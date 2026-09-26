@@ -195,6 +195,12 @@ class GlmMoeLayer {
                             const MoeSegment* segs, int n_segs, int max_rows,
                             const MoeSegment* shared_seg, int tokens,
                             size_t rows_total, cudaStream_t stream);
+  // Longest routed segment for grid sizing (the grouped launchers document
+  // max_rows as the longest segment's row count): reads the device segment
+  // table back into the pinned staging and takes the max over the routed
+  // experts. DGPP_MOE_SEG_MAX=0 keeps the old tokens-wide bound.
+  int routed_seg_max_rows(const MoeSegment* d_segs, int n_segs, int fallback,
+                          cudaStream_t stream);
 
   GlmMoeWeights w_;
   GlmMoeConfig cfg_;
