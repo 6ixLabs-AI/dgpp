@@ -1,0 +1,2 @@
+# Preserve captured diagnostic output, including its original whitespace.
+raw/*.txt -whitespace

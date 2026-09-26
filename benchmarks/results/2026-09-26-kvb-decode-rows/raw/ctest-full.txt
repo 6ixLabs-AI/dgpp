@@ -1,0 +1,359 @@
+Internal ctest changing into directory: /home/stephen/workspace/dgpp-kvb-rows/build-ci
+Test project /home/stephen/workspace/dgpp-kvb-rows/build-ci
+        Start   1: qwen_forward_fixture
+  1/167 Test   #1: qwen_forward_fixture .......................   Passed    0.17 sec
+        Start   2: qwen_plan_check
+  2/167 Test   #2: qwen_plan_check ............................   Passed    0.06 sec
+        Start   3: qwen_w4a4_plan_default
+  3/167 Test   #3: qwen_w4a4_plan_default .....................   Passed    0.07 sec
+        Start   4: qwen_w4a4_plan_mode_0
+  4/167 Test   #4: qwen_w4a4_plan_mode_0 ......................   Passed    0.07 sec
+        Start   5: qwen_w4a4_plan_mode_1
+  5/167 Test   #5: qwen_w4a4_plan_mode_1 ......................   Passed    0.07 sec
+        Start   6: qwen_forward_smoke
+  6/167 Test   #6: qwen_forward_smoke .........................   Passed    1.25 sec
+        Start   7: qwen_qsa_prefill
+  7/167 Test   #7: qwen_qsa_prefill ...........................   Passed    2.97 sec
+        Start   8: qwen_forward_smoke_yarn
+  8/167 Test   #8: qwen_forward_smoke_yarn ....................   Passed    1.27 sec
+        Start   9: qwen_forward_cross_limit
+  9/167 Test   #9: qwen_forward_cross_limit ...................   Passed    1.29 sec
+        Start  10: qwen_forward_generate
+ 10/167 Test  #10: qwen_forward_generate ......................   Passed   19.05 sec
+        Start  11: qwen_forward_test
+ 11/167 Test  #11: qwen_forward_test ..........................   Passed    1.31 sec
+        Start  12: qwen_decode_test
+ 12/167 Test  #12: qwen_decode_test ...........................   Passed    4.55 sec
+        Start  13: qwen_decode_fp8_head
+ 13/167 Test  #13: qwen_decode_fp8_head .......................   Passed    5.45 sec
+        Start  14: qwen_decode_fp8_head_row_independent
+ 14/167 Test  #14: qwen_decode_fp8_head_row_independent .......   Passed    4.73 sec
+        Start  15: qwen_prefill_head
+ 15/167 Test  #15: qwen_prefill_head ..........................   Passed    1.70 sec
+        Start  16: qwen_prefill_head_all_rows
+ 16/167 Test  #16: qwen_prefill_head_all_rows .................   Passed    1.77 sec
+        Start  17: nic_regress_selftest
+ 17/167 Test  #17: nic_regress_selftest .......................   Passed    0.49 sec
+        Start  18: glm_tp_test
+ 18/167 Test  #18: glm_tp_test ................................   Passed   35.74 sec
+        Start  19: glm_mtp_sampling_no_pipeline
+ 19/167 Test  #19: glm_mtp_sampling_no_pipeline ...............   Passed    3.56 sec
+        Start  20: unit_tests
+ 20/167 Test  #20: unit_tests .................................   Passed   10.03 sec
+        Start  21: qwen_yarn_fixture_test
+ 21/167 Test  #21: qwen_yarn_fixture_test .....................   Passed    0.01 sec
+        Start  22: tokenizer_test
+ 22/167 Test  #22: tokenizer_test .............................   Passed    0.23 sec
+        Start  23: qwen_tokenizer_test
+ 23/167 Test  #23: qwen_tokenizer_test ........................   Passed    0.15 sec
+        Start  24: dsv41_tokenizer_test
+ 24/167 Test  #24: dsv41_tokenizer_test .......................   Passed    0.10 sec
+        Start  25: dsv41_prompt_test
+ 25/167 Test  #25: dsv41_prompt_test ..........................   Passed    0.09 sec
+        Start  26: glm4_tokenizer_test
+ 26/167 Test  #26: glm4_tokenizer_test ........................   Passed    0.24 sec
+        Start  27: glm_dsa_tokenizer_test
+ 27/167 Test  #27: glm_dsa_tokenizer_test .....................   Passed    0.25 sec
+        Start  28: mimo_tokenizer_test
+ 28/167 Test  #28: mimo_tokenizer_test ........................***Skipped   0.00 sec
+        Start  29: chat_template_test
+ 29/167 Test  #29: chat_template_test .........................   Passed    1.81 sec
+        Start  30: qwen_chat_template_test
+ 30/167 Test  #30: qwen_chat_template_test ....................***Failed    1.39 sec
+        Start  31: glm4_chat_template_test
+ 31/167 Test  #31: glm4_chat_template_test ....................   Passed    1.90 sec
+        Start  32: glm_dsa_chat_template_test
+ 32/167 Test  #32: glm_dsa_chat_template_test .................   Passed    1.82 sec
+        Start  33: mimo_chat_template_test
+ 33/167 Test  #33: mimo_chat_template_test ....................***Skipped   0.01 sec
+        Start  34: http_server_test
+ 34/167 Test  #34: http_server_test ...........................   Passed    6.33 sec
+        Start  35: serve_test
+ 35/167 Test  #35: serve_test .................................   Passed  118.44 sec
+        Start  36: fabric_serve_test
+ 36/167 Test  #36: fabric_serve_test ..........................   Passed    3.13 sec
+        Start  37: scheduler_test
+ 37/167 Test  #37: scheduler_test .............................   Passed    0.05 sec
+        Start  38: shutdown_watchdog_test
+ 38/167 Test  #38: shutdown_watchdog_test .....................   Passed    0.20 sec
+        Start  39: engine_watchdog_test
+ 39/167 Test  #39: engine_watchdog_test .......................   Passed    5.16 sec
+        Start  40: cuda_wait_test
+ 40/167 Test  #40: cuda_wait_test .............................   Passed    0.51 sec
+        Start  41: unit
+ 41/167 Test  #41: unit .......................................   Passed    9.30 sec
+        Start  42: checkpoint_audit_test
+ 42/167 Test  #42: checkpoint_audit_test ......................   Passed    0.05 sec
+        Start  43: route_trace_test
+ 43/167 Test  #43: route_trace_test ...........................   Passed    0.11 sec
+        Start  44: sampling_profile_test
+ 44/167 Test  #44: sampling_profile_test ......................   Passed    0.04 sec
+        Start  45: site_env_test
+ 45/167 Test  #45: site_env_test ..............................***Failed    1.56 sec
+        Start  46: script_reports_test
+ 46/167 Test  #46: script_reports_test ........................   Passed    0.59 sec
+        Start  47: portability_test
+ 47/167 Test  #47: portability_test ...........................   Passed    0.30 sec
+        Start  48: timed_load_test
+ 48/167 Test  #48: timed_load_test ............................   Passed    0.78 sec
+        Start  49: qwen_yarn_release_check_test
+ 49/167 Test  #49: qwen_yarn_release_check_test ...............   Passed    0.12 sec
+        Start  50: qwen_head_compare_test
+ 50/167 Test  #50: qwen_head_compare_test .....................   Passed    1.56 sec
+        Start  51: spark_cross_test
+ 51/167 Test  #51: spark_cross_test ...........................   Passed    0.89 sec
+        Start  52: setup_tools_test
+ 52/167 Test  #52: setup_tools_test ...........................   Passed    1.63 sec
+        Start  53: bootstrap_test
+ 53/167 Test  #53: bootstrap_test .............................   Passed    0.13 sec
+        Start  54: launcher_test
+ 54/167 Test  #54: launcher_test ..............................   Passed    8.53 sec
+        Start  55: serve_startup_test
+ 55/167 Test  #55: serve_startup_test .........................   Passed    2.21 sec
+        Start  56: kda_test
+ 56/167 Test  #56: kda_test ...................................   Passed    3.18 sec
+        Start  57: dsa_test
+ 57/167 Test  #57: dsa_test ...................................   Passed   15.28 sec
+        Start  58: qwen_gr_test
+ 58/167 Test  #58: qwen_gr_test ...............................   Passed    0.40 sec
+        Start  59: qwen_norm_test
+ 59/167 Test  #59: qwen_norm_test .............................   Passed    0.39 sec
+        Start  60: gdn_test
+ 60/167 Test  #60: gdn_test ...................................   Passed    0.44 sec
+        Start  61: qsa_test
+ 61/167 Test  #61: qsa_test ...................................   Passed    3.06 sec
+        Start  62: qwen_ple_test
+ 62/167 Test  #62: qwen_ple_test ..............................   Passed    0.75 sec
+        Start  63: csa2_test
+ 63/167 Test  #63: csa2_test ..................................   Passed    0.71 sec
+        Start  64: csa2_layer_test
+ 64/167 Test  #64: csa2_layer_test ............................   Passed    3.82 sec
+        Start  65: dsv41_engram_layer_test
+ 65/167 Test  #65: dsv41_engram_layer_test ....................   Passed    1.06 sec
+        Start  66: dsv41_model_test
+ 66/167 Test  #66: dsv41_model_test ...........................   Passed    3.66 sec
+        Start  67: dsv41_forward_fixture
+ 67/167 Test  #67: dsv41_forward_fixture ......................   Passed    0.63 sec
+        Start  68: dsv41_forward_smoke
+ 68/167 Test  #68: dsv41_forward_smoke ........................   Passed    0.95 sec
+        Start  69: dsv41_forward_generate
+ 69/167 Test  #69: dsv41_forward_generate .....................   Passed    0.68 sec
+        Start  70: dsv41_forward_test_e2e
+ 70/167 Test  #70: dsv41_forward_test_e2e .....................   Passed    0.97 sec
+        Start  71: dsv41_forward_generate_teacher
+ 71/167 Test  #71: dsv41_forward_generate_teacher .............   Passed    0.64 sec
+        Start  72: dsv41_forward_test
+ 72/167 Test  #72: dsv41_forward_test .........................   Passed    0.95 sec
+        Start  73: dsv41_forward_generate_bounded
+ 73/167 Test  #73: dsv41_forward_generate_bounded .............   Passed    0.57 sec
+        Start  74: dsv41_forward_test_bounded_e2e
+ 74/167 Test  #74: dsv41_forward_test_bounded_e2e .............   Passed    0.96 sec
+        Start  75: dsv41_forward_generate_teacher_bounded
+ 75/167 Test  #75: dsv41_forward_generate_teacher_bounded .....   Passed    0.62 sec
+        Start  76: dsv41_forward_test_bounded
+ 76/167 Test  #76: dsv41_forward_test_bounded .................   Passed    0.91 sec
+        Start  77: dsv41_decode_test
+ 77/167 Test  #77: dsv41_decode_test ..........................   Passed    3.37 sec
+        Start  78: dsv41_engram_test
+ 78/167 Test  #78: dsv41_engram_test ..........................   Passed    0.41 sec
+        Start  79: qwen_moe_test
+ 79/167 Test  #79: qwen_moe_test ..............................   Passed    2.62 sec
+        Start  80: qwen_loader_test
+ 80/167 Test  #80: qwen_loader_test ...........................   Passed    6.49 sec
+        Start  81: glm4_attn_test
+ 81/167 Test  #81: glm4_attn_test .............................   Passed    0.42 sec
+        Start  82: mimo_attn_test
+ 82/167 Test  #82: mimo_attn_test .............................   Passed    0.63 sec
+        Start  83: add_rmsnorm_test
+ 83/167 Test  #83: add_rmsnorm_test ...........................   Passed    1.11 sec
+        Start  84: glm4_loader_test
+ 84/167 Test  #84: glm4_loader_test ...........................   Passed    0.90 sec
+        Start  85: mimo_loader_test
+ 85/167 Test  #85: mimo_loader_test ...........................   Passed    0.70 sec
+        Start  86: glm4_forward_fixture
+ 86/167 Test  #86: glm4_forward_fixture .......................   Passed    0.09 sec
+        Start  87: glm4_forward_smoke
+ 87/167 Test  #87: glm4_forward_smoke .........................   Passed    0.85 sec
+        Start  88: glm4_forward_generate
+ 88/167 Test  #88: glm4_forward_generate ......................   Passed    6.99 sec
+        Start  89: glm4_forward_test
+ 89/167 Test  #89: glm4_forward_test ..........................   Passed    0.93 sec
+        Start  90: mimo_forward_fixture
+ 90/167 Test  #90: mimo_forward_fixture .......................   Passed    0.09 sec
+        Start  91: mimo_forward_smoke
+ 91/167 Test  #91: mimo_forward_smoke .........................   Passed    0.90 sec
+        Start  92: mimo_forward_generate
+ 92/167 Test  #92: mimo_forward_generate ......................   Passed    0.41 sec
+        Start  93: mimo_forward_test_e2e
+ 93/167 Test  #93: mimo_forward_test_e2e ......................   Passed    0.90 sec
+        Start  94: mimo_forward_generate_teacher
+ 94/167 Test  #94: mimo_forward_generate_teacher ..............   Passed    0.40 sec
+        Start  95: mimo_forward_test
+ 95/167 Test  #95: mimo_forward_test ..........................   Passed    0.90 sec
+        Start  96: glm_dsa_forward_fixture
+ 96/167 Test  #96: glm_dsa_forward_fixture ....................   Passed    0.11 sec
+        Start  97: glm_dsa_forward_smoke
+ 97/167 Test  #97: glm_dsa_forward_smoke ......................   Passed    0.92 sec
+        Start  98: glm_dsa_forward_generate
+ 98/167 Test  #98: glm_dsa_forward_generate ...................   Passed   13.17 sec
+        Start  99: glm_dsa_forward_test
+ 99/167 Test  #99: glm_dsa_forward_test .......................   Passed    0.98 sec
+        Start 100: glm_dsa_prefill_fixture
+100/167 Test #100: glm_dsa_prefill_fixture ....................   Passed    0.10 sec
+        Start 101: glm_dsa_prefill_generate
+101/167 Test #101: glm_dsa_prefill_generate ...................   Passed  105.70 sec
+        Start 102: glm_dsa_prefill_test
+102/167 Test #102: glm_dsa_prefill_test .......................   Passed    1.04 sec
+        Start 103: glm_dsa_decode_test
+103/167 Test #103: glm_dsa_decode_test ........................   Passed    1.37 sec
+        Start 104: glm_dsa_tp_test
+104/167 Test #104: glm_dsa_tp_test ............................   Passed    3.33 sec
+        Start 105: glm_dsa_engine_test
+105/167 Test #105: glm_dsa_engine_test ........................   Passed    6.59 sec
+        Start 106: glm4_decode_test
+106/167 Test #106: glm4_decode_test ...........................   Passed    1.03 sec
+        Start 107: glm4_tp_test
+107/167 Test #107: glm4_tp_test ...............................   Passed    2.56 sec
+        Start 108: glm4_engine_test
+108/167 Test #108: glm4_engine_test ...........................   Passed    3.42 sec
+        Start 109: mimo_decode_test
+109/167 Test #109: mimo_decode_test ...........................   Passed    1.09 sec
+        Start 110: mimo_tp_test
+110/167 Test #110: mimo_tp_test ...............................   Passed    2.05 sec
+        Start 111: mimo_engine_test
+111/167 Test #111: mimo_engine_test ...........................   Passed    5.33 sec
+        Start 112: glm_dsa_loader_test
+112/167 Test #112: glm_dsa_loader_test ........................   Passed    1.02 sec
+        Start 113: dsv41_loader_test
+113/167 Test #113: dsv41_loader_test ..........................   Passed    8.57 sec
+        Start 114: dsv41_tp_test
+114/167 Test #114: dsv41_tp_test ..............................   Passed    7.44 sec
+        Start 115: dsv41_engine_test
+115/167 Test #115: dsv41_engine_test ..........................   Passed    6.61 sec
+        Start 116: qwen_tp_test
+116/167 Test #116: qwen_tp_test ...............................   Passed    3.10 sec
+        Start 117: qwen_engine_test
+117/167 Test #117: qwen_engine_test ...........................   Passed    9.47 sec
+        Start 118: qwen_engine_row_independent
+118/167 Test #118: qwen_engine_row_independent ................   Passed    3.27 sec
+        Start 119: qwen_engine_bf12
+119/167 Test #119: qwen_engine_bf12 ...........................   Passed   10.73 sec
+        Start 120: qwen_engine_fp8_head_4
+120/167 Test #120: qwen_engine_fp8_head_4 .....................   Passed    3.13 sec
+        Start 121: qwen_engine_fp8_head_256
+121/167 Test #121: qwen_engine_fp8_head_256 ...................   Passed    3.22 sec
+        Start 122: qwen_engine_fp8_wide
+122/167 Test #122: qwen_engine_fp8_wide .......................   Passed    3.12 sec
+        Start 123: qwen_engine_fp8_mtp3_rows32
+123/167 Test #123: qwen_engine_fp8_mtp3_rows32 ................   Passed    2.81 sec
+        Start 124: qwen_engine_mtp3_rows32_row_independent
+124/167 Test #124: qwen_engine_mtp3_rows32_row_independent ....   Passed    3.48 sec
+        Start 125: qwen_engine_fp8_mtp3_rows64
+125/167 Test #125: qwen_engine_fp8_mtp3_rows64 ................   Passed    3.21 sec
+        Start 126: qwen_engine_mtp3_rows64_row_independent
+126/167 Test #126: qwen_engine_mtp3_rows64_row_independent ....   Passed    3.52 sec
+        Start 127: qwen_engine_compaction_disabled
+127/167 Test #127: qwen_engine_compaction_disabled ............   Passed    9.18 sec
+        Start 128: qwen_engine_compact_sampling_1
+128/167 Test #128: qwen_engine_compact_sampling_1 .............   Passed    2.96 sec
+        Start 129: qwen_engine_compact_sampling_32
+129/167 Test #129: qwen_engine_compact_sampling_32 ............   Passed    2.89 sec
+        Start 130: qwen_engine_compact_fallback_0
+130/167 Test #130: qwen_engine_compact_fallback_0 .............   Passed    3.45 sec
+        Start 131: qwen_engine_compact_fallback_1
+131/167 Test #131: qwen_engine_compact_fallback_1 .............   Passed    3.54 sec
+        Start 132: qwen_engine_compact_fallback_mtp3_rows64
+132/167 Test #132: qwen_engine_compact_fallback_mtp3_rows64 ...   Passed    3.87 sec
+        Start 133: qwen_head_check_fixture
+133/167 Test #133: qwen_head_check_fixture ....................   Passed    2.60 sec
+        Start 134: qwen_compact_check_fixture
+134/167 Test #134: qwen_compact_check_fixture .................   Passed    4.18 sec
+        Start 135: glm_loader_test
+135/167 Test #135: glm_loader_test ............................   Passed    2.96 sec
+        Start 136: bf16_gemv_test
+136/167 Test #136: bf16_gemv_test .............................   Passed   16.35 sec
+        Start 137: bf12_gemv_test
+137/167 Test #137: bf12_gemv_test .............................   Passed    1.54 sec
+        Start 138: mma_gemv_test
+138/167 Test #138: mma_gemv_test ..............................   Passed    4.26 sec
+        Start 139: fp4_gemv_test
+139/167 Test #139: fp4_gemv_test ..............................   Passed    0.55 sec
+        Start 140: packq_gemv_test
+140/167 Test #140: packq_gemv_test ............................   Passed    0.58 sec
+        Start 141: packq_gemm_test
+141/167 Test #141: packq_gemm_test ............................   Passed    0.51 sec
+        Start 142: scale_gemm_test
+142/167 Test #142: scale_gemm_test ............................   Passed    3.06 sec
+        Start 143: glm_mhc_test
+143/167 Test #143: glm_mhc_test ...............................   Passed    2.70 sec
+        Start 144: det_math_test
+144/167 Test #144: det_math_test ..............................   Passed    4.39 sec
+        Start 145: glm_pick_test
+145/167 Test #145: glm_pick_test ..............................   Passed    1.72 sec
+        Start 146: moe_w4a4_test
+146/167 Test #146: moe_w4a4_test ..............................   Passed    1.12 sec
+        Start 147: gdn_chunk_test
+147/167 Test #147: gdn_chunk_test .............................   Passed    4.09 sec
+        Start 148: glm_moe_test
+148/167 Test #148: glm_moe_test ...............................   Passed   25.32 sec
+        Start 149: moe_w4a4_layer_test
+149/167 Test #149: moe_w4a4_layer_test ........................   Passed    0.46 sec
+        Start 150: glm_forward_fixture
+150/167 Test #150: glm_forward_fixture ........................   Passed    0.12 sec
+        Start 151: glm_forward_generate
+151/167 Test #151: glm_forward_generate .......................   Passed    2.21 sec
+        Start 152: glm_forward_test
+152/167 Test #152: glm_forward_test ...........................   Passed    0.96 sec
+        Start 153: dsa_dump_generate
+153/167 Test #153: dsa_dump_generate ..........................   Passed    0.50 sec
+        Start 154: dsa_dump_test
+154/167 Test #154: dsa_dump_test ..............................   Passed    0.83 sec
+        Start 155: kda_dump_generate
+155/167 Test #155: kda_dump_generate ..........................   Passed    0.06 sec
+        Start 156: kda_dump_test
+156/167 Test #156: kda_dump_test ..............................   Passed    3.14 sec
+        Start 157: doll_selftest
+157/167 Test #157: doll_selftest ..............................   Passed    0.84 sec
+        Start 158: flag_protocol_test
+158/167 Test #158: flag_protocol_test .........................   Passed    1.30 sec
+        Start 159: roster_selftest
+159/167 Test #159: roster_selftest ............................   Passed    0.05 sec
+        Start 160: bus_test
+160/167 Test #160: bus_test ...................................   Passed   36.44 sec
+        Start 161: bus_selftest
+161/167 Test #161: bus_selftest ...............................   Passed    2.24 sec
+        Start 162: qwen_vision_test
+162/167 Test #162: qwen_vision_test ...........................   Passed    0.43 sec
+        Start 163: glm_vision_test
+163/167 Test #163: glm_vision_test ............................   Passed    0.85 sec
+        Start 164: glm_vision_stream_test
+164/167 Test #164: glm_vision_stream_test .....................   Passed   23.16 sec
+        Start 165: glm_vision_frontend_test
+165/167 Test #165: glm_vision_frontend_test ...................   Passed    0.30 sec
+        Start 166: mimo_port_test
+166/167 Test #166: mimo_port_test .............................   Passed    2.03 sec
+        Start 167: mimo_native_mtp_test
+167/167 Test #167: mimo_native_mtp_test .......................   Passed    1.78 sec
+
+99% tests passed, 2 tests failed out of 167
+
+Label Time Summary:
+checkpoint    =  29.36 sec*proc (10 tests)
+fixture       =  30.10 sec*proc (11 tests)
+gpu           = 528.23 sec*proc (120 tests)
+host          = 177.59 sec*proc (36 tests)
+python        =  18.50 sec*proc (14 tests)
+rdma          = 151.39 sec*proc (21 tests)
+
+Total Test time (real) = 735.97 sec
+
+The following tests did not run:
+	 28 - mimo_tokenizer_test (Skipped)
+	 33 - mimo_chat_template_test (Skipped)
+
+The following tests FAILED:
+	 30 - qwen_chat_template_test (Failed)
+	 45 - site_env_test (Failed)
+Errors while running CTest
+Output from these tests are in: /home/stephen/workspace/dgpp-kvb-rows/build-ci/Testing/Temporary/LastTest.log
+Use "--rerun-failed --output-on-failure" to re-run the failed cases verbosely.
