@@ -2829,3 +2829,91 @@ DGPP_TEST(prefix_cache_image_byte_budget_shares_identity_and_preserves_entries) 
   cache.detach(a);
   require(cache.evict_lru() >= 0 && cache.image_bytes() == 0, "last eviction releases image identity");
 }
+
+DGPP_TEST(scheduler_multiAdmission_admitsFittingOneShotsInOneTick) {
+  // GIVEN two queued image requests (images never group) and one slot each
+  // on a 2-slot engine with a positive prefill budget:
+  class ImageMultiEngine : public GroupFakeEngine {
+   public:
+    ImageMultiEngine() : GroupFakeEngine(2, 100, 4, 32, 64) {}
+    int calls = 0;
+    bool supports_images() const override { return true; }
+    int64_t prefill_chunk_alignment() const override { return 2; }
+    int64_t prefill_chunk_limit() const override { return 64; }
+    int32_t prefill_images(int req, const std::vector<int64_t>& p,
+                           const std::vector<dgpp::ImageInput>& images) override {
+      ++calls;
+      return FakeEngine::prefill(req, p);
+    }
+  } engine;
+  engine.arm(0, {10, 11}, 2);
+  engine.arm(1, {20, 21}, 2);
+  engine.arm(0, {30, 31}, 2);  // the deferred third prompt reuses the lowest free slot
+  dgpp::sched::AdmissionPolicy policy;
+  policy.prefill_budget_tokens = 64;
+  Scheduler sched(&engine, {}, 0, policy);
+  auto image_request = [](const std::string& id) {
+    SchedulerRequest r = make_request(id, 6, 2);
+    r.images.push_back({1, 1, 28, 28, std::vector<uint8_t>(28 * 28 * 3, 123)});
+    return r;
+  };
+  sched.submit(image_request("a"));
+  sched.submit(image_request("b"));
+  sched.submit(image_request("c"));
+
+  // WHEN one tick runs,
+  sched.tick();
+
+  // THEN both fitting one-shots admitted in that tick (never grouped), and
+  // the third deferred for lack of a free slot:
+  require(engine.calls == 2, "both fitting one-shots prefill in the first tick");
+  require(engine.op_stream().find("PG:") == std::string::npos, "images never group");
+  require(sched.meters().prompts_prefilled == 2, "two admissions in one tick");
+  require(sched.meters().queued == 1, "the slotless third request waits");
+
+  // WHEN the run completes,
+  sched.run_to_completion();
+
+  // THEN all three transcripts are intact and the deferred request reused
+  // slot 0:
+  require(sched.results().size() == 3, "three results");
+  require(ids_joined(sched.results()[0].generated) == "10,11", "a ids");
+  require(ids_joined(sched.results()[1].generated) == "20,21", "b ids");
+  require(ids_joined(sched.results()[2].generated) == "30,31", "c ids");
+  require(sched.meters().pool_blocks_in_use == 0, "no reservation leak");
+}
+
+DGPP_TEST(scheduler_fairShare_interleavesConcurrentChunkedPrefills) {
+  // GIVEN two over-budget prompts (11 and 9 tokens, budget 4) on a 2-slot
+  // chunked engine:
+  ChunkFakeEngine engine;
+  engine.arm(0, {10, 11}, 2);
+  engine.arm(1, {20, 21}, 2);
+  dgpp::sched::AdmissionPolicy policy;
+  policy.prefill_budget_tokens = 4;
+  Scheduler sched(&engine, {}, 0, policy);
+  sched.submit(make_request("long-a", 11, 2));
+  sched.submit(make_request("long-b", 9, 2));
+
+  // WHEN the first tick runs, the head begins with the full tick budget
+  // (chunked read-ins stay one at a time);
+  sched.tick();
+  require(sched.meters().prefilling == 1 && sched.meters().prompt_tokens_computed == 4,
+          "first tick begins one chunked prefill with the full budget");
+
+  // WHEN the second tick runs, the second read-in begins and both advance
+  // on equal shares;
+  sched.tick();
+  require(sched.meters().prefilling == 2 && sched.meters().prompt_tokens_computed == 8,
+          "second tick interleaves: both prefills advance 2+2");
+
+  // WHEN the run completes,
+  sched.run_to_completion();
+
+  // THEN both transcripts are intact, every token counted once, and nothing
+  // leaks:
+  require(sched.find("long-a")->generated == std::vector<int64_t>({10, 11}), "a transcript");
+  require(sched.find("long-b")->generated == std::vector<int64_t>({20, 21}), "b transcript");
+  require(sched.meters().prompt_tokens_computed == 20, "no double counting");
+  require(sched.meters().pool_blocks_in_use == 0, "no reservation leak");
+}

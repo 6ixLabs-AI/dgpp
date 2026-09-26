@@ -5,8 +5,8 @@
 // container iteration: engine operations include collectives whose order
 // must match across ranks.
 //
-// Each tick admits at most one fitting queued request and performs prefill
-// work, then runs one decode step. A configured budget bounds prefill work. Admission chooses the oldest request that fits,
+// Each tick admits fitting queued requests against the tick's prefill
+// budget and performs prefill work, then runs one decode step. Admission chooses the oldest request that fits,
 // so a smaller request can pass a larger one; sustained small requests can
 // starve a large request. With a zero budget prefill blocks decode for the
 // full admission; supported engines yield between chunks with a positive budget.
@@ -673,6 +673,21 @@ class Scheduler {
   void admit(int arrival);
   void begin_prefill(int arrival, int64_t budget);
   void advance_prefill(int arrival, int64_t budget);
+  // The chunked-prefill predicate behind the admit dispatch: a positive
+  // budget, chunkable inputs (plain text, or images on an engine that
+  // chunks them), and a prompt longer than one tick's budget.
+  bool needs_chunked_prefill(int arrival, int64_t budget) const;
+  // One iteration of the tick's admit loop: the oldest fitting queued
+  // request admits (group, one-shot, or chunked start) against the tick's
+  // remaining prefill cap. Sets began_chunked when the admission started a
+  // chunked prefill (the caller ends the loop — chunked read-ins stay one
+  // at a time). A fitting one-shot past the remaining cap waits for a
+  // later tick, so one tick never stacks unbounded synchronous prefill
+  // work. With allow_chunked false (a prefill already in flight) a
+  // chunked-needing head waits instead of beginning. Returns false when
+  // nothing admitted.
+  bool admit_fitting(int64_t& tick_cap, int64_t budget, bool allow_chunked,
+                     bool& began_chunked);
   void step_batch(const std::vector<int>& arrivals);
   // Appends one token and applies terminal conditions in their canonical
   // order. Returns true when the request retired. `logprobs` (optional)
