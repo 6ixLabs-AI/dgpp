@@ -1030,6 +1030,79 @@ DGPP_TEST(dsa_absorb_and_vout_mma_match_the_warp_kernels) {
   }
 }
 
+// The row-batched decode forms of absorb and vout (two rows and up) against
+// the one-row launches, row by row, BITWISE: the decode contract — a
+// batched row is the row alone — at every row count the schedulers issue
+// (1..16, the tiles' edges included), at the checkpoint's 64-head geometry
+// and at TP=4's, with a rope tail and without.
+DGPP_TEST(dsa_absorb_and_vout_row_batches_match_the_rows_alone) {
+  for (const int heads : {64, 16}) {
+    for (const int rope : {0, 64}) {
+      DsaConfig cfg{};
+      cfg.num_heads = heads;
+      const DsaGeometry g = DsaGeometry::from_config(cfg);
+      const int local_heads = g.local_heads, nope = cfg.qk_nope_head_dim;
+      const int v = cfg.v_head_dim, kv_lora = cfg.kv_lora_rank;
+      const int rows = 16;
+      const int qw = nope + rope, ow = kv_lora + rope;
+      auto q = random_bf16_bits(201 + heads + rope, int64_t(rows) * local_heads * qw, -2, 1);
+      auto kv_b = random_bf16_bits(202 + heads + rope, int64_t(local_heads) * (nope + v) * kv_lora, -2, 1);
+      std::vector<float> c(size_t(rows) * local_heads * kv_lora);
+      {
+        uint64_t x = 0xD1B54A32D192ED03ULL + heads + rope;
+        for (auto& f : c) {
+          x = x * 6364136223846793005ULL + 1442695040888963407ULL;
+          f = (float(int64_t(x >> 40)) / float(1 << 23) - 1.f) * 3.f;
+        }
+      }
+      DevBuf dq(q.size() * 2), dkb(kv_b.size() * 2), dc(c.size() * 4),
+          dqt_one(size_t(rows) * local_heads * ow * 2), dqt_batch(size_t(rows) * local_heads * ow * 2),
+          dout_one(size_t(rows) * local_heads * v * 2), dout_batch(size_t(rows) * local_heads * v * 2);
+      dq.upload(q.data(), q.size() * 2);
+      dkb.upload(kv_b.data(), kv_b.size() * 2);
+      dc.upload(c.data(), c.size() * 4);
+      // Every row alone (the one-row kernels).
+      for (int r = 0; r < rows; ++r) {
+        dsa_absorb_q(static_cast<const uint16_t*>(dq.p) + size_t(r) * local_heads * qw, dkb.p,
+                     static_cast<uint16_t*>(dqt_one.p) + size_t(r) * local_heads * ow, 1,
+                     local_heads, nope, v, kv_lora, 0, rope, /*tensor_cores=*/false);
+        dsa_vout_gemm(static_cast<const float*>(dc.p) + size_t(r) * local_heads * kv_lora, dkb.p,
+                      static_cast<uint16_t*>(dout_one.p) + size_t(r) * local_heads * v, 1,
+                      local_heads, nope, v, kv_lora, 0, /*tensor_cores=*/false);
+      }
+      DGPP_CUDA_OK(cudaDeviceSynchronize());
+      const size_t nq = size_t(rows) * local_heads * ow, no = size_t(rows) * local_heads * v;
+      std::vector<uint16_t> q_one(nq), q_batch(nq), o_one(no), o_batch(no);
+      dqt_one.download(q_one.data(), nq * 2);
+      dout_one.download(o_one.data(), no * 2);
+      for (int n = 1; n <= rows; ++n) {
+        DGPP_CUDA_OK(cudaMemset(dqt_batch.p, 0xEE, nq * 2));
+        DGPP_CUDA_OK(cudaMemset(dout_batch.p, 0xEE, no * 2));
+        dsa_absorb_q(dq.p, dkb.p, dqt_batch.p, n, local_heads, nope, v, kv_lora, 0, rope,
+                     /*tensor_cores=*/false);
+        dsa_vout_gemm(dc.p, dkb.p, dout_batch.p, n, local_heads, nope, v, kv_lora, 0,
+                      /*tensor_cores=*/false);
+        DGPP_CUDA_OK(cudaDeviceSynchronize());
+        dqt_batch.download(q_batch.data(), nq * 2);
+        dout_batch.download(o_batch.data(), no * 2);
+        const std::string tag = " heads=" + std::to_string(heads) + " rope=" + std::to_string(rope) +
+                                " rows=" + std::to_string(n);
+        require_bitwise("absorb batch vs rows alone" + tag, q_batch.data(), q_one.data(),
+                        size_t(n) * local_heads * ow * 2);
+        require_bitwise("vout batch vs rows alone" + tag, o_batch.data(), o_one.data(),
+                        size_t(n) * local_heads * v * 2);
+        // Rows past n untouched (the batch writes nothing beyond its rows).
+        for (size_t i = size_t(n) * local_heads * ow; i < nq; ++i)
+          if (q_batch[i] != 0xEEEEu) throw std::runtime_error("absorb batch wrote past its rows" + tag);
+        for (size_t i = size_t(n) * local_heads * v; i < no; ++i)
+          if (o_batch[i] != 0xEEEEu) throw std::runtime_error("vout batch wrote past its rows" + tag);
+      }
+      std::printf("[ OK ] row batches heads=%d rope=%d: absorb and vout bitwise the rows alone at 1..%d rows\n",
+                  heads, rope, rows);
+    }
+  }
+}
+
 // The flash kernel over per-row SELECTED lists (the sparse regime) against
 // the split kernel on the same lists and the host oracle: 41 rows with
 // counts from 3 to 283 (adjacent rows very different, so a block's two

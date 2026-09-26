@@ -1501,6 +1501,90 @@ __global__ __launch_bounds__(kAbsorbThreads) void absorb_q_kernel(
   }
 }
 
+// The row-batched decode form (2026-09-26): a block owns kTile rows of one
+// head, so every W_uk load feeds kTile rows' FMAs — the one-row kernel
+// above reads the head's 197 KB once per (row, head) block, and at eight
+// or sixteen decode rows (the batched MTP verify) those re-reads, L2 hits
+// though they are, were the layer's cost. Thread (group, col) keeps the
+// one-row kernel's d chain (d = group, group + kAbsorbGroups, ...) and its
+// eight columns, then the groups' partials are summed IN GROUP ORDER
+// through one running row (group g adds its partial in phase g), which is
+// the one-row kernel's `total = partial[0]; total += partial[g]` sequence
+// — so every row's bits are the one-row kernel's, whatever rows share the
+// block (the decode contract: a batched row bitwise the row alone), and
+// the shared memory stays static (no dynamic opt-in on a capture path).
+// Rows past `rows` in the last tile stage zeros and store nothing.
+template <int kTile>
+__global__ __launch_bounds__(kAbsorbThreads) void absorb_q_rows_kernel(
+    const uint16_t* q, const uint16_t* kv_b, uint16_t* q_tilde, int rows,
+    int local_heads, int nope, int v, int kv_lora, int rope) {
+  const int r0 = blockIdx.x * kTile;
+  const int h = blockIdx.y;
+  const int head_rows = nope + v;
+  const int nr = min(kTile, rows - r0);
+  const uint16_t* wuk = kv_b + int64_t(h) * head_rows * kv_lora;
+  __shared__ float qs[kTile][256];
+  __shared__ __align__(16) float run[kTile][512];
+  for (int i = threadIdx.x; i < kTile * nope; i += blockDim.x) {
+    const int r = i / nope, d = i - r * nope;
+    qs[r][d] = r < nr ? bf16_bits_to_float(
+                            q[(int64_t(r0 + r) * local_heads + h) * (nope + rope) + d])
+                      : 0.0f;
+  }
+  // The rope tail rides along unchanged (rotated upstream).
+  for (int i = threadIdx.x; i < nr * rope; i += blockDim.x) {
+    const int r = i / rope, t = i - r * rope;
+    q_tilde[(int64_t(r0 + r) * local_heads + h) * (kv_lora + rope) + kv_lora + t] =
+        q[(int64_t(r0 + r) * local_heads + h) * (nope + rope) + nope + t];
+  }
+  __syncthreads();
+  const int group = threadIdx.x / kAbsorbGroupThreads;
+  const int col = (threadIdx.x % kAbsorbGroupThreads) * 8;
+  float acc[kTile][8];
+#pragma unroll
+  for (int r = 0; r < kTile; ++r)
+#pragma unroll
+    for (int j = 0; j < 8; ++j) acc[r][j] = 0.0f;
+  if (col < kv_lora) {
+#pragma unroll 4
+    for (int d = group; d < nope; d += kAbsorbGroups) {
+      const uint4 wv =
+          *reinterpret_cast<const uint4*>(wuk + int64_t(d) * kv_lora + col);
+      const uint32_t* w32 = reinterpret_cast<const uint32_t*>(&wv);
+      float wf[8];
+#pragma unroll
+      for (int j = 0; j < 4; ++j) {
+        const float2 f = bf16x2_to_float2(w32[j]);
+        wf[2 * j] = f.x;
+        wf[2 * j + 1] = f.y;
+      }
+#pragma unroll
+      for (int r = 0; r < kTile; ++r) {
+        const float qv = qs[r][d];
+#pragma unroll
+        for (int j = 0; j < 8; ++j) acc[r][j] += qv * wf[j];
+      }
+    }
+  }
+  for (int g = 0; g < kAbsorbGroups; ++g) {
+    if (group == g && col < kv_lora) {
+#pragma unroll
+      for (int r = 0; r < kTile; ++r)
+#pragma unroll
+        for (int j = 0; j < 8; ++j)
+          run[r][col + j] = g == 0 ? acc[r][j] : run[r][col + j] + acc[r][j];
+    }
+    __syncthreads();
+  }
+  if (group == 0 && col < kv_lora) {
+    for (int r = 0; r < nr; ++r) {
+      uint16_t* out = q_tilde + (int64_t(r0 + r) * local_heads + h) * (kv_lora + rope);
+#pragma unroll
+      for (int j = 0; j < 8; ++j) out[col + j] = float_to_bf16_bits(run[r][col + j]);
+    }
+  }
+}
+
 // One block per (row, split, head-group). Thread (h, g) within the block:
 // head h, dim group g (contiguous lanes, so the group reduce is shuffles).
 //
@@ -2236,6 +2320,80 @@ __global__ __launch_bounds__(kVoutThreads) void vout_gemm_kernel(
   for (int off = 16; off > 0; off >>= 1)
     acc += __shfl_xor_sync(0xFFFFFFFFu, acc, off);
   if (lane == 0) out[(r * local_heads + h) * v + d] = float_to_bf16_bits(acc);
+}
+
+
+// The row-batched decode form (2026-09-26): each warp loads its 1 KB
+// W_uv row ONCE into registers (the lane's two uint4, sixteen values) and
+// runs the tile's activation rows one after another, each the one-row
+// kernel's chain over the staged c row — the lane / element order and the
+// shuffle tree above — so every row's bits are the one-row kernel's. A
+// block owns kVoutRowsPerBlock weight rows of one head for a tile of
+// kVoutTileRows activation rows (grid z = the tiles): the one-row kernel's
+// parallelism at a quarter of its W_uv traffic, c staged with float4
+// loads, static shared memory as before.
+constexpr int kVoutTileRows = 4;
+
+__global__ __launch_bounds__(kVoutThreads) void vout_rows_kernel(
+    const float* c, const uint16_t* kv_b, uint16_t* out, int rows,
+    int local_heads, int nope, int v, int kv_lora) {
+  const int h = blockIdx.y;
+  const int d0 = blockIdx.x * kVoutRowsPerBlock;
+  const int t0 = blockIdx.z * kVoutTileRows;
+  const int nr = min(kVoutTileRows, rows - t0);
+  const int head_rows = nope + v;
+  __shared__ __align__(16) float cs[kVoutTileRows][512];
+  const int warp = threadIdx.x / 32, lane = threadIdx.x % 32;
+  const int d = d0 + warp;
+  const bool live = d < v;
+  const uint16_t* wuv = kv_b + (int64_t(h) * head_rows + nope) * kv_lora;
+  const uint4* w4 = reinterpret_cast<const uint4*>(wuv + int64_t(d) * kv_lora);
+  float wf[2][8];
+#pragma unroll
+  for (int i = 0; i < 2; ++i) {
+    const int u = lane + 32 * i;
+    uint4 wv = make_uint4(0u, 0u, 0u, 0u);
+    if (live && u < kv_lora / 8) wv = w4[u];
+    const uint32_t* w32 = reinterpret_cast<const uint32_t*>(&wv);
+#pragma unroll
+    for (int j = 0; j < 4; ++j) {
+      const float2 f = bf16x2_to_float2(w32[j]);
+      wf[i][2 * j] = f.x;
+      wf[i][2 * j + 1] = f.y;
+    }
+  }
+  const int vec_per_row = kv_lora / 4;
+  for (int i = threadIdx.x; i < nr * vec_per_row; i += blockDim.x) {
+    const int r = i / vec_per_row, cc = i - r * vec_per_row;
+    reinterpret_cast<float4*>(cs[r])[cc] = reinterpret_cast<const float4*>(
+        c + (int64_t(t0 + r) * local_heads + h) * kv_lora)[cc];
+  }
+  __syncthreads();
+  if (!live) return;
+  for (int r = 0; r < nr; ++r) {
+    float acc = 0.0f;
+#pragma unroll
+    for (int i = 0; i < 2; ++i) {
+      const int u = lane + 32 * i;
+      if (u < kv_lora / 8) {
+        const float4 cs4 = *reinterpret_cast<const float4*>(&cs[r][u * 8]);
+        const float4 cs4b = *reinterpret_cast<const float4*>(&cs[r][u * 8 + 4]);
+        acc += wf[i][0] * cs4.x;
+        acc += wf[i][1] * cs4.y;
+        acc += wf[i][2] * cs4.z;
+        acc += wf[i][3] * cs4.w;
+        acc += wf[i][4] * cs4b.x;
+        acc += wf[i][5] * cs4b.y;
+        acc += wf[i][6] * cs4b.z;
+        acc += wf[i][7] * cs4b.w;
+      }
+    }
+#pragma unroll
+    for (int off = 16; off > 0; off >>= 1)
+      acc += __shfl_xor_sync(0xFFFFFFFFu, acc, off);
+    if (lane == 0)
+      out[(int64_t(t0 + r) * local_heads + h) * v + d] = float_to_bf16_bits(acc);
+  }
 }
 
 }  // namespace
@@ -2985,10 +3143,28 @@ void dsa_absorb_q(const void* q, const void* kv_b, void* q_tilde,
     DGPP_CUDA_OK(cudaGetLastError());
     return;
   }
-  dim3 grid{unsigned(rows), unsigned(local_heads)};
-  absorb_q_kernel<<<grid, kAbsorbThreads, 0, stream>>>(
-      static_cast<const uint16_t*>(q), static_cast<const uint16_t*>(kv_b),
-      static_cast<uint16_t*>(q_tilde), local_heads, nope, v, kv_lora, rope);
+  if (rows == 1) {
+    dim3 grid{unsigned(rows), unsigned(local_heads)};
+    absorb_q_kernel<<<grid, kAbsorbThreads, 0, stream>>>(
+        static_cast<const uint16_t*>(q), static_cast<const uint16_t*>(kv_b),
+        static_cast<uint16_t*>(q_tilde), local_heads, nope, v, kv_lora, rope);
+    DGPP_CUDA_OK(cudaGetLastError());
+    return;
+  }
+  // The row-batched form: tiles of up to four rows per block, the exact
+  // tile for two or three rows (a partial last tile only wastes FMAs).
+  const auto launch = [&](auto tile) {
+    constexpr int kTile = decltype(tile)::value;
+    dim3 grid{unsigned((rows + kTile - 1) / kTile), unsigned(local_heads)};
+    absorb_q_rows_kernel<kTile><<<grid, kAbsorbThreads, 0, stream>>>(
+        static_cast<const uint16_t*>(q), static_cast<const uint16_t*>(kv_b),
+        static_cast<uint16_t*>(q_tilde), int(rows), local_heads, nope, v, kv_lora, rope);
+  };
+  switch (rows) {
+    case 2: launch(std::integral_constant<int, 2>{}); break;
+    case 3: launch(std::integral_constant<int, 3>{}); break;
+    default: launch(std::integral_constant<int, 4>{}); break;
+  }
   DGPP_CUDA_OK(cudaGetLastError());
 }
 
@@ -3224,11 +3400,23 @@ void dsa_vout_gemm(const void* c, const void* kv_b, void* out,
     DGPP_CUDA_OK(cudaGetLastError());
     return;
   }
-  dim3 grid{unsigned(rows), unsigned(local_heads),
-            unsigned((v + kVoutRowsPerBlock - 1) / kVoutRowsPerBlock)};
-  vout_gemm_kernel<<<grid, kVoutThreads, 0, stream>>>(
+  if (rows == 1) {
+    dim3 grid{unsigned(rows), unsigned(local_heads),
+              unsigned((v + kVoutRowsPerBlock - 1) / kVoutRowsPerBlock)};
+    vout_gemm_kernel<<<grid, kVoutThreads, 0, stream>>>(
+        static_cast<const float*>(c), static_cast<const uint16_t*>(kv_b),
+        static_cast<uint16_t*>(out), local_heads, nope, v, kv_lora);
+    DGPP_CUDA_OK(cudaGetLastError());
+    return;
+  }
+  // The row-batched form (float4-staged c rows: c is the combine's fp32
+  // output, 16-byte aligned; kv_lora % 8 == 0 keeps the vectors whole).
+  if (reinterpret_cast<uintptr_t>(c) % 16 != 0) DGPP_CUDA_OK(cudaErrorInvalidValue);
+  dim3 grid{unsigned((v + kVoutRowsPerBlock - 1) / kVoutRowsPerBlock), unsigned(local_heads),
+            unsigned((rows + kVoutTileRows - 1) / kVoutTileRows)};
+  vout_rows_kernel<<<grid, kVoutThreads, 0, stream>>>(
       static_cast<const float*>(c), static_cast<const uint16_t*>(kv_b),
-      static_cast<uint16_t*>(out), local_heads, nope, v, kv_lora);
+      static_cast<uint16_t*>(out), int(rows), local_heads, nope, v, kv_lora);
   DGPP_CUDA_OK(cudaGetLastError());
 }
 
