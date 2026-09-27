@@ -67,47 +67,34 @@ arrival order, begins at most one new chunked read-in (oldest fitting,
 skip-fit, no eviction dance — a begin must not disturb the pool the
 in-flight prefills hold), gated so every share keeps at least one aligned
 chunk (`(n+1)*align <= budget`); splits the tick budget into equal
-align-down shares and advances every in-flight prefill on its share; then
+align-down shares and advances the selected prefills on their shares; then
 admits fitting one-shots/groups into the align-down leftover (never a new
 chunked start — chunked read-ins stay one at a time). Order derives from
-arrival order only, so every rank agrees.
+arrival order and the last-advanced prefill only, so every rank agrees.
+
+When the budget drops from idle to busy, the in-flight count can exceed
+`budget / align`. Advance only that many prefills, rotating through arrival
+order from the last-advanced request. Every share remains at least one
+aligned chunk without exceeding the total budget. Record compaction remaps
+the prefill cursor just like the decode cursor, including when its request
+was cancelled or retired. With enough budget, all prefills advance again.
 
 **Audit results** (the pre-implementation open questions, all green): the
 engine already supports ≥2 concurrent `kPrefilling` requests — per-slot
 `prefills_` cursors suspend/resume by design (`session_model` advance marks
 unfinished slots inert `0xff`), `reseed_live_feeds` touches live slots
-only, and grow-mode shedding touches `kActive` only.
-
-**Rule**: relax the `prefill_arrival >= 0 → admit_arrival = -1` gate. Keep
-advancing the in-flight chunked prefill each tick, but also allow
-`begin_prefill` for one waiting request, then alternate chunks round-robin
-(each within the per-tick budget, order derived from arrival order only).
-A second prompt's early chunks overlap the first prompt's late chunks instead
-of waiting for all of them.
-
-**Must be verified before implementing** (open questions, not blockers):
-
-1. Engine support for ≥2 concurrent `kPrefilling` requests:
-   `advance_prefill(arrival)` is parameterized per request (good sign), but it
-   does `drain() + reseed_live_feeds()` (`graph_engine.hpp:1087,1689-1694`)
-   — confirm a second in-flight prefill doesn't clobber the first's
-   feeds/cuts. Read `begin_prefill:1019`, `advance_prefill:1087`, and the
-   session chunk state first.
-2. KV reservations: each chunked prefill must hold `initial_reserve_tokens`
-   for its whole duration; confirm grow-mode shedding
-   (`youngest_active_after`) can't shed an in-flight prefill's reservation
-   mid-chunk.
-3. Determinism: round-robin order from arrival order only, so every rank
-   agrees (same rule as the decode `cursor_`).
-
-**Risk**: medium — engine-side single-prefill assumptions are the danger, and
-a bug here corrupts KV, not just latency. Requires a c4 deep-context soak
-test before merging. Estimated 3–5 days including the engine audit.
+only. Grow-mode shedding can retire younger `kActive` or `kPrefilling`
+requests at the tick's initial reservation pass; the in-flight list is
+built after that pass. Each surviving prefill retains its reservation
+between chunks.
 
 ## Test plan (both items)
 
 - `unit_tests` + `serve_test` green (scheduler determinism tests compare
   concurrent requests against independent runs).
+- Scheduler regressions cover exhausted group budgets, chunked starts
+  after one-shots, monolithic image fallback, idle-to-busy budget changes,
+  fair rotation, cancellation, slot reuse and compaction determinism.
 - Live: c1/c2/c4 @ d0/d4k/d8k benchy sweep; TTFT of request #2 must drop;
   per-request tok/s must not regress at c1.
 - Item 2 additionally: c4 deep-context soak, KV pool metrics sane, no

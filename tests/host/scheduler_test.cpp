@@ -3041,3 +3041,74 @@ DGPP_TEST(scheduler_multiAdmission_no_group_after_inflight_exhausts_budget) {
   require(sched.meters().prompt_tokens_computed == 19 && sched.meters().pool_blocks_in_use == 0,
           "inflight and grouped work complete without leaks");
 }
+
+DGPP_TEST(scheduler_fairShare_busy_budget_rotates_and_survives_compaction) {
+  for (const int busy_budget : {2, 4}) for (const bool cancel_cursor : {false, true}) {
+    const auto run = [&](bool keep_retired) {
+      struct Engine : ChunkFakeEngine {
+        std::vector<int> advanced;
+        int max_concurrent_requests() const override { return 4; }
+        int decode_batch_capacity() const override { return 4; }
+        PrefillProgress advance_prefill(int req, int64_t budget) override {
+          require(budget >= 2 && budget % 2 == 0, "each share is a supported aligned chunk");
+          advanced.push_back(req);
+          return ChunkFakeEngine::advance_prefill(req, budget);
+        }
+      } engine;
+      engine.arm(0, {10, 11, 12, 13, 14, 15, 16, 17}, 8);
+      for (int slot = 1; slot < 4; ++slot) engine.arm(slot, {20, 21}, 2);
+      for (int slot = 0; slot < 4; ++slot) engine.arm(slot, {90, 91}, 2);
+      dgpp::sched::AdmissionPolicy policy;
+      policy.prefill_budget_tokens = busy_budget;
+      policy.prefill_idle_budget_tokens = 8;
+      Scheduler sched(&engine, {}, 0, policy);
+      RecordingObserver observer;
+      sched.set_observer(&observer);
+      sched.set_keep_retired(keep_retired);
+      sched.submit(make_request("first", 18, 8));
+      for (int i = 1; i < 4; ++i) sched.submit(make_request("long" + std::to_string(i), 31, 2));
+      const auto tick = [&] {
+        const auto before = sched.meters();
+        const auto cap = before.active > before.prefilling ? busy_budget : 8;
+        engine.advanced.clear();
+        sched.tick();
+        require(sched.meters().prompt_tokens_computed - before.prompt_tokens_computed <= cap,
+                "prefill work stays within the current busy or idle budget");
+      };
+      for (int i = 0; i < 5; ++i) tick();
+      require(sched.meters().prefilling == 3 && sched.meters().active == 4,
+              "idle admissions leave three prefills when the first prompt starts decoding");
+      std::vector<int> visited;
+      for (int i = 0; i < 3; ++i) {
+        const auto before = sched.meters().tokens_generated;
+        tick();
+        require(sched.meters().tokens_generated == before + 1, "decode advances between bounded prefill slices");
+        visited.insert(visited.end(), engine.advanced.begin(), engine.advanced.end());
+      }
+      for (int slot = 1; slot < 4; ++slot)
+        require(std::count(visited.begin(), visited.end(), slot) == busy_budget / 2,
+                "all three in-flight prefills receive equal turns without starvation");
+      if (cancel_cursor) {
+        // Move off the last arrival before cancelling: compaction must
+        // remap an interior cursor, not merely wrap at the end of the list.
+        tick();
+        const int victim = engine.advanced.back();
+        require(sched.cancel("long" + std::to_string(victim)), "cancel the last-advanced cursor's request");
+        sched.submit(make_request("replacement", 31, 2));
+      }
+      int remaining_ticks = 100;
+      while (sched.has_pending() && --remaining_ticks > 0) tick();
+      require(!sched.has_pending() && sched.meters().pool_blocks_in_use == 0,
+              "every request finishes or cancels and releases its reservation");
+      if (keep_retired) {
+        require(sched.find("first")->generated == std::vector<int64_t>({10, 11, 12, 13, 14, 15, 16, 17}),
+                "decode transcript intact across the budget transition");
+        if (cancel_cursor)
+          require(sched.find("replacement")->generated == std::vector<int64_t>({90, 91}),
+                  "replacement transcript intact after slot reuse");
+      } else require(sched.meters().records == 0, "all retired records compacted");
+      return std::make_pair(engine.op_stream(), observer.replay());
+    };
+    require(run(true) == run(false), "compaction preserves every engine op and observer event");
+  }
+}

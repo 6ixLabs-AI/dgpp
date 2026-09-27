@@ -758,6 +758,50 @@ DGPP_TEST(qwen_engines_loopback_world_2_wide_mtp_slot_reuse_and_continuation) {
         graph.close(slots - 1);
         graph.prefix_release(0);
       }
+      {
+        // Exercise the scheduler over real per-slot cursors and MTP graphs:
+        // idle admission opens four prefills, then the first completion
+        // reduces the tick budget below the remaining prefill count.
+        const int64_t align = graph.prefill_chunk_alignment();
+        dgpp::sched::AdmissionPolicy policy;
+        policy.prefill_budget_tokens = static_cast<int>(align);
+        policy.prefill_idle_budget_tokens = static_cast<int>(4 * align);
+        std::vector<dgpp::sched::SchedulerRequest> requests;
+        std::vector<std::vector<int64_t>> expected;
+        for (int i = 0; i < 4; ++i) {
+          dgpp::sched::SchedulerRequest request;
+          request.id = "fair-" + std::to_string(i);
+          request.prompt = smoke_tokens(cfg, i == 0 ? 9 * align : 15 * align + 1, 6400 + i);
+          request.max_steps = 12;
+          requests.push_back(request);
+          dgpp::sched::Scheduler solo_sched(&graph, {}, 0, policy, /*prefix_slots=*/0);
+          solo_sched.submit(request);
+          solo_sched.run_to_completion();
+          expected.push_back(solo_sched.find(request.id)->generated);
+        }
+        dgpp::sched::Scheduler concurrent(&graph, {}, 0, policy, /*prefix_slots=*/0);
+        for (const auto& request : requests) concurrent.submit(request);
+        bool saw_busy_rotation = false;
+        int ticks = 0;
+        while (concurrent.has_pending() && ++ticks < 256) {
+          const auto before = concurrent.meters();
+          const bool busy = before.active > before.prefilling;
+          saw_busy_rotation |= busy && before.prefilling > 1;
+          concurrent.tick();
+          require(concurrent.meters().prompt_tokens_computed - before.prompt_tokens_computed <=
+                      (busy ? policy.prefill_budget_tokens : policy.prefill_idle_budget_tokens),
+                  "real graph prefills exceed the current scheduler budget");
+        }
+        require(!concurrent.has_pending() && saw_busy_rotation,
+                "four graph prefills complete across a busy-budget rotation");
+        for (size_t i = 0; i < requests.size(); ++i) {
+          const auto* result = concurrent.find(requests[i].id);
+          require(result->steps_done == 12, "concurrent graph transcript is complete");
+          if (row_independent)
+            require(result->generated == expected[i], "fair-share graph prefill changes the solo transcript");
+        }
+        require(graph.pool_blocks_in_use() == 0, "concurrent graph prefill leaks KV reservations");
+      }
       if (sample_cap) {
         std::vector<std::vector<int32_t>> reference;
         const std::vector<std::vector<int>> maps{{0, 1}, {slots - 1, 3}, {1, 0}};

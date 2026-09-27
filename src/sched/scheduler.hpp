@@ -381,7 +381,7 @@ struct AdmissionPolicy {
   enum class Mode : int { kFullReserve = 0, kGrowOnDemand = 1 };
   Mode mode = Mode::kFullReserve;
   int window_tokens = 256;  // grow: the initial headroom and the growth step
-  int prefill_budget_tokens = 0;  // 0: monolithic; otherwise one aligned chunk per tick
+  int prefill_budget_tokens = 0;  // 0: monolithic; otherwise total prefill tokens per tick
   int prefill_idle_budget_tokens = 0;  // 0: use the same budget; otherwise larger chunks without active decode
   bool operator==(const AdmissionPolicy& o) const {
     return mode == o.mode && window_tokens == o.window_tokens && prefill_budget_tokens == o.prefill_budget_tokens &&
@@ -709,8 +709,8 @@ class Scheduler {
   bool quantum();
   // Erases the retired records when they are not kept, at the end of every
   // tick: the live requests keep their order, and the slot map, the
-  // round-robin cursor and the deferral log follow them to their new
-  // indices (a cursor on a retired record moves to the nearest live one
+  // decode/prefill round-robin cursors and the deferral log follow their
+  // new indices (a cursor on a retired record moves to the nearest live one
   // before it, so the next slice starts where it would have).
   void compact_retired();
 
@@ -720,6 +720,7 @@ class Scheduler {
   std::vector<int> slots_;         // engine slot -> arrival index, or -1
   std::vector<Result> results_;     // parallel to requests_
   int cursor_ = -1;                // last-stepped arrival (round-robin)
+  int prefill_cursor_ = -1;        // last-advanced prefill (round-robin when the budget shrinks)
   int deferred_logged_ = -1;       // arrival of the current deferral log
   SchedulerObserver* observer_ = nullptr;
   bool keep_retired_ = true;       // the batch contract (set_keep_retired)
