@@ -698,9 +698,9 @@ DGPP_TEST(qwen_tool_call_render_encode_parse_roundTrip) {
   DGPP_LOG_INFO("qwen_chat_template_test: {} tool-call turns ({} calls) round-trip render -> encode -> parse", turns, calls);
 }
 
-// The Qwen3.8 grammar over the REAL tokenizer: every golden
-// tool-call turn accepted position by position under a required-call spec
-// (the literals and names over BPE token texts, the typed values); the
+// The Qwen3.8 grammar over the REAL tokenizer: auto accepts the original
+// golden turns; required accepts them with the first call forced directly
+// after reasoning (the literals and names over BPE token texts, the typed values). The
 // single-call spec refuses a second call; EOS refused while a call is
 // owed; a name outside the tools refused at its first token.
 const dgpp::minijson::Value& function_of(const dgpp::minijson::Value& value) {
@@ -835,6 +835,17 @@ DGPP_TEST(qwen_tool_grammar_accepts_the_golden_turns_over_the_real_tokenizer) {
   const bool mimo = corpus_is_mimo(kGoldenPath);
   require(vocab.markers().xml_compact == mimo, "the XML dialect follows the tokenizer");
   require(vocab.call_turn_eos() == (mimo ? 151645 : 248046), "the call-turn EOS is <|im_end|>");
+  const auto accept_turn = [&](dgpp::text::GrammarState& grammar, const std::vector<int64_t>& ids,
+                               const std::string& name) {
+    for (size_t j = 0; j < ids.size(); ++j) {
+      require(grammar.allows(ids[j]), name + ": id " + std::to_string(ids[j]) + " (" +
+                                          tok.decode(ids[j], false) + ") at position " +
+                                          std::to_string(j) + " refused in state " +
+                                          grammar.state_name());
+      grammar.advance(ids[j]);
+    }
+    require(grammar.active(), name + ": the grammar stayed live");
+  };
   std::vector<std::string> lines;
   {
     std::istringstream f(read_text_file(kGoldenPath));
@@ -907,19 +918,55 @@ DGPP_TEST(qwen_tool_grammar_accepts_the_golden_turns_over_the_real_tokenizer) {
       if (thinks) turn.erase(0, 8);  // the prompt opened the block
       std::vector<int64_t> ids = tok.encode(turn);
       ids.push_back(vocab.call_turn_eos());
+      const std::string first_name(function_of(tcs->items()[0]).at("name").as_string());
+      if (!mimo) {
+        // Auto permits the template's whitespace and optional prose before
+        // the first call. Keep that exact rendered sequence covered.
+        using Mode = dgpp::text::GrammarSpec::Mode;
+        dgpp::text::GrammarState automatic(
+            &vocab, golden_tool_spec(tools, *tcs, Mode::kAuto, true, ""), thinks);
+        accept_turn(automatic, ids, name + " auto");
+
+        // Required/named must force the opener, both without thinking and
+        // immediately after the reasoning block closes.
+        for (const auto mode : {Mode::kRequired, Mode::kNamed}) {
+          for (const bool prompt_thinks : {false, true}) {
+            dgpp::text::GrammarState forced(
+                &vocab,
+                golden_tool_spec(tools, *tcs, mode, true, mode == Mode::kNamed ? first_name : ""),
+                prompt_thinks);
+            if (prompt_thinks) {
+              require(forced.allows(vocab.markers().think_close.id),
+                      name + ": required/named allows reasoning to finish");
+              forced.advance(vocab.markers().think_close.id);
+            }
+            dgpp::text::TokenMask mask;
+            forced.mask(&mask);
+            require(mask.allowed == 1 && mask.allows(vocab.markers().tool_call_open.id),
+                    name + ": required/named must force only the first tool-call opener");
+          }
+        }
+
+        // The required walk keeps the reasoning and calls, but omits the
+        // template's text between them: constrained generation cannot emit it.
+        size_t content_begin = 0;
+        if (thinks) {
+          const std::string close = "</think>";
+          const size_t at = turn.find(close);
+          require(at != std::string::npos, name + ": reasoning block must close");
+          content_begin = at + close.size();
+        }
+        const size_t first_call = turn.find("<tool_call>", content_begin);
+        require(first_call != std::string::npos, name + ": first call must be present");
+        turn.erase(content_begin, first_call - content_begin);
+        ids = tok.encode(turn);
+        ids.push_back(vocab.call_turn_eos());
+      }
       opt_out_turns += check_golden_key_closure(vocab, tok, tools, *tcs, turn, ids, thinks, name);
       dgpp::text::GrammarState g(
           &vocab, golden_tool_spec(tools, *tcs, dgpp::text::GrammarSpec::Mode::kRequired, true, ""),
           thinks, mimo);
-      for (size_t j = 0; j < ids.size(); ++j) {
-        require(g.allows(ids[j]), name + ": id " + std::to_string(ids[j]) + " (" + tok.decode(ids[j], false) +
-                                      ") at position " + std::to_string(j) + " refused in state " + g.state_name());
-        g.advance(ids[j]);
-      }
-      require(g.active(), name + ": the grammar stayed live");
-      const dgpp::minijson::Value& first = tcs->items()[0];
-      const dgpp::minijson::Value* ffn = first.find("function");
-      const std::string first_name((ffn ? *ffn : first).at("name").as_string());
+      accept_turn(g, ids, name + " required");
       // The single-call spec: the first call is accepted through its close;
       // then only the turn's end — the separator before a second call (the
       // template's "\n<tool_call>") is refused at its first id.
