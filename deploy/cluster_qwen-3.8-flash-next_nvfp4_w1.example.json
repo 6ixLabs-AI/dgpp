@@ -3,7 +3,7 @@
   "world_size": 1,
   "engine": {
     "max_concurrency": 4,
-    "kv_capacity": 65536,
+    "kv_capacity": 262144,
     "kv_dtype": "bf16",
     "bf16_weights": "bf12+bf16",
     "ngram_table": "mmap",
@@ -19,7 +19,9 @@
     "sampling_candidates": 128,
     "stats_interval_s": 10,
     "dense_weights": "fp8",
-    "fp8_head": "mma"
+    "fp8_head": "mma",
+    "prefill_budget_tokens": 4096,
+    "prefill_idle_budget_tokens": 4096
   },
   "paths": {
     "resident_cache": ""
