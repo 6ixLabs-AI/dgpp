@@ -10,6 +10,8 @@
 // so a smaller request can pass a larger one; sustained small requests can
 // starve a large request. With a zero budget prefill blocks decode for the
 // full admission; supported engines yield between chunks with a positive budget.
+// Images on engines without image chunking retain one monolithic admission
+// as the tick's only prefill work when the prompt exceeds the budget.
 //
 // Full admission reserves prompt plus maximum completion. Grow admission
 // reserves a window and extends it before decode, ending the youngest
@@ -679,15 +681,12 @@ class Scheduler {
   bool needs_chunked_prefill(int arrival, int64_t budget) const;
   // One iteration of the tick's admit loop: the oldest fitting queued
   // request admits (group, one-shot, or chunked start) against the tick's
-  // remaining prefill cap. Sets began_chunked when the admission started a
-  // chunked prefill (the caller ends the loop — chunked read-ins stay one
-  // at a time). A fitting one-shot past the remaining cap waits for a
-  // later tick, so one tick never stacks unbounded synchronous prefill
-  // work. With allow_chunked false (a prefill already in flight) a
-  // chunked-needing head waits instead of beginning. Returns false when
-  // nothing admitted.
-  bool admit_fitting(int64_t& tick_cap, int64_t budget, bool allow_chunked,
-                     bool& began_chunked);
+  // remaining prefill cap. Only first_prefill may start a chunked prompt
+  // or admit an oversized image on an engine without image chunking;
+  // either consumes the remaining cap. Other one-shots/groups must fit
+  // the cap. Returns false when nothing admitted. A zero policy budget
+  // retains one monolithic admission event per tick.
+  bool admit_fitting(int64_t& tick_cap, int64_t budget, bool first_prefill);
   void step_batch(const std::vector<int>& arrivals);
   // Appends one token and applies terminal conditions in their canonical
   // order. Returns true when the request retired. `logprobs` (optional)

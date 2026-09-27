@@ -2842,6 +2842,7 @@ DGPP_TEST(scheduler_multiAdmission_admitsFittingOneShotsInOneTick) {
     int64_t prefill_chunk_limit() const override { return 64; }
     int32_t prefill_images(int req, const std::vector<int64_t>& p,
                            const std::vector<dgpp::ImageInput>& images) override {
+      require(images.size() == 1, "one image reaches each admission");
       ++calls;
       return FakeEngine::prefill(req, p);
     }
@@ -2916,4 +2917,127 @@ DGPP_TEST(scheduler_fairShare_interleavesConcurrentChunkedPrefills) {
   require(sched.find("long-b")->generated == std::vector<int64_t>({20, 21}), "b transcript");
   require(sched.meters().prompt_tokens_computed == 20, "no double counting");
   require(sched.meters().pool_blocks_in_use == 0, "no reservation leak");
+}
+
+DGPP_TEST(scheduler_multiAdmission_stops_groups_at_exhausted_budget) {
+  for (const int budget : {0, 4}) for (const int steps : {1, 3}) {
+    struct Engine : GroupFakeEngine {
+      Engine() : GroupFakeEngine(4, 100, 2, 16, 32) {}
+      int64_t prefill_chunk_alignment() const override { return 2; }
+      int64_t prefill_chunk_limit() const override { return 16; }
+    } engine;
+    for (int slot = 0; slot < 4; ++slot)
+      for (int episode = 0; episode < 4; ++episode)
+        engine.arm(slot, steps == 1 ? std::vector<int32_t>{10} : std::vector<int32_t>{10, 11, 12}, steps);
+    dgpp::sched::AdmissionPolicy policy;
+    policy.prefill_budget_tokens = budget;
+    Scheduler sched(&engine, {}, 0, policy);
+    for (int i = 0; i < 4; ++i) sched.submit(make_request("r" + std::to_string(i), 2, steps));
+    sched.tick();
+    require(sched.meters().prompts_prefilled == (budget == 0 ? 4 : 2),
+            "only the first fitting group admits; zero budget retains a full group");
+    while (sched.has_pending()) {
+      const auto before = sched.meters().prompt_tokens_computed;
+      sched.tick();
+      require(budget == 0 || sched.meters().prompt_tokens_computed - before <= budget,
+              "group admissions respect every tick's cap even when slots retire immediately");
+    }
+    for (const auto& result : sched.results())
+      require(result.steps_done == steps && result.generated.front() == 10, "all group transcripts complete");
+    require(sched.meters().prompt_tokens_computed == 8 && sched.meters().pool_blocks_in_use == 0,
+            "all prompts counted once and reservations released");
+  }
+}
+
+DGPP_TEST(scheduler_multiAdmission_defers_chunked_start_after_one_shot) {
+  for (const int short_length : {2, 4}) {
+    ChunkFakeEngine engine;
+    engine.arm(0, {10, 11, 12}, 3);
+    engine.arm(1, {20, 21, 22}, 3);
+    dgpp::sched::AdmissionPolicy policy;
+    policy.prefill_budget_tokens = 4;
+    Scheduler sched(&engine, {}, 0, policy);
+    sched.submit(make_request("short", short_length, 3));
+    sched.submit(make_request("long", 11, 3));
+    sched.tick();
+    require(sched.meters().prompt_tokens_computed == short_length && sched.meters().prefilling == 0,
+            "a chunked start waits even when a one-shot leaves a partial budget");
+    while (sched.has_pending()) {
+      const auto before = sched.meters().prompt_tokens_computed;
+      sched.tick();
+      require(sched.meters().prompt_tokens_computed - before <= 4, "every tick respects the prefill cap");
+    }
+    require(sched.find("short")->generated == std::vector<int64_t>({10, 11, 12}) &&
+                sched.find("long")->generated == std::vector<int64_t>({20, 21, 22}), "both transcripts intact");
+    require(sched.meters().pool_blocks_in_use == 0, "no reservation leak");
+  }
+}
+
+DGPP_TEST(scheduler_multiAdmission_oversized_images_keep_one_monolithic_prefill_per_tick) {
+  for (const bool leading_text : {false, true}) {
+    struct Engine : ChunkFakeEngine {
+      int calls = 0;
+      int max_concurrent_requests() const override { return 3; }
+      int decode_batch_capacity() const override { return 3; }
+      bool supports_images() const override { return true; }
+      int32_t prefill_images(int req, const std::vector<int64_t>& prompt,
+                            const std::vector<dgpp::ImageInput>& images) override {
+        require(images.size() == 1 && images[0].rgb[0] == 123, "image input intact");
+        ++calls;
+        return FakeEngine::prefill(req, prompt);
+      }
+    } engine;
+    if (leading_text) engine.arm(0, {10, 11, 12, 13, 14, 15, 16, 17}, 8);
+    for (int i = 0; i < 2; ++i) engine.arm(i + leading_text, {20, 21, 22}, 3);
+    dgpp::sched::AdmissionPolicy policy;
+    policy.prefill_budget_tokens = 4;
+    Scheduler sched(&engine, {}, 0, policy);
+    if (leading_text) sched.submit(make_request("text", 2, 8));
+    for (int i = 0; i < 2; ++i) {
+      auto request = make_request("image" + std::to_string(i), 6, 3);
+      request.images.push_back({1, 1, 28, 28, std::vector<uint8_t>(28 * 28 * 3, 123)});
+      sched.submit(request);
+    }
+    if (leading_text) {
+      sched.tick();
+      require(engine.calls == 0, "oversized image waits after partial text prefill work");
+    }
+    for (int i = 1; i <= 2; ++i) {
+      const auto before = sched.meters().prompt_tokens_computed;
+      sched.tick();
+      require(engine.calls == i && sched.meters().prompt_tokens_computed - before == 6,
+              "one oversized image admits as the tick's only prefill work");
+    }
+    sched.run_to_completion();
+    for (int i = 0; i < 2; ++i)
+      require(sched.find("image" + std::to_string(i))->generated == std::vector<int64_t>({20, 21, 22}),
+              "monolithic image transcript intact");
+    require(sched.meters().pool_blocks_in_use == 0, "image reservations released");
+  }
+}
+
+DGPP_TEST(scheduler_multiAdmission_no_group_after_inflight_exhausts_budget) {
+  struct Engine : ChunkFakeEngine {
+    int max_concurrent_requests() const override { return 4; }
+    int decode_batch_capacity() const override { return 4; }
+  } engine;
+  engine.arm(0, {10, 11, 12}, 3);
+  engine.arm(1, {20, 21, 22}, 3);
+  engine.arm(2, {30, 31, 32}, 3);
+  dgpp::sched::AdmissionPolicy policy;
+  policy.prefill_budget_tokens = 4;
+  Scheduler sched(&engine, {}, 0, policy);
+  sched.submit(make_request("long", 15, 3));
+  sched.tick();
+  sched.submit(make_request("short-a", 2, 3));
+  sched.submit(make_request("short-b", 2, 3));
+  const auto before = sched.meters().prompt_tokens_computed;
+  sched.tick();
+  require(sched.meters().prompt_tokens_computed - before == 4 && sched.meters().queued == 2,
+          "a zero leftover cannot become an unbounded group budget");
+  sched.run_to_completion();
+  require(sched.find("short-a")->generated == std::vector<int64_t>({20, 21, 22}) &&
+              sched.find("short-b")->generated == std::vector<int64_t>({30, 31, 32}), "deferred group transcripts");
+  require(sched.meters().prompt_tokens_computed == 19 && sched.meters().pool_blocks_in_use == 0,
+          "inflight and grouped work complete without leaks");
 }

@@ -736,9 +736,10 @@ bool Scheduler::needs_chunked_prefill(int arrival, int64_t budget) const {
          static_cast<int64_t>(r.spec.prompt.size()) > budget;
 }
 
-bool Scheduler::admit_fitting(int64_t& tick_cap, int64_t budget, bool allow_chunked,
-                              bool& began_chunked) {
-  began_chunked = false;
+bool Scheduler::admit_fitting(int64_t& tick_cap, int64_t budget, bool first_prefill) {
+  // Zero is the monolithic sentinel to admissible_group(), not a remaining
+  // budget. Stop before either grouping or the prefix-cache eviction scan.
+  if (budget > 0 && tick_cap <= 0) return false;
   const int first = next_admissible();
   if (first < 0) return false;
   const int64_t P =
@@ -747,10 +748,9 @@ bool Scheduler::admit_fitting(int64_t& tick_cap, int64_t budget, bool allow_chun
     // A chunked read-in consumes the tick: it begins (and takes its first
     // chunk) only when the caller allows new chunked starts, and always
     // ends the admit loop — chunked read-ins stay one at a time.
-    if (!allow_chunked) return false;
+    if (!first_prefill) return false;
     begin_prefill(first, budget);
     advance_prefill(first, budget);
-    began_chunked = true;
     tick_cap = 0;
     return true;
   }
@@ -758,6 +758,12 @@ bool Scheduler::admit_fitting(int64_t& tick_cap, int64_t budget, bool allow_chun
   // waits for a later tick, so one tick never stacks unbounded synchronous
   // prefill work. (With a zero budget there is no cap: monolithic mode
   // admits exactly as before, and the caller ends the loop after one.)
+  // Engines without image chunking retain their monolithic fallback. An
+  // oversized image must be the tick's only prefill admission, even when
+  // it finishes immediately and releases its slot.
+  const bool monolithic_image = !requests_[static_cast<size_t>(first)].spec.images.empty() &&
+                                !engine_->supports_image_chunked_prefill();
+  if (budget > 0 && P > tick_cap && !(first_prefill && monolithic_image)) return false;
   const std::vector<int> group =
       admissible_group(first, budget > 0 ? std::min(budget, tick_cap) : budget);
   if (group.size() >= 2) {
@@ -768,9 +774,8 @@ bool Scheduler::admit_fitting(int64_t& tick_cap, int64_t budget, bool allow_chun
     tick_cap -= total;
     return true;
   }
-  if (budget > 0 && P > tick_cap) return false;
   admit(first);
-  tick_cap -= P;
+  tick_cap = std::max<int64_t>(0, tick_cap - P);
   return true;
 }
 
@@ -1260,8 +1265,7 @@ bool Scheduler::quantum() {
     // never a new chunked start (chunked read-ins stay one at a time, and
     // the begin above already took this tick's).
     int64_t leftover = budget - static_cast<int64_t>(n) * share;
-    bool began = false;
-    while (admit_fitting(leftover, budget, /*allow_chunked=*/false, began)) {
+    while (admit_fitting(leftover, budget, /*first_prefill=*/false)) {
       admitted_any = true;
       progressed = true;
     }
@@ -1271,15 +1275,13 @@ bool Scheduler::quantum() {
     // budget (or the engine's chunk limit in monolithic mode), at a
     // chunked start, or when nothing fitting remains.
     int64_t tick_cap = budget > 0 ? budget : engine_->prefill_chunk_limit();
-    for (;;) {
-      bool began_chunked = false;
-      if (!admit_fitting(tick_cap, budget, /*allow_chunked=*/true, began_chunked)) break;
+    while (admit_fitting(tick_cap, budget, /*first_prefill=*/!admitted_any)) {
       admitted_any = true;
       progressed = true;
       // Monolithic mode keeps its original policy bit-for-bit: one
-      // admission event per tick (a zero budget never takes the
-      // chunked path, so began_chunked is false here).
-      if (began_chunked || budget == 0) break;
+      // admission event per tick. Positive budgets stop at an exhausted
+      // cap, including after a chunked start or an oversized image.
+      if (budget == 0) break;
     }
   }
   if (!admitted_any && any_queued) {
