@@ -152,7 +152,8 @@ inline std::vector<uint8_t> tensor_bytes(const QwenTextConfig& cfg, const QwenEx
 // Writes `dir` (config.json + one safetensors shard) for `cfg`.
 inline void write_fixture(const QwenTextConfig& cfg, const std::string& dir,
                           const char* text_json = tiny_text_json(),
-                          const char* quant_json = tiny_quant_json()) {
+                          const char* quant_json = tiny_quant_json(),
+                          const std::vector<QwenExpectedTensor>& extra_tensors = {}) {
   fs::path root(dir);
   fs::remove_all(root);
   fs::create_directories(root);
@@ -166,7 +167,8 @@ inline void write_fixture(const QwenTextConfig& cfg, const std::string& dir,
     std::fwrite(json.data(), 1, json.size(), f);
     std::fclose(f);
   }
-  const auto table = dgpp::qwen_expected_text_tensors(cfg);
+  auto table = dgpp::qwen_expected_text_tensors(cfg);
+  table.insert(table.end(), extra_tensors.begin(), extra_tensors.end());
   std::string header = "{";
   std::vector<uint8_t> data;
   size_t off = 0;

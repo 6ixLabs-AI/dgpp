@@ -66,7 +66,7 @@ def main():
                             ready.set()
         assert done and usage is not None, (done, usage)
         if record is None:
-            assert 'ready' in ''.join(text).lower(), ''.join(text)
+            assert 'ready' in ''.join(text).lower(), (''.join(text), usage)
         return usage
 
     with ThreadPoolExecutor(max_workers=args.decoders + 1) as pool:
@@ -104,7 +104,8 @@ def main():
                 content.insert(0, {'type': 'image_url', 'image_url': {'url':
                     'data:image/png;base64,' + base64.b64encode(png(color, 896, 896)).decode()}})
         submitted_at = time.monotonic()
-        long = pool.submit(run, [{'role': 'user', 'content': content}], 32)
+        # Reasoning models need room to finish thinking before emitting "ready".
+        long = pool.submit(run, [{'role': 'user', 'content': content}], 256)
         start = finish = None
         deadline = time.monotonic() + 180
         while time.monotonic() < deadline:

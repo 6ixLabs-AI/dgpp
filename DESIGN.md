@@ -1740,9 +1740,13 @@ protected, and blocks are freed only when their references reach zero.
 Image identities share immutable RGB storage across matching entries and
 have a separate 256 MiB host-byte budget. An insertion that would exceed it
 is skipped without rejecting the request or evicting an attached entry.
-GLM stages image embeddings in fixed storage for one image and one prefill
-chunk plus MTP lookahead. Visual tokens occupy normal context positions;
-there is no history-wide image-count or visual-token limit. Resumable GLM
+GLM and Qwen stage image embeddings in fixed storage for one image and a
+bounded token window. Qwen consumes wider prefill chunks as successive
+stage/copy windows. Its cursors retain their image borrows across yields,
+while the model's image state is scoped to each executing call and its
+shared window is invalidated when that scope changes. Visual tokens occupy
+normal context positions; there is no history-wide image-count or
+visual-token limit. Resumable GLM and Qwen
 prefill preserves main/MTP state per request and masks unfinished device
 positions between scheduler ticks so padded decode graphs cannot alter them.
 
@@ -2334,7 +2338,7 @@ features at its shifted token positions. This handles image spans across
 language-model prefill chunks. Eager and graph adapters share normal slot
 opening and sampling; decode graphs consume ordinary generated token IDs.
 Image admissions run individually and support prefix-cache lookup and
-insertion. The GLM graph engine supports resumable image prefill with a
+insertion. The GLM and Qwen graph engines support resumable image prefill with a
 configured token budget; image requests do not use grouped prefill.
 
 ### Admission journal

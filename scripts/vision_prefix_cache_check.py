@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check image prefix reuse, continuation and pixel isolation on an idle GLM server."""
+"""Check image prefix reuse, continuation and pixel isolation on an idle GLM or Qwen server."""
 import argparse
 import base64
 from concurrent.futures import ThreadPoolExecutor
@@ -90,7 +90,9 @@ def main():
     # Both old history limits: more than eight images and 8192 visual tokens.
     history = [{'role': 'system', 'content': marker + ' extended history'}]
     for _ in range(12):
-        history.append({'role': 'user', 'content': [image(blue, 896, 896)]})
+        # Reach the 1024-token cap on both the 28-pixel GLM grid and the
+        # 32-pixel Qwen grid (896 pixels yields only 784 Qwen tokens).
+        history.append({'role': 'user', 'content': [image(blue, 1024, 1024)]})
         history.append({'role': 'assistant', 'content': 'Image received.'})
     history.append({'role': 'user', 'content': [question]})
     many = request('twelve-full-size-images', history, 'blue')

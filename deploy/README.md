@@ -36,7 +36,7 @@ a template does not name are knobs appended at boot:
 | [cluster_glm-5.3-flash_nvfp4-fp8_w2.example.json](cluster_glm-5.3-flash_nvfp4-fp8_w2.example.json) | the same hybrid on two nodes: MTP depth 1, FP8 latent cache, 160K context, four request slots; the BF16 decode weights resident in their 12-bit form alone (`"bf12"`: 107.0 GiB per rank, 1 GiB under the BF16 plan, 4.8 GiB of the node left at boot) | both forms resident (no prefill cost, 132K context): `--bf16-weights bf12+bf16 --kv-capacity 135168`; the 256K-context two-slot shape: `--max-concurrency 2 --kv-capacity 262144 --prefix-cache-gib 2` |
 | [cluster_qwen-3.8-flash-next_fp8_w4.example.json](cluster_qwen-3.8-flash-next_fp8_w4.example.json) | Qwen3.8-Flash-Next FP8 on four nodes: MTP depth 1, 256K context, four request slots | T=1: `--no-mtp`; depth 2: `--mtp-depth 2` |
 | [cluster_qwen-3.8-flash-next_fp8_w2.example.json](cluster_qwen-3.8-flash-next_fp8_w2.example.json) | the same on two nodes | T=1: `--no-mtp` |
-| [cluster_qwen-3.8-flash-next_nvfp4_w1.example.json](cluster_qwen-3.8-flash-next_nvfp4_w1.example.json) | Qwen3.8-Flash-Next NVFP4 on one Spark: MTP depth 1, the dense projections FP8 at load (`dense_weights: "fp8"`: 31 ms/step T=1 and 21–26 ms/token against the BF16 stack's 38 and 31–38), the n-gram table mapped, 64K context | the BF16 dense stack: `--dense-weights checkpoint --fp8-head gemv`; T=1: `--no-mtp`; depth 2: `--mtp-depth 2` |
+| [cluster_qwen-3.8-flash-next_nvfp4_w1.example.json](cluster_qwen-3.8-flash-next_nvfp4_w1.example.json) | Qwen3.8-Flash-Next NVFP4 on one Spark: MTP depth 1, the dense projections FP8 at load (`dense_weights: "fp8"`: 31 ms/step T=1 and 21–26 ms/token against the BF16 stack's 38 and 31–38), the n-gram table mapped, a 262144-token shared KV pool and 4096-token busy/idle prefill budgets | the BF16 dense stack: `--dense-weights checkpoint --fp8-head gemv`; T=1: `--no-mtp`; depth 2: `--mtp-depth 2` |
 | [cluster_qwen-3.8-flash-next_nvfp4_w2.example.json](cluster_qwen-3.8-flash-next_nvfp4_w2.example.json) | Qwen3.8-Flash-Next NVFP4 on two Sparks: MTP depth 1, FP8 dense projections, the n-gram table mapped, 262K context and four request slots | the resident n-gram table: `--ngram-table resident`; T=1: `--no-mtp`; depth 2: `--mtp-depth 2` |
 | [cluster_qwen-3.8-flash-next_nvfp4-radixark_w1.example.json](cluster_qwen-3.8-flash-next_nvfp4-radixark_w1.example.json) | RadixArk's Qwen3.8-Flash-Next NVFP4 on one Spark: tuned engine configuration (4K prefill chunks with matching 4096-token busy/idle budgets, MTP depth 2, grow admission), dense projections FP8 at load, n-gram table mapped, 256K context | the BF16 dense stack: `--dense-weights checkpoint`; T=1: `--no-mtp`; depth 1: `--mtp-depth 1` |
 | [cluster_qwen-3.8-flash-next_nvfp4-radixark_w2.example.json](cluster_qwen-3.8-flash-next_nvfp4-radixark_w2.example.json) | RadixArk's Qwen3.8-Flash-Next NVFP4 on two Sparks: identical engine configuration to the NVIDIA release, MTP depth 1, FP8 dense projections, n-gram table mapped, 262K context and four request slots | the resident n-gram table: `--ngram-table resident`; T=1: `--no-mtp`; depth 2: `--mtp-depth 2` |
@@ -95,6 +95,37 @@ or its lm-head slice of the rows: `vocab` frees 1.33 GiB per rank at world 4
 for one small fold per token lookup and changes no number; the other families
 ignore it. `kv_dtype` affects only the GLM-5.3 latent caches (bf16, fp8 or
 fp4); Qwen's and GLM-4.7's K/V caches stay BF16.
+
+## Single-Spark NVIDIA Qwen NVFP4 defaults
+
+The NVIDIA NVFP4 `w1` example uses a 262144-token shared KV pool and sets
+both `prefill_budget_tokens` and `prefill_idle_budget_tokens` to 4096.
+These budgets select the engine's supported 4K prefill chunks both when
+idle and when another request is generating. The profile retains MTP depth 1,
+full admission, four request slots and its existing precision settings.
+
+The pool is shared across those slots. It permits a single request to approach
+the checkpoint's 262144-token total context, including its generated output;
+it does not reserve 256K for each of four simultaneous requests. Full admission
+accounts for the prompt plus requested output, and cached prefixes also occupy
+pool blocks. Increase KV capacity separately when concurrent contexts need more
+space, using the engine's startup memory plan.
+
+Larger chunks favor cold-prompt processing and can interrupt existing output
+streams for seconds. For frequent interactive arrivals, a smaller busy budget
+can keep decode opportunities closer together while retaining 4096 when idle.
+For example, append this override on the next normal start:
+
+```bash
+python3 scripts/dgpp-cluster up \
+  --config deploy/cluster_qwen-3.8-flash-next_nvfp4_w1.json \
+  --knobs "--prefill-budget-tokens 256 --prefill-idle-budget-tokens 4096"
+```
+
+Existing local deployment files are not overwritten by an example update.
+Copy the three fields into the local config and use the normal restart process
+to adopt them. See the [single-GB10 observations](../benchmarks/results/2026-09-27-qwen-nvfp4-w1-prefill.md)
+for measured prefill performance, concurrent-stream effects and setup limits.
 
 ## The 512K YaRN template (`engine.rope_scaling`)
 
