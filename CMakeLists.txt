@@ -481,6 +481,14 @@ add_test(NAME qwen_prefill_head_all_rows
 set_tests_properties(qwen_prefill_head qwen_prefill_head_all_rows
   PROPERTIES DEPENDS qwen_forward_fixture LABELS "gpu" RUN_SERIAL TRUE)
 
+add_executable(qwen_image_prefill_test tests/cuda/qwen_image_prefill_test.cpp)
+target_include_directories(qwen_image_prefill_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests/cuda)
+target_link_libraries(qwen_image_prefill_test PRIVATE dgpp_models_qwen_layers CUDA::cudart Threads::Threads)
+dgpp_set_common(qwen_image_prefill_test)
+add_test(NAME qwen_image_prefill_test
+  COMMAND qwen_image_prefill_test ${CMAKE_CURRENT_BINARY_DIR}/qwen_image_prefill_fixture)
+set_tests_properties(qwen_image_prefill_test PROPERTIES LABELS "gpu" RUN_SERIAL TRUE SKIP_RETURN_CODE 2)
+
 # The MoE layer both families run: GLM's sigmoid+bias router
 # with the FP8 shared expert in the chain, Qwen's softmax router without
 # it (models/qwen/moe_layer.hpp composes the BF16 shared expert on top).
@@ -704,6 +712,7 @@ add_executable(unit_tests
   tests/unit/net_test.cpp
   tests/unit/cluster_config_test.cpp
   tests/unit/qwen_config_test.cpp
+  tests/unit/qwen_image_stage_test.cpp
   tests/unit/qwen_binding_test.cpp
   tests/unit/qwen_rope_scaling_test.cpp
   tests/unit/glm4_config_test.cpp

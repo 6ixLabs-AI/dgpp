@@ -55,7 +55,7 @@ print(json.load(urlopen(request))["choices"][0]["message"])
 | Preprocessing | RGB conversion and an aspect-preserving antialiased bicubic resize onto the family's visual-token grid, then the checkpoint's own normalization — see [per-family preprocessing](#per-family-preprocessing) |
 | Usage | Each merged patch block contributes one prompt token; image delimiters also count. Normal context and admission limits still apply |
 | Prefix cache | Identical image content, geometry and token positions can reuse prompt and generated-continuation snapshots; `cached_tokens` reports reuse |
-| Scheduling | GLM graph prefill can yield between bounded chunks for both image and text requests; active decodes run after each chunk |
+| Scheduling | GLM and Qwen graph prefill can yield between bounded chunks for both image and text requests; active decodes run after each chunk |
 
 ## Per-family preprocessing
 
@@ -82,9 +82,7 @@ DGPP's position array is also its cache-slot index, so the three-axis
 positions land with that split, not before it. Spatially demanding prompts
 (fine-grained layout, dense tables, OCR of long rows) are the ones to
 re-measure when it does. Until then the served behaviour is a usable but
-degraded reading of the reference. Image prompts also keep prefix-cache
-snapshots off mid-prompt: they are prefilled in the model's own chunks, which
-are not scheduler-visible cuts.
+degraded reading of the reference.
 
 The processor targets at least 16 visual tokens for small images. Aspect
 ratio and grid alignment determine the actual count. DGPP's 1,024-token
@@ -109,8 +107,11 @@ The prefix index shares immutable pixels and retains at most 256 MiB of unique
 pixel identities. When this budget is full, new cache insertions are skipped;
 requests still execute. Metrics expose `image_bytes` and `skipped_image_bytes`.
 
-The encoder reuses one image-output buffer and a 2,049-row staging window
-(one prefill chunk plus MTP lookahead). Main-model and MTP consumers finish
+The encoder reuses one image-output buffer and a 2,049-row staging window.
+Qwen splits wider model chunks into windows, copying each window before
+staging the next. Each resumable cursor borrows its request's image vector;
+the model exposes that borrow only during a prefill call and invalidates the
+shared window on entry and exit. Main-model and MTP consumers finish
 before the window is reused. An image crossing a chunk or attachment boundary
 is encoded in full, then only the required rows are staged. The single-image
 output can serve successive chunks without re-encoding. Historical images
@@ -152,6 +153,11 @@ encoder outputs across 12 full-size images, 256/2,048-token windows, MTP
 lookahead and an attachment inside an image. It uses the cached serving
 checkpoint, or `DGPP_VISION_TEST_CHECKPOINT` when set. Run this GPU test
 with serving stopped.
+
+`qwen_image_prefill_test` uses synthetic text and vision weights to check
+cold image prefills, interleaved cursors with and without MTP, cancellation,
+slot reuse, and MTP catch-up at an attached prefix. It needs a GPU but no
+downloaded checkpoint.
 
 ```bash
 cmake --build build-ci -j 4 --target glm_vision_check

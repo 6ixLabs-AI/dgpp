@@ -130,8 +130,8 @@ record the modes measured for each deployment.
 - **Image inputs**: PNG/JPEG/WebP data URIs in Chat Completions for GLM-5.3-Flash
   and Qwen3.8-Flash-Next, using each checkpoint's native vision encoder.
   Multiple images, streaming and MTP work together, with image-aware prefix
-  caching; see [image inputs](docs/vision.md) for the geometry each family's
-  processor uses, examples and memory requirements.
+  caching and resumable prefill; see [image inputs](docs/vision.md) for each
+  family's preprocessing geometry, examples and memory requirements.
 - **Deterministic across ranks**: admissions journaled from the head, every
   tick's operation-stream digest checked on every peer, and all ranks'
   complete streams compared at shutdown.
