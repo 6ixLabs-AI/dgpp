@@ -485,8 +485,6 @@ void QwenModel::build_layer_objects(const QwenLayerResident& r) {
 // core's open_slot / close): zero GDN recurrent/conv states, zero PLE conv
 // state, EOS n-gram context, zero rings, no blocks.
 void QwenModel::reset_slot_state(int req) {
-  if (req >= 0 && req < static_cast<int>(prefill_images_per_req_.size()))
-    prefill_images_per_req_[static_cast<size_t>(req)] = nullptr;
   if (num_gdn_ > 0) {
     DGPP_CUDA_OK(cudaMemsetAsync(gdn_rec(req, 0), 0, static_cast<size_t>(num_gdn_) * gdn_rec_elems_ * 4, stream_));
     DGPP_CUDA_OK(cudaMemsetAsync(gdn_conv(req, 0), 0, static_cast<size_t>(num_gdn_) * gdn_conv_elems_ * 2, stream_));
@@ -1316,6 +1314,29 @@ void QwenModel::store_request_images(int req, const std::vector<ImageInput>* ima
   prefill_images_per_req_[static_cast<size_t>(req)] = images;
 }
 
+class QwenModel::ImagePrefillScope {
+ public:
+  ImagePrefillScope(QwenModel& model, int req, const std::vector<ImageInput>* images)
+      : model_(model), req_(req) {
+    model_.store_request_images(req_, images && !images->empty() ? images : nullptr);
+    invalidate_window();
+  }
+  ~ImagePrefillScope() {
+    model_.prefill_images_per_req_[static_cast<size_t>(req_)] = nullptr;
+    invalidate_window();
+  }
+  ImagePrefillScope(const ImagePrefillScope&) = delete;
+  ImagePrefillScope& operator=(const ImagePrefillScope&) = delete;
+
+ private:
+  void invalidate_window() {
+    model_.image_embeddings_ = nullptr;
+    model_.image_window_first_ = model_.image_window_end_ = 0;
+  }
+  QwenModel& model_;
+  int req_;
+};
+
 QwenModel::PrefillCursor QwenModel::session_prefill_begin(
     int req, const std::vector<int64_t>& prompt, int64_t reserve_tokens, int64_t chunk_tokens,
     const std::vector<int64_t>& boundaries, SnapshotRequest* snap, int64_t attach_position,
@@ -1331,22 +1352,17 @@ QwenModel::PrefillCursor QwenModel::session_prefill_begin(
           throw std::invalid_argument("Qwen: image span does not contain image tokens");
       }
   }
-  // The base begin opens the slot (clearing any stale borrow) before any
-  // image state is stored.
+  // An attached prefix may need one MTP catch-up row during begin itself.
+  ImagePrefillScope scope(*this, req, images);
   auto cursor = Base::session_prefill_begin(req, prompt, reserve_tokens, chunk_tokens, boundaries,
                                             snap, attach_position);
-  if (has_images) {
-    store_request_images(req, images);
-    image_embeddings_ = nullptr;
-    image_window_first_ = image_window_end_ = 0;
-  }
-  return cursor;
+  return PrefillCursor{std::move(cursor), has_images ? images : nullptr};
 }
 
 bool QwenModel::session_prefill_advance(PrefillCursor& cursor, int64_t chunk_tokens) {
+  ImagePrefillScope scope(*this, cursor.req, cursor.images);
   const bool done = Base::session_prefill_advance(cursor, chunk_tokens);
-  if (done && cursor.req >= 0 && cursor.req < static_cast<int>(prefill_images_per_req_.size()))
-    prefill_images_per_req_[static_cast<size_t>(cursor.req)] = nullptr;
+  if (done) cursor.images = nullptr;
   return done;
 }
 
@@ -1368,20 +1384,9 @@ QwenModel::Outputs QwenModel::session_prefill_with_images(
       if (ids[static_cast<size_t>(pos - start)] != image_pad_id())
         throw std::invalid_argument("Qwen: image span does not contain image tokens");
     }
-  store_request_images(req, &images);
-  image_embeddings_ = nullptr;
-  image_window_first_ = image_window_end_ = 0;
-  try {
-    auto out = resume ? session_prefill_resume(req, ids, boundaries, snap)
-                      : session_prefill(req, ids, boundaries, snap);
-    store_request_images(req, nullptr);
-    image_embeddings_ = nullptr;
-    return out;
-  } catch (...) {
-    store_request_images(req, nullptr);
-    image_embeddings_ = nullptr;
-    throw;
-  }
+  ImagePrefillScope scope(*this, req, &images);
+  return resume ? session_prefill_resume(req, ids, boundaries, snap)
+                : session_prefill(req, ids, boundaries, snap);
 }
 
 void QwenModel::stage_image_embeddings(int64_t first, int64_t end,

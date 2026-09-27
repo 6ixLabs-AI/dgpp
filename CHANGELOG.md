@@ -6,6 +6,14 @@ The history by milestone. The dated engineering record in
 
 ## Unreleased
 
+- **Qwen image prefill** (2026-09-27, PR #62): image embedding staging now
+  splits chunks wider than the vision workspace, and image prefills can
+  yield between scheduler ticks. Review follow-up scopes image borrows and
+  staging buffers to each executing prefill, preserving cold image inputs
+  and isolating interleaved cursors. CUDA regressions cover MTP catch-up,
+  cancellation and slot reuse; see the
+  [validation record](benchmarks/results/2026-09-27-qwen-image-prefill.md).
+
 - **Lazy SSE preambles** (2026-09-26, PR #57): chat and legacy completion
   preambles wait for the first output, preserving first-event prefill timing.
   Empty completions still receive a preamble before their terminal chunk,
