@@ -182,12 +182,40 @@ int run_plan_check() {  // The memory plan's context line under the rope knob (e
   require(on == want_on, "the YaRN plan takes original x factor");
   require(cfg.context_limit() == want_off && yarn.context_limit() == want_on,
           "the config's ceiling is what the plan reads");
-  // The pool is sized by the cache capacity, not by the positional ceiling,
-  // so the knob lifts what a request may reach without moving a byte: the
-  // plan validates the same pool either way (a pool past the ceiling is
-  // concurrency headroom, which the launcher names out loud).
-  require(plan_of(yarn).total_bytes() == plan_of(cfg).total_bytes(),
-          "the knob allocates nothing");
+  // Shared K/V capacity is unchanged by the request ceiling. Only the
+  // per-row scoring workspace grows when more pools can become visible.
+  const auto bytes_named = [](const QwenModel::MemoryPlan& plan, const char* name) {
+    for (const auto& item : plan.items)
+      if (item.name == name) return item.device + item.pinned;
+    throw std::runtime_error(std::string("missing memory plan item: ") + name);
+  };
+  const auto plain_plan = plan_of(cfg), yarn_plan = plan_of(yarn);
+  require(bytes_named(plain_plan, "kv cache pool (K/V bf16, compressed index keys, rings)") ==
+          bytes_named(yarn_plan, "kv cache pool (K/V bf16, compressed index keys, rings)"),
+          "request ceiling leaves shared K/V capacity unchanged");
+  const size_t extra_keys = size_t{64} * static_cast<size_t>((want_on - want_off) /
+                                                        cfg.indexer_compress_ratio) * 8;
+  require(yarn_plan.total_bytes() - plain_plan.total_bytes() == extra_keys,
+          "scoring workspace follows the per-request ceiling, not the shared pool");
+  QwenTextConfig unaligned = cfg;
+  unaligned.max_position_embeddings = native + 1;
+  require(plan_of(unaligned).total_bytes() - plain_plan.total_bytes() == size_t{64 * 8},
+          "partial final compressed pool has workspace");
+  const auto small_pool_plan = [&](const QwenTextConfig& c) {
+    return QwenModel::plan_memory(c, 64, 512, 0, 2, dgpp::QwenResidency::Resident, 4,
+                                 false, 8);
+  };
+  require(small_pool_plan(cfg).total_bytes() == small_pool_plan(yarn).total_bytes(),
+          "a smaller shared pool bounds workspace even with a larger positional ceiling");
+  QwenTextConfig site = cfg, shared = cfg;
+  site.max_position_embeddings = 262144;
+  shared.max_position_embeddings = 850048;
+  const auto site_plan = [&](const QwenTextConfig& c) {
+    return QwenModel::plan_memory(c, 4096, 850048, 0, 1, dgpp::QwenResidency::Resident,
+                                 4, false, 8);
+  };
+  require(site_plan(shared).total_bytes() - site_plan(site).total_bytes() == size_t{4816109568ULL},
+          "4K rows and an 850048-token shared pool save 4.485 GiB at a 256K request ceiling");
   // A pool of exactly the scaled ceiling is accepted by the same arithmetic.
   require(QwenModel::plan_memory(yarn, 64, native * 64 * 2, 0, 2, dgpp::QwenResidency::Resident, 4,
                                  false, 8)
