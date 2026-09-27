@@ -186,6 +186,11 @@ the main stack occupies about 81.77 GiB per rank, and MTP adds about
 checkpoint has a smaller footprint; use the memory plan for its exact
 configuration. Other families have their own residency requirements.
 
+Qwen's FP8 serving head allocates FP32 logits for the configured decode and
+MTP verification width. Prefill packs the last row of each request into that
+buffer while retaining the full prefill's kernel dispatch and reduction order.
+BF16 heads and all-row diagnostic forwards retain full-row storage.
+
 Streaming mode loads one layer at a time and rereads the checkpoint on
 each forward pass. It supports diagnostic runs that cannot hold the full
 model. Resident mode uses the same layer builders, with each layer's

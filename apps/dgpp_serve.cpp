@@ -431,7 +431,7 @@ struct QwenFamily final : ServeFamily {
                         bool mtp, int decode_rows) const override {
     return dgpp::QwenModel::plan_memory(cfg, forward_rows, context, fabric ? rank : 0, fabric ? world_ : 1,
                                         fabric ? dgpp::QwenResidency::Resident : dgpp::QwenResidency::Streaming,
-                                        slots, fabric && mtp, decode_rows);
+                                        slots, fabric && mtp, decode_rows, /*serving_logits=*/true);
   }
   size_t snapshot_bytes(int world_, bool mtp) const override {
     return dgpp::QwenModel::session_snapshot_bytes(cfg, world_, mtp);
@@ -444,7 +444,7 @@ struct QwenFamily final : ServeFamily {
     model = std::make_unique<dgpp::QwenModel>(
         cfg, ckpt, forward_rows, pool_tokens,
         fabric ? dgpp::QwenResidency::Resident : dgpp::QwenResidency::Streaming, reducer,
-        fabric ? rank : 0, fabric ? world_ : 1, slots, fabric && mtp, decode_rows, fp8_head_mma);
+        fabric ? rank : 0, fabric ? world_ : 1, slots, fabric && mtp, decode_rows, fp8_head_mma, /*serving_logits=*/true);
   }
   void destroy_model() override { model.reset(); }
   size_t model_snapshot_bytes() const override { return model ? model->session_snapshot_bytes() : 0; }

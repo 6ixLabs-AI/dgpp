@@ -74,6 +74,9 @@ struct SessionParams {
   // it. 0 or less than kDecodeRows: kDecodeRows (the floor); at most
   // kDecodeRowsMax.
   int decode_rows = 0;
+  // Optional compact head storage; families must select/pack prefill outputs.
+  // Zero preserves the diagnostic full-row allocation.
+  int logits_rows = 0;
   bool mtp = false;
   int64_t vocab_size = 0;
   int hidden = 0;              // the final hidden's width (DecodeOutputs::final_hidden_bits rows)
@@ -227,6 +230,7 @@ class SessionModel : public PrefillReporting {
   bool decode_route_traces() const { return route_traces_; }
   void set_decode_tail_mirrors(bool on) { decode_tail_mirrors_ = on; }
   int max_tokens() const { return max_tokens_; }
+  int logits_capacity_rows() const { return logits_capacity_rows_; }
   int tp_rank() const { return rank_; }
   int tp_world() const { return world_; }
 
@@ -373,7 +377,7 @@ class SessionModel : public PrefillReporting {
   // A walk's staged inputs (the decode rows' token upload included) and
   // its results (the tail mirrors, the host copies).
   RowInputs begin_run(const RowRun& run);
-  Outputs finish_run(const RowRun& run, Outputs&& out);
+  Outputs finish_run(const RowRun& run, Outputs&& out, bool packed_logits = false);
   std::vector<int64_t> prefill_cuts(int64_t start, int64_t end, const std::vector<int64_t>& boundaries) const;
   Outputs session_prefill_chunks(int req, const int64_t* ids, int64_t start, int64_t count,
                                  const std::vector<int64_t>& boundaries, SnapshotRequest* snap);
@@ -441,6 +445,7 @@ class SessionModel : public PrefillReporting {
   int max_decode_rows_ = kDecodeRows;  // the fixed batch's row ceiling (SessionParams::decode_rows)
 
   // The head's outputs: fp32 logits [M, vocab slice], the final hidden [M, H].
+  int logits_capacity_rows_ = 0;
   float* logits_ = nullptr;
   uint16_t* h_ = nullptr;
   float* h_tail_logits_ = nullptr;     // pinned [rows, vocab slice]
@@ -515,6 +520,9 @@ void SessionModel<D>::init_session(const SessionParams& p) {
   boundary_ = p.boundary;
   max_requests_ = p.max_requests;
   max_decode_rows_ = std::max({kDecodeRows, p.decode_rows, max_requests_});
+  if (p.logits_rows < 0 || (p.logits_rows > 0 && p.logits_rows < max_decode_rows_))
+    throw std::invalid_argument("session model: compact logits must hold every decode row");
+  logits_capacity_rows_ = p.logits_rows > 0 ? p.logits_rows : max_tokens_;
   mtp_ = p.mtp;
   vocab_size_ = p.vocab_size;
   hidden_ = p.hidden;
@@ -551,7 +559,7 @@ void SessionModel<D>::init_session(const SessionParams& p) {
   d_batch_map_ = dev_alloc<int32_t>(max_requests_);
   d_step_pos_ = dev_alloc<int64_t>(rows);
   d_req_spans_ = dev_alloc<int32_t>(2 * rows);
-  logits_ = dev_alloc<float>(M * static_cast<size_t>(lm_vocab_count_));
+  logits_ = dev_alloc<float>(static_cast<size_t>(logits_capacity_rows_) * lm_vocab_count_);
   h_ = dev_alloc<uint16_t>(M * static_cast<size_t>(hidden_));
   h_tail_logits_ = pinned_alloc<float>(rows * static_cast<size_t>(lm_vocab_count_));
   h_tail_hidden_ = pinned_alloc<uint16_t>(rows * static_cast<size_t>(hidden_));
@@ -698,7 +706,7 @@ typename SessionModel<D>::RowInputs SessionModel<D>::begin_run(const RowRun& run
 }
 
 template <class D>
-typename SessionModel<D>::Outputs SessionModel<D>::finish_run(const RowRun& run, Outputs&& out) {
+typename SessionModel<D>::Outputs SessionModel<D>::finish_run(const RowRun& run, Outputs&& out, bool packed_logits) {
   const int T = run.T;
   const size_t H = static_cast<size_t>(hidden_);
   // The decode tail's rows into the pinned mirrors: eager rows always
@@ -729,14 +737,14 @@ typename SessionModel<D>::Outputs SessionModel<D>::finish_run(const RowRun& run,
       const size_t last = static_cast<size_t>(at + run.span_lens[s] - 1);
       DGPP_CUDA_OK(cudaMemcpy(out.final_hidden_bits.data() + static_cast<size_t>(s) * H, h_ + last * H, H * 2,
                               cudaMemcpyDeviceToHost));
-      DGPP_CUDA_OK(cudaMemcpy(out.logits.data() + static_cast<size_t>(s) * lm_vocab_count_, logits_ + last * lm_vocab_count_,
+      DGPP_CUDA_OK(cudaMemcpy(out.logits.data() + static_cast<size_t>(s) * lm_vocab_count_, logits_ + (packed_logits ? static_cast<size_t>(s) : last) * lm_vocab_count_,
                               static_cast<size_t>(lm_vocab_count_) * 4, cudaMemcpyDeviceToHost));
       at += run.span_lens[s];
     }
   } else {
     DGPP_CUDA_OK(cudaMemcpy(out.final_hidden_bits.data(), h_ + first * H, out.final_hidden_bits.size() * 2,
                             cudaMemcpyDeviceToHost));
-    DGPP_CUDA_OK(cudaMemcpy(out.logits.data(), logits_ + first * lm_vocab_count_, out.logits.size() * 4,
+    DGPP_CUDA_OK(cudaMemcpy(out.logits.data(), logits_ + (packed_logits ? 0 : first) * lm_vocab_count_, out.logits.size() * 4,
                             cudaMemcpyDeviceToHost));
   }
   return std::move(out);

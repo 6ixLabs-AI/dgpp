@@ -43,13 +43,21 @@ void d2d(void* dst, const void* src, size_t bytes, cudaStream_t stream) {
   DGPP_CUDA_OK(cudaMemcpyAsync(dst, src, bytes, cudaMemcpyDeviceToDevice, stream));
 }
 
+// Compact storage is an explicit serving opt-in for the FP8 head. The
+// diagnostic all-row override and BF16/cuBLAS path retain their full buffers.
+bool compact_serving_logits(bool serving) {
+  const char* all = std::getenv("DGPP_PREFILL_HEAD_ALL_ROWS");
+  return serving && QwenLayerStream::dense_weights_fp8() && !(all && all[0] == '1');
+}
+
 }  // namespace
 
 QwenModel::QwenModel(const QwenTextConfig& cfg, const std::string& checkpoint_dir, int max_tokens,
                      int64_t max_cache_tokens, QwenResidency residency, BoundaryReducer* boundary,
                      int tp_rank, int tp_world, int max_requests, bool mtp, int decode_rows,
-                     bool fp8_head_mma)
+                     bool fp8_head_mma, bool serving_logits)
     : fp8_head_mma_(fp8_head_mma),
+      compact_logits_(compact_serving_logits(serving_logits)),
       cfg_(cfg),
       loader_(cfg, checkpoint_dir, tp_rank, tp_world, residency,
               tp_world > 1 ? QwenHeadSharding::VocabSharded : QwenHeadSharding::Full,
@@ -80,6 +88,7 @@ QwenModel::QwenModel(const QwenTextConfig& cfg, const std::string& checkpoint_di
     sp.boundary = boundary;
     sp.max_requests = max_requests;
     sp.decode_rows = decode_rows;
+    if (compact_logits_) sp.logits_rows = std::max({kDecodeRows, decode_rows, max_requests});
     sp.mtp = mtp;
     sp.vocab_size = cfg_.vocab_size;
     sp.hidden = H;
@@ -207,7 +216,7 @@ QwenModel::QwenModel(const QwenTextConfig& cfg, const std::string& checkpoint_di
 QwenModel::MemoryPlan QwenModel::plan_memory(const QwenTextConfig& cfg, int max_tokens,
                                              int64_t max_cache_tokens, int tp_rank, int tp_world,
                                              QwenResidency residency, int max_requests, bool mtp,
-                                             int decode_rows) {
+                                             int decode_rows, bool serving_logits) {
   if (max_tokens <= 0) throw std::invalid_argument("plan_memory: max_tokens must be positive");
   if (max_requests <= 0 || max_requests > kPickMaxRequests)
     throw std::invalid_argument("plan_memory: max_requests must be in [1, kPickMaxRequests]");
@@ -286,9 +295,10 @@ QwenModel::MemoryPlan QwenModel::plan_memory(const QwenTextConfig& cfg, int max_
     plan.add("kv cache pool (K/V bf16, compressed index keys, rings)", QwenKvPool::cache_bytes(shape));
   }
   // Activations and the token rows.
+  const size_t logits_rows = compact_serving_logits(serving_logits) ? rows : M;
   const size_t token_rows = std::max(M, rows + R * static_cast<size_t>(kSpecRows));
   plan.add("activations (hyper state, rows, head)",
-           token_rows * 8 + M * 12 + 8 + M * W * 2 + 3 * M * H * 2 + M * V * 4 + rows * 64,
+           token_rows * 8 + M * 12 + 8 + M * W * 2 + 3 * M * H * 2 + logits_rows * V * 4 + rows * 64,
            rows * V * 4 + rows * H * 2 + token_rows * 8 + rows * 32 + R * 40);
   // The layer objects (built once, rebound per layer).
   const int64_t max_pools = cache_tokens / cfg.indexer_compress_ratio;
@@ -391,7 +401,10 @@ size_t QwenModel::dense_bridge_bytes(const QwenTextConfig& cfg, const QwenLocalG
 // The lm_head product into logits_ (f32): the checkpoint's BF16 through the
 // GEMM interface, or the block-FP8 form (engine.dense_weights) through the scale
 // GEMM.
-void QwenModel::lm_head_logits(const uint16_t* hidden, int rows, cudaStream_t stream, bool last_row_only) {
+void QwenModel::lm_head_logits(const uint16_t* hidden, int rows, cudaStream_t stream, bool last_row_only,
+                               int compact_row, int output_row) {
+  if ((compact_row < 0 && rows > logits_capacity_rows_) || output_row >= logits_capacity_rows_)
+    throw std::invalid_argument("Qwen head: output exceeds logits capacity; use full diagnostic storage");
   const int H = cfg_.hidden_size;
   // Opt in to weight-tile reuse only within the configured decode envelope;
   // this bounds the optimization to verification shapes covered by its gates.
@@ -401,10 +414,10 @@ void QwenModel::lm_head_logits(const uint16_t* hidden, int rows, cudaStream_t st
   // Streaming MMA preserves weight values but reassociates FP32 sums.
   if (globals_.lm_head_fp8.payload)
     launch_scale_gemm_f32(hidden, static_cast<size_t>(H), globals_.lm_head_fp8.payload,
-                          globals_.lm_head_fp8.scales, logits_, rows, lm_vocab_count_, H, stream,
+                          globals_.lm_head_fp8.scales, logits_ + static_cast<size_t>(output_row) * lm_vocab_count_, rows, lm_vocab_count_, H, stream,
                           static_cast<size_t>(lm_vocab_count_),
                           fp8_head_mma_ && rows <= max_decode_rows_ ? dense_gemv_rows() + 1 : 0,
-                          last_row_only);
+                          last_row_only, nullptr, 0, compact_row);
   else
     gemm_.matmul(hidden, globals_.lm_head, logits_, rows, lm_vocab_count_, H, DType::BF16, GemmOut::F32,
                  static_cast<size_t>(H), gemm_ws_, gemm_ws_bytes_, stream);
@@ -636,6 +649,8 @@ void QwenModel::prefetch_ple_value_side(const QwenLayerResident& r) {
 
 QwenModel::Outputs QwenModel::run_rows(const RowRun& run) {
   const int T = run.T, req = run.req;
+  if (run.all_rows && T > logits_capacity_rows_)
+    throw std::invalid_argument("Qwen serving head: use full diagnostic storage for an all-row forward");
   walk_rows_ = T;
   qwen_configure_gemm_rows(gemm_, T, run.decode);
   if (run.capture && loader_.residency() != QwenResidency::Resident)
@@ -832,7 +847,20 @@ QwenModel::Outputs QwenModel::run_rows(const RowRun& run) {
   const bool mma_envelope = fp8_head_mma_ && T <= max_decode_rows_;
   const bool last_row_only = !run.decode && !run.all_rows && run.num_spans == 0 && T > 1 &&
                              globals_.lm_head_fp8.payload != nullptr && !mma_envelope && !head_all_rows;
-  lm_head_logits(h_, T, stream_, last_row_only);
+  const bool packed_logits = compact_logits_ && T > logits_capacity_rows_;
+  if (packed_logits) {
+    // T exceeds the decode envelope, so each selected row keeps the same
+    // GEMV/dense-MMA dispatch as the original full prefill head. Grouped
+    // prefill packs one selected row per span; hidden rows stay in place.
+    if (run.decode || run.all_rows) throw std::logic_error("Qwen compact head: invalid row run");
+    int end = 0;
+    for (int s = 0; s < std::max(1, run.num_spans); ++s) {
+      end += run.num_spans > 0 ? run.span_lens[s] : T;
+      lm_head_logits(h_, T, stream_, false, end - 1, s);
+    }
+  } else {
+    lm_head_logits(h_, T, stream_, last_row_only);
+  }
   // The draft block's input: the last rows' hyper states into the slots'
   // windows by position (the last window rows of a prefill chunk, every
   // decode row — distinct slots within one launch).
@@ -846,7 +874,7 @@ QwenModel::Outputs QwenModel::run_rows(const RowRun& run) {
   if (run.decode) prefetch_.join(stream_);
   // The tail mirrors, the sync and the host copies are the core's; the
   // route traces of the device-segmented prefill materialize after it.
-  out = finish_run(run, std::move(out));
+  out = finish_run(run, std::move(out), packed_logits);
   // An eager walk has synced: a staging that failed on the host surfaces
   // here rather than as a silent embedding.
   if (has_ple_ && table_.mmap && !run.capture) ple_->check_staged();

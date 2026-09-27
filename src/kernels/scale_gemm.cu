@@ -207,19 +207,23 @@ void launch_scale_gemm(const uint16_t* act, size_t act_row_stride_elems,
                        const uint8_t* w_payload, const float* w_scales,
                        OutT* out, int m, int n, int k, cudaStream_t stream,
                        size_t out_stride, int mma_from_rows, bool last_row_only = false,
-                       void* ws = nullptr, size_t ws_bytes = 0) {
+                       void* ws = nullptr, size_t ws_bytes = 0, int compact_row = -1) {
   if (m <= 0 || n <= 0) return;  // empty output by definition
   if (!act || !w_payload || !w_scales || !out)
     throw std::invalid_argument("scale_gemm: null pointer");
   if (out_stride == 0) out_stride = static_cast<size_t>(n);
   if (out_stride < static_cast<size_t>(n))
     throw std::invalid_argument("scale_gemm: output row stride narrower than n");
+  if (compact_row < -1 || compact_row >= m || (compact_row >= 0 && last_row_only))
+    throw std::invalid_argument("scale_gemm: invalid compact row selection");
   const int dispatch_rows = m;
+  const bool selected_only = last_row_only || compact_row >= 0;
+  const int selected_row = compact_row >= 0 ? compact_row : m - 1;
   const bool streaming_mma = mma_from_rows > 0 && m >= mma_from_rows && m <= kScaleGemmMmaMaxRows &&
                             mma_gemv_shape_ok(w_payload, act, act_row_stride_elems, m, k);
-  if (last_row_only) {
-    act += static_cast<size_t>(m - 1) * act_row_stride_elems;
-    out += static_cast<size_t>(m - 1) * out_stride;
+  if (selected_only) {
+    act += static_cast<size_t>(selected_row) * act_row_stride_elems;
+    if (last_row_only) out += static_cast<size_t>(selected_row) * out_stride;
     m = 1;
   }
   if (k <= 0) {
@@ -235,8 +239,9 @@ void launch_scale_gemm(const uint16_t* act, size_t act_row_stride_elems,
     // A last-row request must retain the full product's reduction order.
     // Only its final group can contain the selected row; groups above the
     // decode bound run unsplit even when a workspace was supplied.
-    const int last_group_rows = (dispatch_rows - 1) % kMmaGemvMaxRowsPerLaunch + 1;
-    if (last_row_only && last_group_rows > kMmaGemvMaxRows) {
+    const int group_start = selected_row / kMmaGemvMaxRowsPerLaunch * kMmaGemvMaxRowsPerLaunch;
+    const int selected_group_rows = std::min(kMmaGemvMaxRowsPerLaunch, dispatch_rows - group_start);
+    if (selected_only && selected_group_rows > kMmaGemvMaxRows) {
       ws = nullptr;
       ws_bytes = 0;
     }
@@ -455,10 +460,10 @@ void launch_scale_gemm_f32(const uint16_t* act, size_t act_row_stride_elems,
                            const uint8_t* w_payload, const float* w_scales,
                            float* out, int m, int n, int k,
                            cudaStream_t stream, size_t out_row_stride_elems, int mma_from_rows,
-                           bool last_row_only, void* ws, size_t ws_bytes) {
+                           bool last_row_only, void* ws, size_t ws_bytes, int compact_row) {
   launch_scale_gemm<float>(act, act_row_stride_elems, w_payload, w_scales,
                            out, m, n, k, stream, out_row_stride_elems, mma_from_rows, last_row_only, ws,
-                           ws_bytes);
+                           ws_bytes, compact_row);
 }
 
 namespace {

@@ -110,10 +110,12 @@ class QwenModel : public SessionModel<QwenModel> {
   // verify rows per request; engine/decode_outputs.hpp); 0 = kDecodeRows.
   // fp8_head_mma: opt in to streaming MMA within that decode envelope,
   // including short prefill. Bitwise parity needs matching settings/capacity.
+  // serving_logits bounds FP8 head storage to decode rows and packs selected
+  // prefill outputs. Leave false for all-row diagnostic forwards.
   QwenModel(const QwenTextConfig& cfg, const std::string& checkpoint_dir, int max_tokens,
             int64_t max_cache_tokens, QwenResidency residency = QwenResidency::Streaming,
             BoundaryReducer* boundary = nullptr, int tp_rank = 0, int tp_world = 1,
-            int max_requests = 1, bool mtp = false, int decode_rows = 0, bool fp8_head_mma = false);
+            int max_requests = 1, bool mtp = false, int decode_rows = 0, bool fp8_head_mma = false, bool serving_logits = false);
   bool fp8_head_mma() const { return fp8_head_mma_; }
   ~QwenModel();
   QwenModel(const QwenModel&) = delete;
@@ -126,7 +128,7 @@ class QwenModel : public SessionModel<QwenModel> {
   static MemoryPlan plan_memory(const QwenTextConfig& cfg, int max_tokens, int64_t max_cache_tokens,
                                 int tp_rank = 0, int tp_world = 1,
                                 QwenResidency residency = QwenResidency::Streaming,
-                                int max_requests = 1, bool mtp = false, int decode_rows = 0);
+                                int max_requests = 1, bool mtp = false, int decode_rows = 0, bool serving_logits = false);
 
   // The cold diagnostic forward: one request on slot 0 (which must be
   // closed), fresh state, every row's logits; the slot is closed after.
@@ -219,6 +221,7 @@ class QwenModel : public SessionModel<QwenModel> {
 
  private:
   const bool fp8_head_mma_;
+  const bool compact_logits_;
   static constexpr int kBlockTokens = 64;
   static constexpr int kPrefillChunkTokens = 4096;
 
@@ -248,7 +251,8 @@ class QwenModel : public SessionModel<QwenModel> {
   int64_t image_window_first_ = 0, image_window_end_ = 0;
 
   void build_layer_objects(const QwenLayerResident& r);
-  void lm_head_logits(const uint16_t* hidden, int rows, cudaStream_t stream, bool last_row_only = false);
+  void lm_head_logits(const uint16_t* hidden, int rows, cudaStream_t stream, bool last_row_only = false,
+                      int compact_row = -1, int output_row = 0);
   static size_t dense_bridge_bytes(const QwenTextConfig& cfg, const QwenLocalGeometry& geo);
   size_t dense_bridge_bytes_ = 0;
   static QwenMoeWeights moe_view(const QwenMoeResident& m);
