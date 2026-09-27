@@ -434,6 +434,79 @@ struct SelectFixture {
 
 }  // namespace
 
+DGPP_TEST(qsa_visible_pool_bound_preserves_scores_selection_and_graphs) {
+  SelectFixture sf(20);
+  const Geo& g = sf.f.g;
+  cudaStream_t stream = test_stream();
+  // Leave many empty scoring stripes while keeping the same row stride.
+  constexpr int64_t stride = 4096;
+  constexpr size_t guard = 16;
+  struct Result {
+    std::vector<uint64_t> keys;
+    std::vector<int32_t> selected, counts;
+    bool operator==(const Result&) const = default;
+  };
+  const auto calculate = [&](int64_t bound, bool replay_graph = false) {
+    const size_t count = static_cast<size_t>(sf.rows()) * stride;
+    const size_t width = static_cast<size_t>(sf.rows()) * g.max_selected();
+    DevBuf keys((count + 2 * guard) * sizeof(uint64_t));
+    DevBuf selected(width * sizeof(int32_t)), counts(sf.rows() * sizeof(int32_t));
+    DGPP_CUDA_OK(cudaMemsetAsync(keys.p, 0xff, keys.bytes, stream));
+    const auto launch = [&] {
+      dgpp::qsa_index_score(ptr<uint16_t>(sf.dq), int64_t(g.idx_heads) * g.idx_dim,
+                            ptr<int32_t>(sf.dreq), ptr<int64_t>(sf.dpos), sf.rows(),
+                            ptr<int32_t>(sf.f.dtable), g.blocks_per_request,
+                            ptr<uint16_t>(sf.dcache), g.pools_per_block(), g.idx_heads,
+                            g.idx_dim, g.kpool, mptr<uint64_t>(keys) + guard, stride, stream, bound);
+      dgpp::qsa_select_from_keys(ptr<uint64_t>(keys) + guard, stride, ptr<int64_t>(sf.dpos),
+                                 sf.rows(), g.select_k, g.kpool, g.max_selected(),
+                                 mptr<int32_t>(selected), mptr<int32_t>(counts), stream);
+    };
+    if (replay_graph) {
+      DGPP_CUDA_OK(cudaStreamBeginCapture(stream, cudaStreamCaptureModeGlobal));
+      launch();
+      cudaGraph_t graph;
+      cudaGraphExec_t exec;
+      DGPP_CUDA_OK(cudaStreamEndCapture(stream, &graph));
+      DGPP_CUDA_OK(cudaGraphInstantiate(&exec, graph, nullptr, nullptr, 0));
+      for (int repeat = 0; repeat < 2; ++repeat)
+        DGPP_CUDA_OK(cudaGraphLaunch(exec, stream));
+      DGPP_CUDA_OK(cudaStreamSynchronize(stream));
+      DGPP_CUDA_OK(cudaGraphExecDestroy(exec));
+      DGPP_CUDA_OK(cudaGraphDestroy(graph));
+    } else {
+      launch();
+      DGPP_CUDA_OK(cudaStreamSynchronize(stream));
+    }
+    Result result{down<uint64_t>(keys, count + 2 * guard),
+                  down<int32_t>(selected, width), down<int32_t>(counts, sf.rows())};
+    for (size_t i = 0; i < guard; ++i)
+      require(result.keys[i] == UINT64_MAX && result.keys[guard + count + i] == UINT64_MAX,
+              "visible-pool scoring changed a workspace guard");
+    return result;
+  };
+  const int64_t visible = (*std::max_element(sf.pos.begin(), sf.pos.end()) + 1) / g.kpool;
+  const auto reference = calculate(-1);
+  require(reference == calculate(visible), "visible-pool cap changed scores or selection");
+  require(reference == calculate(visible, true), "visible-pool graph changed scores or selection");
+  require(reference == calculate(stride), "full-stride cap changed scores or selection");
+
+  // With no complete compressed key, selection still includes the token tail.
+  sf.pos.assign(static_cast<size_t>(sf.rows()), g.kpool - 2);
+  sf.pos.back() = -1;
+  sf.dpos.upload(sf.pos.data(), sf.pos.size() * sizeof(int64_t));
+  require(calculate(-1) == calculate(0, true), "zero-visible cap changed keys or token tails");
+  for (int64_t invalid : {int64_t{-2}, stride + 1}) {
+    bool threw = false;
+    try {
+      (void)calculate(invalid);
+    } catch (const std::invalid_argument&) {
+      threw = true;
+    }
+    require(threw, "invalid visible-pool bound accepted");
+  }
+}
+
 DGPP_TEST(qsa_index_score_and_select_match_the_reference_bitwise) {
   SelectFixture sf(20);
   const Geo& g = sf.f.g;

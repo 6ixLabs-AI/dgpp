@@ -101,12 +101,14 @@ void qsa_index_decode_update(const uint16_t* raw_k, int64_t k_stride, const uint
 // layout; absent heads contribute nothing). The score's fp32 order: lane (h, c) sums dims [16c, 16c + 16)
 // with fma, a 3-level xor tree over the head's 8 lanes, relu, a 2-level
 // tree over the heads, one division by sqrt(dim). Grid: pool stripes x
-// rows. Every row's visible count must fit ws_stride.
+// rows. Every row's visible count must fit ws_stride. A host-known
+// visible_pool_bound skips empty stripes without changing row strides. It
+// must cover every row, including on graph replay; -1 launches over ws_stride.
 void qsa_index_score(const uint16_t* q, int64_t q_row_stride, const int32_t* req_ids,
                      const int64_t* pos, int rows, const int32_t* block_tables,
                      int blocks_per_request, const uint16_t* index_cache,
                      int pools_per_block, int heads, int dim, int kpool, uint64_t* keys_ws,
-                     int64_t ws_stride, cudaStream_t stream);
+                     int64_t ws_stride, cudaStream_t stream, int64_t visible_pool_bound = -1);
 
 // One block per row: the select_k smallest keys of keys_ws[r, 0..visible)
 // (exact radix selection above 2048 pools, streaming top-k otherwise), with

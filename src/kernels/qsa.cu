@@ -667,7 +667,7 @@ void qsa_index_score(const uint16_t* q, int64_t q_row_stride, const int32_t* req
                      const int64_t* pos, int rows, const int32_t* block_tables,
                      int blocks_per_request, const uint16_t* index_cache, int pools_per_block,
                      int heads, int dim, int kpool, uint64_t* keys_ws, int64_t ws_stride,
-                     cudaStream_t stream) {
+                     cudaStream_t stream, int64_t visible_pool_bound) {
   if (rows <= 0) return;
   if (!q || !req_ids || !pos || !block_tables || !index_cache || !keys_ws)
     throw std::invalid_argument("qsa_index_score: null pointer");
@@ -675,8 +675,12 @@ void qsa_index_score(const uint16_t* q, int64_t q_row_stride, const int32_t* req
     throw std::invalid_argument("qsa_index_score: the lane layout is <= 4 heads x 128 dims");
   if (ws_stride > (int64_t(1) << kIdxBits))
     throw std::invalid_argument("qsa_index_score: pool ids must fit kIdxBits");
+  if (visible_pool_bound < -1 || visible_pool_bound > ws_stride)
+    throw std::invalid_argument("qsa_index_score: visible pool bound outside workspace");
   if (rows > 65535) throw std::invalid_argument("qsa_index_score: too many rows per launch");
-  const int64_t stripes = (ws_stride + kScorePoolsPerBlock - 1) / kScorePoolsPerBlock;
+  const int64_t pools = visible_pool_bound < 0 ? ws_stride : visible_pool_bound;
+  if (pools == 0) return;
+  const int64_t stripes = (pools + kScorePoolsPerBlock - 1) / kScorePoolsPerBlock;
   if (stripes > 0x7fffffff) throw std::invalid_argument("qsa_index_score: too many pools");
   const dim3 grid(static_cast<unsigned>(stripes), static_cast<unsigned>(rows));
   index_score_kernel<<<grid, kScoreThreads, 0, stream>>>(
