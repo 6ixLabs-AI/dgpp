@@ -84,8 +84,8 @@ its node.
 | `cluster_glm-5.3-flash_nvfp4-fp8_w4.example.json` | GLM-5.3-Flash NVFP4/FP8 hybrid, four nodes, MTP depth 1, bf16 latent cache, 768K context, an 8 GiB prefix arena |
 | `cluster_glm-5.3-flash_nvfp4-fp8_w2.example.json` | the same hybrid on two nodes, FP8 latent cache, 132K context on four request slots (160K with `--bf16-weights checkpoint --kv-capacity 163840`) |
 | `cluster_qwen-3.8-flash-next_fp8_w{2,4}.example.json` | Qwen FP8 with MTP depth 1, four or two nodes |
-| `cluster_qwen-3.8-flash-next_nvfp4_w{1,2}.example.json` | Qwen NVFP4 on one or two Sparks, MTP depth 1, the dense projections FP8 at load, a mapped n-gram table |
-| `cluster_qwen-3.8-flash-next_nvfp4-radixark_w{1,2}.example.json` | RadixArk's Qwen NVFP4 on one or two Sparks, identical engine configuration to the NVIDIA release |
+| `cluster_qwen-3.8-flash-next_nvfp4_w{1,2}.example.json` | Qwen NVFP4 on one or two Sparks, MTP depth 1, dense projections FP8 at load, mapped n-gram table; the single-Spark example selects a 256K shared pool and 4K busy/idle prefill |
+| `cluster_qwen-3.8-flash-next_nvfp4-radixark_w{1,2}.example.json` | RadixArk Qwen NVFP4 on one or two Sparks; the single-Spark recipe selects MTP depth 2, grow admission and 4K busy/idle prefill |
 | `cluster_glm-4.7_nvfp4_w4.example.json` | GLM-4.7 NVFP4, four nodes, MTP depth 1 |
 | `cluster_glm-5.3_int4-int8_w4.example.json` | the full GLM-5.3 (int4/int8 RTN), four nodes, MTP depth 1, eight request slots, 100K bf16 context (120K with `--bf16-weights checkpoint --kv-capacity 122880`), the embedding vocab-sharded |
 | `cluster_deepseek-v4.1-flash_mxfp4-fp8_w4.example.json` | DeepSeek-V4.1-Flash as shipped, four nodes, six request slots, DSpark depth 4 with the scheduled verify depth, the bounded prefill, 128K context |
@@ -459,8 +459,9 @@ An explicit zero preserves full-prompt admission within a scheduler pass;
 model and snapshot boundaries still split the work. Qwen retains its internal
 4,096-token limit and reports token progress after each completed chunk.
 The resolved budget is logged at startup and carried in rank 0's warm record.
-The four-rank GLM-5.3-Flash deployment explicitly selects 256-token busy and
-2,048-token idle budgets.
+The single-Spark NVIDIA and RadixArk Qwen NVFP4 templates explicitly select
+4,096-token busy and idle budgets. The four-rank GLM-5.3-Flash deployment
+explicitly selects 256-token busy and 2,048-token idle budgets.
 A positive budget executes one aligned prefill chunk per tick, followed by
 a decode pass for active requests. Try 256 or 512 tokens; the budget must
 be a multiple of the snapshot alignment and fit the prefill scratch limit.
