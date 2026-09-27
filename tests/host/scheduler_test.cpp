@@ -2829,3 +2829,286 @@ DGPP_TEST(prefix_cache_image_byte_budget_shares_identity_and_preserves_entries) 
   cache.detach(a);
   require(cache.evict_lru() >= 0 && cache.image_bytes() == 0, "last eviction releases image identity");
 }
+
+DGPP_TEST(scheduler_multiAdmission_admitsFittingOneShotsInOneTick) {
+  // GIVEN two queued image requests (images never group) and one slot each
+  // on a 2-slot engine with a positive prefill budget:
+  class ImageMultiEngine : public GroupFakeEngine {
+   public:
+    ImageMultiEngine() : GroupFakeEngine(2, 100, 4, 32, 64) {}
+    int calls = 0;
+    bool supports_images() const override { return true; }
+    int64_t prefill_chunk_alignment() const override { return 2; }
+    int64_t prefill_chunk_limit() const override { return 64; }
+    int32_t prefill_images(int req, const std::vector<int64_t>& p,
+                           const std::vector<dgpp::ImageInput>& images) override {
+      require(images.size() == 1, "one image reaches each admission");
+      ++calls;
+      return FakeEngine::prefill(req, p);
+    }
+  } engine;
+  engine.arm(0, {10, 11}, 2);
+  engine.arm(1, {20, 21}, 2);
+  engine.arm(0, {30, 31}, 2);  // the deferred third prompt reuses the lowest free slot
+  dgpp::sched::AdmissionPolicy policy;
+  policy.prefill_budget_tokens = 64;
+  Scheduler sched(&engine, {}, 0, policy);
+  auto image_request = [](const std::string& id) {
+    SchedulerRequest r = make_request(id, 6, 2);
+    r.images.push_back({1, 1, 28, 28, std::vector<uint8_t>(28 * 28 * 3, 123)});
+    return r;
+  };
+  sched.submit(image_request("a"));
+  sched.submit(image_request("b"));
+  sched.submit(image_request("c"));
+
+  // WHEN one tick runs,
+  sched.tick();
+
+  // THEN both fitting one-shots admitted in that tick (never grouped), and
+  // the third deferred for lack of a free slot:
+  require(engine.calls == 2, "both fitting one-shots prefill in the first tick");
+  require(engine.op_stream().find("PG:") == std::string::npos, "images never group");
+  require(sched.meters().prompts_prefilled == 2, "two admissions in one tick");
+  require(sched.meters().queued == 1, "the slotless third request waits");
+
+  // WHEN the run completes,
+  sched.run_to_completion();
+
+  // THEN all three transcripts are intact and the deferred request reused
+  // slot 0:
+  require(sched.results().size() == 3, "three results");
+  require(ids_joined(sched.results()[0].generated) == "10,11", "a ids");
+  require(ids_joined(sched.results()[1].generated) == "20,21", "b ids");
+  require(ids_joined(sched.results()[2].generated) == "30,31", "c ids");
+  require(sched.meters().pool_blocks_in_use == 0, "no reservation leak");
+}
+
+DGPP_TEST(scheduler_fairShare_interleavesConcurrentChunkedPrefills) {
+  // GIVEN two over-budget prompts (11 and 9 tokens, budget 4) on a 2-slot
+  // chunked engine:
+  ChunkFakeEngine engine;
+  engine.arm(0, {10, 11}, 2);
+  engine.arm(1, {20, 21}, 2);
+  dgpp::sched::AdmissionPolicy policy;
+  policy.prefill_budget_tokens = 4;
+  Scheduler sched(&engine, {}, 0, policy);
+  sched.submit(make_request("long-a", 11, 2));
+  sched.submit(make_request("long-b", 9, 2));
+
+  // WHEN the first tick runs, the head begins with the full tick budget
+  // (chunked read-ins stay one at a time);
+  sched.tick();
+  require(sched.meters().prefilling == 1 && sched.meters().prompt_tokens_computed == 4,
+          "first tick begins one chunked prefill with the full budget");
+
+  // WHEN the second tick runs, the second read-in begins and both advance
+  // on equal shares;
+  sched.tick();
+  require(sched.meters().prefilling == 2 && sched.meters().prompt_tokens_computed == 8,
+          "second tick interleaves: both prefills advance 2+2");
+
+  // WHEN the run completes,
+  sched.run_to_completion();
+
+  // THEN both transcripts are intact, every token counted once, and nothing
+  // leaks:
+  require(sched.find("long-a")->generated == std::vector<int64_t>({10, 11}), "a transcript");
+  require(sched.find("long-b")->generated == std::vector<int64_t>({20, 21}), "b transcript");
+  require(sched.meters().prompt_tokens_computed == 20, "no double counting");
+  require(sched.meters().pool_blocks_in_use == 0, "no reservation leak");
+}
+
+DGPP_TEST(scheduler_multiAdmission_stops_groups_at_exhausted_budget) {
+  for (const int budget : {0, 4}) for (const int steps : {1, 3}) {
+    struct Engine : GroupFakeEngine {
+      Engine() : GroupFakeEngine(4, 100, 2, 16, 32) {}
+      int64_t prefill_chunk_alignment() const override { return 2; }
+      int64_t prefill_chunk_limit() const override { return 16; }
+    } engine;
+    for (int slot = 0; slot < 4; ++slot)
+      for (int episode = 0; episode < 4; ++episode)
+        engine.arm(slot, steps == 1 ? std::vector<int32_t>{10} : std::vector<int32_t>{10, 11, 12}, steps);
+    dgpp::sched::AdmissionPolicy policy;
+    policy.prefill_budget_tokens = budget;
+    Scheduler sched(&engine, {}, 0, policy);
+    for (int i = 0; i < 4; ++i) sched.submit(make_request("r" + std::to_string(i), 2, steps));
+    sched.tick();
+    require(sched.meters().prompts_prefilled == (budget == 0 ? 4 : 2),
+            "only the first fitting group admits; zero budget retains a full group");
+    while (sched.has_pending()) {
+      const auto before = sched.meters().prompt_tokens_computed;
+      sched.tick();
+      require(budget == 0 || sched.meters().prompt_tokens_computed - before <= budget,
+              "group admissions respect every tick's cap even when slots retire immediately");
+    }
+    for (const auto& result : sched.results())
+      require(result.steps_done == steps && result.generated.front() == 10, "all group transcripts complete");
+    require(sched.meters().prompt_tokens_computed == 8 && sched.meters().pool_blocks_in_use == 0,
+            "all prompts counted once and reservations released");
+  }
+}
+
+DGPP_TEST(scheduler_multiAdmission_defers_chunked_start_after_one_shot) {
+  for (const int short_length : {2, 4}) {
+    ChunkFakeEngine engine;
+    engine.arm(0, {10, 11, 12}, 3);
+    engine.arm(1, {20, 21, 22}, 3);
+    dgpp::sched::AdmissionPolicy policy;
+    policy.prefill_budget_tokens = 4;
+    Scheduler sched(&engine, {}, 0, policy);
+    sched.submit(make_request("short", short_length, 3));
+    sched.submit(make_request("long", 11, 3));
+    sched.tick();
+    require(sched.meters().prompt_tokens_computed == short_length && sched.meters().prefilling == 0,
+            "a chunked start waits even when a one-shot leaves a partial budget");
+    while (sched.has_pending()) {
+      const auto before = sched.meters().prompt_tokens_computed;
+      sched.tick();
+      require(sched.meters().prompt_tokens_computed - before <= 4, "every tick respects the prefill cap");
+    }
+    require(sched.find("short")->generated == std::vector<int64_t>({10, 11, 12}) &&
+                sched.find("long")->generated == std::vector<int64_t>({20, 21, 22}), "both transcripts intact");
+    require(sched.meters().pool_blocks_in_use == 0, "no reservation leak");
+  }
+}
+
+DGPP_TEST(scheduler_multiAdmission_oversized_images_keep_one_monolithic_prefill_per_tick) {
+  for (const bool leading_text : {false, true}) {
+    struct Engine : ChunkFakeEngine {
+      int calls = 0;
+      int max_concurrent_requests() const override { return 3; }
+      int decode_batch_capacity() const override { return 3; }
+      bool supports_images() const override { return true; }
+      int32_t prefill_images(int req, const std::vector<int64_t>& prompt,
+                            const std::vector<dgpp::ImageInput>& images) override {
+        require(images.size() == 1 && images[0].rgb[0] == 123, "image input intact");
+        ++calls;
+        return FakeEngine::prefill(req, prompt);
+      }
+    } engine;
+    if (leading_text) engine.arm(0, {10, 11, 12, 13, 14, 15, 16, 17}, 8);
+    for (int i = 0; i < 2; ++i) engine.arm(i + leading_text, {20, 21, 22}, 3);
+    dgpp::sched::AdmissionPolicy policy;
+    policy.prefill_budget_tokens = 4;
+    Scheduler sched(&engine, {}, 0, policy);
+    if (leading_text) sched.submit(make_request("text", 2, 8));
+    for (int i = 0; i < 2; ++i) {
+      auto request = make_request("image" + std::to_string(i), 6, 3);
+      request.images.push_back({1, 1, 28, 28, std::vector<uint8_t>(28 * 28 * 3, 123)});
+      sched.submit(request);
+    }
+    if (leading_text) {
+      sched.tick();
+      require(engine.calls == 0, "oversized image waits after partial text prefill work");
+    }
+    for (int i = 1; i <= 2; ++i) {
+      const auto before = sched.meters().prompt_tokens_computed;
+      sched.tick();
+      require(engine.calls == i && sched.meters().prompt_tokens_computed - before == 6,
+              "one oversized image admits as the tick's only prefill work");
+    }
+    sched.run_to_completion();
+    for (int i = 0; i < 2; ++i)
+      require(sched.find("image" + std::to_string(i))->generated == std::vector<int64_t>({20, 21, 22}),
+              "monolithic image transcript intact");
+    require(sched.meters().pool_blocks_in_use == 0, "image reservations released");
+  }
+}
+
+DGPP_TEST(scheduler_multiAdmission_no_group_after_inflight_exhausts_budget) {
+  struct Engine : ChunkFakeEngine {
+    int max_concurrent_requests() const override { return 4; }
+    int decode_batch_capacity() const override { return 4; }
+  } engine;
+  engine.arm(0, {10, 11, 12}, 3);
+  engine.arm(1, {20, 21, 22}, 3);
+  engine.arm(2, {30, 31, 32}, 3);
+  dgpp::sched::AdmissionPolicy policy;
+  policy.prefill_budget_tokens = 4;
+  Scheduler sched(&engine, {}, 0, policy);
+  sched.submit(make_request("long", 15, 3));
+  sched.tick();
+  sched.submit(make_request("short-a", 2, 3));
+  sched.submit(make_request("short-b", 2, 3));
+  const auto before = sched.meters().prompt_tokens_computed;
+  sched.tick();
+  require(sched.meters().prompt_tokens_computed - before == 4 && sched.meters().queued == 2,
+          "a zero leftover cannot become an unbounded group budget");
+  sched.run_to_completion();
+  require(sched.find("short-a")->generated == std::vector<int64_t>({20, 21, 22}) &&
+              sched.find("short-b")->generated == std::vector<int64_t>({30, 31, 32}), "deferred group transcripts");
+  require(sched.meters().prompt_tokens_computed == 19 && sched.meters().pool_blocks_in_use == 0,
+          "inflight and grouped work complete without leaks");
+}
+
+DGPP_TEST(scheduler_fairShare_busy_budget_rotates_and_survives_compaction) {
+  for (const int busy_budget : {2, 4}) for (const bool cancel_cursor : {false, true}) {
+    const auto run = [&](bool keep_retired) {
+      struct Engine : ChunkFakeEngine {
+        std::vector<int> advanced;
+        int max_concurrent_requests() const override { return 4; }
+        int decode_batch_capacity() const override { return 4; }
+        PrefillProgress advance_prefill(int req, int64_t budget) override {
+          require(budget >= 2 && budget % 2 == 0, "each share is a supported aligned chunk");
+          advanced.push_back(req);
+          return ChunkFakeEngine::advance_prefill(req, budget);
+        }
+      } engine;
+      engine.arm(0, {10, 11, 12, 13, 14, 15, 16, 17}, 8);
+      for (int slot = 1; slot < 4; ++slot) engine.arm(slot, {20, 21}, 2);
+      for (int slot = 0; slot < 4; ++slot) engine.arm(slot, {90, 91}, 2);
+      dgpp::sched::AdmissionPolicy policy;
+      policy.prefill_budget_tokens = busy_budget;
+      policy.prefill_idle_budget_tokens = 8;
+      Scheduler sched(&engine, {}, 0, policy);
+      RecordingObserver observer;
+      sched.set_observer(&observer);
+      sched.set_keep_retired(keep_retired);
+      sched.submit(make_request("first", 18, 8));
+      for (int i = 1; i < 4; ++i) sched.submit(make_request("long" + std::to_string(i), 31, 2));
+      const auto tick = [&] {
+        const auto before = sched.meters();
+        const auto cap = before.active > before.prefilling ? busy_budget : 8;
+        engine.advanced.clear();
+        sched.tick();
+        require(sched.meters().prompt_tokens_computed - before.prompt_tokens_computed <= cap,
+                "prefill work stays within the current busy or idle budget");
+      };
+      for (int i = 0; i < 5; ++i) tick();
+      require(sched.meters().prefilling == 3 && sched.meters().active == 4,
+              "idle admissions leave three prefills when the first prompt starts decoding");
+      std::vector<int> visited;
+      for (int i = 0; i < 3; ++i) {
+        const auto before = sched.meters().tokens_generated;
+        tick();
+        require(sched.meters().tokens_generated == before + 1, "decode advances between bounded prefill slices");
+        visited.insert(visited.end(), engine.advanced.begin(), engine.advanced.end());
+      }
+      for (int slot = 1; slot < 4; ++slot)
+        require(std::count(visited.begin(), visited.end(), slot) == busy_budget / 2,
+                "all three in-flight prefills receive equal turns without starvation");
+      if (cancel_cursor) {
+        // Move off the last arrival before cancelling: compaction must
+        // remap an interior cursor, not merely wrap at the end of the list.
+        tick();
+        const int victim = engine.advanced.back();
+        require(sched.cancel("long" + std::to_string(victim)), "cancel the last-advanced cursor's request");
+        sched.submit(make_request("replacement", 31, 2));
+      }
+      int remaining_ticks = 100;
+      while (sched.has_pending() && --remaining_ticks > 0) tick();
+      require(!sched.has_pending() && sched.meters().pool_blocks_in_use == 0,
+              "every request finishes or cancels and releases its reservation");
+      if (keep_retired) {
+        require(sched.find("first")->generated == std::vector<int64_t>({10, 11, 12, 13, 14, 15, 16, 17}),
+                "decode transcript intact across the budget transition");
+        if (cancel_cursor)
+          require(sched.find("replacement")->generated == std::vector<int64_t>({90, 91}),
+                  "replacement transcript intact after slot reuse");
+      } else require(sched.meters().records == 0, "all retired records compacted");
+      return std::make_pair(engine.op_stream(), observer.replay());
+    };
+    require(run(true) == run(false), "compaction preserves every engine op and observer event");
+  }
+}

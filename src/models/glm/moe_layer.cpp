@@ -508,6 +508,24 @@ void GlmMoeLayer::upload_expert_views(MoeExpertView* d_dst, bool with_shared,
   view_ring_armed_[slot] = true;
 }
 
+int GlmMoeLayer::routed_seg_max_rows(const MoeSegment* d_segs, int n_segs,
+                                     int fallback, cudaStream_t stream) {
+  static const bool enabled = [] {
+    const char* e = std::getenv("DGPP_MOE_SEG_MAX");
+    return e == nullptr || e[0] != '0';  // default on; =0 keeps tokens-wide
+  }();
+  if (!enabled || d_segs == nullptr || n_segs <= 0) return fallback;
+  // h_segs_ is pinned staging sized to n_experts + 1 (the host path uploads
+  // from it; here it is download scratch — the uses never interleave).
+  DGPP_CUDA_OK(cudaMemcpyAsync(h_segs_, d_segs,
+                               static_cast<size_t>(n_segs) * sizeof(MoeSegment),
+                               cudaMemcpyDeviceToHost, stream));
+  DGPP_CUDA_OK(cudaStreamSynchronize(stream));
+  int longest = 1;
+  for (int e = 0; e < n_segs; ++e) longest = std::max(longest, h_segs_[e].rows);
+  return longest;
+}
+
 void GlmMoeLayer::enqueue_prefill(const uint16_t* hidden, uint16_t* out,
                                   int tokens, MoeTraceStaging* trace,
                                   cudaStream_t stream) {
@@ -561,7 +579,8 @@ void GlmMoeLayer::enqueue_prefill(const uint16_t* hidden, uint16_t* out,
   // the weights; the smallest batches retain the GEMV launchers.
   const bool mma = mma_takes_grid() && (!w_.packq() || tokens >= kPackqMmaFromRows);
   grouped_expert_chain(mma ? MoeExpertKernel::kMma : MoeExpertKernel::kGemv, hidden, d_segs_, E,
-                       /*max_rows=*/std::max(tokens, 1), d_segs_ + E, tokens, rows_total, stream);
+                       routed_seg_max_rows(d_segs_, E, std::max(tokens, 1), stream),
+                       d_segs_ + E, tokens, rows_total, stream);
   accumulate_grouped(out, nullptr, shared_row0, tokens, stream);
 }
 
@@ -611,8 +630,8 @@ void GlmMoeLayer::enqueue_prefill_f32(const uint16_t* hidden, float* out, int to
   // The routed chain alone (no shared segment) on the tensor-core kernel,
   // the fp32 chain handed back unrounded (shared_row0 < 0).
   grouped_expert_chain(kernel, hidden, d_segs_, E,
-                       /*max_rows=*/std::max(tokens, 1), /*shared_seg=*/nullptr,
-                       tokens, tk, stream);
+                       routed_seg_max_rows(d_segs_, E, std::max(tokens, 1), stream),
+                       /*shared_seg=*/nullptr, tokens, tk, stream);
   accumulate_grouped(nullptr, out, /*shared_row0=*/-1, tokens, stream);
 }
 

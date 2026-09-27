@@ -710,6 +710,7 @@ void Scheduler::advance_prefill(int arrival, int64_t budget) {
   r.prefill_ms += ms;
   if (progress.computed_tokens <= 0 || progress.computed_tokens > budget)
     throw std::runtime_error("Scheduler: prefill chunk made no progress or exceeded its token budget");
+  prefill_cursor_ = arrival;
   r.prefill_computed += progress.computed_tokens;
   engine_->prefill_monitor()->update(r.slot, r.attached_tokens + r.prefill_computed);
   prompt_tokens_ += progress.computed_tokens;
@@ -727,6 +728,56 @@ void Scheduler::advance_prefill(int arrival, int64_t budget) {
                           progress.body_snap_taken);
   r.prefill_body_slot = -1;
   admit_finish(arrival, r.slot, progress.first_token, r.prefill_ms, r.attached_tokens, true);
+}
+
+bool Scheduler::needs_chunked_prefill(int arrival, int64_t budget) const {
+  const Request& r = requests_[static_cast<size_t>(arrival)];
+  return budget > 0 &&
+         (r.spec.images.empty() || engine_->supports_image_chunked_prefill()) &&
+         static_cast<int64_t>(r.spec.prompt.size()) > budget;
+}
+
+bool Scheduler::admit_fitting(int64_t& tick_cap, int64_t budget, bool first_prefill) {
+  // Zero is the monolithic sentinel to admissible_group(), not a remaining
+  // budget. Stop before either grouping or the prefix-cache eviction scan.
+  if (budget > 0 && tick_cap <= 0) return false;
+  const int first = next_admissible();
+  if (first < 0) return false;
+  const int64_t P =
+      static_cast<int64_t>(requests_[static_cast<size_t>(first)].spec.prompt.size());
+  if (needs_chunked_prefill(first, budget)) {
+    // A chunked read-in consumes the tick: it begins (and takes its first
+    // chunk) only when the caller allows new chunked starts, and always
+    // ends the admit loop — chunked read-ins stay one at a time.
+    if (!first_prefill) return false;
+    begin_prefill(first, budget);
+    advance_prefill(first, budget);
+    tick_cap = 0;
+    return true;
+  }
+  // The prospective fit: a fitting one-shot past the tick's remaining cap
+  // waits for a later tick, so one tick never stacks unbounded synchronous
+  // prefill work. (With a zero budget there is no cap: monolithic mode
+  // admits exactly as before, and the caller ends the loop after one.)
+  // Engines without image chunking retain their monolithic fallback. An
+  // oversized image must be the tick's only prefill admission, even when
+  // it finishes immediately and releases its slot.
+  const bool monolithic_image = !requests_[static_cast<size_t>(first)].spec.images.empty() &&
+                                !engine_->supports_image_chunked_prefill();
+  if (budget > 0 && P > tick_cap && !(first_prefill && monolithic_image)) return false;
+  const std::vector<int> group =
+      admissible_group(first, budget > 0 ? std::min(budget, tick_cap) : budget);
+  if (group.size() >= 2) {
+    int64_t total = 0;
+    for (const int a : group)
+      total += static_cast<int64_t>(requests_[static_cast<size_t>(a)].spec.prompt.size());
+    admit_group(group);
+    tick_cap -= total;
+    return true;
+  }
+  admit(first);
+  tick_cap = std::max<int64_t>(0, tick_cap - P);
+  return true;
 }
 
 void Scheduler::finish_prefill_snapshot(Request& r, int slot, int64_t position, bool taken) {
@@ -1099,6 +1150,7 @@ void Scheduler::compact_retired() {
   kept_results.reserve(live);
   std::vector<int> index(requests_.size(), -1);  // old arrival -> new
   int cursor = -1;
+  int prefill_cursor = -1;
   int deferred = -1;
   for (size_t i = 0; i < requests_.size(); ++i) {
     if (requests_[i].state == State::kTerminal) continue;
@@ -1106,6 +1158,7 @@ void Scheduler::compact_retired() {
     kept.push_back(std::move(requests_[i]));
     kept_results.push_back(std::move(results_[i]));
     if (static_cast<int>(i) <= cursor_) cursor = index[i];
+    if (static_cast<int>(i) <= prefill_cursor_) prefill_cursor = index[i];
     if (static_cast<int>(i) == deferred_logged_) deferred = index[i];
   }
   for (int& arrival : slots_) {
@@ -1118,6 +1171,7 @@ void Scheduler::compact_retired() {
   requests_.swap(kept);
   results_.swap(kept_results);
   cursor_ = cursor;
+  prefill_cursor_ = prefill_cursor;
   deferred_logged_ = deferred;
 }
 
@@ -1153,43 +1207,94 @@ bool Scheduler::quantum() {
   const auto prefill = policy_.prefill_budget_tokens > 0
       ? std::find_if(requests_.begin(), requests_.end(), [](const Request& r) { return r.state == State::kPrefilling; })
       : requests_.end();
-  const int prefill_arrival = prefill == requests_.end() ? -1 : static_cast<int>(prefill - requests_.begin());
-  if (!any_active && !any_queued && prefill_arrival < 0) return false;
+  const bool prefill_in_flight = prefill != requests_.end();
+  if (!any_active && !any_queued && !prefill_in_flight) return false;
 
   bool progressed = false;
+  bool admitted_any = false;  // anything left the queue this tick
 
-  // (1) Strict alternation: at most one admission per tick, before the
-  // step, so a queued request's first token is not delayed behind a
-  // step — and mid-answer requests never wait behind more than one
-  // read-in.
-  const int admit_arrival = prefill_arrival < 0 ? next_admissible() : -1;
+  // (1) Admission before the step, so a queued request's first token is not
+  // delayed behind a step — and mid-answer requests never wait behind more
+  // than one read-in. Every branch below depends only on replicated
+  // scheduler state, so every rank computes the same loop.
   // This choice depends only on replicated scheduler state. Reevaluate at
   // every yield so an unfinished prompt speeds up when its decoding peer retires.
   const auto prefill_budget = [&]() -> int64_t {
     return !any_active && policy_.prefill_idle_budget_tokens > 0
         ? policy_.prefill_idle_budget_tokens : policy_.prefill_budget_tokens;
   };
-  if (prefill_arrival >= 0) {
-    advance_prefill(prefill_arrival, prefill_budget());
-    progressed = true;
-  } else if (admit_arrival >= 0) {
-    const int64_t budget = prefill_budget();
-    // Several queued cold prompts prefill as one forward when the engine
-    // takes groups (the six-stream arrival: one read-in instead of six,
-    // with a step between each).
-    const std::vector<int> group = admissible_group(admit_arrival, budget);
-    if (group.size() >= 2)
-      admit_group(group);
-    else if (budget > 0 && (requests_[admit_arrival].spec.images.empty() ||
-                           engine_->supports_image_chunked_prefill()) &&
-             static_cast<int64_t>(requests_[admit_arrival].spec.prompt.size()) > budget) {
-      begin_prefill(admit_arrival, budget);
-      advance_prefill(admit_arrival, budget);
+  const int64_t budget = prefill_budget();
+  if (prefill_in_flight) {
+    // A chunked prefill is in flight: advance a fair slice on equal aligned
+    // shares of the tick's budget (all prefills when they fit), begin at most
+    // one new chunked read-in, and admit fitting one-shots/groups into the
+    // align-down leftover. Order derives from arrival order only, so every
+    // rank agrees.
+    std::vector<int> inflight;
+    for (size_t i = 0; i < requests_.size(); ++i)
+      if (requests_[i].state == State::kPrefilling) inflight.push_back(static_cast<int>(i));
+    const int64_t align = engine_->prefill_chunk_alignment();
+    const size_t max_advances = static_cast<size_t>(budget / align);
+    // The one new begin, when any: the oldest fitting chunked-needing
+    // request (skip-fit, no eviction dance — a begin must not disturb the
+    // pool the in-flight prefills hold), gated so every share keeps at
+    // least one aligned chunk.
+    int begin_arrival = -1;
+    if (free_slot() >= 0 && inflight.size() < max_advances) {
+      const int64_t free_blocks =
+          engine_->pool_blocks_total() - engine_->pool_blocks_in_use();
+      for (size_t i = 0; i < requests_.size(); ++i) {
+        if (requests_[i].state != State::kQueued) continue;
+        if (!needs_chunked_prefill(static_cast<int>(i), budget)) continue;
+        if (new_blocks(requests_[i], plan_prefix(requests_[i])) <= free_blocks) {
+          begin_arrival = static_cast<int>(i);
+          break;
+        }
+      }
     }
-    else
-      admit(admit_arrival);
+    if (begin_arrival >= 0) inflight.push_back(begin_arrival);
+    if (inflight.size() > max_advances) {
+      // Idle admissions may outnumber the smaller busy budget's chunks.
+      // Rotate a bounded slice so every unfinished request gets a turn;
+      // rounding every share up would silently exceed the tick's cap.
+      const auto next = std::upper_bound(inflight.begin(), inflight.end(), prefill_cursor_);
+      std::rotate(inflight.begin(), next, inflight.end());
+      inflight.resize(max_advances);
+    }
+    const int64_t n = static_cast<int64_t>(inflight.size());
+    // The constructor guarantees budget >= align > 0, so the slice is
+    // nonempty and every share is a supported chunk within the total cap.
+    const int64_t share = (budget / n / align) * align;
+    if (begin_arrival >= 0) {
+      begin_prefill(begin_arrival, share);
+      admitted_any = true;
+    }
+    for (const int a : inflight) advance_prefill(a, share);
     progressed = true;
-  } else if (any_queued) {
+    // The align-down leftover still admits fitting one-shots/groups — but
+    // never a new chunked start (chunked read-ins stay one at a time, and
+    // the begin above already took this tick's).
+    int64_t leftover = budget - n * share;
+    while (admit_fitting(leftover, budget, /*first_prefill=*/false)) {
+      admitted_any = true;
+      progressed = true;
+    }
+  } else {
+    // No prefill in flight: admit fitting queued requests in a loop before
+    // the decode slice is built. The loop stops at the tick's prefill
+    // budget, at a chunked start, or when nothing fitting remains.
+    // Monolithic mode retains exactly one admission event.
+    int64_t tick_cap = budget > 0 ? budget : engine_->prefill_chunk_limit();
+    while (admit_fitting(tick_cap, budget, /*first_prefill=*/!admitted_any)) {
+      admitted_any = true;
+      progressed = true;
+      // Monolithic mode keeps its original policy bit-for-bit: one
+      // admission event per tick. Positive budgets stop at an exhausted
+      // cap, including after a chunked start or an oversized image.
+      if (budget == 0) break;
+    }
+  }
+  if (!admitted_any && any_queued) {
     // Deferral bookkeeping: log the head of the queue once per
     // deferral episode, with the numbers an operator needs.
     const auto head = std::find_if(

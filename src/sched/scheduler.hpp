@@ -5,11 +5,13 @@
 // container iteration: engine operations include collectives whose order
 // must match across ranks.
 //
-// Each tick admits at most one fitting queued request and performs prefill
-// work, then runs one decode step. A configured budget bounds prefill work. Admission chooses the oldest request that fits,
+// Each tick admits fitting queued requests against the tick's prefill
+// budget and performs prefill work, then runs one decode step. Admission chooses the oldest request that fits,
 // so a smaller request can pass a larger one; sustained small requests can
 // starve a large request. With a zero budget prefill blocks decode for the
 // full admission; supported engines yield between chunks with a positive budget.
+// Images on engines without image chunking retain one monolithic admission
+// as the tick's only prefill work when the prompt exceeds the budget.
 //
 // Full admission reserves prompt plus maximum completion. Grow admission
 // reserves a window and extends it before decode, ending the youngest
@@ -379,7 +381,7 @@ struct AdmissionPolicy {
   enum class Mode : int { kFullReserve = 0, kGrowOnDemand = 1 };
   Mode mode = Mode::kFullReserve;
   int window_tokens = 256;  // grow: the initial headroom and the growth step
-  int prefill_budget_tokens = 0;  // 0: monolithic; otherwise one aligned chunk per tick
+  int prefill_budget_tokens = 0;  // 0: monolithic; otherwise total prefill tokens per tick
   int prefill_idle_budget_tokens = 0;  // 0: use the same budget; otherwise larger chunks without active decode
   bool operator==(const AdmissionPolicy& o) const {
     return mode == o.mode && window_tokens == o.window_tokens && prefill_budget_tokens == o.prefill_budget_tokens &&
@@ -673,6 +675,18 @@ class Scheduler {
   void admit(int arrival);
   void begin_prefill(int arrival, int64_t budget);
   void advance_prefill(int arrival, int64_t budget);
+  // The chunked-prefill predicate behind the admit dispatch: a positive
+  // budget, chunkable inputs (plain text, or images on an engine that
+  // chunks them), and a prompt longer than one tick's budget.
+  bool needs_chunked_prefill(int arrival, int64_t budget) const;
+  // One iteration of the tick's admit loop: the oldest fitting queued
+  // request admits (group, one-shot, or chunked start) against the tick's
+  // remaining prefill cap. Only first_prefill may start a chunked prompt
+  // or admit an oversized image on an engine without image chunking;
+  // either consumes the remaining cap. Other one-shots/groups must fit
+  // the cap. Returns false when nothing admitted. A zero policy budget
+  // retains one monolithic admission event per tick.
+  bool admit_fitting(int64_t& tick_cap, int64_t budget, bool first_prefill);
   void step_batch(const std::vector<int>& arrivals);
   // Appends one token and applies terminal conditions in their canonical
   // order. Returns true when the request retired. `logprobs` (optional)
@@ -695,8 +709,8 @@ class Scheduler {
   bool quantum();
   // Erases the retired records when they are not kept, at the end of every
   // tick: the live requests keep their order, and the slot map, the
-  // round-robin cursor and the deferral log follow them to their new
-  // indices (a cursor on a retired record moves to the nearest live one
+  // decode/prefill round-robin cursors and the deferral log follow their
+  // new indices (a cursor on a retired record moves to the nearest live one
   // before it, so the next slice starts where it would have).
   void compact_retired();
 
@@ -706,6 +720,7 @@ class Scheduler {
   std::vector<int> slots_;         // engine slot -> arrival index, or -1
   std::vector<Result> results_;     // parallel to requests_
   int cursor_ = -1;                // last-stepped arrival (round-robin)
+  int prefill_cursor_ = -1;        // last-advanced prefill (round-robin when the budget shrinks)
   int deferred_logged_ = -1;       // arrival of the current deferral log
   SchedulerObserver* observer_ = nullptr;
   bool keep_retired_ = true;       // the batch contract (set_keep_retired)
