@@ -214,7 +214,8 @@ int run_plan_check() {  // The memory plan's context line under the rope knob (e
     return QwenModel::plan_memory(c, 4096, 850048, 0, 1, dgpp::QwenResidency::Resident,
                                  4, false, 8);
   };
-  require(site_plan(shared).total_bytes() - site_plan(site).total_bytes() == size_t{4816109568ULL},
+  require(site_plan(shared).total_bytes() - site_plan(site).total_bytes() ==
+              size_t{4096} * (212512 - 65536) * 8,  // rows x pools saved x bytes per key
           "4K rows and an 850048-token shared pool save 4.485 GiB at a 256K request ceiling");
   // A pool of exactly the scaled ceiling is accepted by the same arithmetic.
   require(QwenModel::plan_memory(yarn, 64, native * 64 * 2, 0, 2, dgpp::QwenResidency::Resident, 4,
