@@ -2509,6 +2509,10 @@ void GenerationService::route_metrics(HttpResponseWriter& w) {  Scheduler::Meter
   out.append(m.prefix_slots > 0 ? "true" : "false");
   out.append(",\"slots\":");
   append_json_int(&out, m.prefix_slots);
+  out.append(",\"min_tokens\":");
+  append_json_int(&out, sched_.admission_policy().prefix_min_tokens);
+  out.append(sched_.admission_policy().prefix_head_snapshots ? ",\"head_cuts\":true"
+                                                               : ",\"head_cuts\":false");
   out.append(",\"entries\":");
   append_json_int(&out, m.prefix_entries);
   out.append(",\"hits\":");
@@ -2519,6 +2523,8 @@ void GenerationService::route_metrics(HttpResponseWriter& w) {  Scheduler::Meter
   append_json_int(&out, m.prefix_tokens_saved);
   out.append(",\"snapshots\":");
   append_json_int(&out, m.prefix_snapshots);
+  out.append(",\"head_snapshots\":");
+  append_json_int(&out, m.prefix_head_snapshots);
   out.append(",\"close_entries\":");
   append_json_int(&out, m.prefix_close_entries);
   out.append(",\"rolling_snapshots\":");

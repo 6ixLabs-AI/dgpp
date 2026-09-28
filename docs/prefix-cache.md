@@ -26,35 +26,77 @@ snapshot has priority. DeepSeek's bounded prefill keeps its original policy
 because an additional snapshot would execute another decoder span. Exact
 DeepSeek prefill supports the additional cut.
 
+## The entry floor and the head cut
+
+Two policy keys (2026-09-28) decide which cuts become entries at all.
+Both are world settings: rank 0's values reach every peer, and the
+journal's decision digest checks that every rank made the same choices.
+
+`engine.prefix_min_tokens` (`--prefix-min-tokens`, default 1024) is the
+floor below which no snapshot is taken: not the prefill cut, not the head
+or body cut, not a rolling or close entry. A prompt shorter than the floor
+still attaches to any entry that matches; it just never takes a slot.
+Every entry costs one slot whatever its position, and LRU eviction cannot
+tell a probe's entry from a long conversation's. A single-Spark field log
+replayed under a 13-slot arena lost every turn of a 66K-token conversation
+because three 45-token requests followed each turn; with the floor the
+same 13 slots served the whole log with two misses. Set the floor to 0 to
+restore the old behavior.
+
+`engine.prefix_head_snapshots` (`--prefix-head-snapshots`, default on)
+adds one entry to a cold prefill at the prompt's first structural boundary
+past its start, the aligned image of the first role marker after the
+opening one, which is where a system prompt ends. The next conversation
+under the same system prompt attaches there, and so does the turn after an
+agent client compacted its history, which shares the system prompt and the
+tool schemas with the conversation it replaced but nothing after them. In
+the same field log those post-compaction turns prefilled 18K shared tokens
+cold 24 times in 15 hours. The head cut obeys the floor, takes its slot
+after the deepest cut and before the body cut, and is off on a family
+whose prefill cannot take extra cuts (DeepSeek's bounded prefill).
+`/v1/metrics` reports `min_tokens`, `head_cuts` and the `head_snapshots`
+taken under `prefix_cache`.
+
 ## Current recipe capacities
 
 The following are per-rank memory-plan results for the checked-in recipes,
-with their configured MTP settings, measured on 2026-09-21. Snapshot size is
+with their configured MTP settings, re-measured on 2026-09-28. Snapshot size is
 independent of context length for these model families. A longer document
 uses more **KV blocks**, not a larger snapshot slot.
 
 | Recipe | Concurrent requests | KV token pool | Budget, GiB | MiB per snapshot | Slots |
 |---|---:|---:|---:|---:|---:|
-| Qwen NVFP4, one node | 4 | 65,536 | 1.5 | 110.317 | 13 |
-| Qwen NVFP4 or FP8, two nodes | 4 | 262,144 | 1.5 | 55.263 | 27 |
-| Qwen NVFP4 YaRN, two nodes | 2 | 532,480 | 1.5 | 55.263 | 27 |
-| Qwen FP8, four nodes | 4 | 262,144 | 1.5 | 27.735 | 55 |
-| GLM-5.3-Flash, two nodes | 4 | 163,840 | 1.5 | 70.422 | 21 |
-| GLM-5.3-Flash, four nodes | 4 | 786,432 | 8 | 35.227 | 232 |
+| Qwen NVFP4, one node | 4 | 65,536 | 3 | 110.317 | 27 |
+| Qwen NVFP4, two nodes | 4 | 262,144 | 58 | 55.263 | 1074 |
+| Qwen FP8, two nodes | 4 | 262,144 | 6 | 55.263 | 111 |
+| Qwen NVFP4 YaRN, two nodes | 2 | 532,480 | 40 | 55.263 | 741 |
+| Qwen FP8, four nodes | 4 | 262,144 | 50 | 27.735 | 1846 |
+| GLM-5.3-Flash, two nodes | 4 | 163,840 | 4.5 | 70.422 | 65 |
+| GLM-5.3-Flash, four nodes | 4 | 786,432 | 22 | 35.227 | 639 |
 | GLM-4.7, four nodes | 4 | 262,144 | 1.5 | 0.010 | 4096 |
 | GLM-5.3 full, four nodes | 8 | 122,880 | 1 | 0.012 | 4096 |
-| DeepSeek-V4.1-Flash, four nodes | 6 | 131,072 | 1.5 | 3.476 | 441 |
+| DeepSeek-V4.1-Flash, four nodes | 6 | 131,072 | 14 | 3.476 | 4096 |
 
-GLM-4.7 and full GLM-5.3 reach the 4096-slot limit and allocate only about
-40 and 48 MiB respectively, despite their larger configured ceilings.
+GLM-4.7, full GLM-5.3 and DeepSeek reach the 4096-slot limit and allocate
+about 40 MiB, 48 MiB and 13.9 GiB respectively.
 The one-node Qwen memory plan includes MTP state when graph decode is enabled.
 
-The existing budgets remain the defaults. Production GLM's 232 slots have
-ample room for four active conversations. Qwen's two-node 27-slot arena
-can retain a shared document and several question variants. Single-node
-Qwen's 13 slots provide the least retention headroom: increase its budget
-if the required history exceeds those slots and the memory plan still fits.
-Concurrency alone does not specify how much historical cache to retain.
+Since 2026-09-28 the recipes size the arena to what the node has left: the
+memory plan's total plus its 4 GiB headroom, measured against the 115 GiB an
+idle Spark reports free, minus a 1 GiB margin, rounded down to whole GiB (the
+GLM-5.3-Flash two-node recipe, already within 4 GiB of the node, gains 3;
+the YaRN recipe stops at 40 so its documented 1,114,112-token variant still
+fits).
+The one-node Qwen recipes are the exception on purpose: their 47.7 GiB n-gram
+table is mmap'ed from the checkpoint and served through the page cache, and a
+field log showed fresh text prefilling three to four times slower than text
+the server had seen, so the memory not given to the arena is what keeps that
+cache warm. The MiMo and RadixArk recipes could not be re-planned here (no
+checkpoint on the fabric); the RadixArk two-node budget is an estimate from the
+NVIDIA checkpoint's plan and the one-node one follows the page-cache rule.
+Concurrency alone does not specify how much historical cache to retain: with
+the entry floor a conversation costs about two slots per turn, and an arena
+holds that many turns of history across every conversation it serves.
 
 ## Size for the working set
 

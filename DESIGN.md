@@ -1703,6 +1703,23 @@ past the attached prefix and before the deepest cut. For 2048-token chunks,
 this leaves 2048–4095 tokens for a changed question after the shared document.
 Both snapshots use existing cuts; the final snapshot gets an arena slot
 first. Short prompts and one-slot arenas retain the original policy.
+
+A cold prefill also keeps the cut at the prompt's first structural
+boundary past its start — the aligned image of the first role marker
+after position 0, which is where a system prompt ends — when
+`engine.prefix_head_snapshots` is on (the default). The next conversation
+under the same system prompt, or the turn after an agent client compacted
+its history, attaches there instead of prefilling the head cold. The head
+cut takes its slot after the deepest cut and before the body cut; the
+same walk takes all three.
+
+No snapshot of any kind is taken below `engine.prefix_min_tokens` (1024 by
+default): a prompt shorter than the floor attaches to whatever exists but
+never takes a prefill-cut, head, body, rolling or close entry. Every entry
+costs the same slot whatever its position, and LRU eviction cannot tell a
+45-token probe's entry from a 180K-token conversation's; a single-Spark
+field log replayed under a 13-slot arena lost every turn of a 66K
+conversation to three such probes per turn, and lost none with the floor.
 DeepSeek's bounded prefill retains the original policy too: saving an extra
 state would run another decoder span and change its computation.
 
@@ -1736,6 +1753,13 @@ Entries hold references to their cache blocks, which count against pool
 usage. Admission can evict the least-recently-used eligible entry when it
 needs blocks or an arena slot. Entries attached to live requests are
 protected, and blocks are freed only when their references reach zero.
+The entry floor and the head cut are world settings like the rest of the
+policy: rank 0's values ride the settings and warm records, every rank's
+scheduler runs the same ones, and the journal's decision digest checks
+that they did. The checked-in recipes size the arena to the memory the
+node has left under the plan's headroom (see the sizing guide); the
+one-node Qwen recipes keep it small on purpose, because that memory is
+the page cache behind the mmap'ed n-gram table.
 
 Image identities share immutable RGB storage across matching entries and
 have a separate 256 MiB host-byte budget. An insertion that would exceed it

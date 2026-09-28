@@ -98,6 +98,8 @@ Scheduler::Scheduler(SchedulerEngine* engine,
         policy_.prefill_idle_budget_tokens > engine_->prefill_chunk_limit())))
     throw std::invalid_argument("Scheduler: idle prefill budget needs an enabled budget and must be aligned, "
                                 "at least the busy budget and no larger than the engine's prefill limit");
+  if (policy_.prefix_min_tokens < 0)
+    throw std::invalid_argument("Scheduler: prefix_min_tokens must be nonnegative");
   if (queue_limit_ < 0)
     throw std::invalid_argument(
         "Scheduler: queue_limit must be 0 (unbounded) or positive");
@@ -205,18 +207,42 @@ Scheduler::PrefixPlan Scheduler::plan_prefix(const Request& r) const {
     plan.attach_entry = e;
     plan.attach_position = cache_.entry(e).position;
   }
+  // No entry below the policy's floor: a short prompt attaches to what
+  // exists but never takes a slot (the single-Spark replay of 2026-09-28:
+  // three 45-token probes per turn pushed a 66K conversation out of a
+  // 13-slot arena every turn; with the floor the same arena served it).
+  const int64_t floor_tokens = policy_.prefix_min_tokens;
   // A new entry at the deepest cut past the attach — the next turn's cut.
-  if (!r.cuts.empty() && r.cuts.back() > plan.attach_position)
+  if (!r.cuts.empty() && r.cuts.back() > plan.attach_position &&
+      r.cuts.back() >= floor_tokens)
     plan.snap_position = r.cuts.back();
   // Keep the deepest cut for identical repeats and one regular chunk cut
   // at least a chunk before the end for a shared document with a new tail.
   const int64_t n = static_cast<int64_t>(r.spec.prompt.size());
   const int64_t chunk = cache_.config().chunk_tokens;
+  const int64_t align = cache_.config().align;
   if (prefix_info_.body_snapshots && n / chunk >= 4) {
     const int64_t body = (n / chunk - 1) * chunk;
-    if (body > plan.attach_position && body < plan.snap_position &&
-        body % cache_.config().align == 0)
+    if (body > plan.attach_position && body < plan.snap_position && body % align == 0 &&
+        body >= floor_tokens)
       plan.body_snap_position = body;
+  }
+  // The head cut (2026-09-28): the aligned image of the prompt's first
+  // structural boundary past its start — a long system prompt's end — so
+  // the next conversation under the same system prompt, or the turn after
+  // a client compacted its history, attaches there instead of prefilling
+  // the head cold (the replay: 18K tokens on each of 24 post-compaction
+  // turns). Taken on the same walk as the deepest cut, under the same
+  // floor, only on a family whose extra snapshots preserve the walk.
+  if (policy_.prefix_head_snapshots && prefix_info_.body_snapshots) {
+    for (const int64_t b : r.spec.boundaries) {
+      const int64_t head = (b / align) * align;
+      if (head <= 0) continue;  // the opening marker: no prefix before it
+      if (head >= floor_tokens && head > plan.attach_position && head < plan.snap_position &&
+          head != plan.body_snap_position)
+        plan.head_snap_position = head;
+      break;
+    }
   }
   return plan;
 }
@@ -257,6 +283,7 @@ int64_t Scheduler::new_blocks(const Request& r, const PrefixPlan& plan) const {
   // wider than the alignment.
   if (plan.snap_position > 0) blocks += snapshot_blocks(plan.snap_position);
   if (plan.body_snap_position > 0) blocks += snapshot_blocks(plan.body_snap_position);
+  if (plan.head_snap_position > 0) blocks += snapshot_blocks(plan.head_snap_position);
   if (cache_on(r) && bt > std::max<int64_t>(1, prefix_info_.align)) blocks += 1;
   return std::max<int64_t>(blocks, 0);
 }
@@ -588,6 +615,15 @@ void Scheduler::admit(int arrival) {
         ++cache_.stats().skipped_no_slot;
       }
     }
+    // The head cut before the body cut: shared by every conversation under
+    // the system prompt, it is the more valuable entry when slots are scarce.
+    if (plan.head_snap_position > 0) {
+      pp.head_snap_slot = acquire_arena_slot(r.spec.id);
+      if (pp.head_snap_slot >= 0)
+        pp.head_snap_position = plan.head_snap_position;
+      else
+        ++cache_.stats().skipped_no_slot;
+    }
     if (plan.body_snap_position > 0) {
       pp.body_snap_slot = acquire_arena_slot(r.spec.id);
       if (pp.body_snap_slot >= 0)
@@ -604,6 +640,7 @@ void Scheduler::admit(int arrival) {
       slots_[static_cast<size_t>(slot)] = -1;
       if (plan.attach_entry >= 0) cache_.detach(plan.attach_entry);
       if (snap_slot >= 0) free_arena_slot(snap_slot);
+      if (pp.head_snap_slot >= 0) free_arena_slot(pp.head_snap_slot);
       if (pp.body_snap_slot >= 0) free_arena_slot(pp.body_snap_slot);
       throw;
     }
@@ -617,6 +654,8 @@ void Scheduler::admit(int arrival) {
       log_prefix_miss(r);
     }
     finish_prefill_snapshot(r, snap_slot, plan.snap_position, pp.snap_taken);
+    finish_prefill_snapshot(r, pp.head_snap_slot, pp.head_snap_position, pp.head_snap_taken,
+                            /*head=*/true);
     finish_prefill_snapshot(r, pp.body_snap_slot, pp.body_snap_position, pp.body_snap_taken);
   }
   const double prefill_ms = std::chrono::duration<double, std::milli>(
@@ -654,6 +693,15 @@ void Scheduler::begin_prefill(int arrival, int64_t budget) {
           pp.snap_slot = r.prefill_snap_slot;
           pp.snap_position = plan.snap_position;
         } else ++cache_.stats().skipped_no_slot;
+      }
+      if (plan.head_snap_position > 0) {
+        r.prefill_head_slot = acquire_arena_slot(r.spec.id);
+        r.prefill_head_position = plan.head_snap_position;
+        if (r.prefill_head_slot >= 0) {
+          pp.head_snap_slot = r.prefill_head_slot;
+          pp.head_snap_position = plan.head_snap_position;
+        } else
+          ++cache_.stats().skipped_no_slot;
       }
       if (plan.body_snap_position > 0) {
         r.prefill_body_slot = acquire_arena_slot(r.spec.id);
@@ -724,6 +772,9 @@ void Scheduler::advance_prefill(int arrival, int64_t budget) {
     throw std::runtime_error("Scheduler: prefill completed at the wrong prompt position");
   finish_prefill_snapshot(r, r.prefill_snap_slot, r.prefill_snap_position, progress.snap_taken);
   r.prefill_snap_slot = -1;
+  finish_prefill_snapshot(r, r.prefill_head_slot, r.prefill_head_position,
+                          progress.head_snap_taken, /*head=*/true);
+  r.prefill_head_slot = -1;
   finish_prefill_snapshot(r, r.prefill_body_slot, r.prefill_body_position,
                           progress.body_snap_taken);
   r.prefill_body_slot = -1;
@@ -780,7 +831,8 @@ bool Scheduler::admit_fitting(int64_t& tick_cap, int64_t budget, bool first_pref
   return true;
 }
 
-void Scheduler::finish_prefill_snapshot(Request& r, int slot, int64_t position, bool taken) {
+void Scheduler::finish_prefill_snapshot(Request& r, int slot, int64_t position, bool taken,
+                                        bool head) {
   if (slot < 0) return;
   if (!taken) {
     cache_.give_back_slot(slot);
@@ -794,6 +846,7 @@ void Scheduler::finish_prefill_snapshot(Request& r, int slot, int64_t position, 
     free_arena_slot(slot);
   else {
     ++cache_.stats().snapshots;
+    if (head) ++cache_.stats().head_snapshots;
     emit_prefix(r.spec.id, "snapshot", position, slot);
   }
 }
@@ -996,6 +1049,10 @@ void Scheduler::retire(int arrival, Result::Status status,
     free_arena_slot(r.prefill_body_slot);
     r.prefill_body_slot = -1;
   }
+  if (r.prefill_head_slot >= 0) {
+    free_arena_slot(r.prefill_head_slot);
+    r.prefill_head_slot = -1;
+  }
   // The prefix cache's retire-time snapshot (M7): when the answer completed
   // with its committed position aligned — the exact position the close
   // entry wants — take the state now, from the live slot, whether or not
@@ -1011,7 +1068,7 @@ void Scheduler::retire(int arrival, Result::Status status,
     const int64_t committed =
         static_cast<int64_t>(r.spec.prompt.size()) + r.steps_done - 1;
     if (committed > 0 && committed % align == 0 && committed != r.rolling_position &&
-        committed > r.attach_position) {
+        committed > r.attach_position && committed >= policy_.prefix_min_tokens) {
       if (r.rolling_slot < 0) r.rolling_slot = acquire_arena_slot(r.spec.id);
       if (r.rolling_slot < 0) {
         ++cache_.stats().skipped_no_slot;
@@ -1397,6 +1454,7 @@ Scheduler::Meters Scheduler::meters() const {
   m.prefix_misses = cache_.stats().misses;
   m.prefix_tokens_saved = cache_.stats().tokens_saved;
   m.prefix_snapshots = cache_.stats().snapshots;
+  m.prefix_head_snapshots = cache_.stats().head_snapshots;
   m.prefix_close_entries = cache_.stats().close_entries;
   m.prefix_rolling = cache_.stats().rolling;
   m.prefix_hops = cache_.stats().hops;
@@ -1431,6 +1489,7 @@ void Scheduler::rolling_snapshots() {
       const int64_t hop = committed + 1;
       if (prefix_info_.step_tokens_max < 2 || hop % align != 0) continue;
       if (hop <= r.attach_position || hop == r.rolling_position) continue;
+      if (hop < policy_.prefix_min_tokens) continue;  // below the entry floor
       if (r.rolling_slot < 0) {
         const int slot = acquire_arena_slot(r.spec.id);
         if (slot < 0) {
@@ -1453,6 +1512,7 @@ void Scheduler::rolling_snapshots() {
     // A snapshot at a position the request attached at or below repeats an
     // entry that exists; one at or below the prefill-cut entry likewise.
     if (committed <= r.attach_position) continue;
+    if (committed < policy_.prefix_min_tokens) continue;  // below the entry floor
     if (r.rolling_slot < 0) {
       const int slot = acquire_arena_slot(r.spec.id);
       if (slot < 0) {

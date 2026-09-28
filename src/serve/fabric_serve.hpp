@@ -150,6 +150,8 @@ struct WorldSettings {
   int admission_window = 0;
   int prefill_budget_tokens = 0;  // settings: -1 = automatic; absent legacy field = disabled
   int prefill_idle_budget_tokens = 0;
+  int prefix_min_tokens = 0;          // the prefix cache's entry floor (2026-09-28); absent legacy field = 0
+  bool prefix_head_snapshots = false;  // the head cut (2026-09-28); absent legacy field = off
   double bulk_pace_gbps = 0.0;
   int bulk_inflight = 0;
   int rendezvous_timeout_ms = 0;

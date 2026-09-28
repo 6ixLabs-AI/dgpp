@@ -299,7 +299,9 @@ ClusterConfig parse_cluster_config(const std::string& json, const std::string& w
         else if (p.key == "prefix_cache_gib") {
           e.prefix_cache_gib = number(x, ek, what);
           if (e.prefix_cache_gib < 0.0) fail(what, "'" + ek + "' must be >= 0 (0 turns the cache off)");
-        } else if (p.key == "admission") {
+        } else if (p.key == "prefix_min_tokens") e.prefix_min_tokens = static_cast<int>(integer(x, ek, what, 0, 1 << 30));
+        else if (p.key == "prefix_head_snapshots") e.prefix_head_snapshots = boolean(x, ek, what);
+        else if (p.key == "admission") {
           e.admission = text(x, ek, what);
           if (e.admission != "full" && e.admission != "grow")
             fail(what, "'" + ek + "' must be \"full\" or \"grow\"");

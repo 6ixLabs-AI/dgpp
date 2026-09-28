@@ -1177,6 +1177,10 @@ int main(int argc, char** argv) {
       "disables\n"
       "  [--prefill-idle-budget-tokens N (default 0)]: larger budget without active decode; 0 uses "
       "the busy budget\n"
+      "  [--prefix-min-tokens N (default 1024)]: no prefix-cache entry below this position; a\n"
+      "    short prompt attaches to what exists but never takes a snapshot slot\n"
+      "  [--prefix-head-snapshots | --no-prefix-head-snapshots (default on)]: a cold prompt\n"
+      "    also keeps the cut at its first structural boundary (a long system prompt's end)\n"
       "  bus (the prefill's bulk all-reduce): [--bulk-pace-gbps X]: sender\n"
       "    pacing per (peer, lane) queue pair (default: derived from the\n"
       "    port rate, port / ((world-1) x lanes) x 0.85; 0 = unpaced)\n"
@@ -1222,6 +1226,10 @@ int main(int argc, char** argv) {
   int admission_window = 256;
   int prefill_budget_tokens = -1;
   int prefill_idle_budget_tokens = 0;
+  // The prefix cache's entry policy (2026-09-28): no entry below the floor,
+  // and a cold prompt keeps the cut at its first structural boundary.
+  int prefix_min_tokens = 1024;
+  bool prefix_head_snapshots = true;
   // The bulk collective's sender pacing (prefill all-reduces): negative
   // derives the per-QP rate from the port at bus start.
   double bulk_pace_gbps = -1.0;
@@ -1318,6 +1326,8 @@ int main(int argc, char** argv) {
     model_alias = e.model_alias;
     prefill_budget_tokens = e.prefill_budget_tokens;
     prefill_idle_budget_tokens = e.prefill_idle_budget_tokens;
+    prefix_min_tokens = e.prefix_min_tokens;
+    prefix_head_snapshots = e.prefix_head_snapshots;
     bulk_pace_gbps = e.bulk_pace_gbps;
     bulk_inflight = e.bulk_inflight;
     rendezvous_timeout_ms = e.rendezvous_timeout_ms;
@@ -1398,6 +1408,9 @@ int main(int argc, char** argv) {
     else if (a == "--admission-window") admission_window = std::stoi(next());
     else if (a == "--prefill-budget-tokens") prefill_budget_tokens = std::stoi(next());
     else if (a == "--prefill-idle-budget-tokens") prefill_idle_budget_tokens = std::stoi(next());
+    else if (a == "--prefix-min-tokens") prefix_min_tokens = std::stoi(next());
+    else if (a == "--prefix-head-snapshots") prefix_head_snapshots = true;
+    else if (a == "--no-prefix-head-snapshots") prefix_head_snapshots = false;
     else if (a == "--bulk-pace-gbps") bulk_pace_gbps = std::stod(next());
     else if (a == "--bulk-inflight") bulk_inflight = std::stoi(next());
     else if (a == "--world") world = std::stoi(next());
@@ -1475,7 +1488,8 @@ int main(int argc, char** argv) {
         "eos={} graph={} compact={} mtp={} mtpd={} mss={} msrow={} msbase={} mslam={} msmin={} "
         "msad={} "
         "batchmin={} cand={} "
-        "pcgib={} adm={} win={} pfbudget={} pfidle={} pace={} inflight={} reasoning_in_content={} "
+        "pcgib={} adm={} win={} pfbudget={} pfidle={} pmin={} phead={} pace={} inflight={} "
+        "reasoning_in_content={} "
         "rs={}",
         model_id.empty() ? ckpt : model_id, world, fabric_port, journal_port, max_concurrency,
         kv_capacity, kv_dtype, ngram_table, dense_weights, mtp_expert_format, bf16_weights, fp8_head, prefill,
@@ -1484,6 +1498,7 @@ int main(int argc, char** argv) {
         mtp_schedule_base_ms, mtp_schedule_lambda, mtp_schedule_min_depth,
         mtp_schedule_adapt ? 1 : 0, effective_batch_min_live, sampling_candidates, prefix_cache_gib,
         admission_mode, admission_window, prefill_budget_tokens, prefill_idle_budget_tokens,
+        prefix_min_tokens, prefix_head_snapshots ? 1 : 0,
         bulk_pace_gbps, bulk_inflight, reasoning_in_content ? 1 : 0,
         rope_scaling ? std::format("yarn:{}:{}:{}:{}:{}:{}", rope_scaling->factor,
                                    rope_scaling->original_max_position_embeddings,
@@ -1542,6 +1557,8 @@ int main(int argc, char** argv) {
         ws.admission_window = admission_window;
         ws.prefill_budget_tokens = prefill_budget_tokens;
         ws.prefill_idle_budget_tokens = prefill_idle_budget_tokens;
+        ws.prefix_min_tokens = prefix_min_tokens;
+        ws.prefix_head_snapshots = prefix_head_snapshots;
         ws.bulk_pace_gbps = bulk_pace_gbps;
         ws.bulk_inflight = bulk_inflight;
         ws.rendezvous_timeout_ms = rendezvous_timeout_ms;
@@ -1596,6 +1613,8 @@ int main(int argc, char** argv) {
         admission_window = ws.admission_window;
         prefill_budget_tokens = ws.prefill_budget_tokens;
         prefill_idle_budget_tokens = ws.prefill_idle_budget_tokens;
+        prefix_min_tokens = ws.prefix_min_tokens;
+        prefix_head_snapshots = ws.prefix_head_snapshots;
         bulk_pace_gbps = ws.bulk_pace_gbps;
         bulk_inflight = ws.bulk_inflight;
         rendezvous_timeout_ms = ws.rendezvous_timeout_ms;
@@ -1778,6 +1797,10 @@ int main(int argc, char** argv) {
       (prefill_idle_budget_tokens > 0 &&
        (prefill_budget_tokens == 0 || prefill_idle_budget_tokens < prefill_budget_tokens))) {
     DGPP_LOG_ERROR("--prefill-idle-budget-tokens must be 0 or at least the enabled busy budget, at most 1073741824");
+    return 1;
+  }
+  if (prefix_min_tokens < 0 || prefix_min_tokens > (1 << 30)) {
+    DGPP_LOG_ERROR("--prefix-min-tokens must be in [0, 1073741824]");
     return 1;
   }
 
@@ -2084,6 +2107,8 @@ int main(int argc, char** argv) {
     knobs.admission.window_tokens = admission_window;
     knobs.admission.prefill_budget_tokens = prefill_budget_tokens;
     knobs.admission.prefill_idle_budget_tokens = prefill_idle_budget_tokens;
+    knobs.admission.prefix_min_tokens = prefix_min_tokens;
+    knobs.admission.prefix_head_snapshots = prefix_head_snapshots;
     knobs.default_max_tokens = default_max_tokens;
     knobs.file_inputs = file_inputs;
     knobs.sampling_defaults = sampling_defaults;

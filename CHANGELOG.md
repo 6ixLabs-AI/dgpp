@@ -6,6 +6,22 @@ The history by milestone. The dated engineering record in
 
 ## Unreleased
 
+- **Prefix cache: an entry floor, a head cut, and arenas sized to the node**
+  (2026-09-28): `engine.prefix_min_tokens` (default 1024) takes no snapshot
+  below that position, so short probes and side requests never push a long
+  conversation's entries out of the arena; `engine.prefix_head_snapshots`
+  (default on) keeps a cold prefill's cut at its first structural boundary,
+  a long system prompt's end, where the next conversation under it or the
+  turn after a client-side compaction attaches. Both ride the settings and
+  warm records. A single-Spark field log replayed under a 13-slot arena lost
+  every turn of a 66K conversation to three 45-token requests per turn and
+  none with the floor. The checked-in recipes now give the arena the memory
+  the node has left under the plan's headroom, except the one-node Qwen
+  recipes, whose spare memory is the page cache behind the mmap'ed n-gram
+  table. See the [record](benchmarks/results/2026-09-28-prefix-entry-floor-head-cut.md)
+  and the [sizing guide](docs/prefix-cache.md).
+
+
 - **Faster batched GLM decode** (2026-09-27): merge the validated row-batched
   attention projections, reusing weights across decode rows while preserving
   each row's bitwise result. The recorded four-Spark full GLM-5.3 comparison

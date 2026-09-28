@@ -479,6 +479,20 @@ split chunks. Short cold prompts can group up to the selected budget.
 Larger idle chunks also increase the maximum wait for cancellation or a newly
 arriving request; they do not preempt a chunk already running.
 
+`engine.prefix_min_tokens` (`--prefix-min-tokens`, default 1024) is the prefix
+cache's entry floor: no snapshot of any kind — prefill cut, head or body cut,
+rolling or close entry — is taken below that position. A shorter prompt still
+attaches to a matching entry; it just never takes a slot, so a stream of
+health probes or tiny side requests cannot push a long conversation's entries
+out of the arena. `engine.prefix_head_snapshots` (`--prefix-head-snapshots`,
+`--no-prefix-head-snapshots`, default on) keeps one more entry per cold
+prefill at the prompt's first structural boundary past its start (a long
+system prompt's end), where the next conversation under that prompt or the
+turn after a client-side compaction attaches. Both are world settings pushed
+to every peer; `/v1/metrics` shows them under `prefix_cache` as `min_tokens`
+and `head_cuts`, with `head_snapshots` counting the head entries taken. See
+[the sizing guide](prefix-cache.md).
+
 One long prefill progresses at a time in arrival order. Short prompts can
 still prefill together when the group fits the budget. Snapshots from an
 unfinished prefill remain private until completion. The settings and warm

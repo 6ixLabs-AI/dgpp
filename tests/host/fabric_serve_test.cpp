@@ -413,6 +413,25 @@ void test_journal_codec() {
     require(fixed_warm.admission.prefill_budget_tokens == 256 &&
                 fixed_warm.admission.prefill_idle_budget_tokens == 0,
             "old budgeted records retain a fixed budget");
+    // The prefix cache's entry policy (2026-09-28) rides the warm record;
+    // a record without the keys decodes to what such a rank 0 ran.
+    dgpp::sched::AdmissionPolicy entry_policy;
+    entry_policy.prefix_min_tokens = 1024;
+    entry_policy.prefix_head_snapshots = true;
+    const auto entry_warm =
+        dgpp::serve::decode_journal_line(dgpp::serve::encode_journal_warm(entry_policy));
+    require(entry_warm.admission == entry_policy && fixed_warm.admission.prefix_min_tokens == 0 &&
+                !fixed_warm.admission.prefix_head_snapshots,
+            "the prefix entry floor and the head cut round-trip; old records carry neither");
+    for (const std::string bad : {R"("pmin":-1)", R"("phead":2)"}) {
+      bool rejected = false;
+      try {
+        (void)dgpp::serve::decode_journal_line(R"({"op":"warm","adm":0,"win":256,)" + bad + "}");
+      } catch (const std::runtime_error&) {
+        rejected = true;
+      }
+      require(rejected, "a bad prefix entry policy is rejected: " + bad);
+    }
     for (const std::string value : {"-1", "1073741825", "\"256\""}) {
       bool rejected = false;
       try {
@@ -455,6 +474,8 @@ void test_journal_codec() {
     ws.admission_window = 512;
     ws.prefill_budget_tokens = 256;
     ws.prefill_idle_budget_tokens = 2048;
+    ws.prefix_min_tokens = 1024;
+    ws.prefix_head_snapshots = true;
     ws.bulk_pace_gbps = 28.333333333333332;
     ws.bulk_inflight = 4;
     ws.rendezvous_timeout_ms = 120000;
@@ -475,6 +496,19 @@ void test_journal_codec() {
         dgpp::serve::encode_journal_settings(ws));
     require(sr.settings && !sr.warm && !sr.stop && sr.world_settings == ws,
             "codec: the settings record round-trips");
+    {
+      // A record from before the entry policy (2026-09-28) carries neither
+      // key: no floor, no head cut, what that rank 0 ran.
+      auto plain = ws;
+      plain.prefix_min_tokens = 0;
+      plain.prefix_head_snapshots = false;
+      const std::string line = dgpp::serve::encode_journal_settings(plain);
+      require(line.find("\"pmin\"") == std::string::npos && line.find("\"phead\"") == std::string::npos,
+              "codec: the entry policy's keys are absent when it is off");
+      const auto decoded = dgpp::serve::decode_journal_line(line);
+      require(decoded.world_settings.prefix_min_tokens == 0 && !decoded.world_settings.prefix_head_snapshots,
+              "codec: absent entry policy decodes to off");
+    }
     for (int budget : {-1, 0, 256}) {
       auto settings = ws;
       settings.prefill_budget_tokens = budget;
