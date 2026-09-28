@@ -123,6 +123,7 @@ struct ClusterConfig {
     double prefix_cache_gib = 1.5;
     int prefix_min_tokens = 1024;       // no prefix snapshot below this position (0: every cut)
     bool prefix_head_snapshots = true;  // a cold prompt also keeps its first structural cut (the system prompt's end)
+    bool prefill_group = false;         // co-queued cold prompts share one prefill walk (tolerance-equal to their prefills alone)
     std::string admission = "full";
     int admission_window = 256;
     int prefill_budget_tokens = -1;  // automatic on engines with resumable prefill

@@ -1181,6 +1181,9 @@ int main(int argc, char** argv) {
       "    short prompt attaches to what exists but never takes a snapshot slot\n"
       "  [--prefix-head-snapshots | --no-prefix-head-snapshots (default on)]: a cold prompt\n"
       "    also keeps the cut at its first structural boundary (a long system prompt's end)\n"
+      "  [--prefill-group | --no-prefill-group (default off)]: cold prompts queued in one tick\n"
+      "    share a prefill walk (faster together, tolerance-equal to prefilling alone; off keeps\n"
+      "    every greedy transcript independent of what arrived beside it)\n"
       "  bus (the prefill's bulk all-reduce): [--bulk-pace-gbps X]: sender\n"
       "    pacing per (peer, lane) queue pair (default: derived from the\n"
       "    port rate, port / ((world-1) x lanes) x 0.85; 0 = unpaced)\n"
@@ -1230,6 +1233,10 @@ int main(int argc, char** argv) {
   // and a cold prompt keeps the cut at its first structural boundary.
   int prefix_min_tokens = 1024;
   bool prefix_head_snapshots = true;
+  // Group admission (2026-09-28): off, so a request's greedy transcript never
+  // depends on which tick its neighbours arrived in; on shares one prefill
+  // walk between co-queued cold prompts (tolerance-equal to prefills alone).
+  bool prefill_group = false;
   // The bulk collective's sender pacing (prefill all-reduces): negative
   // derives the per-QP rate from the port at bus start.
   double bulk_pace_gbps = -1.0;
@@ -1328,6 +1335,7 @@ int main(int argc, char** argv) {
     prefill_idle_budget_tokens = e.prefill_idle_budget_tokens;
     prefix_min_tokens = e.prefix_min_tokens;
     prefix_head_snapshots = e.prefix_head_snapshots;
+    prefill_group = e.prefill_group;
     bulk_pace_gbps = e.bulk_pace_gbps;
     bulk_inflight = e.bulk_inflight;
     rendezvous_timeout_ms = e.rendezvous_timeout_ms;
@@ -1411,6 +1419,8 @@ int main(int argc, char** argv) {
     else if (a == "--prefix-min-tokens") prefix_min_tokens = std::stoi(next());
     else if (a == "--prefix-head-snapshots") prefix_head_snapshots = true;
     else if (a == "--no-prefix-head-snapshots") prefix_head_snapshots = false;
+    else if (a == "--prefill-group") prefill_group = true;
+    else if (a == "--no-prefill-group") prefill_group = false;
     else if (a == "--bulk-pace-gbps") bulk_pace_gbps = std::stod(next());
     else if (a == "--bulk-inflight") bulk_inflight = std::stoi(next());
     else if (a == "--world") world = std::stoi(next());
@@ -1488,7 +1498,7 @@ int main(int argc, char** argv) {
         "eos={} graph={} compact={} mtp={} mtpd={} mss={} msrow={} msbase={} mslam={} msmin={} "
         "msad={} "
         "batchmin={} cand={} "
-        "pcgib={} adm={} win={} pfbudget={} pfidle={} pmin={} phead={} pace={} inflight={} "
+        "pcgib={} adm={} win={} pfbudget={} pfidle={} pmin={} phead={} pgroup={} pace={} inflight={} "
         "reasoning_in_content={} "
         "rs={}",
         model_id.empty() ? ckpt : model_id, world, fabric_port, journal_port, max_concurrency,
@@ -1498,7 +1508,7 @@ int main(int argc, char** argv) {
         mtp_schedule_base_ms, mtp_schedule_lambda, mtp_schedule_min_depth,
         mtp_schedule_adapt ? 1 : 0, effective_batch_min_live, sampling_candidates, prefix_cache_gib,
         admission_mode, admission_window, prefill_budget_tokens, prefill_idle_budget_tokens,
-        prefix_min_tokens, prefix_head_snapshots ? 1 : 0,
+        prefix_min_tokens, prefix_head_snapshots ? 1 : 0, prefill_group ? 1 : 0,
         bulk_pace_gbps, bulk_inflight, reasoning_in_content ? 1 : 0,
         rope_scaling ? std::format("yarn:{}:{}:{}:{}:{}:{}", rope_scaling->factor,
                                    rope_scaling->original_max_position_embeddings,
@@ -1559,6 +1569,7 @@ int main(int argc, char** argv) {
         ws.prefill_idle_budget_tokens = prefill_idle_budget_tokens;
         ws.prefix_min_tokens = prefix_min_tokens;
         ws.prefix_head_snapshots = prefix_head_snapshots;
+        ws.prefill_group = prefill_group;
         ws.bulk_pace_gbps = bulk_pace_gbps;
         ws.bulk_inflight = bulk_inflight;
         ws.rendezvous_timeout_ms = rendezvous_timeout_ms;
@@ -1615,6 +1626,7 @@ int main(int argc, char** argv) {
         prefill_idle_budget_tokens = ws.prefill_idle_budget_tokens;
         prefix_min_tokens = ws.prefix_min_tokens;
         prefix_head_snapshots = ws.prefix_head_snapshots;
+        prefill_group = ws.prefill_group;
         bulk_pace_gbps = ws.bulk_pace_gbps;
         bulk_inflight = ws.bulk_inflight;
         rendezvous_timeout_ms = ws.rendezvous_timeout_ms;
@@ -2109,6 +2121,7 @@ int main(int argc, char** argv) {
     knobs.admission.prefill_idle_budget_tokens = prefill_idle_budget_tokens;
     knobs.admission.prefix_min_tokens = prefix_min_tokens;
     knobs.admission.prefix_head_snapshots = prefix_head_snapshots;
+    knobs.admission.prefill_group = prefill_group;
     knobs.default_max_tokens = default_max_tokens;
     knobs.file_inputs = file_inputs;
     knobs.sampling_defaults = sampling_defaults;
