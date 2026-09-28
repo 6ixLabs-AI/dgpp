@@ -18,6 +18,16 @@ streaming top-k. Both expand the same sorted pool ids with the existing
 workspace and captured graph shape. See the
 [selection measurements](benchmarks/results/2026-09-21-qwen-qsa-select.md).
 
+QSA scoring storage (`keys_ws_`, one stripe per activation row) is sized by
+the effective per-request context — the lesser of the positional ceiling and
+the KV pool, rounded up to a compressed-key pool — not by the pool: a pool
+past the ceiling seats more requests and adds no visible keys to any one row
+(4.5 GiB at 4096 rows over an 850048-token pool with a 256K ceiling). The
+bound holds because no decode row is staged past the ceiling: a request's
+lifetime reservation is capped there, so the fixed-width verify's trailing
+rows past it are padding (`glm_spec_positions` emits -1, as the chain rows
+already did), and admission refuses a prompt-plus-budget past the ceiling.
+
 QSA prefills of at least 128 rows use one warp per query and KV-head group
 when the head dimension is 256 and each KV head serves at most 16 query heads.
 The warp gathers 16 selected tokens at a time and keeps the online softmax

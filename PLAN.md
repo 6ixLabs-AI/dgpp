@@ -194,7 +194,9 @@ now handles larger prefills with tolerance-based comparison against the
 one-, three- and eight-split references, including model-level dispatch checks. The
 [long-context QSA selector](benchmarks/results/2026-09-21-qwen-qsa-select.md)
 uses exact radix selection above 2048 pools, retaining the score arithmetic,
-tie order and workspace. Grouped Qwen continuation and
+tie order and workspace. QSA scoring storage follows the per-request context
+rather than the shared pool (2026-09-28), and no decode row is staged past the
+positional ceiling. Grouped Qwen continuation and
 GLM-Flash row expansion are the next targets in the
 [performance plan](docs/performance_improvement_plan.md#10-next-priorities-after-the-first-delivery).
 
