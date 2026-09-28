@@ -1104,7 +1104,7 @@ void SessionModel<D>::decode_host_prep(int req, const std::vector<int64_t>& ids,
   if (upload) {
     glm_upload_i32(h_req_ids_, d_req_ids_, T, stream_);
     if (device_positions)
-      glm_spec_positions(d_session_pos_ + req, T, d_step_pos_, stream_);
+      glm_spec_positions(d_session_pos_ + req, T, max_context_, d_step_pos_, stream_);
     else
       glm_upload_i64(h_step_pos_, d_step_pos_, T, stream_);
     glm_upload_i32(h_req_spans_, d_req_spans_, 2, stream_);
@@ -1482,7 +1482,8 @@ void SessionModel<D>::session_graph_capture_batch(int rows_per_request, int requ
     glm_upload_i32(h_req_ids_, d_req_ids_, rows, stream_);
     glm_upload_i32(h_req_spans_, d_req_spans_, 2 * requests, stream_);
   }
-  glm_spec_positions_batched(d_session_pos_, d_req_ids_, rows, rows_per_request, d_step_pos_, stream_);
+  glm_spec_positions_batched(d_session_pos_, d_req_ids_, rows, rows_per_request, max_context_,
+                             d_step_pos_, stream_);
   const std::vector<int64_t> shape(static_cast<size_t>(rows), 0);
   RowRun run;
   run.req = 0;

@@ -291,7 +291,10 @@ QwenModel::MemoryPlan QwenModel::plan_memory(const QwenTextConfig& cfg, int max_
            token_rows * 8 + M * 12 + 8 + M * W * 2 + 3 * M * H * 2 + M * V * 4 + rows * 64,
            rows * V * 4 + rows * H * 2 + token_rows * 8 + rows * 32 + R * 40);
   // The layer objects (built once, rebound per layer).
-  const int64_t max_pools = cache_tokens / cfg.indexer_compress_ratio;
+  // Scoring is per request. A shared pool larger than the positional limit
+  // does not make more compressed keys visible to any one row.
+  const int64_t max_pools =
+      (plan.context_tokens + cfg.indexer_compress_ratio - 1) / cfg.indexer_compress_ratio;
   size_t layers = 0;
   layers += 3 * QwenGrSite::scratch_bytes(cfg.hc_count, cfg.hidden_size, cfg.hc_lowrank, max_tokens);
   if (num_gdn > 0) layers += QwenGdnLayer::scratch_bytes(cfg, geo.local_key_heads, geo.local_value_heads, max_tokens);
@@ -454,7 +457,9 @@ void QwenModel::build_layer_objects(const QwenLayerResident& r) {
     }
   } else {
     if (!qsa_) {
-      qsa_ = std::make_unique<QwenQsaLayer>(r.qsa, gw_, cfg_, max_tokens_, pool_.pool_slots());
+      const int64_t max_pools =
+          (max_context_ + cfg_.indexer_compress_ratio - 1) / cfg_.indexer_compress_ratio;
+      qsa_ = std::make_unique<QwenQsaLayer>(r.qsa, gw_, cfg_, max_tokens_, max_pools);
     } else {
       qsa_->rebind(r.qsa);
     }

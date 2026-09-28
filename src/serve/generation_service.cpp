@@ -2029,6 +2029,19 @@ void GenerationService::route_chat_completions(const HttpRequest& req,
   popts.start_in_reasoning = opens_thinking;
   popts.model_may_open_thinking = markers_.prompt_leaves_thinking_to_model(prompt);
 
+  // The positional ceiling (review item 7): a pool past it seats more
+  // requests, never a longer one — beyond the ceiling the model has no
+  // positions to encode and the engine stages no rows.
+  if (cfg_.position_ceiling > 0 &&
+      static_cast<int64_t>(prompt.size()) + steps > cfg_.position_ceiling) {
+    respond_error(
+        w, 400,
+        "the request's token budget (prompt " + std::to_string(prompt.size()) +
+            " + max_tokens " + std::to_string(steps) + ") exceeds the model's " +
+            std::to_string(cfg_.position_ceiling) + "-token positional ceiling",
+        "invalid_request_error", "max_tokens", "context_length_exceeded");
+    return;
+  }
   // Full-reserve admission arithmetic — a request that can never fit is
   // a 400, never a scheduler deadlock.
   const int64_t reserve =
@@ -2226,6 +2239,15 @@ void GenerationService::route_completions(const HttpRequest& req,
   if (ids.empty()) {
     respond_error(w, 400, "the prompt produced no tokens",
                   "invalid_request_error", "prompt");
+    return;
+  }
+  if (cfg_.position_ceiling > 0 &&
+      static_cast<int64_t>(ids.size()) + steps > cfg_.position_ceiling) {
+    respond_error(w, 400,
+                  "the request's token budget (prompt " + std::to_string(ids.size()) +
+                      " + max_tokens " + std::to_string(steps) + ") exceeds the model's " +
+                      std::to_string(cfg_.position_ceiling) + "-token positional ceiling",
+                  "invalid_request_error", "max_tokens", "context_length_exceeded");
     return;
   }
   const int64_t reserve =

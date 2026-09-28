@@ -374,6 +374,180 @@ void rank_work_mtp(int r, const QwenTextConfig& cfg, const std::string& dir, con
 
 }  // namespace
 
+DGPP_TEST(qwen_engines_world_of_one_request_bound_preserves_mtp_and_slot_reuse) {
+  struct RestoreModes {
+    bool mapped = dgpp::QwenLayerStream::ngram_table_mmap();
+    bool fp8 = dgpp::QwenLayerStream::dense_weights_fp8();
+    ~RestoreModes() {
+      dgpp::QwenLayerStream::set_ngram_table_mmap(mapped);
+      dgpp::QwenLayerStream::set_dense_weights_fp8(fp8);
+    }
+  } restore;
+  const auto original = qwenfx::tiny_config();
+  const std::string dir = "qwen_engine_request_bound_fixture";
+  qwenfx::write_fixture(original, dir);
+  const std::vector<int> lengths{161, 153, 149, 145};
+  const std::vector<int> limits{12, 36, 40, 44};
+  std::vector<std::vector<int64_t>> prompts;
+  for (int i = 0; i < 4; ++i) prompts.push_back(smoke_tokens(original, lengths[i], 0xAB00 + i));
+  dgpp::QwenLayerStream::set_ngram_table_mmap(true);
+  for (bool fp8 : {false, true}) {
+    dgpp::QwenLayerStream::set_dense_weights_fp8(fp8);
+    const auto run = [&](int context) {
+      auto cfg = original;
+      cfg.max_position_embeddings = context;
+      auto buses = start_world(1, kPort + 20);
+      QwenModel model(cfg, dir, 128, 1024, QwenResidency::Resident, nullptr, 0, 1,
+                      4, true, 8, fp8);
+      uint16_t* scratch = nullptr;
+      DGPP_CUDA_OK(cudaHostAlloc(reinterpret_cast<void**>(&scratch),
+                                 sizeof(uint16_t) * dgpp::kPickScratchElems(1), cudaHostAllocDefault));
+      std::vector<std::vector<int32_t>> result(5);
+      {
+        GraphEngineAdapter<QwenModel> graph(&model, buses[0].get(), 0, 1, scratch,
+            cfg.vocab_size, wait_timeout_ms(), 2, nullptr, nullptr, 0, nullptr, 0, 1,
+            test_compaction());
+        for (int i = 0; i < 4; ++i) {
+          result[i].push_back(graph.prefill(i, prompts[i]));
+          graph.reserve(i, 193);
+        }
+        std::vector<int> active{0, 1, 2, 3};
+        std::vector<int> generation{0, 1, 2, 3};
+        bool reused = false;
+        while (!active.empty()) {
+          const auto tokens = graph.step_batch(active);
+          std::vector<int> remaining;
+          bool reopen = false;
+          for (size_t j = 0; j < active.size(); ++j) {
+            const int slot = active[j], id = generation[slot];
+            auto& transcript = result[id];
+            transcript.insert(transcript.end(), tokens[j].begin(), tokens[j].end());
+            const int limit = id == 4 ? 7 : limits[id];
+            if (transcript.size() >= static_cast<size_t>(limit)) {
+              transcript.resize(static_cast<size_t>(limit));
+              graph.close(slot);
+              if (slot == 0 && !reused) reopen = true;
+            } else {
+              remaining.push_back(slot);
+            }
+          }
+          if (reopen) {
+            require(!remaining.empty(), "slot reuse must overlap another active request");
+            generation[0] = 4;
+            result[4].push_back(graph.prefill(0, smoke_tokens(cfg, 13, 0xAC00)));
+            graph.reserve(0, 64);
+            remaining.push_back(0);
+            reused = true;
+          }
+          std::sort(remaining.begin(), remaining.end());
+          active = std::move(remaining);
+        }
+        require(reused, "the comparison must retire and reuse a slot while peers run");
+        graph.drain();
+      }
+      DGPP_CUDA_OK(cudaFreeHost(scratch));
+      return result;
+    };
+    // Same weights and graph schedule. The first run keeps the old shared-
+    // pool stride; the second bounds it by an unaligned per-request ceiling.
+    require(run(1024) == run(193),
+            "bounding QSA workspace changes a four-slot MTP-1 transcript");
+  }
+}
+
+DGPP_TEST(qwen_engines_request_bound_stripe_holds_a_depth5_verify_at_a_block_aligned_ceiling) {
+  struct RestoreModes {
+    bool mapped = dgpp::QwenLayerStream::ngram_table_mmap();
+    bool fp8 = dgpp::QwenLayerStream::dense_weights_fp8();
+    ~RestoreModes() {
+      dgpp::QwenLayerStream::set_ngram_table_mmap(mapped);
+      dgpp::QwenLayerStream::set_dense_weights_fp8(fp8);
+    }
+  } restore;
+  const auto original = qwenfx::tiny_config();
+  const std::string dir = "qwen_engine_request_bound_depth5_fixture";
+  qwenfx::write_fixture(original, dir);
+  dgpp::QwenLayerStream::set_ngram_table_mmap(true);
+  dgpp::QwenLayerStream::set_dense_weights_fp8(false);
+  // A 256-token ceiling on the 64-token block grid, two slots with
+  // 254-token prompts and a two-token budget: the final six-row verify
+  // stages positions 254..259 for each slot. Rows 256..259 lie past the
+  // ceiling — past the request-bounded scoring stripe (the last slot's keys
+  // would land beyond the allocation; compute-sanitizer sees that) and past
+  // the lifetime reservation (their K/V and index rows would land in
+  // physical block 0 through the zeroed table entries). The position
+  // kernels stage them as padding instead: the transcript matches a run
+  // whose 1024-token ceiling computes those rows for real, and physical
+  // block 0's first rows — positions 0..3 of whichever request holds it,
+  // which the live rows at 254 and 255 never write — are the same before
+  // and after the step. Twelve activation rows put the last slot's final
+  // row at the end of the stripe allocation.
+  constexpr int context = 256, rows = 12, slots = 2;
+  // Physical block 0's first four K/V rows and its first compressed key in
+  // every QSA layer.
+  const auto block0 = [](const QwenModel& m) {
+    const auto& pool = m.pool();
+    const auto& shape = pool.shape();
+    const size_t kv = static_cast<size_t>(shape.kv_heads) * shape.dim * 4;
+    std::vector<uint16_t> out;
+    DGPP_CUDA_OK(cudaDeviceSynchronize());
+    for (int l = 0; l < shape.layers; ++l) {
+      const auto v = pool.view(l);
+      std::vector<uint16_t> k(kv), val(kv), key(static_cast<size_t>(shape.idx_dim));
+      DGPP_CUDA_OK(cudaMemcpy(k.data(), v.k_cache, kv * 2, cudaMemcpyDeviceToHost));
+      DGPP_CUDA_OK(cudaMemcpy(val.data(), v.v_cache, kv * 2, cudaMemcpyDeviceToHost));
+      DGPP_CUDA_OK(cudaMemcpy(key.data(), v.index_cache, key.size() * 2, cudaMemcpyDeviceToHost));
+      out.insert(out.end(), k.begin(), k.end());
+      out.insert(out.end(), val.begin(), val.end());
+      out.insert(out.end(), key.begin(), key.end());
+    }
+    return out;
+  };
+  std::array<std::vector<int64_t>, slots> prompts;
+  for (int req = 0; req < slots; ++req)
+    prompts[req] = smoke_tokens(original, context - 2, 0xAD00 + req);
+  for (bool compact : {false, true}) {
+    const auto run = [&](int ceiling) {
+      auto cfg = original;
+      cfg.max_position_embeddings = ceiling;
+      auto buses = start_world(1, kPort + 21);
+      require(!buses.empty(), "the depth-5 ceiling gate needs a world of one");
+      QwenModel model(cfg, dir, rows, 1024, QwenResidency::Resident, nullptr, 0, 1, slots, true,
+                      rows);
+      uint16_t* scratch = nullptr;
+      DGPP_CUDA_OK(cudaHostAlloc(reinterpret_cast<void**>(&scratch),
+                                 sizeof(uint16_t) * dgpp::kPickScratchElems(1),
+                                 cudaHostAllocDefault));
+      std::array<std::vector<int32_t>, slots> result;
+      {
+        GraphEngineAdapter<QwenModel> graph(&model, buses[0].get(), 0, 1, scratch, cfg.vocab_size,
+                                            wait_timeout_ms(), 2, nullptr, nullptr, 0, nullptr, 0,
+                                            5, compact);
+        for (int req = 0; req < slots; ++req) {
+          result[req].push_back(graph.prefill(req, prompts[req]));
+          graph.reserve(req, context);
+        }
+        const auto before = block0(model);
+        const auto tokens = graph.step_batch({0, 1});
+        graph.drain();
+        require(block0(model) == before,
+                "the final verify wrote physical block 0 (rows past the reservation)");
+        require(tokens.size() == slots, "the final verify must produce both requests");
+        for (int req = 0; req < slots; ++req) {
+          require(!tokens[req].empty(), "the final verify must produce the remaining token");
+          // The scheduler publishes only the remaining generation budget.
+          result[req].push_back(tokens[req][0]);
+          graph.close(req);
+        }
+      }
+      DGPP_CUDA_OK(cudaFreeHost(scratch));
+      return result;
+    };
+    require(run(1024) == run(context),
+            "a depth-5 verify at a block-aligned ceiling changes the final generated token");
+  }
+}
+
 DGPP_TEST(qwen_engines_loopback_world_2_mtp_graph_matches_plain_decode) {
   const QwenTextConfig cfg = qwenfx::tiny_config();
   const std::string dir = "qwen_engine_fixture";
