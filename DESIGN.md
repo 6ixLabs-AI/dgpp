@@ -1629,6 +1629,31 @@ read every row keep the full head. `DGPP_PREFILL_HEAD_ALL_ROWS=1` restores
 the full head for comparison. The [prefill-head record](benchmarks/results/2026-09-24-pr43-prefill-head.md)
 describes the regression checks across the 128-row dispatch boundary.
 
+*Group admission is bitwise the prefills alone (2026-09-28).* The scheduler
+admits cold prompts queued in the same tick as the spans of one prefill walk
+(`admissible_group`, `session_prefill_group`); which tick sees two arrivals is
+timing, so a span's rows in that walk must be bitwise the same prompt's cold
+prefill or greedy transcripts at concurrency would depend on it. Two things
+kept them apart. A cold prefill cut at every structural boundary of the prompt
+(the chat template's message markers) so that a cache hit and a miss compute
+the same walk; the cache's entry floor removed the snapshots below 1024 tokens
+but not the cuts, and a group walks each span whole — and a DSA site is not
+split-invariant. The scheduler now hands the engine only the boundaries a
+snapshot can stand on (`cut_boundaries`: the cache on and the aligned image at
+or past the floor), so a groupable prompt is one walk either way and a cache
+hit is still the miss's walk. And a prefill chunk's bf16 head ran over every
+row through cuBLASLt, whose algorithm and tile placement follow the row count;
+it now runs over the mirrored rows only (the last row, or each span's last
+row), gathered to the front, in the four-row GEMV form the decode head takes.
+The gates: `glm_tp_group_prefill_is_bitwise_the_prefills_alone_site_by_site`
+(world 1) and its world-2 twin capture the streams after the embedding and
+after every attention and FFN update (`set_walk_capture`) and require every
+span's rows, its logits and its eager decode steps bitwise; `glm_gen_check
+--group-check-b` runs the same check on the served checkpoint across the
+fabric. What still moves a transcript with the cut positions is the chunk
+grid itself: a prompt longer than the busy prefill budget is cut on that
+budget's grid when decode is active and on the idle budget's grid otherwise.
+
 *Companions and the prefetch windows.* `WeightPrefetcher::add` coalesces a
 window's adds and bridges holes of up to 2 MB between them — a read of
 whatever lies between, which inside one layer image is a neighbouring tensor

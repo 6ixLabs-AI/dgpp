@@ -480,7 +480,11 @@ Larger idle chunks also increase the maximum wait for cancellation or a newly
 arriving request; they do not preempt a chunk already running.
 
 `engine.prefix_min_tokens` (`--prefix-min-tokens`, default 1024) is the prefix
-cache's entry floor: no snapshot of any kind — prefill cut, head or body cut,
+cache's entry floor. A cold prefill cuts at a prompt's structural boundaries
+only where a snapshot can stand — the cache on and the boundary at or past
+the floor — so a prompt under the floor is one walk, the same walk it gets
+as a span of a group admission, and its greedy transcript does not depend on
+what arrived beside it. No snapshot of any kind — prefill cut, head or body cut,
 rolling or close entry — is taken below that position. A shorter prompt still
 attaches to a matching entry; it just never takes a slot, so a stream of
 health probes or tiny side requests cannot push a long conversation's entries
