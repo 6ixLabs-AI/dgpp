@@ -1773,6 +1773,163 @@ DGPP_TEST(glm_tp_greedy_gen_loopback) {
 // the rows: kernels/gemm.hpp dense_gemv_rows, so the rows are
 // tolerance-equal, not bitwise); then a decode off the group's cache
 // against the decode off the solo prefill, step by step.
+DGPP_TEST(glm_tp_group_prefill_is_bitwise_the_prefills_alone_site_by_site) {
+  // Two prompts prefilled alone and then as the spans of one walk: after
+  // the embedding and after every attention and FFN stream update, each
+  // span's rows must be bitwise its solo rows. The first site that differs
+  // names the kernel whose per-row arithmetic depends on the walk's row
+  // count. Two regimes: rows past every tiled-form threshold (20 + 24) and
+  // the per-token forms (9 + 13).
+  const GlmTextConfig cfg = glm_tp_test_config();
+  const std::string dir = "glm_tp_fixture";
+  glm_tp_write_fixture(dir);
+  for (const auto& [la, lb] : std::vector<std::pair<int, int>>{{20, 24}, {9, 13}}) {
+    const std::vector<int64_t> A = make_tokens(la, cfg.vocab_size);
+    std::vector<int64_t> B = make_tokens(lb, cfg.vocab_size);
+    std::reverse(B.begin(), B.end());
+    GlmDiagnosticModel m(cfg, dir, la + lb + 4, 512, nullptr, 0, 1, GlmResidency::Streaming,
+                         GlmHeadSharding::Full, /*max_requests=*/2, /*mtp=*/false);
+    std::vector<std::vector<uint16_t>> ca, cb, cg;
+    m.set_walk_capture(&ca);
+    const GlmDiagnosticModel::Outputs pa = m.session_prefill(0, A);
+    m.session_close(0);
+    m.set_walk_capture(&cb);
+    const GlmDiagnosticModel::Outputs pb = m.session_prefill(1, B);
+    m.session_close(1);
+    m.set_walk_capture(&cg);
+    const std::vector<GlmDiagnosticModel::Outputs> g = m.session_prefill_group({0, 1}, {&A, &B});
+    m.set_walk_capture(nullptr);
+    m.session_close(0);
+    m.session_close(1);
+    require(ca.size() == cg.size() && cb.size() == cg.size() && !cg.empty(), "one capture per site");
+    const size_t elems = cg[0].size() / static_cast<size_t>(la + lb);  // per row
+    int first_bad = -1;
+    size_t bad_a = 0, bad_b = 0;
+    for (size_t s = 0; s < cg.size(); ++s) {
+      size_t da = 0, db = 0;
+      for (size_t i = 0; i < static_cast<size_t>(la) * elems; ++i) da += cg[s][i] != ca[s][i];
+      for (size_t i = 0; i < static_cast<size_t>(lb) * elems; ++i)
+        db += cg[s][static_cast<size_t>(la) * elems + i] != cb[s][i];
+      if ((da || db) && first_bad < 0) {
+        first_bad = static_cast<int>(s);
+        bad_a = da;
+        bad_b = db;
+      }
+    }
+    if (first_bad >= 0)
+      std::printf("[ .. ] %d + %d rows: first differing site %d (%s, layer %d): %zu / %zu elements (span A / B)\n",
+                  la, lb, first_bad, first_bad == 0 ? "embedding" : ((first_bad - 1) % 2 ? "FFN" : "attention"),
+                  first_bad == 0 ? 0 : (first_bad - 1) / 2, bad_a, bad_b);
+    else
+      std::printf("[ .. ] %d + %d rows: every site bitwise (%zu sites), logits %s / %s\n", la, lb, cg.size(),
+                  g[0].logits == pa.logits ? "bitwise" : "DIFFER", g[1].logits == pb.logits ? "bitwise" : "DIFFER");
+    require(first_bad < 0, "a span's rows in the group walk differ from its prefill alone");
+    require(g[0].logits == pa.logits && g[1].logits == pb.logits, "a span's logits differ from its prefill alone");
+  }
+}
+
+DGPP_TEST(glm_tp_world2_group_prefill_is_bitwise_the_prefills_alone_site_by_site) {
+  // The site-by-site gate over the loopback bus at world 2 with the draft
+  // block on: the folds (canonical rank order), the vocab-sharded head and
+  // the draft's state rows must keep every span's rows bitwise its prefill
+  // alone on every rank.
+  constexpr int kWorld = 2;
+  const GlmTextConfig cfg = glm_tp_test_config();
+  const std::string dir = "glm_tp_fixture";
+  glm_tp_write_fixture(dir);
+  const int la = 20, lb = 24;
+  const std::vector<int64_t> A = make_tokens(la, cfg.vocab_size);
+  std::vector<int64_t> B = make_tokens(lb, cfg.vocab_size);
+  std::reverse(B.begin(), B.end());
+  for (const bool mtp : {false, true}) {
+  std::vector<std::unique_ptr<CollectiveBus>> buses = start_world(kWorld, mtp ? 29939 : 29927);
+  require(!buses.empty(), "tp bus world failed to start");
+  std::vector<std::string> errors(kWorld), reports(kWorld);
+  ConstructBarrier barrier(kWorld);
+  std::vector<std::thread> workers;
+  for (int r = 0; r < kWorld; ++r) {
+    workers.emplace_back([&, r] {
+      bool arrived = false;
+      const auto arrive_once = [&] {
+        if (arrived) return;
+        arrived = true;
+        barrier.arrive_and_wait();
+      };
+      try {
+        CollectiveBus& bus = *buses[static_cast<size_t>(r)];
+        GlmBusBoundaryReducer reducer(bus, test_wait_timeout_ms());
+        GlmDiagnosticModel shard(cfg, dir, la + lb + 4, 512, &reducer, r, kWorld,
+                                 GlmResidency::Streaming, GlmHeadSharding::VocabSharded,
+                                 /*max_requests=*/2, mtp);
+        arrive_once();
+        std::vector<std::vector<uint16_t>> ca, cb, cg;
+        shard.set_walk_capture(&ca);
+        const GlmDiagnosticModel::Outputs pa = shard.session_prefill(0, A);
+        shard.session_close(0);
+        shard.set_walk_capture(&cb);
+        const GlmDiagnosticModel::Outputs pb = shard.session_prefill(1, B);
+        shard.session_close(1);
+        shard.set_walk_capture(&cg);
+        const std::vector<GlmDiagnosticModel::Outputs> g = shard.session_prefill_group({0, 1}, {&A, &B});
+        shard.set_walk_capture(nullptr);
+        shard.session_close(0);
+        shard.session_close(1);
+        if (ca.size() != cg.size() || cb.size() != cg.size() || cg.empty())
+          throw std::runtime_error("one capture per site");
+        const size_t elems = cg[0].size() / static_cast<size_t>(la + lb);
+        int first_bad = -1;
+        size_t bad_a = 0, bad_b = 0;
+        for (size_t s = 0; s < cg.size(); ++s) {
+          size_t da = 0, db = 0;
+          for (size_t i = 0; i < static_cast<size_t>(la) * elems; ++i) da += cg[s][i] != ca[s][i];
+          for (size_t i = 0; i < static_cast<size_t>(lb) * elems; ++i)
+            db += cg[s][static_cast<size_t>(la) * elems + i] != cb[s][i];
+          if ((da || db) && first_bad < 0) {
+            first_bad = static_cast<int>(s);
+            bad_a = da;
+            bad_b = db;
+          }
+        }
+        const bool logits_ok = g[0].logits == pa.logits && g[1].logits == pb.logits;
+        const auto logit_diff = [](const std::vector<float>& x, const std::vector<float>& y) {
+          size_t n = 0;
+          float worst = 0.f;
+          for (size_t i = 0; i < x.size() && i < y.size(); ++i)
+            if (x[i] != y[i]) {
+              ++n;
+              worst = std::max(worst, std::abs(x[i] - y[i]));
+            }
+          return std::to_string(n) + "/" + std::to_string(x.size()) + " (max abs " + std::to_string(worst) + ")";
+        };
+        if (first_bad >= 0)
+          reports[static_cast<size_t>(r)] =
+              "first differing site " + std::to_string(first_bad) + " (" +
+              (first_bad == 0 ? std::string("embedding") : ((first_bad - 1) % 2 ? "FFN" : "attention")) +
+              ", layer " + std::to_string(first_bad == 0 ? 0 : (first_bad - 1) / 2) + "): " +
+              std::to_string(bad_a) + " / " + std::to_string(bad_b) + " elements (span A / B)";
+        else
+          reports[static_cast<size_t>(r)] =
+              "every site bitwise (" + std::to_string(cg.size()) + " sites), logits " +
+              (logits_ok ? std::string("bitwise")
+                         : "DIFFER: span A " + logit_diff(g[0].logits, pa.logits) + ", span B " +
+                               logit_diff(g[1].logits, pb.logits));
+        if (first_bad >= 0 || !logits_ok)
+          errors[static_cast<size_t>(r)] = "a span's rows or logits in the group walk differ from its prefill alone";
+      } catch (const std::exception& e) {
+        errors[static_cast<size_t>(r)] = e.what();
+      }
+      arrive_once();
+    });
+  }
+  for (auto& w : workers) w.join();
+  for (int r = 0; r < kWorld; ++r)
+    std::printf("[ .. ] world 2 mtp=%d rank %d: %s\n", mtp ? 1 : 0, r, reports[static_cast<size_t>(r)].c_str());
+  for (int r = 0; r < kWorld; ++r)
+    require(errors[static_cast<size_t>(r)].empty(),
+            "rank " + std::to_string(r) + ": " + errors[static_cast<size_t>(r)]);
+  }
+}
+
 DGPP_TEST(glm_tp_group_prefill_matches_prefills_alone) {
   const GlmTextConfig cfg = glm_tp_test_config();
   const std::string dir = "glm_tp_fixture";

@@ -411,6 +411,9 @@ int g_prefill_repeat = 1;
 // (GlmBoundaryReducer::probe). Bounded by the graph's node budget:
 // kBusMaxGraphGens = 128 less the step's own ~92 nodes.
 int g_gr_probe_layers = 0;
+// --group-check-b: the second prompt of the grouped-prefill site check (below).
+static std::string g_group_check_b;
+static std::vector<int64_t> g_group_check_b_tokens;
 
 // The memory receipt: exactly what the model pre-allocates for this knob
 // combination, by region, plus the per-request reserve math. Runs with or
@@ -632,6 +635,113 @@ struct PinnedWords {
   PinnedWords(const PinnedWords&) = delete;
   PinnedWords& operator=(const PinnedWords&) = delete;
 };
+
+// --group-check-b: the site-by-site view of a grouped prefill against the
+// prefills alone on this rank (GlmDiagnosticModel::set_walk_capture): the
+// --text/--chat prompt A and prompt B alone, then as the spans of one walk.
+// Every span's rows after the embedding and after every attention and FFN
+// stream update, and its last-row logits, must be bitwise. Returns 0 when
+// they are; logs the first differing sites otherwise.
+static int run_group_check(GlmDiagnosticModel& model, int rank, const std::vector<int64_t>& A,
+                           const std::vector<int64_t>& B) {
+  // Greedy eager steps off each prefill: the step-by-step view of the
+  // request's state (KV, recurrent, index caches) after a solo and a group
+  // prefill. The argmax over this rank's vocab rows is enough to drive
+  // identical steps on every rank as long as they stay bitwise.
+  constexpr int kSteps = 12;
+  const auto local_argmax = [](const std::vector<float>& row) {
+    return static_cast<int64_t>(std::max_element(row.begin(), row.end()) - row.begin());
+  };
+  const auto steps_from = [&](int req, const GlmDiagnosticModel::Outputs& first) {
+    std::vector<std::vector<float>> rows;
+    int64_t tok = local_argmax(first.logits);
+    for (int s = 0; s < kSteps; ++s) {
+      const GlmDiagnosticModel::Outputs o = model.session_step(req, tok);
+      rows.push_back(o.logits);
+      tok = local_argmax(o.logits);
+    }
+    return rows;
+  };
+  std::vector<std::vector<uint16_t>> ca, cb, cg;
+  model.set_walk_capture(&ca);
+  const GlmDiagnosticModel::Outputs pa = model.session_prefill(0, A);
+  model.set_walk_capture(nullptr);
+  const auto steps_a = steps_from(0, pa);
+  model.session_close(0);
+  model.set_walk_capture(&cb);
+  const GlmDiagnosticModel::Outputs pb = model.session_prefill(1, B);
+  model.set_walk_capture(nullptr);
+  const auto steps_b = steps_from(1, pb);
+  model.session_close(1);
+  model.set_walk_capture(&cg);
+  const std::vector<GlmDiagnosticModel::Outputs> g = model.session_prefill_group({0, 1}, {&A, &B});
+  model.set_walk_capture(nullptr);
+  const auto gsteps_a = steps_from(0, g[0]);
+  const auto gsteps_b = steps_from(1, g[1]);
+  model.session_close(0);
+  model.session_close(1);
+  int first_step_bad_a = -1, first_step_bad_b = -1;
+  for (int s = 0; s < kSteps; ++s) {
+    if (first_step_bad_a < 0 && gsteps_a[static_cast<size_t>(s)] != steps_a[static_cast<size_t>(s)]) first_step_bad_a = s;
+    if (first_step_bad_b < 0 && gsteps_b[static_cast<size_t>(s)] != steps_b[static_cast<size_t>(s)]) first_step_bad_b = s;
+  }
+  DGPP_LOG_INFO("rank {} group check: {} eager greedy steps off the group's cache vs the solo cache: span A {}, span B {}",
+                rank, kSteps, first_step_bad_a < 0 ? std::string("bitwise") : "first differing step " + std::to_string(first_step_bad_a),
+                first_step_bad_b < 0 ? std::string("bitwise") : "first differing step " + std::to_string(first_step_bad_b));
+  const size_t la = A.size(), lb = B.size();
+  if (ca.size() != cg.size() || cb.size() != cg.size() || cg.empty()) {
+    DGPP_LOG_ERROR("rank {} group check: capture counts {} / {} / {}", rank, ca.size(), cb.size(), cg.size());
+    return 2;
+  }
+  const size_t elems = cg[0].size() / (la + lb);
+  const auto bf = [](uint16_t b) {
+    const uint32_t u = static_cast<uint32_t>(b) << 16;
+    float f;
+    std::memcpy(&f, &u, 4);
+    return f;
+  };
+  int bad_sites = 0;
+  for (size_t s = 0; s < cg.size(); ++s) {
+    for (int span = 0; span < 2; ++span) {
+      const std::vector<uint16_t>& solo = span == 0 ? ca[s] : cb[s];
+      const size_t rows = span == 0 ? la : lb, off = span == 0 ? 0 : la * elems;
+      size_t n = 0, first_row = rows, last_row = 0;
+      float worst = 0.f;
+      for (size_t r = 0; r < rows; ++r)
+        for (size_t i = 0; i < elems; ++i) {
+          const uint16_t x = cg[s][off + r * elems + i], y = solo[r * elems + i];
+          if (x != y) {
+            ++n;
+            first_row = std::min(first_row, r);
+            last_row = std::max(last_row, r);
+            worst = std::max(worst, std::abs(bf(x) - bf(y)));
+          }
+        }
+      if (n == 0) continue;
+      if (bad_sites < 8)
+        DGPP_LOG_INFO("rank {} group check: site {} ({}, layer {}) span {}: {} of {} elements differ, rows {}..{} of {}, max abs {:.3g}",
+                      rank, s, s == 0 ? "embedding" : ((s - 1) % 2 ? "FFN" : "attention"),
+                      s == 0 ? 0 : (s - 1) / 2, span == 0 ? "A" : "B", n, rows * elems, first_row, last_row,
+                      rows, worst);
+      ++bad_sites;
+    }
+  }
+  const auto logit_diff = [](const std::vector<float>& x, const std::vector<float>& y) {
+    size_t n = 0;
+    float worst = 0.f;
+    for (size_t i = 0; i < x.size() && i < y.size(); ++i)
+      if (x[i] != y[i]) {
+        ++n;
+        worst = std::max(worst, std::abs(x[i] - y[i]));
+      }
+    return std::make_pair(n, worst);
+  };
+  const auto da = logit_diff(g[0].logits, pa.logits), db = logit_diff(g[1].logits, pb.logits);
+  DGPP_LOG_INFO("rank {} group check: {} + {} rows, {} sites, {} span-sites with differences; last-row logits "
+                "(this rank's {} vocab rows): A {} differ (max abs {:.3g}), B {} differ (max abs {:.3g})",
+                rank, la, lb, cg.size(), bad_sites, g[0].logits.size(), da.first, da.second, db.first, db.second);
+  return (bad_sites == 0 && da.first == 0 && db.first == 0 && first_step_bad_a < 0 && first_step_bad_b < 0) ? 0 : 2;
+}
 
 const char* sched_status_name(const dgpp::sched::Scheduler::Result& r) {
   using S = dgpp::sched::Scheduler::Result::Status;
@@ -1242,7 +1352,8 @@ int run(const GlmTextConfig& cfg, const std::string& ckpt, int world,
     steps = static_cast<int>(teacher.size());
     no_eos = true;
   }
-  const int max_tokens = static_cast<int>(prompt.size()) + steps + 1;
+  // The group check walks both prompts as one chunk.
+  const int max_tokens = static_cast<int>(prompt.size() + g_group_check_b_tokens.size()) + steps + 1;
   // --kv-capacity overrides the pool bound here too (0 = the historical
   // default); the model rounds it up to a block multiple.
   const int64_t cache =
@@ -1457,7 +1568,8 @@ int run(const GlmTextConfig& cfg, const std::string& ckpt, int world,
         cfg, ckpt, max_tokens, cache, &reducer, rank, world,
         resident ? dgpp::GlmResidency::Resident
                  : dgpp::GlmResidency::Streaming,
-        dgpp::GlmHeadSharding::VocabSharded, /*max_requests=*/1, mtp);
+        dgpp::GlmHeadSharding::VocabSharded,
+        /*max_requests=*/g_group_check_b_tokens.empty() ? 1 : 2, mtp);
     if (g_gr_probe_layers > 0) model.set_gr_probe_layers(g_gr_probe_layers);
     const double construct_s = std::chrono::duration<double>(
                                    std::chrono::steady_clock::now() -
@@ -1466,6 +1578,11 @@ int run(const GlmTextConfig& cfg, const std::string& ckpt, int world,
     DGPP_LOG_INFO("rank {} model constructed in {:.1f}s ({}{})", rank,
                   construct_s, resident ? "resident" : "streaming",
                   mtp ? ", + MTP draft layer" : "");
+    if (!g_group_check_b_tokens.empty()) {
+      const int rc = run_group_check(model, rank, prompt, g_group_check_b_tokens);
+      bus->stop();
+      return rc;
+    }
 
     std::vector<int64_t> toks = prompt;
     std::vector<int64_t> generated;
@@ -1843,6 +1960,7 @@ int main(int argc, char** argv) {
     else if (a == "--streaming") resident = false;
     else if (a == "--step-timing") step_timing = true;
     else if (a == "--gr-probe") g_gr_probe_layers = std::stoi(next());
+    else if (a == "--group-check-b") g_group_check_b = next();
     else if (a == "--decode-graph") decode_graph = true;
     else if (a == "--mtp") mtp = true;
     else if (a == "--engine") {
@@ -2118,6 +2236,11 @@ int main(int argc, char** argv) {
       require(!prompt.empty(), "--text produced no tokens");
     } else {
       prompt = parse_prompt_ids(prompt_text, cfg.vocab_size);
+    }
+    if (!g_group_check_b.empty()) {
+      g_group_check_b_tokens = tok.encode(g_group_check_b);
+      require(!g_group_check_b_tokens.empty(), "--group-check-b produced no tokens");
+      DGPP_LOG_INFO("group check: prompt B encoded to {} ids", g_group_check_b_tokens.size());
     }
     std::vector<int64_t> teacher;
     if (!teacher_file.empty()) {

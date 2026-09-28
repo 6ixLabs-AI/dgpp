@@ -247,6 +247,17 @@ Scheduler::PrefixPlan Scheduler::plan_prefix(const Request& r) const {
   return plan;
 }
 
+std::vector<int64_t> Scheduler::cut_boundaries(const Request& r) const {
+  std::vector<int64_t> out;
+  if (!cache_on(r)) return out;
+  const int64_t align = cache_.config().align;
+  for (const int64_t b : r.spec.boundaries) {
+    const int64_t image = align > 0 ? (b / align) * align : b;
+    if (image >= policy_.prefix_min_tokens) out.push_back(b);
+  }
+  return out;
+}
+
 int64_t Scheduler::snapshot_blocks(int64_t position) const {
   const int64_t bt = prefix_info_.block_tokens;
   return bt > 0 && position > 0 && position % bt != 0 ? 1 : 0;
@@ -498,7 +509,6 @@ int Scheduler::admit_prepare(int arrival) {
 
 std::vector<int> Scheduler::admissible_group(int first, int64_t budget) {
   std::vector<int> group;
-  if (!policy_.prefill_group) return group;  // every cold prompt prefills alone
   const int64_t span_limit = engine_->prefill_group_span_limit();
   const int64_t total_limit = budget > 0
       ? std::min<int64_t>(engine_->prefill_group_total_limit(), budget)
@@ -593,8 +603,9 @@ void Scheduler::admit(int arrival) {
     // document cut for long prompts. The deepest cut gets an arena slot
     // first; a full arena may skip the extra snapshot.
     const PrefixPlan plan = plan_prefix(r);
+    const std::vector<int64_t> cuts = cut_boundaries(r);
     SchedulerEngine::PrefixPrefill pp;
-    pp.boundaries = &r.spec.boundaries;
+    pp.boundaries = &cuts;
     pp.images = &r.spec.images;
     int snap_slot = -1;
     if (plan.attach_entry >= 0) {
@@ -669,8 +680,9 @@ void Scheduler::admit(int arrival) {
 void Scheduler::begin_prefill(int arrival, int64_t budget) {
   Request& r = requests_[static_cast<size_t>(arrival)];
   const int slot = admit_prepare(arrival);
+  const std::vector<int64_t> cuts = cut_boundaries(r);
   SchedulerEngine::PrefixPrefill pp;
-  pp.boundaries = &r.spec.boundaries;
+  pp.boundaries = &cuts;
   pp.images = &r.spec.images;
   r.admitted_at = std::chrono::steady_clock::now();
   try {

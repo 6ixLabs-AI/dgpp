@@ -197,7 +197,9 @@ one-, three- and eight-split references, including model-level dispatch checks. 
 uses exact radix selection above 2048 pools, retaining the score arithmetic,
 tie order and workspace. QSA scoring storage follows the per-request context
 rather than the shared pool (2026-09-28), and no decode row is staged past the
-positional ceiling. Grouped Qwen continuation and
+positional ceiling. Group admission is bitwise the prefills alone (2026-09-28:
+cuts only where a snapshot can stand, the prefill head over the mirrored rows).
+Grouped Qwen continuation and
 GLM-Flash row expansion are the next targets in the
 [performance plan](docs/performance_improvement_plan.md#10-next-priorities-after-the-first-delivery).
 

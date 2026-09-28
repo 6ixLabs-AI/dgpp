@@ -47,6 +47,8 @@ void require(bool cond, const std::string& what) {
 // block reservations, and the op stream the tests pin.
 class FakeEngine : public SchedulerEngine {
  public:
+  // The boundaries the scheduler handed the last prefill (the cut rule's gate).
+  std::vector<int64_t> last_boundaries;
   FakeEngine(int slots, int64_t total_blocks, int64_t block_tokens,
              int batch_capacity = 1, bool can_sample = false)
       : slots_(slots),
@@ -180,6 +182,7 @@ class FakeEngine : public SchedulerEngine {
   int32_t prefill_cached(int req, const std::vector<int64_t>& prompt,
                          dgpp::sched::SchedulerEngine::PrefixPrefill* plan) override {
     require(plan != nullptr && plan->boundaries != nullptr, "fake: plan");
+    last_boundaries = *plan->boundaries;
     if (plan->attach_slot >= 0) {
       require(pinned_.count(plan->attach_slot) != 0, "fake: attach from an empty arena slot");
       require(pinned_positions_[plan->attach_slot] == plan->attach_position,
@@ -445,6 +448,7 @@ class ChunkFakeEngine : public FakeEngine {
   int64_t prefill_group_total_limit() const override { return 32; }
   void begin_prefill(int req, const std::vector<int64_t>& prompt, int64_t reserved,
                      int64_t budget, const PrefixPrefill& plan) override {
+    if (plan.boundaries) last_boundaries = *plan.boundaries;
     auto copy = plan;
     const int32_t first = plan.attach_slot >= 0 || plan.snap_slot >= 0 ||
                                   plan.body_snap_slot >= 0 || plan.head_snap_slot >= 0
@@ -619,6 +623,38 @@ DGPP_TEST(scheduler_chunked_prefill_yields_reservation_to_older_decode) {
           "partial work is counted and the reservation is released");
 }
 
+DGPP_TEST(scheduler_prefill_cuts_only_where_a_snapshot_can_stand) {
+  // GIVEN a 40-token prompt with structural boundaries at 4, 8 and 32 and a
+  // chunked engine, WHEN the entry floor sits at 16, THEN the engine cuts
+  // at 32 only (its aligned image clears the floor); with the floor at 0
+  // every boundary cuts, and with the cache off none does — a cut a
+  // snapshot never stands on made the cold walk differ from a group walk.
+  for (const int variant : {0, 1, 2}) {
+    ChunkFakeEngine engine;
+    if (variant != 2) engine.set_prefix_arena(4, 2, 4);
+    engine.arm(0, {10, 11}, 2);
+    dgpp::sched::AdmissionPolicy policy;
+    policy.prefill_budget_tokens = 16;
+    policy.prefix_min_tokens = variant == 1 ? 16 : 0;
+    Scheduler sched(&engine, {}, 0, policy, variant == 2 ? 0 : -1);
+    SchedulerRequest request;
+    request.id = "cuts";
+    request.prompt.assign(40, 3);
+    request.max_steps = 2;
+    request.boundaries = {4, 8, 32};
+    sched.submit(request);
+    sched.tick();
+    const std::vector<int64_t> want = variant == 0   ? std::vector<int64_t>{4, 8, 32}
+                                      : variant == 1 ? std::vector<int64_t>{32}
+                                                     : std::vector<int64_t>{};
+    require(engine.last_boundaries == want,
+            "variant " + std::to_string(variant) + ": the engine cuts at " +
+                std::to_string(engine.last_boundaries.size()) + " boundaries, expected " +
+                std::to_string(want.size()));
+    sched.run_to_completion();
+  }
+}
+
 DGPP_TEST(scheduler_chunked_prefill_cancel_at_each_yield_releases_cache_and_reservations) {
   for (const int chunks : {1, 2}) {
     ChunkFakeEngine engine;
@@ -738,36 +774,6 @@ DGPP_TEST(scheduler_chunked_prefill_budget_rejects_unsupported_and_unaligned_con
     catch (const std::invalid_argument&) { rejected = true; }
     require(rejected, "idle budget requires enabled, ordered, aligned budgets within scratch capacity");
   }
-}
-
-DGPP_TEST(scheduler_groupPrefill_offAdmitsQueuedShortPromptsOneByOne) {
-  // GIVEN the same three queued 5-token prompts and an engine that takes
-  // groups, but a policy with prefill_group off (the serve app's default):
-  // no prompt shares a walk with a co-arrival — no PG op, three solo P ops
-  // — so its rows compute exactly as they would with nobody else queued.
-  // Four-token episodes keep all three live while the one-per-tick
-  // admissions land, so each takes its own slot.
-  GroupFakeEngine engine(/*slots=*/3, /*total_blocks=*/100, /*block_tokens=*/4, /*span=*/8, /*total=*/64);
-  engine.arm(0, {1, 2, 3, 4}, /*max_steps=*/4);
-  engine.arm(1, {4, 5, 6, 7}, /*max_steps=*/4);
-  engine.arm(2, {7, 8, 9, 10}, /*max_steps=*/4);
-  dgpp::sched::AdmissionPolicy policy;
-  policy.prefill_group = false;
-  Scheduler sched(&engine, {kEos}, 0, policy);
-  sched.submit(make_request("a", 5, 4));
-  sched.submit(make_request("b", 5, 4));
-  sched.submit(make_request("c", 5, 4));
-  sched.run_to_completion();
-  const std::string got = engine.op_stream();
-  require(got.find("PG:") == std::string::npos, "no group admission with prefill_group off:\n  got: " + got);
-  require(got.rfind("P:0:5", 0) == 0 && got.find("P:1:5") != std::string::npos &&
-              got.find("P:2:5") != std::string::npos,
-          "every prompt prefills alone:\n  got: " + got);
-  require(sched.results().size() == 3, "three results");
-  require(ids_joined(sched.results()[0].generated) == "1,2,3,4" &&
-              ids_joined(sched.results()[1].generated) == "4,5,6,7" &&
-              ids_joined(sched.results()[2].generated) == "7,8,9,10",
-          "each prompt's own episode, in its own slot");
 }
 
 DGPP_TEST(scheduler_groupPrefill_admitsQueuedShortPromptsTogether) {

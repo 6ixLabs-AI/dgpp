@@ -423,18 +423,7 @@ void test_journal_codec() {
     require(entry_warm.admission == entry_policy && fixed_warm.admission.prefix_min_tokens == 0 &&
                 !fixed_warm.admission.prefix_head_snapshots,
             "the prefix entry floor and the head cut round-trip; old records carry neither");
-    // The group-admission switch (2026-09-28) rides the warm record too:
-    // off is the tag, absent is on — what every earlier rank 0 ran.
-    dgpp::sched::AdmissionPolicy solo_policy;
-    solo_policy.prefill_group = false;
-    const std::string solo_line = dgpp::serve::encode_journal_warm(solo_policy);
-    require(solo_line.find("\"pgroup\":0") != std::string::npos &&
-                dgpp::serve::encode_journal_warm(entry_policy).find("pgroup") == std::string::npos,
-            "the group switch is written only when off");
-    require(!dgpp::serve::decode_journal_line(solo_line).admission.prefill_group &&
-                entry_warm.admission.prefill_group && fixed_warm.admission.prefill_group,
-            "prefill_group round-trips; old records decode to grouping on");
-    for (const std::string bad : {R"("pmin":-1)", R"("phead":2)", R"("pgroup":2)"}) {
+    for (const std::string bad : {R"("pmin":-1)", R"("phead":2)"}) {
       bool rejected = false;
       try {
         (void)dgpp::serve::decode_journal_line(R"({"op":"warm","adm":0,"win":256,)" + bad + "}");
@@ -519,14 +508,6 @@ void test_journal_codec() {
       const auto decoded = dgpp::serve::decode_journal_line(line);
       require(decoded.world_settings.prefix_min_tokens == 0 && !decoded.world_settings.prefix_head_snapshots,
               "codec: absent entry policy decodes to off");
-      require(line.find("\"pgroup\"") == std::string::npos && decoded.world_settings.prefill_group,
-              "codec: an absent group switch decodes to on (what every earlier rank 0 ran)");
-      auto solo = ws;
-      solo.prefill_group = false;
-      const std::string solo_line = dgpp::serve::encode_journal_settings(solo);
-      require(solo_line.find("\"pgroup\":0") != std::string::npos &&
-                  !dgpp::serve::decode_journal_line(solo_line).world_settings.prefill_group,
-              "codec: the group switch off round-trips");
     }
     for (int budget : {-1, 0, 256}) {
       auto settings = ws;

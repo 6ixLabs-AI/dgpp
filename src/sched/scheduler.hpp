@@ -399,19 +399,10 @@ struct AdmissionPolicy {
   // prompt, or the turn after a client compacted its history, attaches.
   int prefix_min_tokens = 0;
   bool prefix_head_snapshots = false;
-  // Group admission (2026-09-28): co-queued cold prompts within the engine's
-  // span limit share one prefill walk (admissible_group). A span's rows in
-  // that walk are tolerance-equal, not bitwise, to its prefill alone (the
-  // row-count-dependent kernel choices of the whole-walk sites), and whether
-  // two arrivals share a tick is timing — so with grouping on, greedy
-  // transcripts at concurrency depend on co-arrivals. The scheduler's own
-  // default keeps every existing op stream; the serve app defaults it off.
-  bool prefill_group = true;
   bool operator==(const AdmissionPolicy& o) const {
     return mode == o.mode && window_tokens == o.window_tokens && prefill_budget_tokens == o.prefill_budget_tokens &&
            prefill_idle_budget_tokens == o.prefill_idle_budget_tokens &&
-           prefix_min_tokens == o.prefix_min_tokens && prefix_head_snapshots == o.prefix_head_snapshots &&
-           prefill_group == o.prefill_group;
+           prefix_min_tokens == o.prefix_min_tokens && prefix_head_snapshots == o.prefix_head_snapshots;
   }
   bool operator!=(const AdmissionPolicy& o) const { return !(*this == o); }
   static const char* name(Mode m) {
@@ -643,6 +634,13 @@ class Scheduler {
            (r.spec.images.empty() || engine_->supports_image_prefix_cache());
   }
   PrefixPlan plan_prefix(const Request& r) const;
+  // The structural boundaries the engine's cold prefill cuts at (2026-09-28):
+  // only where this deployment can take a snapshot — the cache on and the
+  // boundary's aligned image at or past the entry floor — so a cache hit
+  // and a miss are the same walk. A cut a snapshot never stands on served
+  // nothing and made a prompt's cold walk differ from its rows in a group
+  // walk (the DSA sites are not split-invariant).
+  std::vector<int64_t> cut_boundaries(const Request& r) const;
   void finish_prefill_snapshot(Request& r, int slot, int64_t position, bool taken,
                                bool head = false);
   // The pool block a snapshot's private partial-block copy takes: one when

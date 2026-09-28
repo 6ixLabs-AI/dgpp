@@ -97,7 +97,7 @@ DGPP_TEST(cluster_config_parses_fills_defaults_and_derives_the_world) {
     "engine": {"max_concurrency": 2, "decode_graph": true, "prefix_cache_gib": 0.5,
                "admission": "grow", "stats_interval_s": 0, "mtp_depth": 2, "prefill": "exact",
                "prefill_budget_tokens": 256, "prefill_idle_budget_tokens": 2048,
-               "prefix_min_tokens": 512, "prefix_head_snapshots": false, "prefill_group": true},
+               "prefix_min_tokens": 512, "prefix_head_snapshots": false},
     "paths": {"log_dir": "/var/log/dgpp"}
   })";
   const dgpp::serve::ClusterConfig c = dgpp::serve::parse_cluster_config(json, "t");
@@ -110,7 +110,7 @@ DGPP_TEST(cluster_config_parses_fills_defaults_and_derives_the_world) {
               c.engine.mtp_depth == 2 && c.engine.prefix_cache_gib == 0.5 &&
               c.engine.admission == "grow" && c.engine.stats_interval_s == 0.0 && c.engine.prefill == "exact" &&
               c.engine.prefill_budget_tokens == 256 && c.engine.prefill_idle_budget_tokens == 2048 &&
-              c.engine.prefix_min_tokens == 512 && !c.engine.prefix_head_snapshots && c.engine.prefill_group,
+              c.engine.prefix_min_tokens == 512 && !c.engine.prefix_head_snapshots,
           "the given engine knobs");
   // The engine defaults are the binary's flag defaults — one set of defaults.
   require(c.engine.kv_capacity == 8192 && c.engine.default_max_tokens == 256 &&
@@ -273,8 +273,6 @@ DGPP_TEST(cluster_config_refusesUnknownKeysAndBadValuesByName) {
        "'engine.prefix_min_tokens' must be in [0, 1073741824]"},
       {R"({"model":"m","nodes":["h"],"engine":{"prefix_head_snapshots":"yes"}})",
        "'engine.prefix_head_snapshots' must be true or false"},
-      {R"({"model":"m","nodes":["h"],"engine":{"prefill_group":"yes"}})",
-       "'engine.prefill_group' must be true or false"},
       {R"({"model":"m","nodes":["h"],"engine":{"kv_dtype":"int8"}})",
        "'engine.kv_dtype' must be \"bf16\", \"fp8\" or \"fp4\""},
       {R"({"model":"m","nodes":["h"],"engine":{"kv_dtype":8}})",
