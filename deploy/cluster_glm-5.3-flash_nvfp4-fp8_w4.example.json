@@ -14,7 +14,7 @@
     "prefill_budget_tokens": 256,
     "prefill_idle_budget_tokens": 2048,
     "mtp": true,
-    "prefix_cache_gib": 8,
+    "prefix_cache_gib": 22,
     "admission": "full",
     "admission_window": 256,
     "sampling_candidates": 128,
