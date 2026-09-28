@@ -2510,6 +2510,7 @@ void GenerationService::route_metrics(HttpResponseWriter& w) {  Scheduler::Meter
   append_json_int(&out, sched_.admission_policy().prefill_budget_tokens);
   out.append(",\"prefill_idle_budget_tokens\":");
   append_json_int(&out, sched_.admission_policy().prefill_idle_budget_tokens);
+  out.append(sched_.admission_policy().prefill_group ? ",\"prefill_group\":true" : ",\"prefill_group\":false");
   out.append("}");
   out.append(",\"tokens_out\":");
   append_json_int(&out, static_cast<int64_t>(st.tokens_out));

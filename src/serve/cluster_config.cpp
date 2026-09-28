@@ -301,6 +301,7 @@ ClusterConfig parse_cluster_config(const std::string& json, const std::string& w
           if (e.prefix_cache_gib < 0.0) fail(what, "'" + ek + "' must be >= 0 (0 turns the cache off)");
         } else if (p.key == "prefix_min_tokens") e.prefix_min_tokens = static_cast<int>(integer(x, ek, what, 0, 1 << 30));
         else if (p.key == "prefix_head_snapshots") e.prefix_head_snapshots = boolean(x, ek, what);
+        else if (p.key == "prefill_group") e.prefill_group = boolean(x, ek, what);
         else if (p.key == "admission") {
           e.admission = text(x, ek, what);
           if (e.admission != "full" && e.admission != "grow")

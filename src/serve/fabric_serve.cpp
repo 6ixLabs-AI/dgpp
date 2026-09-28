@@ -350,6 +350,7 @@ std::string encode_journal_warm(const dgpp::sched::AdmissionPolicy& policy,
   if (policy.prefill_idle_budget_tokens > 0) out += ",\"pfidle\":" + std::to_string(policy.prefill_idle_budget_tokens);
   if (policy.prefix_min_tokens > 0) out += ",\"pmin\":" + std::to_string(policy.prefix_min_tokens);
   if (policy.prefix_head_snapshots) out += ",\"phead\":1";
+  if (!policy.prefill_group) out += ",\"pgroup\":0";
   if (!config_digest.empty()) {
     out += ",\"cfg\":";
     append_json_string(&out, config_digest);
@@ -377,6 +378,7 @@ std::string encode_journal_settings(const WorldSettings& s) {
   if (s.prefill_idle_budget_tokens > 0) out += ",\"pfidle\":" + std::to_string(s.prefill_idle_budget_tokens);
   if (s.prefix_min_tokens > 0) out += ",\"pmin\":" + std::to_string(s.prefix_min_tokens);
   if (s.prefix_head_snapshots) out += ",\"phead\":1";
+  if (!s.prefill_group) out += ",\"pgroup\":0";
   out += std::format(",\"win\":{},\"pace\":{:.17g},\"inflight\":{},\"rdv\":{},\"stats\":{:.17g},\"ric\":{},\"kvdt\":",
       s.admission_window, s.bulk_pace_gbps, s.bulk_inflight, s.rendezvous_timeout_ms,
       s.stats_interval_s, s.reasoning_in_content ? 1 : 0);
@@ -551,6 +553,7 @@ JournalRecord decode_journal_line(std::string_view line) {
       s.prefix_min_tokens = static_cast<int>(pmin->as_int());
     }
     if (v.find("phead")) s.prefix_head_snapshots = flag("phead");
+    if (v.find("pgroup")) s.prefill_group = flag("pgroup");
     s.bulk_pace_gbps = num("pace").as_double();
     s.bulk_inflight = static_cast<int>(num("inflight").as_int());
     s.rendezvous_timeout_ms = static_cast<int>(num("rdv").as_int());
@@ -647,6 +650,11 @@ JournalRecord decode_journal_line(std::string_view line) {
         if (!phead->is_number() || (phead->as_int() != 0 && phead->as_int() != 1))
           throw std::runtime_error("journal: warm record with a bad head-cut flag");
         rec.admission.prefix_head_snapshots = phead->as_int() == 1;
+      }
+      if (const auto* pgroup = v.find("pgroup")) {
+        if (!pgroup->is_number() || (pgroup->as_int() != 0 && pgroup->as_int() != 1))
+          throw std::runtime_error("journal: warm record with a bad group-admission flag");
+        rec.admission.prefill_group = pgroup->as_int() == 1;
       }
     }
     if (const dgpp::minijson::Value* pc = v.find("pc")) {

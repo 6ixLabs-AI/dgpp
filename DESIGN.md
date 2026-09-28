@@ -1629,6 +1629,23 @@ read every row keep the full head. `DGPP_PREFILL_HEAD_ALL_ROWS=1` restores
 the full head for comparison. The [prefill-head record](benchmarks/results/2026-09-24-pr43-prefill-head.md)
 describes the regression checks across the 128-row dispatch boundary.
 
+*Group admission and reproducibility (2026-09-28).* The scheduler can admit
+cold prompts queued in the same tick as the spans of one prefill walk
+(`admissible_group`, `session_prefill_group`); each span's attention and
+recurrent sites run over its own request's state, but the whole-walk sites
+(the dense and MoE GEMMs, the head) choose their kernels by the walk's row
+count, so a span's rows are tolerance-equal, not bitwise, to its prefill
+alone — the gates `glm_tp_group_prefill_matches_prefills_alone` and the
+full-GLM decode test say so in their tolerances. Because the grouping of two
+arrivals is a matter of which tick sees them, greedy transcripts at
+concurrency would depend on timing whenever prompts are groupable — which
+the prefix cache's entry floor made the common case for short prompts. The
+serve app therefore defaults `engine.prefill_group` off: a request's rows
+compute as they would alone, whatever arrived beside it. Turning it on buys
+the shared weight pass (two 40-token prompts in about one prompt's time)
+at the cost of run-to-run reproducibility under concurrency; batch-invariant
+kernel selection would let the two coexist.
+
 *Companions and the prefetch windows.* `WeightPrefetcher::add` coalesces a
 window's adds and bridges holes of up to 2 MB between them — a read of
 whatever lies between, which inside one layer image is a neighbouring tensor

@@ -498,6 +498,7 @@ int Scheduler::admit_prepare(int arrival) {
 
 std::vector<int> Scheduler::admissible_group(int first, int64_t budget) {
   std::vector<int> group;
+  if (!policy_.prefill_group) return group;  // every cold prompt prefills alone
   const int64_t span_limit = engine_->prefill_group_span_limit();
   const int64_t total_limit = budget > 0
       ? std::min<int64_t>(engine_->prefill_group_total_limit(), budget)

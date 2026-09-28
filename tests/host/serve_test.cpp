@@ -3035,7 +3035,7 @@ DGPP_TEST(serve_admission_growPolicyShedsTheYoungestWithFinishLength) {
     m.send_all("GET /v1/metrics HTTP/1.1\r\nHost: t\r\n\r\n");
     const std::string metrics = m.read_until("\"admission\"", 2000);
     require(metrics.find("\"requests_shed_pool\":1") != std::string::npos &&
-                metrics.find("\"admission\":{\"mode\":\"grow\",\"window\":8,\"prefill_budget_tokens\":0,\"prefill_idle_budget_tokens\":0}") !=
+                metrics.find("\"admission\":{\"mode\":\"grow\",\"window\":8,\"prefill_budget_tokens\":0,\"prefill_idle_budget_tokens\":0,\"prefill_group\":true}") !=
                     std::string::npos &&
                 metrics.find("\"reservations_grown\":0") == std::string::npos,
             "metrics: the shed, the policy, the growth: " + metrics.substr(0, 500));
@@ -3044,7 +3044,7 @@ DGPP_TEST(serve_admission_growPolicyShedsTheYoungestWithFinishLength) {
   Client m(plain.port());
   m.send_all("GET /v1/metrics HTTP/1.1\r\nHost: t\r\n\r\n");
   require(m.read_until("\"admission\"", 2000).find(
-              "\"admission\":{\"mode\":\"full\",\"window\":256,\"prefill_budget_tokens\":0,\"prefill_idle_budget_tokens\":0}") != std::string::npos,
+              "\"admission\":{\"mode\":\"full\",\"window\":256,\"prefill_budget_tokens\":0,\"prefill_idle_budget_tokens\":0,\"prefill_group\":true}") != std::string::npos,
           "the default policy is full-reserve");
 }
 

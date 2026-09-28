@@ -740,6 +740,36 @@ DGPP_TEST(scheduler_chunked_prefill_budget_rejects_unsupported_and_unaligned_con
   }
 }
 
+DGPP_TEST(scheduler_groupPrefill_offAdmitsQueuedShortPromptsOneByOne) {
+  // GIVEN the same three queued 5-token prompts and an engine that takes
+  // groups, but a policy with prefill_group off (the serve app's default):
+  // no prompt shares a walk with a co-arrival — no PG op, three solo P ops
+  // — so its rows compute exactly as they would with nobody else queued.
+  // Four-token episodes keep all three live while the one-per-tick
+  // admissions land, so each takes its own slot.
+  GroupFakeEngine engine(/*slots=*/3, /*total_blocks=*/100, /*block_tokens=*/4, /*span=*/8, /*total=*/64);
+  engine.arm(0, {1, 2, 3, 4}, /*max_steps=*/4);
+  engine.arm(1, {4, 5, 6, 7}, /*max_steps=*/4);
+  engine.arm(2, {7, 8, 9, 10}, /*max_steps=*/4);
+  dgpp::sched::AdmissionPolicy policy;
+  policy.prefill_group = false;
+  Scheduler sched(&engine, {kEos}, 0, policy);
+  sched.submit(make_request("a", 5, 4));
+  sched.submit(make_request("b", 5, 4));
+  sched.submit(make_request("c", 5, 4));
+  sched.run_to_completion();
+  const std::string got = engine.op_stream();
+  require(got.find("PG:") == std::string::npos, "no group admission with prefill_group off:\n  got: " + got);
+  require(got.rfind("P:0:5", 0) == 0 && got.find("P:1:5") != std::string::npos &&
+              got.find("P:2:5") != std::string::npos,
+          "every prompt prefills alone:\n  got: " + got);
+  require(sched.results().size() == 3, "three results");
+  require(ids_joined(sched.results()[0].generated) == "1,2,3,4" &&
+              ids_joined(sched.results()[1].generated) == "4,5,6,7" &&
+              ids_joined(sched.results()[2].generated) == "7,8,9,10",
+          "each prompt's own episode, in its own slot");
+}
+
 DGPP_TEST(scheduler_groupPrefill_admitsQueuedShortPromptsTogether) {
   // GIVEN three 5-token requests queued at once, 3 slots, an engine that
   // takes groups of prompts within 8 tokens: one tick admits all three in
