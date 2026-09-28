@@ -138,7 +138,7 @@ class QwenGrSite {
 class QwenGdnLayer {
  public:
   QwenGdnLayer(const QwenGdnResident& w, const QwenGemmWorkspace& gemm, const QwenTextConfig& cfg,
-               int max_tokens);
+               int max_tokens, bool swish_gate = false);
   ~QwenGdnLayer();
   QwenGdnLayer(const QwenGdnLayer&) = delete;
   QwenGdnLayer& operator=(const QwenGdnLayer&) = delete;
@@ -179,6 +179,7 @@ class QwenGdnLayer {
   QwenGemmWorkspace g_;
   int hidden_, lk_, lv_, k_dim_, v_dim_, conv_width_, max_tokens_;
   float eps_, scale_;
+  bool swish_gate_ = false;  // Qwen3.5 output gate (swish); false = sigmoid
   int64_t conv_channels_ = 0;
   uint16_t* qkv_ = nullptr;     // [M, C]
   uint16_t* qkvc_ = nullptr;    // [M, C] post-conv
@@ -279,6 +280,59 @@ class QwenQsaLayer {
   float* c_out_ = nullptr;         // [M, lh * D]
   uint16_t* o_ = nullptr;          // [M, lh * D]
   int n_split_ = 1;
+};
+
+// ---- Qwen3.5 full attention ---------------------------------------------------------
+// Plain GQA over the paged K/V cache: no indexer, no scoring/selection, no
+// ring. One cache view per layer (k/v planes only); rows reuse QwenQsaRows
+// (prefill pos0 needs no kpool multiple — no ring contract — but chunking
+// keeps it aligned anyway; decode needs req_ids/pos only, no spans).
+struct QwenFullAttnCache {
+  uint16_t* k_cache = nullptr;      // bf16 [slots, lkv * D]
+  uint16_t* v_cache = nullptr;      // bf16 [slots, lkv * D]
+  const int32_t* block_tables = nullptr;  // int32 [max_requests, blocks_per_request]
+  int block_tokens = 0;
+  int blocks_per_request = 0;
+  int max_requests = 0;
+  int64_t slots() const { return static_cast<int64_t>(block_tokens) * blocks_per_request; }
+};
+
+class QwenFullAttnLayer {
+ public:
+  QwenFullAttnLayer(const QwenFullAttnResident& w, const QwenGemmWorkspace& gemm,
+                    const QwenTextConfig& cfg, int max_tokens);
+  ~QwenFullAttnLayer();
+  QwenFullAttnLayer(const QwenFullAttnLayer&) = delete;
+  QwenFullAttnLayer& operator=(const QwenFullAttnLayer&) = delete;
+  void rebind(const QwenFullAttnResident& w);
+
+  // out[T, H] = FullAttn(x[T, H]): projections, norm + RoPE, the K/V
+  // appends, dense causal attention per row, the gated output projection.
+  // The warp kernel serves prefill chunks and decode rows alike (correct at
+  // any T; a dedicated decode kernel is a later perf item, not correctness).
+  void enqueue(const uint16_t* x, int tokens, const QwenQsaRows& rows, QwenFullAttnCache& cache,
+               uint16_t* out, cudaStream_t stream);
+
+  static size_t scratch_bytes(const QwenTextConfig& cfg, int local_heads, int local_kv_heads,
+                              int max_tokens);
+  int local_heads() const { return lh_; }
+  int local_kv_heads() const { return lkv_; }
+
+ private:
+  QwenFullAttnResident w_;
+  QwenGemmWorkspace g_;
+  int hidden_, lh_, lkv_, dim_, rotary_;
+  int max_tokens_;
+  float eps_, scale_;
+  float mscale_ = 1.0f;
+  float* d_inv_freq_ = nullptr;  // [rotary/2]
+  uint16_t* q_ = nullptr;        // [M, lh * 2D]
+  uint16_t* k_ = nullptr;        // [M, lkv * D]
+  uint16_t* v_ = nullptr;        // [M, lkv * D]
+  uint16_t* qn_ = nullptr;       // [M, lh * D]
+  uint16_t* kn_ = nullptr;       // [M, lkv * D]
+  float* c_out_ = nullptr;       // [M, lh * D]
+  uint16_t* o_ = nullptr;        // [M, lh * D]
 };
 
 // ---- the n-gram embedding layer -----------------------------------------------------
