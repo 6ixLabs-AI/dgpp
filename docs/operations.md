@@ -479,20 +479,6 @@ split chunks. Short cold prompts can group up to the selected budget.
 Larger idle chunks also increase the maximum wait for cancellation or a newly
 arriving request; they do not preempt a chunk already running.
 
-`engine.prefill_group` (`--prefill-group`, `--no-prefill-group`, default off)
-lets cold prompts queued in the same tick share one prefill walk when the
-engine offers group prefill (the families on the session core). The shared
-walk reads the weights once for all of them — two 40-token prompts prefill
-in about the time of one — but a prompt's rows in it are tolerance-equal,
-not bitwise, to its prefill alone (the whole-walk sites choose kernels by
-row count), and whether two arrivals share a tick is timing. Off, every
-request's greedy transcript is the same whatever arrived beside it; on,
-transcripts at concurrency can differ run to run. It is a world setting
-pushed to every peer, shown under `/v1/metrics` `admission` as
-`prefill_group`. Prompts that take a prefix-cache plan never group, so with
-the default entry floor only prompts under `engine.prefix_min_tokens` are
-candidates.
-
 `engine.prefix_min_tokens` (`--prefix-min-tokens`, default 1024) is the prefix
 cache's entry floor: no snapshot of any kind — prefill cut, head or body cut,
 rolling or close entry — is taken below that position. A shorter prompt still
