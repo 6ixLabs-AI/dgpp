@@ -110,18 +110,22 @@ void glm_upload_i64(const int64_t* pinned_src, int64_t* dst, int count,
 
 // The decode rows' metadata from the device position: step_pos[r] =
 // *session_pos + r for r < rows (the replacement for the host's staged
-// h_step_pos_ upload in a device-driven graph).
-void glm_spec_positions(const int64_t* session_pos, int rows,
+// h_step_pos_ upload in a device-driven graph). A row at or past
+// `max_context` emits -1, the padding sentinel: a request's lifetime
+// reservation is capped at the ceiling, so the fixed-width verify's tail
+// past it lands in no K/V block, index stripe or state row.
+void glm_spec_positions(const int64_t* session_pos, int rows, int64_t max_context,
                         int64_t* step_pos, cudaStream_t stream);
 
 // Fixed slot-major row batch: request_ids[r] selects its device position;
 // the offset within that request's `rows_per_request` group is added when
 // the slot is open. A closed slot has position <= 0 and emits -1 for every
-// row, which is the shared KDA/DSA padding sentinel.
+// row, which is the shared KDA/DSA padding sentinel; so does every row at
+// or past `max_context` (see glm_spec_positions).
 void glm_spec_positions_batched(const int64_t* session_pos,
                                 const int32_t* request_ids, int rows,
-                                int rows_per_request, int64_t* step_pos,
-                                cudaStream_t stream);
+                                int rows_per_request, int64_t max_context,
+                                int64_t* step_pos, cudaStream_t stream);
 
 // The in-graph draft's rows off the verify's verdict (phase C). The draft
 // block runs a FIXED `rows` rows per step; the accepted rows are real

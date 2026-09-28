@@ -1045,6 +1045,9 @@ class GraphEngineAdapter final : public sched::SchedulerEngine {
           arena_.attach(req, plan.attach_slot);
         }
         auto cursor = std::make_shared<typename Model::PrefillCursor>([&] {
+          // The lifetime reservation: the prompt, every token the request may
+          // generate and the verify's depth - 1 trailing rows, capped at the
+          // ceiling — past it the position kernels stage padding rows.
           const auto reserved = std::min<int64_t>(reserve_tokens + std::max(0, depth_ - 1), model_->max_context());
           if constexpr (requires { model_->session_prefill_begin(req, task->prompt, reserved,
               chunk_tokens, task->boundaries, snap, plan.attach_position, &task->images); }) {

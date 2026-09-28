@@ -65,21 +65,30 @@ __global__ void spec_commit_kernel(const PickVerdict* __restrict__ verdict, int 
     dst[i] = src[i];
 }
 
+// A row at or past the context ceiling is padding (-1), like a closed
+// slot's rows: a request's lifetime reservation is capped at the ceiling,
+// so the fixed-width verify's trailing rows past it must land in no K/V
+// block, index stripe or state row. Their verdicts are past the request's
+// budget by construction (2026-09-28).
 __global__ void spec_positions_kernel(const int64_t* __restrict__ session_pos,
-                                      int rows, int64_t* __restrict__ step_pos) {
+                                      int rows, int64_t max_context,
+                                      int64_t* __restrict__ step_pos) {
   const int r = threadIdx.x;
-  if (r < rows) step_pos[r] = *session_pos + r;
+  if (r >= rows) return;
+  const int64_t p = *session_pos + r;
+  step_pos[r] = p < max_context ? p : -1;
 }
 
 __global__ void spec_positions_batched_kernel(
     const int64_t* __restrict__ session_pos,
     const int32_t* __restrict__ request_ids, int rows, int rows_per_request,
-    int64_t* __restrict__ step_pos) {
+    int64_t max_context, int64_t* __restrict__ step_pos) {
   const int r = threadIdx.x + blockIdx.x * blockDim.x;
   if (r >= rows) return;
   const int req = request_ids[r];
   const int64_t base = req >= 0 ? session_pos[req] : 0;
-  step_pos[r] = base > 0 ? base + (r % rows_per_request) : -1;
+  const int64_t p = base + (r % rows_per_request);
+  step_pos[r] = base > 0 && p < max_context ? p : -1;
 }
 
 __global__ void spec_draft_rows_kernel(const PickVerdict* __restrict__ verdict,
@@ -454,24 +463,26 @@ void glm_device_copy(void* dst, const void* src, size_t bytes,
   DGPP_CUDA_OK(cudaGetLastError());
 }
 
-void glm_spec_positions(const int64_t* session_pos, int rows,
+void glm_spec_positions(const int64_t* session_pos, int rows, int64_t max_context,
                         int64_t* step_pos, cudaStream_t stream) {
   if (rows < 1 || rows > kPickMaxRows) throw std::invalid_argument("glm_spec_positions: rows");
-  spec_positions_kernel<<<1, kPickMaxRows, 0, stream>>>(session_pos, rows, step_pos);
+  if (max_context < 1) throw std::invalid_argument("glm_spec_positions: context ceiling");
+  spec_positions_kernel<<<1, kPickMaxRows, 0, stream>>>(session_pos, rows, max_context, step_pos);
   DGPP_CUDA_OK(cudaGetLastError());
 }
 
 void glm_spec_positions_batched(const int64_t* session_pos,
                                 const int32_t* request_ids, int rows,
-                                int rows_per_request, int64_t* step_pos,
-                                cudaStream_t stream) {
+                                int rows_per_request, int64_t max_context,
+                                int64_t* step_pos, cudaStream_t stream) {
   if (session_pos == nullptr || request_ids == nullptr || step_pos == nullptr)
     throw std::invalid_argument("glm_spec_positions_batched: null argument");
   if (rows < 1 || rows > kPickMaxRows || rows_per_request < 1 ||
       rows % rows_per_request != 0)
     throw std::invalid_argument("glm_spec_positions_batched: row shape");
-  spec_positions_batched_kernel<<<1, kPickMaxRows, 0, stream>>>(session_pos, request_ids, rows,
-                                                                rows_per_request, step_pos);
+  if (max_context < 1) throw std::invalid_argument("glm_spec_positions_batched: context ceiling");
+  spec_positions_batched_kernel<<<1, kPickMaxRows, 0, stream>>>(
+      session_pos, request_ids, rows, rows_per_request, max_context, step_pos);
   DGPP_CUDA_OK(cudaGetLastError());
 }
 
