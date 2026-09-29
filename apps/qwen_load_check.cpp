@@ -25,6 +25,7 @@
 
 int main(int argc, char** argv) {
   std::string model_id, ckpt, image_dir, ngram_table, dense_weights, mtp_expert_format;
+  std::string ngram_table_dir;
   int world = 1, rank = 0, layers = -1;
   bool streaming = false, mtp = false;
   auto next = [&](int& i) -> std::string {
@@ -43,6 +44,7 @@ int main(int argc, char** argv) {
       else if (a == "--layers") layers = std::stoi(next(i));
       else if (a == "--image-dir") image_dir = next(i);
       else if (a == "--ngram-table") ngram_table = next(i);
+      else if (a == "--ngram-table-dir") ngram_table_dir = next(i);
       else if (a == "--dense-weights") dense_weights = next(i);
       else if (a == "--mtp-expert-format") mtp_expert_format = next(i);
       else throw std::runtime_error("unknown argument " + a);
@@ -59,6 +61,8 @@ int main(int argc, char** argv) {
     dgpp::QwenTextConfig cfg = dgpp::QwenTextConfig::from_json_file(cfg_path);
     if (!image_dir.empty()) dgpp::QwenLayerStream::set_resident_image_dir(image_dir == "off" ? "" : image_dir);
     if (!ngram_table.empty()) dgpp::QwenLayerStream::set_ngram_table_mmap(ngram_table == "mmap");
+    if (!ngram_table_dir.empty()) dgpp::QwenLayerStream::set_ngram_table_dir(ngram_table_dir);
+    if (cfg.dense_fp8_shipped) dgpp::QwenLayerStream::set_dense_weights_fp8(true);  // the hybrid ships fp8
     if (!dense_weights.empty()) dgpp::QwenLayerStream::set_dense_weights_fp8(dense_weights == "fp8");
     if (!mtp_expert_format.empty()) dgpp::QwenLayerStream::set_mtp_expert_format(mtp_expert_format == "bf16_fused");
     cfg.mtp_experts_bf16_fused = dgpp::QwenLayerStream::mtp_experts_bf16_fused();

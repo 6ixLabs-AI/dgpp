@@ -81,6 +81,38 @@ bool env_prefetch_form_lines() {
   return lines;
 }
 
+// The touch form (2026-09-29, the Qwen depth-3 profiles with the prefetch on
+// against off): of the ~3.9 GB a pass prefetched, the consumers found
+// 96 MB in L2 — yet they ran ~10 % slower without it. What the prefetch
+// delivered was the TRANSLATIONS: a 65 GB working set walks 32K 2 MB
+// pages per pass through a walker every SM shares, and the consumer that
+// finds its pages already walked runs at the isolated rate. This form
+// touches one 128-byte line per DGPP_L2_PREFETCH_TOUCH_KB (default 64 KB:
+// 1/512 of the bytes) so the walks happen ahead of the consumer while the
+// DRAM stays free for it. DGPP_L2_PREFETCH_FORM=touch.
+bool env_prefetch_form_touch() {
+  static const bool touch = [] {
+    const char* v = std::getenv("DGPP_L2_PREFETCH_FORM");
+    return v != nullptr && std::string(v) == "touch";
+  }();
+  return touch;
+}
+size_t env_touch_stride_bytes() {
+  static const size_t stride = [] {
+    const char* v = std::getenv("DGPP_L2_PREFETCH_TOUCH_KB");
+    if (v == nullptr) return size_t{64} << 10;
+    const long kb = std::strtol(v, nullptr, 10);
+    return (kb >= 1 && kb <= (1 << 20)) ? static_cast<size_t>(kb) << 10 : size_t{64} << 10;
+  }();
+  return stride;
+}
+__global__ __launch_bounds__(kThreads) void l2_touch_pages_kernel(const uint8_t* __restrict__ p, size_t touches,
+                                                                 size_t stride_bytes) {
+  const size_t stride = static_cast<size_t>(gridDim.x) * kThreads;
+  for (size_t i = static_cast<size_t>(blockIdx.x) * kThreads + threadIdx.x; i < touches; i += stride)
+    asm volatile("prefetch.global.L2 [%0];" ::"l"(p + i * stride_bytes));
+}
+
 bool env_is_off(const char* name) {
   const char* v = std::getenv(name);
   return v != nullptr && std::string(v) == "off";
@@ -160,6 +192,11 @@ void launch_l2_prefetch(const void* ptr, size_t bytes, PrefetchRate rate,
   }
   if (rate == PrefetchRate::Full) {
     l2_prefetch_kernel<kFullUnroll><<<kFullBlocks, kThreads, 0, stream>>>(p, vecs);
+  } else if (env_prefetch_form_touch()) {
+    const size_t sb = env_touch_stride_bytes();
+    const size_t touches = (end - begin + sb - 1) / sb;
+    l2_touch_pages_kernel<<<static_cast<unsigned>(std::min<size_t>(light_blocks(), (touches + kThreads - 1) / kThreads)),
+                            kThreads, 0, stream>>>(reinterpret_cast<const uint8_t*>(begin), touches, sb);
   } else if (env_prefetch_form_lines()) {
     const size_t lines = (end - begin + 127) / 128;
     l2_prefetch_lines_kernel<<<light_blocks(), kThreads, 0, stream>>>(

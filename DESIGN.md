@@ -1885,7 +1885,7 @@ not broadcast an accepted count: every rank folds the identical
 candidate table and computes the identical verdict (`judge_verify`); the
 pick's readback check pins the equality.
 
-**The draft depth (2026-09-06).** `engine.mtp_depth` (1–3) makes the
+**The draft depth (2026-09-06).** `engine.mtp_depth` (1–5) makes the
 verify 1 + depth rows and the block propose the later drafts by recursion:
 after its rows off the verdict (the head at the last accepted row gives
 draft 1), it runs one more row per further draft at the position after
@@ -2005,8 +2005,8 @@ and fallback against the same sampling oracle, including count tables and
 subsequent draft state. Greedy MTP is checked for transcript identity;
 sampled runs are checked against the corresponding speculative algorithm.
 
-`engine.mtp_depth` selects 1–3 draft tokens. GLM-5.3 and Qwen use scalar
-graphs beyond depth 1. GLM-4.7 supports deeper batched draft chains within
+`engine.mtp_depth` selects 1–5 draft tokens. GLM-5.3 uses scalar graphs
+beyond depth 1. Qwen and GLM-4.7 support deeper batched draft chains within
 its runtime row limit. Depth 1 remains the default because extra verify
 rows read more expert weights, and higher acceptance does not always
 offset that cost. See [the MTP guide](docs/mtp.md) and

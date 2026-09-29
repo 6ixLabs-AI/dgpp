@@ -1,0 +1,27 @@
+NVIDIA GB10: 48 SMs, L2 24 MiB, ring 512 MiB per shape, floor rate 233.6 GB/s, 40 launches per cell
+out_proj fp8 [2560 x 6144] scale_gemv          rows 1      72.8 us   215.9 GB/s  floor    67.3 us   92.4 %  gap    5.5 us
+out_proj fp8 [2560 x 6144] scale_gemv          rows 2      68.6 us   229.4 GB/s  floor    67.3 us   98.2 %  gap    1.2 us
+out_proj fp8 [2560 x 6144] scale_gemv          rows 4      68.5 us   229.5 GB/s  floor    67.3 us   98.2 %  gap    1.2 us
+gdn qkv+z fp8 multi [10240+6144 x 2560]        rows 1     166.0 us   252.6 GB/s  floor   179.6 us  108.1 %  gap  -13.5 us
+gdn qkv+z fp8 multi [10240+6144 x 2560]        rows 2     176.5 us   237.6 GB/s  floor   179.6 us  101.7 %  gap   -3.0 us
+gdn qkv+z fp8 multi [10240+6144 x 2560]        rows 4     167.1 us   251.0 GB/s  floor   179.6 us  107.5 %  gap  -12.5 us
+qsa q+k+v fp8 multi [12288+512+512 x 2560]     rows 1     136.6 us   249.4 GB/s  floor   145.9 us  106.8 %  gap   -9.2 us
+qsa q+k+v fp8 multi [12288+512+512 x 2560]     rows 2     136.2 us   250.2 GB/s  floor   145.9 us  107.1 %  gap   -9.7 us
+qsa q+k+v fp8 multi [12288+512+512 x 2560]     rows 4     137.2 us   248.5 GB/s  floor   145.9 us  106.4 %  gap   -8.7 us
+gr down+inject bf16 [320+4 x 10240]            rows 1      32.6 us   203.8 GB/s  floor    28.4 us   87.3 %  gap    4.2 us
+gr down+inject bf16 [320+4 x 10240]            rows 2      32.6 us   203.4 GB/s  floor    28.4 us   87.1 %  gap    4.2 us
+gr down+inject bf16 [320+4 x 10240]            rows 4      31.8 us   208.9 GB/s  floor    28.4 us   89.4 %  gap    3.4 us
+gr up bf16 [10240 x 320] bf16_gemv             rows 1      30.8 us   212.6 GB/s  floor    28.1 us   91.0 %  gap    2.8 us
+gr up bf16 [10240 x 320] bf16_gemv             rows 2      30.6 us   213.9 GB/s  floor    28.1 us   91.6 %  gap    2.6 us
+gr up bf16 [10240 x 320] bf16_gemv             rows 4      31.7 us   206.5 GB/s  floor    28.1 us   88.4 %  gap    3.7 us
+gr norm_down+inject bf16 one row (draft)       rows 1      43.9 us   151.3 GB/s  floor    28.4 us   64.8 %  gap   15.5 us
+gr act_up bf16 one row (draft)                 rows 1      31.6 us   207.6 GB/s  floor    28.1 us   88.8 %  gap    3.5 us
+shared tail fp8 [2x640 x 2560] + [2560 x 640]  rows 1      34.2 us   143.5 GB/s  floor    21.0 us   61.5 %  gap   13.2 us
+shared tail fp8 [2x640 x 2560] + [2560 x 640]  rows 2      35.0 us   140.6 GB/s  floor    21.0 us   60.2 %  gap   13.9 us
+shared tail fp8 [2x640 x 2560] + [2560 x 640]  rows 4      38.4 us   128.1 GB/s  floor    21.0 us   54.9 %  gap   17.3 us
+draft q+k+v bf16 multi [12288+512+512 x 2560]  rows 1     274.5 us   248.3 GB/s  floor   291.8 us  106.3 %  gap  -17.3 us
+draft o bf16 [2560 x 6144] bf16_gemv           rows 1     130.5 us   241.0 GB/s  floor   134.7 us  103.2 %  gap   -4.1 us
+draft q+k+v bf16 multi [12288+512+512 x 2560]  rows 2     272.6 us   250.0 GB/s  floor   291.8 us  107.0 %  gap  -19.2 us
+draft o bf16 [2560 x 6144] bf16_gemv           rows 2     133.1 us   236.3 GB/s  floor   134.7 us  101.2 %  gap   -1.6 us
+draft q+k+v bf16 multi [12288+512+512 x 2560]  rows 4     282.5 us   241.3 GB/s  floor   291.8 us  103.3 %  gap   -9.3 us
+draft o bf16 [2560 x 6144] bf16_gemv           rows 4     128.8 us   244.3 GB/s  floor   134.7 us  104.6 %  gap   -5.9 us

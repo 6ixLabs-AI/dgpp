@@ -383,9 +383,9 @@ DGPP_TEST(qwen_engines_world_of_one_request_bound_preserves_mtp_and_slot_reuse) 
       dgpp::QwenLayerStream::set_dense_weights_fp8(fp8);
     }
   } restore;
-  const auto original = qwenfx::tiny_config();
+  const auto original = qwenfx::test_config();
   const std::string dir = "qwen_engine_request_bound_fixture";
-  qwenfx::write_fixture(original, dir);
+  qwenfx::write_fixture_for(original, dir);
   const std::vector<int> lengths{161, 153, 149, 145};
   const std::vector<int> limits{12, 36, 40, 44};
   std::vector<std::vector<int64_t>> prompts;
@@ -464,9 +464,9 @@ DGPP_TEST(qwen_engines_request_bound_stripe_holds_a_depth5_verify_at_a_block_ali
       dgpp::QwenLayerStream::set_dense_weights_fp8(fp8);
     }
   } restore;
-  const auto original = qwenfx::tiny_config();
+  const auto original = qwenfx::test_config();
   const std::string dir = "qwen_engine_request_bound_depth5_fixture";
-  qwenfx::write_fixture(original, dir);
+  qwenfx::write_fixture_for(original, dir);
   dgpp::QwenLayerStream::set_ngram_table_mmap(true);
   dgpp::QwenLayerStream::set_dense_weights_fp8(false);
   // A 256-token ceiling on the 64-token block grid, two slots with
@@ -549,9 +549,9 @@ DGPP_TEST(qwen_engines_request_bound_stripe_holds_a_depth5_verify_at_a_block_ali
 }
 
 DGPP_TEST(qwen_engines_loopback_world_2_mtp_graph_matches_plain_decode) {
-  const QwenTextConfig cfg = qwenfx::tiny_config();
+  const QwenTextConfig cfg = qwenfx::test_config();
   const std::string dir = "qwen_engine_fixture";
-  qwenfx::write_fixture(cfg, dir);
+  qwenfx::write_fixture_for(cfg, dir);
   const std::vector<int64_t> A = smoke_tokens(cfg, 23, 0x9E3779B97F4A7C15ull);
   const std::vector<int64_t> B = smoke_tokens(cfg, 17, 0xD1B54A32D192ED03ull);
   const std::vector<int64_t> C = smoke_tokens(cfg, 11, 0x2545F4914F6CDD1Dull);
@@ -586,9 +586,9 @@ DGPP_TEST(qwen_engines_loopback_world_2_mtp_graph_matches_plain_decode) {
 // walk's rows gathered by a host node forked inside the walk — the
 // transcripts bitwise the resident table's, on every rank.
 DGPP_TEST(qwen_engines_loopback_world_2_mtp_graph_over_the_mmap_table_matches_resident) {
-  const QwenTextConfig cfg = qwenfx::tiny_config();
+  const QwenTextConfig cfg = qwenfx::test_config();
   const std::string dir = "qwen_engine_fixture";
-  qwenfx::write_fixture(cfg, dir);
+  qwenfx::write_fixture_for(cfg, dir);
   const std::vector<int64_t> A = smoke_tokens(cfg, 23, 0x9E3779B97F4A7C15ull);
   const std::vector<int64_t> B = smoke_tokens(cfg, 17, 0xD1B54A32D192ED03ull);
   const std::vector<int64_t> C = smoke_tokens(cfg, 11, 0x2545F4914F6CDD1Dull);
@@ -623,9 +623,9 @@ DGPP_TEST(qwen_engines_loopback_world_2_mtp_graph_over_the_mmap_table_matches_re
 // block, the ring copied around them — the greedy transcripts still the
 // plain engine's, scalar and batched, on every rank.
 DGPP_TEST(qwen_engines_loopback_world_2_mtp_depth2_graph_matches_plain_decode) {
-  const QwenTextConfig cfg = qwenfx::tiny_config();
+  const QwenTextConfig cfg = qwenfx::test_config();
   const std::string dir = "qwen_engine_fixture";
-  qwenfx::write_fixture(cfg, dir);
+  qwenfx::write_fixture_for(cfg, dir);
   const std::vector<int64_t> A = smoke_tokens(cfg, 23, 0x9E3779B97F4A7C15ull);
   const std::vector<int64_t> B = smoke_tokens(cfg, 17, 0xD1B54A32D192ED03ull);
   const std::vector<int64_t> C = smoke_tokens(cfg, 11, 0x2545F4914F6CDD1Dull);
@@ -732,9 +732,11 @@ DGPP_TEST(qwen_engines_loopback_world_2_wide_mtp_slot_reuse_and_continuation) {
   } restore_dense_weights{old_fp8};
   if (const char* fp8 = std::getenv("DGPP_TEST_DENSE_FP8"); fp8 && std::string(fp8) == "1")
     dgpp::QwenLayerStream::set_dense_weights_fp8(true);
-  const QwenTextConfig cfg = qwenfx::tiny_config();
+  if (const char* g = std::getenv("DGPP_TEST_QWEN_GPTQ"); g && g[0] == '1')
+    dgpp::QwenLayerStream::set_dense_weights_fp8(true);  // the hybrid ships its dense stack as fp8
+  const QwenTextConfig cfg = qwenfx::test_config();
   const std::string dir = "qwen_engine_fixture";
-  qwenfx::write_fixture(cfg, dir);
+  qwenfx::write_fixture_for(cfg, dir);
   auto buses = start_world(kWorld, kPort + 3);
   require(!buses.empty(), "the loopback bus world failed to start");
   ConstructBarrier barrier(kWorld);
@@ -1035,9 +1037,9 @@ DGPP_TEST(qwen_engines_loopback_world_2_wide_mtp_slot_reuse_and_continuation) {
 }
 
 DGPP_TEST(qwen_engines_loopback_world_2_graph_matches_eager) {
-  const QwenTextConfig cfg = qwenfx::tiny_config();
+  const QwenTextConfig cfg = qwenfx::test_config();
   const std::string dir = "qwen_engine_fixture";
-  qwenfx::write_fixture(cfg, dir);
+  qwenfx::write_fixture_for(cfg, dir);
   const std::vector<int64_t> A = smoke_tokens(cfg, 23, 0x9E3779B97F4A7C15ull);
   const std::vector<int64_t> B = smoke_tokens(cfg, 17, 0xD1B54A32D192ED03ull);
   const std::vector<int64_t> C = smoke_tokens(cfg, 11, 0x2545F4914F6CDD1Dull);
@@ -1297,4 +1299,11 @@ DGPP_TEST(qwen_wide_bf16_dense_real_shards_are_kernel_only) {
   require(rejected, "unaligned wide MTP weights fail before an Lt fallback");
 }
 
-int main() { return dgpp::test::run_all(); }
+int main() {
+  // DGPP_TEST_QWEN_GPTQ=1: every case runs the AutoRound hybrid's fixture
+  // (tests/cuda/qwen_fixture.hpp), whose dense stack ships as block fp8 —
+  // the loader's fp8 dense mode is the only one that reads it.
+  if (const char* g = std::getenv("DGPP_TEST_QWEN_GPTQ"); g && g[0] == '1')
+    dgpp::QwenLayerStream::set_dense_weights_fp8(true);
+  return dgpp::test::run_all();
+}

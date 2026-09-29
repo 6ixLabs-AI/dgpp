@@ -1,0 +1,6 @@
+class  tokens wall ms/tok  ms/pass tok/pass accept  finish
+chat      300        32.1       57     1.87    49 %  length
+code      300        24.5       56     2.47    69 %  length
+prose     300        21.8       55     2.72    85 %  length
+json      300        21.0       56     2.90    84 %  length
+math      300        19.2       55     3.22    88 %  length

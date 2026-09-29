@@ -1,0 +1,20 @@
+╔══════════════════════════════════════════════════════╗
+║  Qwen3.5-122B-A10B Benchmark: hybrid_depth3
+║  Tue Sep 29 12:17:52 AM UTC 2026
+╚══════════════════════════════════════════════════════╝
+
+── Run 1/2 ──────────────────────────────────────
+  [Q&A] 62 tokens in 1.45s = 42.7 tok/s (prompt: 65)
+  [Code] 512 tokens in 10.74s = 47.6 tok/s (prompt: 72)
+  [JSON] 828 tokens in 13.40s = 61.7 tok/s (prompt: 90)
+  [Math] 64 tokens in 1.24s = 51.6 tok/s (prompt: 71)
+  [LongCode] 2048 tokens in 45.36s = 45.1 tok/s (prompt: 79)
+
+── Run 2/2 ──────────────────────────────────────
+  [Q&A] 62 tokens in 1.42s = 43.6 tok/s (prompt: 65)
+  [Code] 512 tokens in 10.69s = 47.8 tok/s (prompt: 72)
+  [JSON] 828 tokens in 13.33s = 62.1 tok/s (prompt: 90)
+  [Math] 64 tokens in 1.26s = 50.7 tok/s (prompt: 71)
+  [LongCode] 2048 tokens in 45.13s = 45.3 tok/s (prompt: 79)
+
+=== Done ===

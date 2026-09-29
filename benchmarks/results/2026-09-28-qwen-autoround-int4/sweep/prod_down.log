@@ -1,0 +1,9 @@
+2026-09-29 02:14:34.836 === HawkBearPig/GLM-5.3-Flash-NVFP4-FP8 on 4 node(s) [e602036b385a2d0e] (/home/stephen/dgpp/cluster_glm-5.3-flash_nvfp4-fp8_w4.as-running-2026-09-28.json): no rank recorded as running; nothing to stop
+2026-09-29 02:14:34.836 === waiting for the peers to drain
+2026-09-29 02:14:38.725 === op-stream identity (every rank)
+2026-09-29 02:14:38.725 93b65be471fbba22c2cd49fc3c688086  /home/stephen/dgpp/log/deployments/e602036b385a2d0e/serve_rank0.ops
+2026-09-29 02:14:38.725 93b65be471fbba22c2cd49fc3c688086  /home/stephen/dgpp/log/deployments/e602036b385a2d0e/serve_rank1.ops
+2026-09-29 02:14:38.725 93b65be471fbba22c2cd49fc3c688086  /home/stephen/dgpp/log/deployments/e602036b385a2d0e/serve_rank2.ops
+2026-09-29 02:14:38.725 93b65be471fbba22c2cd49fc3c688086  /home/stephen/dgpp/log/deployments/e602036b385a2d0e/serve_rank3.ops
+2026-09-29 02:14:38.725 op streams: identical across 4 ranks
+2026-09-29 02:14:38.725 === logs in /home/stephen/dgpp/log/deployments/e602036b385a2d0e

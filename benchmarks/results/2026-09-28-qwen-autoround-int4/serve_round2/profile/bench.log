@@ -1,0 +1,2 @@
+[profiled] content chunks 400, ttft 304 ms, decode pace 27.49 ms/chunk (client), wall 11274 ms
+[profiled] text: 'We need answer user: "Explain, in a few paragraphs, why a CUDA graph replay can be faster than launching the same kernels eagerly, and what it costs." Need final concise few paragraphs. Need explain CUDA graph vs eager launch: capture work into graph, replay as single submission. Faster due reduced CPU launch overhead, less driver/runtime work, optimized scheduling, can overlap/dependencies, lower'

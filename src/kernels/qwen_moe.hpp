@@ -36,6 +36,44 @@ void qwen_moe_shared_tail_decode(const uint16_t* x, size_t x_stride, const uint1
 // — bitwise the unfused fp8 chain (launch_scale_gemm_bf16 x2, the swiglu,
 // launch_scale_gemm_f32, the gate, the accumulate, the round). H and S
 // multiples of 16.
+// The tail's two launches as separate entries (2026-09-29): the gate/up +
+// swiglu half reads only x, so it runs on a side stream beside the routed
+// experts (its 21 us ramp hidden behind their stream); the down half needs
+// the routed accumulator and runs on the chain after the join. Each half
+// is the same kernel the one-call tail launches, so the outputs are
+// bitwise the tail's.
+// The routed accumulation folded into the down epilogue (2026-09-29): the
+// per-slot down outputs and the router weights in place of `acc`, summed
+// in the accumulate kernel's fma order — bitwise that kernel + this tail,
+// one launch fewer per layer.
+void qwen_moe_shared_tail_decode_routed(const uint16_t* x, size_t x_stride, const uint16_t* gate_w,
+                                        const uint16_t* up_w, const uint16_t* down_w, const uint16_t* g,
+                                        uint16_t* act, float* sw, const float* contrib, const float* weights,
+                                        int top_k, uint16_t* out, int tokens, int H, int S, cudaStream_t stream);
+void qwen_moe_shared_tail_decode_routed_fp8(const uint16_t* x, size_t x_stride, const uint8_t* gate_p,
+                                            const float* gate_s, const uint8_t* up_p, const float* up_s,
+                                            const uint8_t* down_p, const float* down_s, const uint16_t* g,
+                                            uint16_t* act, float* sw, const float* contrib, const float* weights,
+                                            int top_k, uint16_t* out, int tokens, int H, int S, cudaStream_t stream);
+void qwen_moe_shared_down_decode_routed(const uint16_t* act, const uint16_t* down_w, const float* sw,
+                                        const float* contrib, const float* weights, int top_k, uint16_t* out,
+                                        int tokens, int H, int S, cudaStream_t stream);
+void qwen_moe_shared_down_decode_routed_fp8(const uint16_t* act, const uint8_t* down_p, const float* down_s,
+                                            const float* sw, const float* contrib, const float* weights, int top_k,
+                                            uint16_t* out, int tokens, int H, int S, cudaStream_t stream);
+void qwen_moe_shared_gate_up_decode(const uint16_t* x, size_t x_stride, const uint16_t* gate_w,
+                                    const uint16_t* up_w, const uint16_t* g, uint16_t* act, float* sw,
+                                    int tokens, int H, int S, cudaStream_t stream);
+void qwen_moe_shared_down_decode(const uint16_t* act, const uint16_t* down_w, const float* sw,
+                                 const float* acc, uint16_t* out, int tokens, int H, int S,
+                                 cudaStream_t stream);
+void qwen_moe_shared_gate_up_decode_fp8(const uint16_t* x, size_t x_stride, const uint8_t* gate_p,
+                                        const float* gate_s, const uint8_t* up_p, const float* up_s,
+                                        const uint16_t* g, uint16_t* act, float* sw, int tokens, int H,
+                                        int S, cudaStream_t stream);
+void qwen_moe_shared_down_decode_fp8(const uint16_t* act, const uint8_t* down_p, const float* down_s,
+                                     const float* sw, const float* acc, uint16_t* out, int tokens, int H,
+                                     int S, cudaStream_t stream);
 void qwen_moe_shared_tail_decode_fp8(const uint16_t* x, size_t x_stride, const uint8_t* gate_p,
                                      const float* gate_s, const uint8_t* up_p, const float* up_s,
                                      const uint8_t* down_p, const float* down_s, const uint16_t* g,

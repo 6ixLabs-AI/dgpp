@@ -1,0 +1,45 @@
+production down 02:55:46
+== bench_qwen35 thinking on 02:56:15
+  [Q&A] 62 tokens in 1.40s = 44.4 tok/s (prompt: 65)
+  [Code] 512 tokens in 10.38s = 49.3 tok/s (prompt: 72)
+  [JSON] 828 tokens in 13.06s = 63.4 tok/s (prompt: 90)
+  [Math] 64 tokens in 1.26s = 51.0 tok/s (prompt: 71)
+  [LongCode] 2048 tokens in 44.43s = 46.1 tok/s (prompt: 79)
+  [Q&A] 62 tokens in 1.40s = 44.3 tok/s (prompt: 65)
+  [Code] 512 tokens in 10.40s = 49.2 tok/s (prompt: 72)
+  [JSON] 828 tokens in 13.14s = 63.0 tok/s (prompt: 90)
+  [Math] 64 tokens in 1.25s = 51.1 tok/s (prompt: 71)
+  [LongCode] 2048 tokens in 43.99s = 46.6 tok/s (prompt: 79)
+decode 61 tok / 20 passes in 0.9 s: 68.7 tok/s, 14.6 ms/tok, 44 ms/pass, 3.05 tok/pass, accept p1 85 % p2 70 % p3 50 %
+decode 511 tok / 176 passes in 9.9 s: 51.8 tok/s, 19.3 ms/tok, 56 ms/pass, 2.90 tok/pass, accept p1 78 % p2 63 % p3 49 %
+decode 827 tok / 223 passes in 12.5 s: 66.0 tok/s, 15.2 ms/tok, 56 ms/pass, 3.71 tok/pass, accept p1 95 % p2 91 % p3 85 
+decode 63 tok / 17 passes in 0.7 s: 87.8 tok/s, 11.4 ms/tok, 42 ms/pass, 3.71 tok/pass, accept p1 100 % p2 94 % p3 82 %
+decode 2047 tok / 738 passes in 43.4 s: 47.1 tok/s, 21.2 ms/tok, 59 ms/pass, 2.77 tok/pass, accept p1 77 % p2 58 % p3 43
+== bench_qwen35 thinking off 02:58:36
+  [Q&A] 182 tokens in 3.19s = 57.0 tok/s (prompt: 25)
+  [Code] 188 tokens in 3.10s = 60.7 tok/s (prompt: 32)
+  [JSON] 849 tokens in 13.12s = 64.7 tok/s (prompt: 50)
+  [Math] 9 tokens in 0.41s = 21.8 tok/s (prompt: 31)
+  [LongCode] 2048 tokens in 33.62s = 60.9 tok/s (prompt: 39)
+  [Q&A] 182 tokens in 3.19s = 57.1 tok/s (prompt: 25)
+  [Code] 188 tokens in 3.10s = 60.7 tok/s (prompt: 32)
+  [JSON] 849 tokens in 13.11s = 64.8 tok/s (prompt: 50)
+  [Math] 9 tokens in 0.39s = 23.0 tok/s (prompt: 31)
+  [LongCode] 2048 tokens in 33.61s = 60.9 tok/s (prompt: 39)
+decode 181 tok / 53 passes in 2.9 s: 63.5 tok/s, 15.8 ms/tok, 54 ms/pass, 3.42 tok/pass, accept p1 92 % p2 85 % p3 68 %
+decode 187 tok / 51 passes in 2.7 s: 68.1 tok/s, 14.7 ms/tok, 54 ms/pass, 3.67 tok/pass, accept p1 98 % p2 90 % p3 80 %
+decode 848 tok / 225 passes in 12.7 s: 67.0 tok/s, 14.9 ms/tok, 56 ms/pass, 3.77 tok/pass, accept p1 95 % p2 93 % p3 90 
+decode 8 tok / 4 passes in 0.1 s: 132.3 tok/s, 7.6 ms/tok, 15 ms/pass, 2.00 tok/pass, accept p1 100 % p2 50 % p3 25 %
+decode 2047 tok / 563 passes in 33.2 s: 61.6 tok/s, 16.2 ms/tok, 59 ms/pass, 3.64 tok/pass, accept p1 95 % p2 89 % p3 81
+== ncu pass bytes 03:00:25
+Terminated
+ncu up failed
+OK   rank 0 (192.168.88.11) server version: dgpp-serve 0.1.0+g84028a497443.dirty (git 84028a497443, cuda 13.0)
+Preflight: 0 failed check(s). No files were installed and no services were started or stopped.
+2026-09-29 03:00:26.961 === staging dgpp-serve and the config to the peers
+2026-09-29 03:00:26.961 === rank 0 on 192.168.88.11 (HTTP :18080, fabric :29970, journal :29971)
+2026-09-29 03:00:26.964 head pid 3018347
+ConnectionRefusedError: [Errno 111] Connection refused
+ncu csv lines: 4
+production restored 03:47:59
+followup done

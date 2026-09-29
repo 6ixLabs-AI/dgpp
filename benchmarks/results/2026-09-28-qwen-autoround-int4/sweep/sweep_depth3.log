@@ -1,0 +1,49 @@
+production down 02:14:38
+== baseline: DGPP_SWEEP=1 cfg=deploy/cluster_qwen-3.8-flash-next_autoround-int4_w1.json 02:14:38
+INFO  l2 prefetch: on, window budget 12 MiB, boundary rate light, layer rate light
+[short] content chunks 432, ttft 279 ms, decode pace 26.61 ms/chunk (client), wall 11826 ms
+10.0 s | decode 29.4 tok/s, 26.0 ms/tok, 60.0 ms/step (128 steps / 295 tok, 77 % of wall) | mtp 2.30 tok/step/
+[ctx2k] content chunks 512, ttft 9561 ms, decode pace 22.58 ms/chunk (client), wall 21124 ms
+12.4 s | decode 16.4 tok/s, 25.3 ms/tok, 60.4 ms/step (85 steps / 203 tok, 41 % of wall) | mtp 2.39 tok/step/r
+10.0 s | decode 35.0 tok/s, 21.8 ms/tok, 64.1 ms/step (119 steps / 350 tok, 76 % of wall) | mtp 2.94 tok/step/
+== off: DGPP_L2_PREFETCH=off cfg=deploy/cluster_qwen-3.8-flash-next_autoround-int4_w1.json 02:15:42
+INFO  l2 prefetch: off (DGPP_L2_PREFETCH=off)
+[short] content chunks 648, ttft 305 ms, decode pace 27.81 ms/chunk (client), wall 18323 ms
+10.0 s | decode 27.3 tok/s, 29.0 ms/tok, 61.7 ms/step (129 steps / 274 tok, 79 % of wall) | mtp 2.12 tok/step/
+10.0 s | decode 37.8 tok/s, 26.5 ms/tok, 62.3 ms/step (161 steps / 379 tok, 100 % of wall) | mtp 2.35 tok/step
+== bfull: DGPP_L2_PREFETCH_BOUNDARY=full cfg=deploy/cluster_qwen-3.8-flash-next_autoround-int4_w1.json 02:16:32
+INFO  l2 prefetch: on, window budget 12 MiB, boundary rate full, layer rate light
+[short] content chunks 395, ttft 306 ms, decode pace 26.82 ms/chunk (client), wall 10900 ms
+10.0 s | decode 30.9 tok/s, 25.7 ms/tok, 63.1 ms/step (126 steps / 309 tok, 79 % of wall) | mtp 2.45 tok/step/
+[ctx2k] content chunks 512, ttft 9598 ms, decode pace 25.20 ms/chunk (client), wall 22502 ms
+11.2 s | decode 13.6 tok/s, 26.0 ms/tok, 63.8 ms/step (62 steps / 152 tok, 35 % of wall) | mtp 2.45 tok/step/r
+10.0 s | decode 31.3 tok/s, 24.3 ms/tok, 67.4 ms/step (113 steps / 313 tok, 76 % of wall) | mtp 2.77 tok/step/
+== mb12: DGPP_L2_PREFETCH_MB=12 cfg=deploy/cluster_qwen-3.8-flash-next_autoround-int4_w1.json 02:17:36
+INFO  l2 prefetch: on, window budget 12 MiB, boundary rate light, layer rate light
+[short] content chunks 494, ttft 304 ms, decode pace 25.74 ms/chunk (client), wall 13018 ms
+10.1 s | decode 33.0 tok/s, 24.3 ms/tok, 60.3 ms/step (134 steps / 332 tok, 80 % of wall) | mtp 2.48 tok/step/
+== mb32: DGPP_L2_PREFETCH_MB=32 cfg=deploy/cluster_qwen-3.8-flash-next_autoround-int4_w1.json 02:18:20
+INFO  l2 prefetch: on, window budget 32 MiB, boundary rate light, layer rate light
+[short] content chunks 998, ttft 307 ms, decode pace 26.44 ms/chunk (client), wall 26665 ms
+10.0 s | decode 30.5 tok/s, 25.2 ms/tok, 60.0 ms/step (128 steps / 305 tok, 77 % of wall) | mtp 2.38 tok/step/
+10.0 s | decode 34.3 tok/s, 29.2 ms/tok, 60.8 ms/step (165 steps / 344 tok, 100 % of wall) | mtp 2.08 tok/step
+10.0 s | decode 40.9 tok/s, 24.4 ms/tok, 61.3 ms/step (163 steps / 409 tok, 100 % of wall) | mtp 2.51 tok/step
+== bfull_mb32: DGPP_L2_PREFETCH_BOUNDARY=full DGPP_L2_PREFETCH_MB=32 cfg=deploy/cluster_qwen-3.8-flash-next_autoround-int4_w1.json 02:19:18
+INFO  l2 prefetch: on, window budget 32 MiB, boundary rate full, layer rate light
+[short] content chunks 845, ttft 307 ms, decode pace 30.41 ms/chunk (client), wall 25977 ms
+10.1 s | decode 30.2 tok/s, 27.7 ms/tok, 66.8 ms/step (126 steps / 304 tok, 84 % of wall) | mtp 2.41 tok/step/
+10.0 s | decode 32.3 tok/s, 30.9 ms/tok, 67.3 ms/step (149 steps / 324 tok, 100 % of wall) | mtp 2.17 tok/step
+== bfull_mb8: DGPP_L2_PREFETCH_BOUNDARY=full DGPP_L2_PREFETCH_MB=8 cfg=deploy/cluster_qwen-3.8-flash-next_autoround-int4_w1.json 02:20:16
+INFO  l2 prefetch: on, window budget 8 MiB, boundary rate full, layer rate light
+[short] content chunks 564, ttft 304 ms, decode pace 28.33 ms/chunk (client), wall 16282 ms
+10.0 s | decode 28.8 tok/s, 27.8 ms/tok, 62.4 ms/step (129 steps / 289 tok, 80 % of wall) | mtp 2.24 tok/step/
+== resident: DGPP_SWEEP=1 cfg=deploy/cluster_qwen-3.8-flash-next_autoround-int4_w1_resident.json 02:21:03
+Terminated
+up failed
+OK   rank 0 (192.168.88.11) server version: dgpp-serve 0.1.0+g84028a497443.dirty (git 84028a497443, cuda 13.0)
+Preflight: 0 failed check(s). No files were installed and no services were started or stopped.
+2026-09-29 02:21:04.643 === staging dgpp-serve and the config to the peers
+2026-09-29 02:21:04.643 === rank 0 on 192.168.88.11 (HTTP :18080, fabric :29970, journal :29971)
+2026-09-29 02:21:04.645 head pid 2863934
+production restored 02:27:22
+sweep done

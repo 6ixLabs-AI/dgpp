@@ -2,6 +2,7 @@
 
 #include <arpa/inet.h>
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
 #include <cstdlib>
@@ -193,6 +194,11 @@ ClusterConfig parse_cluster_config(const std::string& json, const std::string& w
           if (e.ngram_table != "resident" && e.ngram_table != "mmap")
             fail(what, "'" + ek + "' must be \"resident\" or \"mmap\"");
         }
+        else if (p.key == "ngram_table_model") {
+          e.ngram_table_model = text(x, ek, what);
+          if (e.ngram_table_model.empty() || std::count(e.ngram_table_model.begin(), e.ngram_table_model.end(), '/') != 1)
+            fail(what, "'" + ek + "' must be a Hugging Face ORG/NAME repository id");
+        }
         else if (p.key == "dense_weights") {
           e.dense_weights = text(x, ek, what);
           if (e.dense_weights != "checkpoint" && e.dense_weights != "fp8")
@@ -212,6 +218,8 @@ ClusterConfig parse_cluster_config(const std::string& json, const std::string& w
           e.bf16_weights = text(x, ek, what);
           if (!parse_bf16_residency(e.bf16_weights, nullptr))
             fail(what, "'" + ek + "' must be \"checkpoint\", \"bf12\" or \"bf12+bf16\"");
+        } else if (p.key == "draft_vocab") {
+          e.draft_vocab = text(x, ek, what);
         } else if (p.key == "prefill") {
           e.prefill = text(x, ek, what);
           if (e.prefill != "bounded" && e.prefill != "exact")

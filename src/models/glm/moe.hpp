@@ -178,14 +178,17 @@ struct MoeExpertView {
   // 32 = MXFP4 (e8m0 scales, no global — fp4_global stays null).
   int fp4_group = 16;
   // The packed-int interpretation: payload = the I32 words [n, k*bits/32]
-  // as bytes, packed_scales = bf16 [n, k/64], bits = 4 or 8 (0: not packed).
+  // as bytes, packed_scales = the group scales (bf16 per 64 or f16 per 128
+  // by packed_scale_fmt, quant_matrix.hpp), bits = 4 or 8 (0: not packed).
   const uint16_t* packed_scales = nullptr;
   int bits = 0;
+  int packed_scale_fmt = 0;
   static MoeExpertView of(const GlmPackedMatrix& m) {
     MoeExpertView v;
     v.payload = reinterpret_cast<const uint8_t*>(m.packed);
     v.packed_scales = m.scales;
     v.bits = m.bits;
+    v.packed_scale_fmt = m.scale_fmt;
     return v;
   }
 };

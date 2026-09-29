@@ -1,5 +1,9 @@
 #include "models/qwen/moe_layer.hpp"
 
+#include <string>
+
+#include <cstdlib>
+
 #include "kernels/fp8_dequant.hpp"
 #include "kernels/scale_gemm.hpp"
 
@@ -37,6 +41,7 @@ GlmMoeWeights QwenMoeLayer::routed_view(const QwenMoeWeights& w) {
   g.router_bias = nullptr;
   g.experts = w.experts;
   g.experts_fp4 = w.experts_fp4;
+  g.experts_packed = w.experts_packed;
   g.act_scale_w13 = w.act_scale_w13;
   g.act_scales_dev = w.act_scales_dev;
   g.act_scale_w2 = w.act_scale_w2;
@@ -48,6 +53,17 @@ QwenMoeLayer::QwenMoeLayer(const QwenMoeWeights& weights, const GlmMoeConfig& cf
                            int graph_table_slots)
     : w_(weights), cfg_(cfg), gemm_(gemm), max_tokens_(max_tokens),
       routed_(routed_view(weights), cfg, max_tokens, decode_slots, graph_table_slots) {
+  // Measured 2026-09-29 (serve_round4): the gate/up half beside the routed
+  // experts takes 35 us there instead of 21 on the chain and the pass does
+  // not move — the experts are DRAM-bound and the shared bytes cost the
+  // same DRAM time wherever they run. Off by default; DGPP_QWEN_SHARED_SIDE=on.
+  if (const char* v = std::getenv("DGPP_QWEN_SHARED_SIDE"); v && std::string(v) == "on") {
+    int least = 0, greatest = 0;
+    DGPP_CUDA_OK(cudaDeviceGetStreamPriorityRange(&least, &greatest));
+    DGPP_CUDA_OK(cudaStreamCreateWithPriority(&shared_side_, cudaStreamNonBlocking, greatest));
+    DGPP_CUDA_OK(cudaEventCreateWithFlags(&shared_fork_, cudaEventDisableTiming));
+    DGPP_CUDA_OK(cudaEventCreateWithFlags(&shared_join_, cudaEventDisableTiming));
+  }
   if (cfg_.n_shared_experts != 0 || cfg_.router_mode != MoeRouterMode::SoftmaxTopk)
     throw std::invalid_argument(
         "QwenMoeLayer: the routed config must be routed_config()'s (softmax "
@@ -77,6 +93,9 @@ QwenMoeLayer::QwenMoeLayer(const QwenMoeWeights& weights, const GlmMoeConfig& cf
 }
 
 QwenMoeLayer::~QwenMoeLayer() {
+  if (shared_join_) cudaEventDestroy(shared_join_);
+  if (shared_fork_) cudaEventDestroy(shared_fork_);
+  if (shared_side_) cudaStreamDestroy(shared_side_);
   if (d_shared_bridge_) cudaFree(d_shared_bridge_);
   cudaFree(d_acc_);
   cudaFree(d_sgate_);
@@ -91,10 +110,11 @@ QwenMoeLayer::~QwenMoeLayer() {
 void QwenMoeLayer::check_weights() const {
   const bool shared_ok = w_.shared_fp8 ? (w_.shared_fp8[0].payload && w_.shared_fp8[1].payload && w_.shared_fp8[2].payload)
                                        : (w_.shared_gate_proj && w_.shared_up_proj && w_.shared_down_proj);
-  if (!w_.router || !w_.shared_gate || !shared_ok || (!w_.experts && !w_.experts_fp4))
+  const int forms = (w_.experts != nullptr) + (w_.experts_fp4 != nullptr) + (w_.experts_packed != nullptr);
+  if (!w_.router || !w_.shared_gate || !shared_ok || forms == 0)
     throw std::invalid_argument("QwenMoeLayer: null weight pointer");
-  if (w_.experts && w_.experts_fp4)
-    throw std::invalid_argument("QwenMoeLayer: both fp8 and nvfp4 experts bound");
+  if (forms != 1)
+    throw std::invalid_argument("QwenMoeLayer: exactly one routed expert form (fp8, nvfp4, packed) may be bound");
   if (w_.shared_inter <= 0 || w_.shared_inter % 8 != 0)
     throw std::invalid_argument("QwenMoeLayer: shared_inter must be a positive multiple of 8");
   if (cfg_.hidden % 8 != 0)
@@ -128,7 +148,27 @@ void QwenMoeLayer::enqueue_decode(const uint16_t* hidden, uint16_t* out, int tok
   if (tokens > max_tokens_)
     throw std::invalid_argument("QwenMoeLayer: tokens exceed max_tokens");
   if (!hidden || !out) throw std::invalid_argument("QwenMoeLayer: null pointer");
-  routed_.enqueue_decode_f32(hidden, d_acc_, tokens, nullptr, stream, table_slot);
+  const int Hs = cfg_.hidden;
+  const int Ss = static_cast<int>(w_.shared_inter);
+  if (shared_side_ != nullptr && tokens <= 8) {
+    // The shared gate/up beside the routed experts: forked here, joined
+    // before the down half below (events; graph edges under capture).
+    DGPP_CUDA_OK(cudaEventRecord(shared_fork_, stream));
+    DGPP_CUDA_OK(cudaStreamWaitEvent(shared_side_, shared_fork_, 0));
+    if (w_.shared_fp8)
+      qwen_moe_shared_gate_up_decode_fp8(hidden, static_cast<size_t>(Hs), w_.shared_fp8[0].payload,
+                                         w_.shared_fp8[0].scales, w_.shared_fp8[1].payload, w_.shared_fp8[1].scales,
+                                         w_.shared_gate, d_sact_, d_sw_, tokens, Hs, Ss, shared_side_);
+    else
+      qwen_moe_shared_gate_up_decode(hidden, static_cast<size_t>(Hs), w_.shared_gate_proj, w_.shared_up_proj,
+                                     w_.shared_gate, d_sact_, d_sw_, tokens, Hs, Ss, shared_side_);
+  }
+  // The fused tails (tokens <= 8) fold the routed accumulation into the
+  // shared down's epilogue (kernels/qwen_moe: bitwise the accumulate + tail
+  // chain, one launch fewer per layer, 2026-09-29); the wide path and the
+  // side-stream path take the accumulate kernel's output.
+  const bool fold = tokens <= 8 && shared_side_ == nullptr;
+  routed_.enqueue_decode_f32(hidden, d_acc_, tokens, nullptr, stream, table_slot, /*accumulate=*/!fold);
   // Preserve the small-row fused tail, including C1 MTP. Wider batches
   // use the dense interface (Lt for BF16, streaming MMA for FP8) so the
   // shared weights are not re-read by another four-row GEMV per chunk.
@@ -137,19 +177,34 @@ void QwenMoeLayer::enqueue_decode(const uint16_t* hidden, uint16_t* out, int tok
     return;
   }
   // The fused two-launch tail (bitwise the chain; qwen_moe_test pins it),
-  // in the weights' form: BF16, or block FP8.
+  // in the weights' form: BF16, or block FP8. With the side stream the
+  // gate/up half ran beside the routed experts (forked above), and only
+  // the down half is left on the chain.
   const int H = cfg_.hidden;
   const int S = static_cast<int>(w_.shared_inter);
-  if (w_.shared_fp8) {
-    qwen_moe_shared_tail_decode_fp8(hidden, static_cast<size_t>(H), w_.shared_fp8[0].payload, w_.shared_fp8[0].scales,
-                                    w_.shared_fp8[1].payload, w_.shared_fp8[1].scales, w_.shared_fp8[2].payload,
-                                    w_.shared_fp8[2].scales, w_.shared_gate, d_sact_, d_sw_, d_acc_, out, tokens, H,
-                                    S, stream);
+  if (shared_side_ != nullptr) {
+    DGPP_CUDA_OK(cudaEventRecord(shared_join_, shared_side_));
+    DGPP_CUDA_OK(cudaStreamWaitEvent(stream, shared_join_, 0));
+    if (w_.shared_fp8)
+      qwen_moe_shared_down_decode_fp8(d_sact_, w_.shared_fp8[2].payload, w_.shared_fp8[2].scales, d_sw_, d_acc_, out,
+                                      tokens, H, S, stream);
+    else
+      qwen_moe_shared_down_decode(d_sact_, w_.shared_down_proj, d_sw_, d_acc_, out, tokens, H, S, stream);
     return;
   }
-  qwen_moe_shared_tail_decode(hidden, static_cast<size_t>(H), w_.shared_gate_proj,
-                              w_.shared_up_proj, w_.shared_down_proj, w_.shared_gate, d_sact_,
-                              d_sw_, d_acc_, out, tokens, H, S, stream);
+  const float* contrib = routed_.decode_slot_down();
+  const float* weights = routed_.decode_weights();
+  const int top_k = routed_.config().top_k;
+  if (w_.shared_fp8) {
+    qwen_moe_shared_tail_decode_routed_fp8(hidden, static_cast<size_t>(H), w_.shared_fp8[0].payload,
+                                           w_.shared_fp8[0].scales, w_.shared_fp8[1].payload, w_.shared_fp8[1].scales,
+                                           w_.shared_fp8[2].payload, w_.shared_fp8[2].scales, w_.shared_gate, d_sact_,
+                                           d_sw_, contrib, weights, top_k, out, tokens, H, S, stream);
+    return;
+  }
+  qwen_moe_shared_tail_decode_routed(hidden, static_cast<size_t>(H), w_.shared_gate_proj, w_.shared_up_proj,
+                                     w_.shared_down_proj, w_.shared_gate, d_sact_, d_sw_, contrib, weights, top_k, out,
+                                     tokens, H, S, stream);
 }
 
 void QwenMoeLayer::enqueue_prefill(const uint16_t* hidden, uint16_t* out, int tokens,

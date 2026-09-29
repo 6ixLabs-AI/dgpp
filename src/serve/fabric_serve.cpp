@@ -391,6 +391,8 @@ std::string encode_journal_settings(const WorldSettings& s) {
   append_json_string(&out, s.mtp_expert_format);
   out += ",\"bfw\":";
   append_json_string(&out, s.bf16_weights);
+  out += ",\"dv\":";
+  append_json_string(&out, s.draft_vocab);
   out += std::format(",\"compact\":{}", s.compact_batches ? 1 : 0);
   out += ",\"pf\":";
   append_json_string(&out, s.prefill);
@@ -568,6 +570,8 @@ JournalRecord decode_journal_line(std::string_view line) {
     if (const dgpp::minijson::Value* mtpef = v.find("mtpef")) s.mtp_expert_format = std::string(mtpef->as_string());
     // The bf16 weights' form (2026-09-19): records before it carry none.
     if (const dgpp::minijson::Value* bfw = v.find("bfw")) s.bf16_weights = std::string(bfw->as_string());
+    // The draft vocabulary slice (2026-09-29): records before it carry none.
+    if (const dgpp::minijson::Value* dv = v.find("dv")) s.draft_vocab = std::string(dv->as_string());
     // Records before 2026-09-14 carry no prefill mode: bounded.
     if (const dgpp::minijson::Value* pf = v.find("pf")) s.prefill = std::string(pf->as_string());
     // Records without the rope ramp key carry none: the plain table

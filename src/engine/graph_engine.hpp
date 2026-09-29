@@ -339,6 +339,13 @@ class GraphEngineAdapter final : public sched::SchedulerEngine {
         DGPP_CUDA_OK(cudaMallocHost(reinterpret_cast<void**>(&h_specs_),
                                     sizeof(SampleSpec) * slots_));
         for (int i = 0; i < slots_; ++i) h_specs_[i] = SampleSpec{};
+        // The argmax-only head flags (kernels/packq_head.hpp): a slot whose
+        // verify (resp. draft) rows need only the argmax, written with the
+        // specs; a family without a plane head ignores the setter.
+        DGPP_CUDA_OK(cudaMalloc(reinterpret_cast<void**>(&d_head_greedy_), static_cast<size_t>(slots_) * 2));
+        DGPP_CUDA_OK(cudaMemset(d_head_greedy_, 0, static_cast<size_t>(slots_) * 2));
+        if constexpr (requires { model_->set_head_greedy_flags(d_head_greedy_, d_head_greedy_ + slots_); })
+          model_->set_head_greedy_flags(d_head_greedy_, d_head_greedy_ + slots_);
         DGPP_CUDA_OK(cudaMalloc(reinterpret_cast<void**>(&d_counts_),
                                 sizeof(int32_t) * slots_ * vocab_));
         DGPP_CUDA_OK(cudaMemset(d_counts_, 0, sizeof(int32_t) * slots_ * vocab_));
@@ -574,6 +581,7 @@ class GraphEngineAdapter final : public sched::SchedulerEngine {
     if (h_conf_seq_) cudaFreeHost(h_conf_seq_);
     if (d_conf_seq_) cudaFree(d_conf_seq_);
     if (d_draft_specs_) cudaFree(d_draft_specs_);
+    if (d_head_greedy_) cudaFree(d_head_greedy_);
     if (d_draft_conf_) cudaFree(d_draft_conf_);
   }
   GraphEngineAdapter(const GraphEngineAdapter&) = delete;
@@ -2962,6 +2970,15 @@ class GraphEngineAdapter final : public sched::SchedulerEngine {
     DGPP_CUDA_OK(cudaMemcpyAsync(d_specs_ + req, h_specs_ + req,
                                  sizeof(SampleSpec), cudaMemcpyHostToDevice,
                                  model_->stream()));
+    if (d_head_greedy_ != nullptr) {
+      // Plain greedy: no temperature, logprobs, penalties, bias or grammar
+      // (full_path_slot's complement); the draft additionally when the
+      // scheduled verify depth does not read the draft's probabilities.
+      const uint8_t g = full_path_slot(req) ? 0 : 1;
+      const uint8_t gd = (g != 0 && !draft_full_path_) ? 1 : 0;
+      DGPP_CUDA_OK(cudaMemcpyAsync(d_head_greedy_ + req, &g, 1, cudaMemcpyHostToDevice, model_->stream()));
+      DGPP_CUDA_OK(cudaMemcpyAsync(d_head_greedy_ + slots_ + req, &gd, 1, cudaMemcpyHostToDevice, model_->stream()));
+    }
     if (d_draft_specs_ != nullptr) {
       // The draft picks' spec: the slot's, reporting logprobs when the
       // scheduled verify depth reads the draft head's probabilities (the
@@ -3185,6 +3202,7 @@ class GraphEngineAdapter final : public sched::SchedulerEngine {
   // — the picks read a spec table whose rows report logprobs.
   bool draft_full_path_ = false;
   SampleSpec* d_draft_specs_ = nullptr;  // device [slots]: the draft picks' specs
+  uint8_t* d_head_greedy_ = nullptr;     // device [2][slots]: the verify's and the draft's argmax-only flags
   float* d_draft_conf_ = nullptr;        // device [slots][conf_rows_]: the gathered logits
   std::vector<bool> live_;
   std::vector<bool> reserved_;

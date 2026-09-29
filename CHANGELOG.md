@@ -6,6 +6,92 @@ The history by milestone. The dated engineering record in
 
 ## Unreleased
 
+- **The hybrid's prefill: the expert GEMM's weight stream kept ahead of
+  the copies** (2026-09-29, round 18 of the
+  [record](benchmarks/results/2026-09-28-qwen-autoround-int4/README.md)):
+  the wide packed-int expert kernel prefetches each activation row's line
+  and each code row's line three k-steps ahead into L2
+  (`DGPP_PACKQ_PREFETCH`, default 3) — the two-stage pipeline's one step
+  of lookahead had left the launch's 419 MB weight stream serialized with
+  its compute (a Zipf-routed gate launch 4.6–5.0 → 3.5 ms, the down 6.8 →
+  5.8, a 556-token launch 3.6 → 2.1 on the device-memory bench; the bench's
+  managed buffers had hidden it behind ~1 ms of page mapping a launch, so
+  `packq_prefill_bench` gained `--device-copy`, `--gather`, `--same-weights`
+  and `--shuffle-rows`) — and runs a compact tile list over the routed
+  segments (`launch_moe_tile_list`, `DGPP_MOE_TILE_LIST`): one block per
+  real 64-row tile instead of n-tiles × the longest segment × 512
+  segments (160K blocks, 97 % exiting, when one expert takes most of a
+  chunk), and no per-layer host sync for the longest segment. Both bitwise
+  (`packq_gemm_test`, the bench's byte compare, the long-prompt sha on
+  every fabric leg). On the fabric at 4,096-token chunks: 2K 1.40 → 1.29 s,
+  8K 4.61 → 4.42, 32K 18.46 → 17.82 (−7 / −4 / −4 %).
+- **The hybrid's decode at the author's protocol: 57 → 54 ms a pass, the
+  head in bit planes** (2026-09-29, S6 rounds 4–12 of the
+  [record](benchmarks/results/2026-09-28-qwen-autoround-int4/README.md)):
+  the int8 head is stored as three per-row planes (high nibbles, bits 3..2,
+  bits 1..0) and an argmax-only head read — every MTP draft step and the
+  greedy verify — takes a pass over the high six bits that gives each row a
+  provable logit interval, then reads only the rows whose interval reaches
+  the best lower bound (a few hundred of 248,320) in full through the packed
+  core's exact chain: 75 % of the head bytes at line rate, the pick's argmax
+  and its logit bit for bit (`kernels/packq_head`, `packq_head_test`; sampled
+  rows read every plane and are the row layout's chain bit for bit; the
+  engine writes a per-slot greedy flag beside the sampling specs because the
+  decode graph is fixed at capture; github issue #69 carries the
+  generalization to the other head formats and the DRAM-burst lesson that
+  the planes must be contiguous per row). Also in the rounds: the QSA
+  attention over the selected keys 181 → 137 us; the draft layer's bf16
+  projections and fc matrices packed bf12 under the hybrid's fp8 dense stack;
+  the recurrent state kept as a checkpoint plus the pass's row inputs
+  (replayed next pass) instead of three snapshot stores a layer; the up GEMV
+  of a hyper-connection site with the mix in its epilogue, the routed
+  accumulation in the shared expert's down epilogue, the combine in the next
+  site's norm launch, the chunked greedy argmax, the n-gram gather on a
+  thread with a device wait — each bitwise the chain it replaces. Measured
+  and left as they were: the byte prefetch (a size cap or off costs 1.3–2 ms
+  a pass), depth 3 (depth 4 is slower and takes other kernel families), and
+  a per-launch prologue prefetch of each GEMV warp's first weight pass
+  (−4..−8 % on `qwen_dense_bench`'s cold ring, +1.1–1.5 % a step on the
+  fabric: the step's matrices are already in L2; the bench's new
+  `--sweep` fits the per-launch intercept per kernel family and
+  `--only pdl` runs the down/up pair as a graph-launched chain). The
+  decode step at context, measured through the endpoint: 52.6 ms at
+  under 200 tokens, 55.7–56.9 from 3K to 47K (a fixed selection budget);
+  the listed attention's tile gather became cp.async phases in the same
+  shared buffers (the next tile's K rows under this tile's PV, its V rows
+  under the next scores; the arithmetic unchanged, `DGPP_QSA_ASYNC=0`
+  keeps the serial gather): −0.4 to −0.5 ms a step from 12K to 47K. The
+  GDN layer's a and b projections ride the fp8 in-projection launch as
+  bf16 problems (one launch fewer per GDN layer, bitwise); the batched
+  group norm staged into the down GEMV (bitwise) measured +0.8 ms a step
+  and stays behind `DGPP_QWEN_GR_NORM_FOLD=on`. The hybrid's prefill, profiled
+  at 32K (the packed-int expert GEMMs 34 %, cuBLAS 15 %, the hyper-connection
+  elementwise passes 12 %): a wide-tile packed-int tensor-core GEMM (64 x 128
+  x 64, two blocks per SM, the codes decoded once per k-step into a bf16
+  tile — bitwise the narrow kernel, `DGPP_PACKQ_GEMM=narrow` keeps it), the
+  prefill's combine riding the next site's norm pass, and the chunk's page
+  advice batched: prefill −7 to −9 % at 2K / 8K / 32K, bit for bit.
+  `engine.draft_vocab` (opt-in, never a headline): the draft head scores a
+  `.npy` set of ids (`tools/build_draft_vocab.py`), 49 ms a pass, outputs
+  unchanged.
+
+- **Qwen3.8-Flash-Next AutoRound int4 hybrid on one Spark** (2026-09-28):
+  `Saren/Qwen3.8-Flash-Next-W4A16-AutoRound-hybrid-MTP_int4RTN` is served in
+  its packed form — int4 group-128 experts (backbone and draft) and the int8
+  group-128 head through the packed-int cores, which gained a scale format
+  (f16 scales per 128 beside the bf16 per 64 of full GLM-5.3) and the Qwen
+  widths; the GPTQ layout is transposed into packed rows at load, its scales
+  untouched, its zeros verified and dropped; the checkpoint's block-FP8 side
+  layers load as shipped (bitwise our own at-load encode of the BF16
+  originals), and the classes it ships in BF16 stay BF16. The n-gram table
+  comes from another cached snapshot (`engine.ngram_table_model`, the FP8
+  release's shards); `download_model.py` fetches and syncs it. New gates on
+  the hybrid's fixture: forward parity against the pure-Python reference
+  (which dequantizes GPTQ exactly), the decode and prefill-head gates and
+  the loopback engines. Performance on the real checkpoint is the next
+  campaign (docs/qwen38_autoround_int4_plan.md, the
+  [record](benchmarks/results/2026-09-28-qwen-autoround-int4/README.md)).
+
 - **Prefix cache: an entry floor, a head cut, and arenas sized to the node**
   (2026-09-28): `engine.prefix_min_tokens` (default 1024) takes no snapshot
   below that position, so short probes and side requests never push a long

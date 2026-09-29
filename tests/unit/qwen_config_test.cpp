@@ -196,6 +196,48 @@ DGPP_TEST(qwen_config_refuses_what_the_engine_does_not_implement) {
   require(no_ple.ple_layer() == -1 && no_ple.ngram_geometry().heads == 0, "no PLE");
 }
 
+// The AutoRound hybrid's quantization_config (Saren/…-hybrid-MTP_int4RTN),
+// transcribed (docs/qwen38_autoround_int4_plan.md §1.4).
+const char* kGptq = R"({"quant_method": "gptq", "bits": 4, "group_size": 128, "desc_act": false,
+  "sym": true, "lm_head": true,
+  "dynamic": {"+:.*lm_head$": {"bits": 8}, "-:.*linear_attn.*": {}, "-:.*self_attn.*": {},
+              "-:.*hyper_connection.*": {}, "-:.*visual.*": {}, "-:.*shared_expert.*": {},
+              "-:.*\\.ple\\..*": {}, "-:.*embed.*": {}, "-:.*fc_hidden.*": {}, "-:.*\\.gate$": {}}})";
+
+std::string gptq_json(const std::string& from, const std::string& to) {
+  std::string s = kGptq;
+  const size_t at = s.find(from);
+  require(at != std::string::npos, "gptq patch anchor missing: " + from);
+  s.replace(at, from.size(), to);
+  return s;
+}
+
+DGPP_TEST(qwen_config_parses_the_autoround_hybrid) {
+  const dgpp::QwenTextConfig c = parse(text_json(), kGptq);
+  require(c.experts_gptq_int4 && c.lm_head_gptq_int8 && c.dense_fp8_shipped && c.gptq_group == 128,
+          "the hybrid's forms");
+  require(!c.experts_fp8 && !c.experts_nvfp4 && c.ngram_table_fp8, "no other expert form; the table e4m3");
+  require(c.ngram_geometry().heads == 16, "the n-gram geometry still derives");
+  // Refused by name: every deviation from the served hybrid.
+  require(refusal(text_json(), gptq_json("\"bits\": 4", "\"bits\": 8")).find("4-bit") != std::string::npos,
+          "8-bit experts refused");
+  require(refusal(text_json(), gptq_json("\"group_size\": 128", "\"group_size\": 64")).find("group 128") != std::string::npos,
+          "group 64 refused");
+  require(refusal(text_json(), gptq_json("\"sym\": true", "\"sym\": false")).find("symmetric") != std::string::npos,
+          "asymmetric refused");
+  require(refusal(text_json(), gptq_json("\"desc_act\": false", "\"desc_act\": true")).find("desc_act") != std::string::npos,
+          "act-order refused");
+  require(refusal(text_json(), gptq_json("\"lm_head\": true", "\"lm_head\": false")).find("raw AutoRound") != std::string::npos,
+          "Intel's raw release refused (BF16 head)");
+  require(refusal(text_json(), gptq_json("\"+:.*lm_head$\": {\"bits\": 8}, ", "")).find("lm_head rule") != std::string::npos,
+          "the missing int8 head rule refused");
+  require(refusal(text_json(), gptq_json("\"-:.*visual.*\": {}", "\"-:.*visual.*\": {}, \"-:.*layers\\\\.48\\\\..*\": {}"))
+                  .find("MTP_int4RTN") != std::string::npos,
+          "the base hybrid (BF16 draft experts) refused, naming the served variant");
+  require(refusal(text_json(), gptq_json("\"-:.*linear_attn.*\": {}, ", "")).find("linear_attn") != std::string::npos,
+          "a missing exclusion refused by name");
+}
+
 DGPP_TEST(qwen_config_parses_the_landed_checkpoint_when_present) {
   namespace fs = std::filesystem;
   const char* home = std::getenv("HOME");

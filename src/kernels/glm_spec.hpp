@@ -37,6 +37,19 @@ constexpr int kSpecMaxSegments = 32;  // KDA rec + KDA conv + DSA layers
 struct GlmSpecSegments {
   int count = 0;
   GlmSpecSegment seg[kSpecMaxSegments];
+  // A checkpoint-and-replay family (kernels/kda.hpp KdaReplay, 2026-09-29):
+  // no snapshot rows; the pass saved its rows' INPUTS and the next pass
+  // replays the accepted ones. The commit copies the saved rows
+  // (`replay_src`, this pass's) over the buffer the next pass replays from
+  // (`replay_dst`) and records the accepted count in replay_pending[req] —
+  // on every step with an active verdict, retraction or not. Mapped
+  // commits offset both buffers by req * replay_request_stride_bytes and
+  // index the pending count by the physical request. Null replay_dst: none.
+  void* replay_dst = nullptr;
+  const void* replay_src = nullptr;
+  size_t replay_bytes = 0;
+  size_t replay_request_stride_bytes = 0;
+  int32_t* replay_pending = nullptr;
 };
 
 // The step's commit, behind the verdict: when verdict->accepted < rows,
@@ -155,6 +168,9 @@ void glm_spec_draft_rows_batched(const PickVerdict* verdicts, int requests, int 
 // back (GlmDiagnosticModel::session_draft_rollback).
 void glm_device_copy(void* dst, const void* src, size_t bytes,
                      cudaStream_t stream);
+// Two bytes stored by a one-thread kernel (a kernel node where a memset
+// node is not allowed: the kernels-only decode graph).
+void glm_device_store_u8x2(uint8_t* dst, uint8_t a, uint8_t b, cudaStream_t stream);
 
 // The chained draft row (depth >= 2, 2026-09-06): the single draft block's
 // recursion. After the block's rows off the verdict (glm_spec_draft_rows)

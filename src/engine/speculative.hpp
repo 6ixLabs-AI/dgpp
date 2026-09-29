@@ -153,7 +153,7 @@ class GreedySpeculator {
     const auto out = model_.session_verify(req_, fed);
     const std::vector<int32_t> winners = pick_rows_(local_row_maxes(out, T));
     const SpecVerdict v = judge_verify(fed, winners);
-    if (v.accepted < T) model_.session_rollback(req_, v.accepted);
+    model_.session_rollback(req_, v.accepted);  // every verify: a replay family records the accepted count
     ++steps_;
     accepted_drafts_ += v.accepted - 1;
     next_ = v.next;
@@ -282,7 +282,7 @@ class SampledSpeculator {
       }
     }
     const int accepted = static_cast<int>(winners.size());
-    if (accepted < T) model_.session_rollback(req_, accepted);
+    model_.session_rollback(req_, accepted);  // every verify: a replay family records the accepted count
     std::vector<int32_t> committed(fed.begin(), fed.begin() + accepted);
     ++steps_;
     accepted_drafts_ += accepted - 1;

@@ -166,6 +166,7 @@ add_library(dgpp_kernels STATIC
   src/kernels/fp4_gemv.cu
   src/kernels/packq_gemv.cu
   src/kernels/packq_gemm.cu
+  src/kernels/packq_head.cu
   src/kernels/scale_gemm.cu
   src/kernels/bf16_gemv.cu
   src/kernels/bf12_gemv.cu
@@ -457,6 +458,23 @@ add_test(NAME qwen_forward_test
   COMMAND qwen_forward_test --checkpoint-dir ${QWEN_FORWARD_FIXTURE}
           --dump-file ${CMAKE_CURRENT_BINARY_DIR}/qwen_pure_ref.qwndump)
 set_tests_properties(qwen_forward_test PROPERTIES DEPENDS qwen_forward_generate)
+# The AutoRound hybrid's twin (docs/qwen38_autoround_int4_plan.md S2): GPTQ
+# int4 g128 experts, the int8 g128 head and the shipped fp8 dense stack
+# through the same fixture chain — the Python reference dequantizes the
+# GPTQ triples exactly (no per-weight rounding, the packed core's policy).
+set(QWEN_GPTQ_FIXTURE ${CMAKE_CURRENT_BINARY_DIR}/qwen_gptq_fixture)
+add_test(NAME qwen_gptq_fixture COMMAND qwen_forward_test --write-fixture ${QWEN_GPTQ_FIXTURE} --gptq)
+add_test(NAME qwen_gptq_smoke COMMAND qwen_forward_test --smoke ${QWEN_GPTQ_FIXTURE})
+set_tests_properties(qwen_gptq_smoke PROPERTIES DEPENDS qwen_gptq_fixture)
+add_test(NAME qwen_gptq_generate
+  COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/qwen_reference_dump.py
+          gen-pure --checkpoint-dir ${QWEN_GPTQ_FIXTURE}
+          --out ${CMAKE_CURRENT_BINARY_DIR}/qwen_gptq_ref.qwndump)
+set_tests_properties(qwen_gptq_generate PROPERTIES DEPENDS qwen_gptq_fixture)
+add_test(NAME qwen_gptq_forward_test
+  COMMAND qwen_forward_test --checkpoint-dir ${QWEN_GPTQ_FIXTURE}
+          --dump-file ${CMAKE_CURRENT_BINARY_DIR}/qwen_gptq_ref.qwndump)
+set_tests_properties(qwen_gptq_forward_test PROPERTIES DEPENDS qwen_gptq_generate)
 
 # The Qwen session surface (Q6 stage A): incremental decode vs the re-forward.
 add_executable(qwen_decode_test tests/cuda/qwen_decode_test.cpp)
@@ -473,6 +491,9 @@ add_test(NAME qwen_decode_fp8_head_row_independent
           $<TARGET_FILE:qwen_decode_test> --fixture ${QWEN_FORWARD_FIXTURE} --fp8-head)
 set_tests_properties(qwen_decode_fp8_head qwen_decode_fp8_head_row_independent
   PROPERTIES DEPENDS qwen_forward_fixture RUN_SERIAL TRUE)
+add_test(NAME qwen_gptq_decode_test COMMAND qwen_decode_test --fixture ${QWEN_GPTQ_FIXTURE})
+add_test(NAME qwen_gptq_prefill_head COMMAND qwen_decode_test --fixture ${QWEN_GPTQ_FIXTURE} --prefill-head)
+set_tests_properties(qwen_gptq_decode_test qwen_gptq_prefill_head PROPERTIES DEPENDS qwen_gptq_fixture)
 add_test(NAME qwen_prefill_head
   COMMAND qwen_decode_test --fixture ${QWEN_FORWARD_FIXTURE} --prefill-head)
 add_test(NAME qwen_prefill_head_all_rows
@@ -1387,6 +1408,12 @@ foreach(_rows 4 256)
   set_tests_properties(qwen_engine_fp8_head_${_rows}
     PROPERTIES RESOURCE_LOCK qwen_engine_world RUN_SERIAL TRUE)
 endforeach()
+# The hybrid through the loopback engines (MTP == plain, the mmap'ed table,
+# depth 2, wide slots, graph == eager) on its own fixture.
+add_test(NAME qwen_engine_gptq
+  COMMAND ${CMAKE_COMMAND} -E env DGPP_TEST_QWEN_GPTQ=1 DGPP_TEST_DENSE_FP8=1 DGPP_TEST_FILTER=loopback_world_2
+          $<TARGET_FILE:qwen_engine_test>)
+set_tests_properties(qwen_engine_gptq PROPERTIES RESOURCE_LOCK qwen_engine_world LABELS "gpu;rdma" RUN_SERIAL TRUE)
 set_tests_properties(qwen_engine_test qwen_engine_row_independent qwen_engine_bf12 PROPERTIES RESOURCE_LOCK qwen_engine_world)
 set_tests_properties(qwen_engine_row_independent qwen_engine_bf12 PROPERTIES LABELS "gpu;rdma" RUN_SERIAL TRUE)
 add_test(NAME qwen_engine_fp8_wide
@@ -1497,6 +1524,12 @@ target_link_libraries(packq_gemv_test PRIVATE dgpp_kernels dgpp_loaders CUDA::cu
 dgpp_set_common(packq_gemv_test)
 add_test(NAME packq_gemv_test COMMAND packq_gemv_test)
 set_tests_properties(packq_gemv_test PROPERTIES SKIP_RETURN_CODE 2)
+add_executable(packq_head_test tests/cuda/packq_head_test.cu)
+target_include_directories(packq_head_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(packq_head_test PRIVATE dgpp_kernels CUDA::cudart Threads::Threads)
+dgpp_set_common(packq_head_test)
+add_test(NAME packq_head_test COMMAND packq_head_test)
+set_tests_properties(packq_head_test PROPERTIES SKIP_RETURN_CODE 2)
 add_executable(packq_gemm_test tests/cuda/packq_gemm_test.cu)
 target_include_directories(packq_gemm_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(packq_gemm_test PRIVATE dgpp_kernels CUDA::cudart)
@@ -1666,6 +1699,10 @@ target_link_libraries(kda_bench PRIVATE dgpp_models_kda CUDA::cudart CUDA::cubla
 dgpp_set_common(kda_bench)
 
 add_executable(moe_slot_bench benchmarks/micro/moe_slot_bench.cu src/common/log.cpp)
+add_executable(qwen_dense_bench benchmarks/micro/qwen_dense_bench.cu src/common/log.cpp)
+target_include_directories(qwen_dense_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(qwen_dense_bench PRIVATE dgpp_kernels CUDA::cudart)
+dgpp_set_common(qwen_dense_bench)
 add_executable(mhc_site_bench benchmarks/micro/mhc_site_bench.cu src/common/log.cpp)
 target_include_directories(mhc_site_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(mhc_site_bench PRIVATE dgpp_kernels CUDA::cudart)

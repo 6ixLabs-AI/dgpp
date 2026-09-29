@@ -7,6 +7,8 @@
 #include <stdexcept>
 #include <string>
 
+#include "common/dtypes.hpp"
+
 namespace dgpp {
 
 struct GlmQuantMatrix {
@@ -134,17 +136,41 @@ inline GlmFp4Matrix fp4_rows_view(const GlmFp4Matrix& m, int64_t row_start,
 // exactly in fp32 (an 8-bit integer times an 8-bit-mantissa scale), and
 // the kernels keep it exact: no weight is rounded to bf16 (the exact
 // policy, packq_gemv.cuh).
-constexpr int kPackedGroup = 64;  // elements per bf16 group scale
+//
+// The scale format (2026-09-28, docs/qwen38_autoround_int4_plan.md D1)
+// selects the group and the scale dtype; the code packing is the same:
+//   kPackedScaleBf16G64 (0): one bf16 scale per 64 codes — the form above.
+//   kPackedScaleF16G128 (1): one IEEE f16 scale per 128 codes — GPTQ /
+//     AutoRound int4 g128 and int8 g128 (the Qwen3.8 AutoRound hybrid): the
+//     checkpoint's own scales, untouched, widened to fp32 exactly in the
+//     kernels; the value is (code - 2^(bits-1)) * float(scales[n][k/128]).
+constexpr int kPackedGroup = 64;  // elements per bf16 group scale (format 0)
+constexpr int kPackedScaleBf16G64 = 0;
+constexpr int kPackedScaleF16G128 = 1;
+inline int packed_scale_group(int scale_fmt) { return scale_fmt == kPackedScaleF16G128 ? 128 : 64; }
+// The host widening of one stored scale (the kernels' exactly).
+inline float packed_scale_to_float(uint16_t bits, int scale_fmt) {
+  return scale_fmt == kPackedScaleF16G128 ? fp16_bits_to_float(bits) : bf16_bits_to_float(bits);
+}
+
+// The payload layout: rows of codes in k order (every packed matrix), or
+// the int8 head's bit planes (2026-09-29, kernels/packq_head.hpp): each
+// 128-code group as [64 B high nibbles][32 B bits 3..2][32 B bits 1..0].
+constexpr int kPackedLayoutRows = 0;
+constexpr int kPackedLayoutPlanes8 = 1;
 
 struct GlmPackedMatrix {
   const uint32_t* packed = nullptr;       // I32 [rows, cols*bits/32]
-  const uint16_t* scales = nullptr;       // bf16 [rows, cols/64]
+  const uint16_t* scales = nullptr;       // bf16 [rows, cols/64] (format 0) or f16 [rows, cols/128] (format 1)
   int64_t rows = 0;
   int64_t cols = 0;                       // logical K (elements)
   int bits = 0;                           // 4 or 8
+  int scale_fmt = kPackedScaleBf16G64;    // kPackedScale*
+  int layout = kPackedLayoutRows;         // kPackedLayout*
 
+  int group() const { return packed_scale_group(scale_fmt); }
   int64_t packed_cols() const { return cols * bits / 32; }   // I32 words per row
-  int64_t scale_cols() const { return cols / kPackedGroup; }
+  int64_t scale_cols() const { return cols / group(); }
   size_t packed_bytes() const {
     return static_cast<size_t>(rows) * static_cast<size_t>(cols) * static_cast<size_t>(bits) / 8;
   }
@@ -153,15 +179,19 @@ struct GlmPackedMatrix {
   }
 };
 
-// K must be a multiple of 64 (one scale per group, whole packed words); a
-// column slice must start on a group boundary and span whole groups. Row
-// slices are free: every row carries its own scales.
-inline void packed_check_cols(int64_t cols, int bits, const char* who) {
+// K must be a multiple of the group (one scale per group, whole packed
+// words); a column slice must start on a group boundary and span whole
+// groups. Row slices are free: every row carries its own scales.
+inline void packed_check_cols(int64_t cols, int bits, const char* who,
+                              int scale_fmt = kPackedScaleBf16G64) {
   if (bits != 4 && bits != 8)
     throw std::invalid_argument(std::string(who) + ": the packed code width must be 4 or 8");
-  if (cols <= 0 || cols % kPackedGroup != 0)
-    throw std::invalid_argument(std::string(who) +
-                                ": packed K must be a positive multiple of 64");
+  if (scale_fmt != kPackedScaleBf16G64 && scale_fmt != kPackedScaleF16G128)
+    throw std::invalid_argument(std::string(who) + ": unknown packed scale format");
+  const int g = packed_scale_group(scale_fmt);
+  if (cols <= 0 || cols % g != 0)
+    throw std::invalid_argument(std::string(who) + ": packed K must be a positive multiple of " +
+                                std::to_string(g));
 }
 
 inline GlmPackedMatrix packed_rows_view(const GlmPackedMatrix& m, int64_t row_start,
@@ -174,6 +204,7 @@ inline GlmPackedMatrix packed_rows_view(const GlmPackedMatrix& m, int64_t row_st
   v.rows = rows;
   v.cols = m.cols;
   v.bits = m.bits;
+  v.scale_fmt = m.scale_fmt;
   return v;
 }
 

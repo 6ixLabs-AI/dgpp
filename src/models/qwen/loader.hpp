@@ -99,6 +99,10 @@ struct QwenMoeResident {
   GlmQuantMatrix shared_fp8[3];           // dense_weights fp8: the same three
   std::vector<GlmQuantMatrix> experts;    // gate, up, down per expert (inter-sliced), the FP8 form
   std::vector<GlmFp4Matrix> experts_fp4;  // the same, the NVFP4 release's backbone experts
+  // The AutoRound hybrid's int4 g128 experts (backbone and draft) in the
+  // packed core's row layout, f16 scales (docs/qwen38_autoround_int4_plan.md).
+  std::vector<GlmPackedMatrix> experts_packed;
+  bool packq() const { return !experts_packed.empty(); }
   float* expert_globals = nullptr;        // [E * 3] F32 on the device: 1 / weight_scale_2 per matrix
   // The layer's activation scales for W4A4 (max input_scale over the experts'
   // gate/up and over their down; 0 = not read): SGLang's flashinfer_cutlass form.
@@ -145,6 +149,12 @@ struct QwenGlobalsResident {
   const uint16_t* embed = nullptr;    // BF16 [vocab, hidden]
   const uint16_t* lm_head = nullptr;  // BF16 [lm_vocab_count, hidden]
   GlmQuantMatrix lm_head_fp8;         // dense_weights fp8
+  GlmPackedMatrix lm_head_packed;     // the AutoRound hybrid's int8 g128 head (packed rows, f16 scales)
+  // The opt-in draft vocabulary slice (engine.draft_vocab): the head rows
+  // of the set, in the plane layout, and the set's ids (device, ascending).
+  GlmPackedMatrix draft_head_packed;
+  const int32_t* draft_vocab_ids = nullptr;
+  int draft_vocab_count = 0;
   int lm_vocab_begin = 0;
   int lm_vocab_count = 0;
   QwenGrResident mixer;               // the final read (no inject)
@@ -261,6 +271,9 @@ struct QwenLoaderFamily {
   static size_t min_staging_bytes() { return size_t{256} << 20; }  // the table's chunked copy
   static void after_restore(const Config& c, int layer, const LoaderTensorMap& tensors,
                             LayerResident& out);
+  // The extra shard directory and its admission filter (loaders/resident_stream.hpp).
+  static std::string extra_shard_dir();
+  static bool admit_extra_tensor(const std::string& name);
 };
 
 extern template class ResidentLayerStream<QwenLoaderFamily>;
@@ -281,6 +294,13 @@ class QwenLayerStream : public ResidentLayerStream<QwenLoaderFamily> {
   // deployment config's engine.ngram_table ("resident" | "mmap") drives it.
   static void set_ngram_table_mmap(bool on);
   static bool ngram_table_mmap();
+  // A second directory whose safetensors shards carry the n-gram table
+  // (engine.ngram_table_model resolved to its snapshot): only the table's
+  // tensors are admitted from it, the checkpoint's own win on a clash.
+  // Empty (the default): the checkpoint's shards alone. Set before the
+  // stream is built.
+  static void set_ngram_table_dir(const std::string& dir);
+  static const std::string& ngram_table_dir();
   // The dense stack's form (2026-09-10, engine.dense_weights): false = the
   // checkpoint's BF16 (the default); true = every dense projection (GDN
   // qkv/z/out, QSA q/k/v/o/indexer, the GR sites, the shared experts, the
@@ -288,6 +308,13 @@ class QwenLayerStream : public ResidentLayerStream<QwenLoaderFamily> {
   // stream is built; the memory plan and the resident image key follow it.
   static void set_dense_weights_fp8(bool on);
   static bool dense_weights_fp8();
+  // The draft vocabulary slice (engine.draft_vocab, 2026-09-29): a .npy of
+  // token ids read once here (sorted, unique); the hybrid's loader gathers
+  // those rows of the int8 head into the draft's own plane-layout matrix.
+  // False with `err` set when the file cannot be read.
+  static bool set_draft_vocab(const std::string& npy_path, std::string* err);
+  static int draft_vocab_count();
+  static const std::vector<int32_t>& draft_vocab_ids();
   // The RadixArk MTP expert format (engine.mtp_expert_format = "bf16_fused"):
   // fused BF16 gate_up_proj + down_proj instead of per-expert FP8 tensors.
   // Set before the stream is built; the memory plan and the resident image

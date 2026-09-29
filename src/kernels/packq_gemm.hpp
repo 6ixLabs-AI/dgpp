@@ -15,24 +15,49 @@ constexpr int kPackqMmaFromRows = 128;
 // D[m,n] = Act[m,k] W[n,k]^T. K is a positive multiple of 64; packed
 // weight rows are 16-byte aligned. Activations may have a padded stride.
 // These explicit GEMM entry points do not change the GEMV decode launchers.
+// `variant` (2026-09-29): -1 = the default kernel (the 64 x 128 wide tile
+// for int4 rows unless DGPP_PACKQ_GEMM=narrow), 0 = the narrow 32 x 64
+// kernel, 1 = the wide one. Both give bitwise the same D.
 void launch_packq_gemm_bf16(const uint16_t* act, size_t act_stride, const GlmPackedMatrix& w,
                             uint16_t* out, int m, int n, int k, cudaStream_t stream);
 void launch_packq_gemm_f32(const uint16_t* act, size_t act_stride, const GlmPackedMatrix& w,
                            float* out, int m, int n, int k, cudaStream_t stream);
+// The same with the kernel pinned (the bench and the tests; the entries
+// above keep their signatures for the callers that take them by pointer).
+void launch_packq_gemm_bf16_variant(const uint16_t* act, size_t act_stride, const GlmPackedMatrix& w,
+                                    uint16_t* out, int m, int n, int k, cudaStream_t stream, int variant);
+void launch_packq_gemm_f32_variant(const uint16_t* act, size_t act_stride, const GlmPackedMatrix& w,
+                                   float* out, int m, int n, int k, cudaStream_t stream, int variant);
 
 // Device-resident expert segments, including empty/ragged segments.
 // max_rows bounds the largest segment; act_rows optionally maps gathered
 // row indices to original activation rows. Output uses segment row indices.
-// Each selected view must have the supplied bit width and N/K geometry.
+// Each selected view must have the supplied bit width, scale format
+// (kPackedScale*, quant_matrix.hpp) and N/K geometry.
+// `tiles` (2026-09-29): the compact tile list of the segments at
+// kPackqGemmWideRows rows a tile (launch_moe_tile_list) with its device
+// count and host capacity; the wide kernel then runs a 1-D grid over the
+// real tiles instead of n_segs x the longest segment's m-tiles (the same
+// blocks do the same tiles: bitwise). Any max_rows > 0 is accepted with a
+// list; the narrow kernel ignores the list and keeps the max_rows grid.
+constexpr int kPackqGemmWideRows = 64;
 void launch_moe_grouped_mma_packq_bf16(const uint16_t* act, size_t act_stride,
                                        const MoeSegment* segs, int n_segs, int max_rows,
                                        const MoeExpertView* views, int which, uint16_t* out,
                                        size_t out_stride, int n, int k, int bits,
-                                       cudaStream_t stream, const int32_t* act_rows = nullptr);
+                                       cudaStream_t stream, const int32_t* act_rows = nullptr,
+                                       int scale_fmt = 0, int variant = -1,
+                                       const MoeTile* tiles = nullptr,
+                                       const int32_t* tile_count = nullptr, int tile_cap = 0);
 void launch_moe_grouped_mma_packq_f32(const uint16_t* act, size_t act_stride,
                                       const MoeSegment* segs, int n_segs, int max_rows,
                                       const MoeExpertView* views, int which, float* out,
                                       size_t out_stride, int n, int k, int bits,
-                                      cudaStream_t stream, const int32_t* act_rows = nullptr);
+                                      cudaStream_t stream, const int32_t* act_rows = nullptr,
+                                      int scale_fmt = 0, int variant = -1,
+                                      const MoeTile* tiles = nullptr,
+                                      const int32_t* tile_count = nullptr, int tile_cap = 0);
+// The kernel the default `variant` selects: 1 = the wide tile, 0 = narrow.
+int packq_gemm_variant_default();
 
 }  // namespace dgpp

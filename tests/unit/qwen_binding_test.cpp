@@ -12,6 +12,7 @@
 #include "common/test.hpp"
 #include "loaders/safetensors.hpp"
 #include "models/qwen/binding.hpp"
+#include "../cuda/qwen_fixture.hpp"
 #include "models/qwen/config.hpp"
 
 namespace {
@@ -106,6 +107,57 @@ DGPP_TEST(qwen_binding_validates_the_landed_checkpoint_when_present) {
                         std::to_string(rep.unexpected) + " first: " + first);
   require(rep.vision == 333 && rep.quantized_matrices == 73728 + 1536 && rep.ngram_shards == 128,
           "the census");
+}
+
+DGPP_TEST(qwen_binding_table_has_the_autoround_hybrid_shape) {
+  // The tiny hybrid: every routed expert matrix (backbone and draft) a GPTQ
+  // triple, the lm_head an int8 triple, the GDN / QSA / shared projections
+  // block FP8 with F32 scales; everything else BF16 as before.
+  const dgpp::QwenTextConfig cfg = qwenfx::tiny_gptq_config();
+  const auto table = dgpp::qwen_expected_text_tensors(cfg);
+  const dgpp::QwenTextConfig fp8 = qwenfx::tiny_config();
+  const auto plain = dgpp::qwen_expected_text_tensors(fp8);
+  const int layers = cfg.num_hidden_layers + 1;
+  const int E = cfg.num_experts;
+  // Experts: 3 GPTQ tensors per matrix (vs the FP8 pair); the head: 3 (vs
+  // 1); the shipped-fp8 dense classes: a scale partner each (vs BF16 alone).
+  // The draft layer ships BF16 projections and shared expert: no partners there.
+  const int gdn = cfg.num_gdn_layers(), qsa = cfg.num_qsa_layers();
+  const size_t dense_partners = static_cast<size_t>(gdn * 3 + qsa * 4 + (layers - 1) * 3);
+  require(table.size() == plain.size() + static_cast<size_t>(layers) * E * 3 + 2 + dense_partners,
+          "hybrid table size " + std::to_string(table.size()) + " vs " + std::to_string(plain.size()));
+  size_t codes = 0, scales = 0, zeros = 0, f32_scales = 0, head = 0;
+  for (const auto& e : table) {
+    if (e.role == dgpp::QwenTensorRole::GptqCodes) {
+      ++codes;
+      require(e.dtype == dgpp::DType::I32, "codes are I32");
+      if (e.cls == dgpp::QwenWeightClass::RoutedExpert) {
+        const bool down = e.name.find("down_proj") != std::string::npos;
+        const int64_t N = down ? cfg.hidden_size : cfg.moe_intermediate_size;
+        const int64_t K = down ? cfg.moe_intermediate_size : cfg.hidden_size;
+        require(e.shape == std::vector<int64_t>{K * 4 / 32, N}, "expert qweight shape " + e.name);
+      }
+    } else if (e.role == dgpp::QwenTensorRole::GptqScales) {
+      ++scales;
+      require(e.dtype == dgpp::DType::F16, "scales are F16");
+    } else if (e.role == dgpp::QwenTensorRole::GptqZeros) {
+      ++zeros;
+    } else if (e.role == dgpp::QwenTensorRole::Fp8Scale && e.dtype == dgpp::DType::F32) {
+      ++f32_scales;
+    }
+    if (e.cls == dgpp::QwenWeightClass::LmHead) {
+      ++head;
+      if (e.role == dgpp::QwenTensorRole::GptqCodes)
+        require(e.shape == std::vector<int64_t>{cfg.hidden_size * 8 / 32, cfg.vocab_size}, "head qweight shape");
+      if (e.role == dgpp::QwenTensorRole::GptqZeros)
+        require(e.shape == std::vector<int64_t>{cfg.hidden_size / 128, cfg.vocab_size * 8 / 32}, "head qzeros shape");
+    }
+  }
+  require(codes == static_cast<size_t>(layers) * E * 3 + 1 && scales == codes && zeros == codes, "one triple per matrix");
+  require(head == 3, "the head is one GPTQ triple");
+  // Per layer: GDN qkv/z/out or QSA q/k/v/o, plus the shared expert's three.
+  require(f32_scales == dense_partners, "the shipped fp8 classes carry F32 scales");
+  require(dgpp::qwen_validate_text_binding(cfg, {}).missing == table.size(), "the validator walks the table");
 }
 
 DGPP_TEST(qwen_binding_table_has_the_radixark_fused_shape) {

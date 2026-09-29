@@ -1,0 +1,48 @@
+{
+  "model": "Saren/Qwen3.8-Flash-Next-W4A16-AutoRound-hybrid-MTP_int4RTN",
+  "engine": {
+    "max_concurrency": 4,
+    "kv_capacity": 262144,
+    "kv_dtype": "bf16",
+    "bf16_weights": "bf12+bf16",
+    "ngram_table": "mmap",
+    "ngram_table_model": "Qwen/Qwen3.8-Flash-Next-FP8",
+    "dense_weights": "fp8",
+    "default_max_tokens": 32768,
+    "queue_limit": 8,
+    "max_connections": 64,
+    "decode_graph": true,
+    "mtp": true,
+    "mtp_depth": 3,
+    "prefix_cache_gib": 3,
+    "admission": "full",
+    "admission_window": 256,
+    "sampling_candidates": 128,
+    "stats_interval_s": 10,
+    "prefill_budget_tokens": 8192,
+    "prefill_idle_budget_tokens": 8192,
+    "model_alias": "qwen"
+  },
+  "paths": {
+    "resident_cache": "",
+    "log_dir": "/home/stephen/workspace/dgpp-autoround/benchmarks/results/2026-09-28-qwen-autoround-int4/serve_prefill_bundle/profile_8192/world",
+    "stage_dir": "/tmp/bus4/deployments/3f3699362ed97a93",
+    "release_dir": "~/dgpp/releases"
+  },
+  "nodes": [
+    "192.168.88.11"
+  ],
+  "ssh_user": "stephen",
+  "ports": {
+    "http": 18080,
+    "fabric": 29970,
+    "journal": 29971
+  },
+  "http": {
+    "bind_host": "0.0.0.0",
+    "port": 18080
+  },
+  "node_env": [
+    {}
+  ]
+}

@@ -25,6 +25,7 @@ over RoCE. Each quant links to its specific Hugging Face model card.
 | GLM-5.3-Flash (hybrid) | [HawkBearPig/GLM-5.3-Flash-NVFP4-FP8](https://huggingface.co/HawkBearPig/GLM-5.3-Flash-NVFP4-FP8) | 2, 4 | [Two nodes](deploy/cluster_glm-5.3-flash_nvfp4-fp8_w2.example.json), [four nodes](deploy/cluster_glm-5.3-flash_nvfp4-fp8_w4.example.json) |
 | Qwen3.8-Flash-Next | [Qwen/Qwen3.8-Flash-Next-FP8](https://huggingface.co/Qwen/Qwen3.8-Flash-Next-FP8) | 2, 4 | [Two nodes](deploy/cluster_qwen-3.8-flash-next_fp8_w2.example.json), [four nodes](deploy/cluster_qwen-3.8-flash-next_fp8_w4.example.json) |
 | Qwen3.8-Flash-Next | [nvidia/Qwen3.8-Flash-Next-NVFP4](https://huggingface.co/nvidia/Qwen3.8-Flash-Next-NVFP4) | 1, 2 | [One node](deploy/cluster_qwen-3.8-flash-next_nvfp4_w1.example.json) (256K shared KV pool, 4K busy/idle prefill), [two nodes](deploy/cluster_qwen-3.8-flash-next_nvfp4_w2.example.json) (mapped n-gram table, dense projections FP8 at load) |
+| Qwen3.8-Flash-Next | [Saren/Qwen3.8-Flash-Next-W4A16-AutoRound-hybrid-MTP_int4RTN](https://huggingface.co/Saren/Qwen3.8-Flash-Next-W4A16-AutoRound-hybrid-MTP_int4RTN) | 1 | [One node](deploy/cluster_qwen-3.8-flash-next_autoround-int4_w1.example.json) (AutoRound int4 g128 experts and an int8 g128 head served in their packed form, the n-gram table from the FP8 release's shards via `engine.ngram_table_model`) |
 | Qwen3.8-Flash-Next | [RadixArk/Qwen3.8-Flash-Next-NVFP4](https://huggingface.co/RadixArk/Qwen3.8-Flash-Next-NVFP4) | 1, 2 | [One node](deploy/cluster_qwen-3.8-flash-next_nvfp4-radixark_w1.example.json) (tuned: 4K prefill chunks with matching prefill budgets, MTP depth 2), [two nodes](deploy/cluster_qwen-3.8-flash-next_nvfp4-radixark_w2.example.json) (same NVFP4 format and engine configuration as the NVIDIA release) |
 | GLM-4.7 | [nvidia/GLM-4.7-NVFP4](https://huggingface.co/nvidia/GLM-4.7-NVFP4) | 4 | [Four nodes](deploy/cluster_glm-4.7_nvfp4_w4.example.json) |
 | GLM-5.3 | [HawkBearPig/GLM-5.3-Int4-Int8Mix-RTN-g64](https://huggingface.co/HawkBearPig/GLM-5.3-Int4-Int8Mix-RTN-g64) | 4 | [Four nodes](deploy/cluster_glm-5.3_int4-int8_w4.example.json) |
@@ -108,6 +109,14 @@ record the modes measured for each deployment.
   +6–12% single-stream decode on GLM-5.3-Flash, GLM-4.7, the full GLM-5.3 and
   Qwen3.8-Flash-Next-FP8. The 12-bit form can also be the only resident one,
   which puts the model below its checkpoint's footprint.
+- **Qwen3.8-Flash-Next AutoRound int4/int8 hybrid on one Spark**: the
+  GPTQ-layout checkpoint (int4 group-128 experts, an int8 group-128 head)
+  is served in its packed form with no dequantized copy; the head is read
+  as bit planes with a provable argmax bound, so every greedy step touches
+  75 % of its bytes for a bit-exact pick, and MTP runs at depth 3. Decode
+  45–72 tok/s single-stream and 77–119 tok/s at four requests, prefill
+  0.55 ms per token from 8K to 32K, with the decode step flat from 3K
+  context up. See the [record](benchmarks/results/2026-09-28-qwen-autoround-int4/README.md).
 - **Model-specific prefill paths**: packed int4/int8 tensor-core prefill for
   full GLM-5.3, tiled QSA and calibrated NVFP4 W4A4 expert prefill for Qwen,
   and bounded grouped prefill for DeepSeek-V4.1-Flash. Qwen can optionally
@@ -158,8 +167,9 @@ As of 2026-09-22, the source tree has eleven measured deployment templates
 covering six model architectures on one, two or four Sparks. The shared
 engine provides graph decode, transactional MTP, row-batched execution,
 grouped prefill, prefix caching, deterministic multi-rank scheduling and the
-OpenAI-compatible service. Current quantized paths cover FP8, NVFP4, MXFP4 and
-full GLM-5.3's packed int4/int8 format. Qwen NVFP4 runs on one or two Sparks by
+OpenAI-compatible service. Current quantized paths cover FP8, NVFP4, MXFP4,
+full GLM-5.3's packed int4/int8 format and the Qwen3.8 AutoRound int4/int8
+hybrid (GPTQ layout, group 128, served as packed). Qwen NVFP4 runs on one or two Sparks by
 mapping its n-gram table from NVMe and encoding the dense stack to FP8 at load.
 
 The Qwen sixteen-slot decode graphs and prefill continuation are implemented as
@@ -392,6 +402,7 @@ first; change one setting at a time and measure the effect on your workload.
 | `engine.dense_weights` | no | Qwen dense-projection storage. `checkpoint` retains the checkpoint's BF16 form; `fp8` converts dense projections at load time to reduce their memory footprint, with quantization error. Does not select another HF repository or change the expert quant; other families ignore it. | `checkpoint` |
 | `engine.fp8_head` | no | Qwen FP8 vocabulary-head dispatch. `mma` uses streaming MMA above the dense GEMV threshold and within the configured decode capacity, including short prefills in that interval. Requires `dense_weights: "fp8"`; the NVFP4 templates select it after [matched numerical validation](benchmarks/results/2026-09-21-qwen-fp8-head-numerics.md). `gemv` restores the previous dispatch. | `gemv` (NVFP4 templates: `mma`) |
 | `engine.bf16_weights` | no | Resident form of the BF16 weights that decode streams (attention/linear-attention projections, the LM head). `checkpoint` keeps the BF16 bytes alone. `bf12` and `bf12+bf16` add a **lossless** 12-bit form of each matrix (sign+mantissa byte plus a 4-bit exponent code; exact side tables for the rare outliers): decode launches of up to eight rows read 0.75 of the bytes and produce bit-identical results, so transcripts do not change. This is a storage format, not quantization. `bf12+bf16` keeps both forms resident: prefill is untouched and the 12-bit copies cost about 0.75× those matrices in additional memory (GLM-5.3-Flash: +2.0 GiB/rank at four Sparks, +3.8 at two; GLM-4.7: +4.9). `bf12` keeps the 12-bit form **alone**: each matrix's BF16 bytes are returned to the node as its layer loads, the footprint drops below `checkpoint`'s (GLM-5.3-Flash −0.5 GiB/rank at four Sparks, −1.0 at two; GLM-4.7 −1.4), and a prefill GEMM expands the rows it reads into a small scratch first — the same bits, so the same results, for about 10 ms per prefill chunk on four-node GLM-5.3-Flash (+1–2% on 8K–32K prompts, +25–40 ms to a short prompt's first token). The memory plan includes either. Measured single-stream decode: GLM-5.3-Flash +6–7%, GLM-4.7 +11–12%, full GLM-5.3 +5–6.5%, Qwen3.8-Flash-Next-FP8 +6.4% on four Sparks and +9.0% on two ([benchmarks](docs/benchmarks.md)). On Qwen it packs the GDN/QSA projections and the head of the FP8 checkpoint and always keeps both forms resident (every Qwen recipe has the room); under `dense_weights: "fp8"` those matrices are already FP8 and nothing is packed. DeepSeek accepts the key and currently packs nothing. Templates with memory to spare ship `bf12+bf16`; the two sized to their nodes' memory (two-node GLM-5.3-Flash, full GLM-5.3) ship `bf12`. | `checkpoint` |
+| `engine.draft_vocab` | no | Qwen3.8 AutoRound hybrid only: path to a one-dimensional int32/int64 `.npy` of token ids. The MTP draft head then scores only those rows of the head (every other id is `-inf` for the draft), so each draft step reads that slice instead of the whole head. The target verifies every draft, so outputs are unchanged; only the draft acceptance can move (a token outside the set is never proposed). `tools/build_draft_vocab.py TOKENIZER.json OUT.npy --size 65536` builds a set from the tokenizer's alphabet, added tokens and most frequent merges. Off by default; headline numbers are measured without it. | empty (whole vocabulary) |
 | `engine.graph_batch_min_live` | no | Active-request count at which decode switches from scalar to batched graphs. A lower threshold starts batching earlier; batching may improve throughput while doing extra padded-row work. 0 chooses min(2, `max_concurrency`); explicit values must be 1 through `max_concurrency`. | 0 (automatic) |
 | `engine.sampling_candidates` | no | Number of candidate tokens gathered per rank on the sampled-token fast path, 1–256. Smaller values reduce routine work but may trigger more full-gather fallbacks. The fallback preserves sampling correctness; this is not the client's `top_k` parameter. | 128 |
 | `engine.bulk_pace_gbps` | no | Sender pacing rate per queue pair for bulk/prefill communication, in gigabits per second. Negative derives the rate from link speed; 0 disables pacing. Override only when measuring network contention—this is not an API throughput limit. | -1 (automatic) |

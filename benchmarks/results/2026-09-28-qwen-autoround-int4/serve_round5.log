@@ -1,0 +1,43 @@
+production down 05:23:49
+deployment /home/stephen/dgpp/log/deployments/ab0d8dd705def24d/
+INFO  rank 0: memory plan for a 262144-token context — model weights (resident; the n-gram table mmap'ed from the checkpoint) 65.31 GiB; loader staging (pinne
+INFO  rank 0: memory plan total 88.59 GiB (83.74 GiB device + 4.86 GiB pinned) + 4.00 GiB headroom against 115.28 GiB free (device free 105.23 GiB of 121.63 GiB
+INFO  rank 0: graph variants warm-captured in 16.59s
+== transcripts vs depth3 05:24:17
+identical transcripts: 4 of 4
+== classes
+class  tokens wall ms/tok  ms/pass tok/pass accept  finish
+== bench_qwen35 thinking on
+  [Q&A] 62 tokens in 1.41s = 44.1 tok/s (prompt: 65)
+  [Code] 512 tokens in 10.32s = 49.6 tok/s (prompt: 72)
+  [JSON] 828 tokens in 12.98s = 63.8 tok/s (prompt: 90)
+  [Math] 64 tokens in 1.23s = 52.1 tok/s (prompt: 71)
+  [LongCode] 2048 tokens in 43.51s = 47.1 tok/s (prompt: 79)
+  [Q&A] 62 tokens in 1.38s = 44.9 tok/s (prompt: 65)
+  [Code] 512 tokens in 10.33s = 49.6 tok/s (prompt: 72)
+  [JSON] 828 tokens in 12.98s = 63.8 tok/s (prompt: 90)
+  [Math] 64 tokens in 1.25s = 51.3 tok/s (prompt: 71)
+  [LongCode] 2048 tokens in 43.49s = 47.1 tok/s (prompt: 79)
+== bench_qwen35 thinking off
+  [Q&A] 182 tokens in 3.19s = 57.1 tok/s (prompt: 25)
+  [Code] 188 tokens in 3.10s = 60.7 tok/s (prompt: 32)
+  [JSON] 849 tokens in 13.03s = 65.2 tok/s (prompt: 50)
+  [Math] 9 tokens in 0.41s = 21.8 tok/s (prompt: 31)
+  [LongCode] 2048 tokens in 33.23s = 61.6 tok/s (prompt: 39)
+  [Q&A] 182 tokens in 3.16s = 57.5 tok/s (prompt: 25)
+  [Code] 188 tokens in 3.09s = 60.8 tok/s (prompt: 32)
+  [JSON] 849 tokens in 13.01s = 65.2 tok/s (prompt: 50)
+  [Math] 9 tokens in 0.39s = 23.2 tok/s (prompt: 31)
+  [LongCode] 2048 tokens in 33.21s = 61.7 tok/s (prompt: 39)
+== stats
+10.0 s | decode 61.5 tok/s, 16.3 ms/tok, 56.9 ms/step (176 steps / 616 tok, 100 % of wall) | mtp 3.50 tok/step
+10.0 s | decode 62.9 tok/s, 15.9 ms/tok, 58.4 ms/step (171 steps / 629 tok, 100 % of wall) | mtp 3.68 tok/step
+10.0 s | decode 62.7 tok/s, 15.9 ms/tok, 60.1 ms/step (166 steps / 628 tok, 100 % of wall) | mtp 3.78 tok/step
+== profile 05:29:22
+[profiled] content chunks 399, ttft 306 ms, decode pace 25.68 ms/chunk (client), wall 10553 ms
+window: 178 steps between markers 'spec_commit_kernel' (skipping the first 20); wall 59.784 ms/step, GPU busy 74.488 ms/step (124.6 %), 1495.7 kernels/step
+== profile at 2K context 05:30:08
+[ctx2k] content chunks 400, ttft 9550 ms, decode pace 22.38 ms/chunk (client), wall 18481 ms
+window: 144 steps between markers 'spec_commit_kernel' (skipping the first 20); wall 128.706 ms/step, GPU busy 143.167 ms/step (111.2 %), 1582.4 kernels/step
+production restored 05:31:39
+ab done

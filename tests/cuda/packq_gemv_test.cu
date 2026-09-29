@@ -32,9 +32,11 @@ using namespace scale_gemm_test;
 
 struct Problem {
   int bits, m, n, k;
+  int sf = 0;                     // the scale format: 0 bf16 per 64, 1 f16 per 128
   std::vector<uint16_t> act;      // [m, k] bf16
   std::vector<uint32_t> packed;   // [n, k*bits/32]
-  std::vector<uint16_t> scales;   // [n, k/64] bf16
+  std::vector<uint16_t> scales;   // [n, k/group] in the format's dtype
+  int group() const { return dgpp::packed_scale_group(sf); }
 };
 
 // The checkpoint's packing: unsigned codes offset 2^(bits-1), 32/bits per
@@ -48,12 +50,13 @@ void pack_codes(const std::vector<int>& codes, int bits, std::vector<uint32_t>& 
   }
 }
 
-Problem make_problem(int bits, int m, int n, int k, uint64_t seed) {
+Problem make_problem(int bits, int m, int n, int k, uint64_t seed, int sf = 0) {
   Problem p;
   p.bits = bits;
   p.m = m;
   p.n = n;
   p.k = k;
+  p.sf = sf;
   Rng rng(seed);
   p.act.resize(static_cast<size_t>(m) * k);
   fill_act(rng, p.act);
@@ -61,9 +64,11 @@ Problem make_problem(int bits, int m, int n, int k, uint64_t seed) {
   std::vector<int> codes(static_cast<size_t>(n) * k);
   for (auto& c : codes) c = lo + static_cast<int>(rng.next() % static_cast<uint64_t>(hi - lo + 1));
   pack_codes(codes, bits, p.packed);
-  p.scales.resize(static_cast<size_t>(n) * k / 64);
-  for (auto& s : p.scales)
-    s = dgpp::float_to_bf16_bits(static_cast<float>(std::exp2(rng.unit() * 2.0) * 0.0625));
+  p.scales.resize(static_cast<size_t>(n) * k / p.group());
+  for (auto& s : p.scales) {
+    const float v = static_cast<float>(std::exp2(rng.unit() * 2.0) * 0.0625);
+    s = sf == 0 ? dgpp::float_to_bf16_bits(v) : dgpp::float_to_fp16_bits(v);
+  }
   return p;
 }
 
@@ -78,8 +83,10 @@ std::vector<double> oracle(const Problem& p) {
   std::vector<double> out(static_cast<size_t>(p.m) * p.n, 0.0);
   std::vector<double> wrow(p.k);
   for (int nn = 0; nn < p.n; ++nn) {
+    const int g = p.group();
     for (int kk = 0; kk < p.k; ++kk) {
-      const float s = bf16_to_float(p.scales[static_cast<size_t>(nn) * (p.k / 64) + kk / 64]);
+      const float s = dgpp::packed_scale_to_float(
+          p.scales[static_cast<size_t>(nn) * (p.k / g) + kk / g], p.sf);
       wrow[kk] = static_cast<double>(code_at(p, nn, kk)) * static_cast<double>(s);
     }
     for (int mm = 0; mm < p.m; ++mm) {
@@ -102,7 +109,7 @@ struct DevMatrix {
     DGPP_CUDA_OK(cudaMallocManaged(&scales, p.scales.size() * 2));
     std::memcpy(packed, p.packed.data(), p.packed.size() * 4);
     std::memcpy(scales, p.scales.data(), p.scales.size() * 2);
-    view = dgpp::GlmPackedMatrix{packed, scales, p.n, p.k, p.bits};
+    view = dgpp::GlmPackedMatrix{packed, scales, p.n, p.k, p.bits, p.sf};
   }
   ~DevMatrix() {
     cudaFree(packed);
@@ -154,6 +161,7 @@ void check_oracle(const Problem& p, const std::vector<uint16_t>& got, const char
 Problem row_of(const Problem& p, int r) {
   Problem q;
   q.bits = p.bits;
+  q.sf = p.sf;
   q.m = 1;
   q.n = p.n;
   q.k = p.k;
@@ -194,6 +202,88 @@ DGPP_TEST(packq_gemv_matches_oracle_across_row_geometries) {
                               std::to_string(s.k);
     check_oracle(p, run_bf16(p), label.c_str());
   }
+}
+
+DGPP_TEST(packq_gemv_g128_f16_matches_oracle) {
+  // The f16-per-128 scale format (docs/qwen38_autoround_int4_plan.md D1)
+  // at the AutoRound hybrid's widths — int4 640 (4 lanes x 5 chunks) and
+  // 2560 (16 x 5), int8 2560 (32 x 5) and 640 (8 x 5) — and the smaller
+  // 128-multiples of the compiled set. Same oracle, same budget: the
+  // chain is the format-0 chain with a different scale index and widening.
+  struct Shape {
+    int bits, m, n, k;
+  };
+  const Shape shapes[] = {
+      {4, 1, 520, 640},  {4, 3, 264, 2560}, {4, 2, 100, 128},  {4, 4, 40, 256},
+      {4, 1, 77, 384},   {4, 2, 30, 1024},  {4, 4, 17, 512},   {4, 2, 130, 2560},
+      {8, 1, 520, 2560}, {8, 3, 264, 640},  {8, 2, 100, 128},  {8, 4, 40, 256},
+      {8, 1, 77, 384},   {8, 2, 30, 2048},  {8, 4, 70, 1536},  {8, 1, 300, 640}};
+  int i = 0;
+  for (const Shape& s : shapes) {
+    const Problem p = make_problem(s.bits, s.m, s.n, s.k, 0xF16 + i++, 1);
+    const std::string label = "packq int" + std::to_string(s.bits) + " g128/f16 gemv M" +
+                              std::to_string(s.m) + "xN" + std::to_string(s.n) + "xK" +
+                              std::to_string(s.k);
+    check_oracle(p, run_bf16(p), label.c_str());
+  }
+  // Row independence and the f32 epilogue at the production widths.
+  for (int bits : {4, 8})
+    for (int k : {640, 2560}) {
+      const Problem p3 = make_problem(bits, 3, 296, k, 0xE3 + k + bits, 1);
+      const std::vector<uint16_t> got3 = run_bf16(p3);
+      for (int r = 0; r < 3; ++r) {
+        const std::vector<uint16_t> got1 = run_bf16(row_of(p3, r));
+        require(std::memcmp(got1.data(), got3.data() + static_cast<size_t>(r) * p3.n,
+                            static_cast<size_t>(p3.n) * 2) == 0,
+                "packq g128 row bits independent of m (3)");
+      }
+      const Problem p8 = make_problem(bits, 8, 136, k, 0xE8 + k + bits, 1);
+      const std::vector<uint16_t> got8 = run_bf16(p8);
+      const std::vector<float> got8f = run_f32(p8);
+      for (int r = 0; r < 8; ++r) {
+        const Problem p1 = row_of(p8, r);
+        const std::vector<uint16_t> got1 = run_bf16(p1);
+        const std::vector<float> got1f = run_f32(p1);
+        require(std::memcmp(got1.data(), got8.data() + static_cast<size_t>(r) * p8.n,
+                            static_cast<size_t>(p8.n) * 2) == 0,
+                "packq g128 chunked bf16 row bits independent of m (8)");
+        require(std::memcmp(got1f.data(), got8f.data() + static_cast<size_t>(r) * p8.n,
+                            static_cast<size_t>(p8.n) * 4) == 0,
+                "packq g128 chunked f32 row bits independent of m (8)");
+      }
+      for (size_t j = 0; j < got8.size(); ++j)
+        require(dgpp::float_to_bf16_bits(got8f[j]) == got8[j], "g128 bf16(out_f32) == out_bf16");
+    }
+  // An f16 NaN scale poisons exactly its row.
+  for (int bits : {4, 8}) {
+    Problem p = make_problem(bits, 1, 300, 640, 0xA5 + bits, 1);
+    p.scales[static_cast<size_t>(9) * (p.k / 128) + 3] = 0x7E00;
+    p.scales[static_cast<size_t>(250) * (p.k / 128) + 0] = 0xFE00;
+    const std::vector<uint16_t> got = run_bf16(p);
+    for (int nn = 0; nn < p.n; ++nn) {
+      const bool got_nan = std::isnan(bf16_to_float(got[static_cast<size_t>(nn)]));
+      require(got_nan == (nn == 9 || nn == 250), "g128 f16 NaN scale poisons exactly its row");
+    }
+  }
+  // The contract: a 128-multiple inside the format's compiled set.
+  auto rejects = [](int bits, int k, int sf) {
+    Problem p = make_problem(bits, 1, 8, k % 128 == 0 ? k : 128, 0xBAD, 1);
+    p.k = k;
+    p.sf = sf;
+    try {
+      (void)run_bf16(p);
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+    return false;
+  };
+  require(rejects(4, 192, 1), "g128: k=192 rejected (not a multiple of 128)");
+  require(rejects(4, 320, 1), "g128: k=320 rejected");
+  require(rejects(4, 4096, 1), "g128: k=4096 rejected (outside the format's compiled set)");
+  require(rejects(8, 640, 2), "an unknown scale format is rejected");
+  require(!rejects(4, 640, 1) && !rejects(4, 2560, 1) && !rejects(8, 2560, 1) && !rejects(8, 640, 1),
+          "g128: the AutoRound widths accepted");
+  std::printf("[ OK ] packq gemv g128/f16: oracle, row independence, NaN, contract\n");
 }
 
 DGPP_TEST(packq_gemv_rows_are_independent_of_row_count) {

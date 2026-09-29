@@ -279,7 +279,7 @@ void check_world(int world, uint16_t port, const std::string& dir, const QwenTex
 DGPP_TEST(qwen_tp_loopback_worlds_2_and_4_match_world_1) {
   const std::string dir = (fs::current_path() / "qwen_tp_fixture").string();
   const QwenTextConfig cfg = qwenfx::tiny_config();
-  qwenfx::write_fixture(cfg, dir);
+  qwenfx::write_fixture_for(cfg, dir);
   const std::vector<int64_t> tokens = make_tokens(cfg, 72);
   QwenModel::Outputs ref;
   {
