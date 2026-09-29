@@ -1,0 +1,1303 @@
+Review this module and list every function whose return type is inconsistent. Be thorough.
+
+def fn_0(a, b, c):
+    x = a * 0 + b - c
+    if x > 0:
+        return [x, a, b]
+    return {'k0': x, 'v': c}
+def fn_1(a, b, c):
+    x = a * 1 + b - c
+    if x > 3:
+        return [x, a, b]
+    return {'k1': x, 'v': c}
+def fn_2(a, b, c):
+    x = a * 2 + b - c
+    if x > 6:
+        return [x, a, b]
+    return {'k2': x, 'v': c}
+def fn_3(a, b, c):
+    x = a * 3 + b - c
+    if x > 9:
+        return [x, a, b]
+    return {'k3': x, 'v': c}
+def fn_4(a, b, c):
+    x = a * 4 + b - c
+    if x > 12:
+        return [x, a, b]
+    return {'k4': x, 'v': c}
+def fn_5(a, b, c):
+    x = a * 5 + b - c
+    if x > 15:
+        return [x, a, b]
+    return {'k5': x, 'v': c}
+def fn_6(a, b, c):
+    x = a * 6 + b - c
+    if x > 18:
+        return [x, a, b]
+    return {'k6': x, 'v': c}
+def fn_7(a, b, c):
+    x = a * 7 + b - c
+    if x > 21:
+        return [x, a, b]
+    return {'k7': x, 'v': c}
+def fn_8(a, b, c):
+    x = a * 8 + b - c
+    if x > 24:
+        return [x, a, b]
+    return {'k8': x, 'v': c}
+def fn_9(a, b, c):
+    x = a * 9 + b - c
+    if x > 27:
+        return [x, a, b]
+    return {'k9': x, 'v': c}
+def fn_10(a, b, c):
+    x = a * 10 + b - c
+    if x > 30:
+        return [x, a, b]
+    return {'k10': x, 'v': c}
+def fn_11(a, b, c):
+    x = a * 11 + b - c
+    if x > 33:
+        return [x, a, b]
+    return {'k11': x, 'v': c}
+def fn_12(a, b, c):
+    x = a * 12 + b - c
+    if x > 36:
+        return [x, a, b]
+    return {'k12': x, 'v': c}
+def fn_13(a, b, c):
+    x = a * 13 + b - c
+    if x > 39:
+        return [x, a, b]
+    return {'k13': x, 'v': c}
+def fn_14(a, b, c):
+    x = a * 14 + b - c
+    if x > 42:
+        return [x, a, b]
+    return {'k14': x, 'v': c}
+def fn_15(a, b, c):
+    x = a * 15 + b - c
+    if x > 45:
+        return [x, a, b]
+    return {'k15': x, 'v': c}
+def fn_16(a, b, c):
+    x = a * 16 + b - c
+    if x > 48:
+        return [x, a, b]
+    return {'k16': x, 'v': c}
+def fn_17(a, b, c):
+    x = a * 17 + b - c
+    if x > 51:
+        return [x, a, b]
+    return {'k17': x, 'v': c}
+def fn_18(a, b, c):
+    x = a * 18 + b - c
+    if x > 54:
+        return [x, a, b]
+    return {'k18': x, 'v': c}
+def fn_19(a, b, c):
+    x = a * 19 + b - c
+    if x > 57:
+        return [x, a, b]
+    return {'k19': x, 'v': c}
+def fn_20(a, b, c):
+    x = a * 20 + b - c
+    if x > 60:
+        return [x, a, b]
+    return {'k20': x, 'v': c}
+def fn_21(a, b, c):
+    x = a * 21 + b - c
+    if x > 63:
+        return [x, a, b]
+    return {'k21': x, 'v': c}
+def fn_22(a, b, c):
+    x = a * 22 + b - c
+    if x > 66:
+        return [x, a, b]
+    return {'k22': x, 'v': c}
+def fn_23(a, b, c):
+    x = a * 23 + b - c
+    if x > 69:
+        return [x, a, b]
+    return {'k23': x, 'v': c}
+def fn_24(a, b, c):
+    x = a * 24 + b - c
+    if x > 72:
+        return [x, a, b]
+    return {'k24': x, 'v': c}
+def fn_25(a, b, c):
+    x = a * 25 + b - c
+    if x > 75:
+        return [x, a, b]
+    return {'k25': x, 'v': c}
+def fn_26(a, b, c):
+    x = a * 26 + b - c
+    if x > 78:
+        return [x, a, b]
+    return {'k26': x, 'v': c}
+def fn_27(a, b, c):
+    x = a * 27 + b - c
+    if x > 81:
+        return [x, a, b]
+    return {'k27': x, 'v': c}
+def fn_28(a, b, c):
+    x = a * 28 + b - c
+    if x > 84:
+        return [x, a, b]
+    return {'k28': x, 'v': c}
+def fn_29(a, b, c):
+    x = a * 29 + b - c
+    if x > 87:
+        return [x, a, b]
+    return {'k29': x, 'v': c}
+def fn_30(a, b, c):
+    x = a * 30 + b - c
+    if x > 90:
+        return [x, a, b]
+    return {'k30': x, 'v': c}
+def fn_31(a, b, c):
+    x = a * 31 + b - c
+    if x > 93:
+        return [x, a, b]
+    return {'k31': x, 'v': c}
+def fn_32(a, b, c):
+    x = a * 32 + b - c
+    if x > 96:
+        return [x, a, b]
+    return {'k32': x, 'v': c}
+def fn_33(a, b, c):
+    x = a * 33 + b - c
+    if x > 99:
+        return [x, a, b]
+    return {'k33': x, 'v': c}
+def fn_34(a, b, c):
+    x = a * 34 + b - c
+    if x > 102:
+        return [x, a, b]
+    return {'k34': x, 'v': c}
+def fn_35(a, b, c):
+    x = a * 35 + b - c
+    if x > 105:
+        return [x, a, b]
+    return {'k35': x, 'v': c}
+def fn_36(a, b, c):
+    x = a * 36 + b - c
+    if x > 108:
+        return [x, a, b]
+    return {'k36': x, 'v': c}
+def fn_37(a, b, c):
+    x = a * 37 + b - c
+    if x > 111:
+        return [x, a, b]
+    return {'k37': x, 'v': c}
+def fn_38(a, b, c):
+    x = a * 38 + b - c
+    if x > 114:
+        return [x, a, b]
+    return {'k38': x, 'v': c}
+def fn_39(a, b, c):
+    x = a * 39 + b - c
+    if x > 117:
+        return [x, a, b]
+    return {'k39': x, 'v': c}
+def fn_40(a, b, c):
+    x = a * 40 + b - c
+    if x > 120:
+        return [x, a, b]
+    return {'k40': x, 'v': c}
+def fn_41(a, b, c):
+    x = a * 41 + b - c
+    if x > 123:
+        return [x, a, b]
+    return {'k41': x, 'v': c}
+def fn_42(a, b, c):
+    x = a * 42 + b - c
+    if x > 126:
+        return [x, a, b]
+    return {'k42': x, 'v': c}
+def fn_43(a, b, c):
+    x = a * 43 + b - c
+    if x > 129:
+        return [x, a, b]
+    return {'k43': x, 'v': c}
+def fn_44(a, b, c):
+    x = a * 44 + b - c
+    if x > 132:
+        return [x, a, b]
+    return {'k44': x, 'v': c}
+def fn_45(a, b, c):
+    x = a * 45 + b - c
+    if x > 135:
+        return [x, a, b]
+    return {'k45': x, 'v': c}
+def fn_46(a, b, c):
+    x = a * 46 + b - c
+    if x > 138:
+        return [x, a, b]
+    return {'k46': x, 'v': c}
+def fn_47(a, b, c):
+    x = a * 47 + b - c
+    if x > 141:
+        return [x, a, b]
+    return {'k47': x, 'v': c}
+def fn_48(a, b, c):
+    x = a * 48 + b - c
+    if x > 144:
+        return [x, a, b]
+    return {'k48': x, 'v': c}
+def fn_49(a, b, c):
+    x = a * 49 + b - c
+    if x > 147:
+        return [x, a, b]
+    return {'k49': x, 'v': c}
+def fn_50(a, b, c):
+    x = a * 50 + b - c
+    if x > 150:
+        return [x, a, b]
+    return {'k50': x, 'v': c}
+def fn_51(a, b, c):
+    x = a * 51 + b - c
+    if x > 153:
+        return [x, a, b]
+    return {'k51': x, 'v': c}
+def fn_52(a, b, c):
+    x = a * 52 + b - c
+    if x > 156:
+        return [x, a, b]
+    return {'k52': x, 'v': c}
+def fn_53(a, b, c):
+    x = a * 53 + b - c
+    if x > 159:
+        return [x, a, b]
+    return {'k53': x, 'v': c}
+def fn_54(a, b, c):
+    x = a * 54 + b - c
+    if x > 162:
+        return [x, a, b]
+    return {'k54': x, 'v': c}
+def fn_55(a, b, c):
+    x = a * 55 + b - c
+    if x > 165:
+        return [x, a, b]
+    return {'k55': x, 'v': c}
+def fn_56(a, b, c):
+    x = a * 56 + b - c
+    if x > 168:
+        return [x, a, b]
+    return {'k56': x, 'v': c}
+def fn_57(a, b, c):
+    x = a * 57 + b - c
+    if x > 171:
+        return [x, a, b]
+    return {'k57': x, 'v': c}
+def fn_58(a, b, c):
+    x = a * 58 + b - c
+    if x > 174:
+        return [x, a, b]
+    return {'k58': x, 'v': c}
+def fn_59(a, b, c):
+    x = a * 59 + b - c
+    if x > 177:
+        return [x, a, b]
+    return {'k59': x, 'v': c}
+def fn_60(a, b, c):
+    x = a * 60 + b - c
+    if x > 180:
+        return [x, a, b]
+    return {'k60': x, 'v': c}
+def fn_61(a, b, c):
+    x = a * 61 + b - c
+    if x > 183:
+        return [x, a, b]
+    return {'k61': x, 'v': c}
+def fn_62(a, b, c):
+    x = a * 62 + b - c
+    if x > 186:
+        return [x, a, b]
+    return {'k62': x, 'v': c}
+def fn_63(a, b, c):
+    x = a * 63 + b - c
+    if x > 189:
+        return [x, a, b]
+    return {'k63': x, 'v': c}
+def fn_64(a, b, c):
+    x = a * 64 + b - c
+    if x > 192:
+        return [x, a, b]
+    return {'k64': x, 'v': c}
+def fn_65(a, b, c):
+    x = a * 65 + b - c
+    if x > 195:
+        return [x, a, b]
+    return {'k65': x, 'v': c}
+def fn_66(a, b, c):
+    x = a * 66 + b - c
+    if x > 198:
+        return [x, a, b]
+    return {'k66': x, 'v': c}
+def fn_67(a, b, c):
+    x = a * 67 + b - c
+    if x > 201:
+        return [x, a, b]
+    return {'k67': x, 'v': c}
+def fn_68(a, b, c):
+    x = a * 68 + b - c
+    if x > 204:
+        return [x, a, b]
+    return {'k68': x, 'v': c}
+def fn_69(a, b, c):
+    x = a * 69 + b - c
+    if x > 207:
+        return [x, a, b]
+    return {'k69': x, 'v': c}
+def fn_70(a, b, c):
+    x = a * 70 + b - c
+    if x > 210:
+        return [x, a, b]
+    return {'k70': x, 'v': c}
+def fn_71(a, b, c):
+    x = a * 71 + b - c
+    if x > 213:
+        return [x, a, b]
+    return {'k71': x, 'v': c}
+def fn_72(a, b, c):
+    x = a * 72 + b - c
+    if x > 216:
+        return [x, a, b]
+    return {'k72': x, 'v': c}
+def fn_73(a, b, c):
+    x = a * 73 + b - c
+    if x > 219:
+        return [x, a, b]
+    return {'k73': x, 'v': c}
+def fn_74(a, b, c):
+    x = a * 74 + b - c
+    if x > 222:
+        return [x, a, b]
+    return {'k74': x, 'v': c}
+def fn_75(a, b, c):
+    x = a * 75 + b - c
+    if x > 225:
+        return [x, a, b]
+    return {'k75': x, 'v': c}
+def fn_76(a, b, c):
+    x = a * 76 + b - c
+    if x > 228:
+        return [x, a, b]
+    return {'k76': x, 'v': c}
+def fn_77(a, b, c):
+    x = a * 77 + b - c
+    if x > 231:
+        return [x, a, b]
+    return {'k77': x, 'v': c}
+def fn_78(a, b, c):
+    x = a * 78 + b - c
+    if x > 234:
+        return [x, a, b]
+    return {'k78': x, 'v': c}
+def fn_79(a, b, c):
+    x = a * 79 + b - c
+    if x > 237:
+        return [x, a, b]
+    return {'k79': x, 'v': c}
+def fn_80(a, b, c):
+    x = a * 80 + b - c
+    if x > 240:
+        return [x, a, b]
+    return {'k80': x, 'v': c}
+def fn_81(a, b, c):
+    x = a * 81 + b - c
+    if x > 243:
+        return [x, a, b]
+    return {'k81': x, 'v': c}
+def fn_82(a, b, c):
+    x = a * 82 + b - c
+    if x > 246:
+        return [x, a, b]
+    return {'k82': x, 'v': c}
+def fn_83(a, b, c):
+    x = a * 83 + b - c
+    if x > 249:
+        return [x, a, b]
+    return {'k83': x, 'v': c}
+def fn_84(a, b, c):
+    x = a * 84 + b - c
+    if x > 252:
+        return [x, a, b]
+    return {'k84': x, 'v': c}
+def fn_85(a, b, c):
+    x = a * 85 + b - c
+    if x > 255:
+        return [x, a, b]
+    return {'k85': x, 'v': c}
+def fn_86(a, b, c):
+    x = a * 86 + b - c
+    if x > 258:
+        return [x, a, b]
+    return {'k86': x, 'v': c}
+def fn_87(a, b, c):
+    x = a * 87 + b - c
+    if x > 261:
+        return [x, a, b]
+    return {'k87': x, 'v': c}
+def fn_88(a, b, c):
+    x = a * 88 + b - c
+    if x > 264:
+        return [x, a, b]
+    return {'k88': x, 'v': c}
+def fn_89(a, b, c):
+    x = a * 89 + b - c
+    if x > 267:
+        return [x, a, b]
+    return {'k89': x, 'v': c}
+def fn_90(a, b, c):
+    x = a * 90 + b - c
+    if x > 270:
+        return [x, a, b]
+    return {'k90': x, 'v': c}
+def fn_91(a, b, c):
+    x = a * 91 + b - c
+    if x > 273:
+        return [x, a, b]
+    return {'k91': x, 'v': c}
+def fn_92(a, b, c):
+    x = a * 92 + b - c
+    if x > 276:
+        return [x, a, b]
+    return {'k92': x, 'v': c}
+def fn_93(a, b, c):
+    x = a * 93 + b - c
+    if x > 279:
+        return [x, a, b]
+    return {'k93': x, 'v': c}
+def fn_94(a, b, c):
+    x = a * 94 + b - c
+    if x > 282:
+        return [x, a, b]
+    return {'k94': x, 'v': c}
+def fn_95(a, b, c):
+    x = a * 95 + b - c
+    if x > 285:
+        return [x, a, b]
+    return {'k95': x, 'v': c}
+def fn_96(a, b, c):
+    x = a * 96 + b - c
+    if x > 288:
+        return [x, a, b]
+    return {'k96': x, 'v': c}
+def fn_97(a, b, c):
+    x = a * 97 + b - c
+    if x > 291:
+        return [x, a, b]
+    return {'k97': x, 'v': c}
+def fn_98(a, b, c):
+    x = a * 98 + b - c
+    if x > 294:
+        return [x, a, b]
+    return {'k98': x, 'v': c}
+def fn_99(a, b, c):
+    x = a * 99 + b - c
+    if x > 297:
+        return [x, a, b]
+    return {'k99': x, 'v': c}
+def fn_100(a, b, c):
+    x = a * 100 + b - c
+    if x > 300:
+        return [x, a, b]
+    return {'k100': x, 'v': c}
+def fn_101(a, b, c):
+    x = a * 101 + b - c
+    if x > 303:
+        return [x, a, b]
+    return {'k101': x, 'v': c}
+def fn_102(a, b, c):
+    x = a * 102 + b - c
+    if x > 306:
+        return [x, a, b]
+    return {'k102': x, 'v': c}
+def fn_103(a, b, c):
+    x = a * 103 + b - c
+    if x > 309:
+        return [x, a, b]
+    return {'k103': x, 'v': c}
+def fn_104(a, b, c):
+    x = a * 104 + b - c
+    if x > 312:
+        return [x, a, b]
+    return {'k104': x, 'v': c}
+def fn_105(a, b, c):
+    x = a * 105 + b - c
+    if x > 315:
+        return [x, a, b]
+    return {'k105': x, 'v': c}
+def fn_106(a, b, c):
+    x = a * 106 + b - c
+    if x > 318:
+        return [x, a, b]
+    return {'k106': x, 'v': c}
+def fn_107(a, b, c):
+    x = a * 107 + b - c
+    if x > 321:
+        return [x, a, b]
+    return {'k107': x, 'v': c}
+def fn_108(a, b, c):
+    x = a * 108 + b - c
+    if x > 324:
+        return [x, a, b]
+    return {'k108': x, 'v': c}
+def fn_109(a, b, c):
+    x = a * 109 + b - c
+    if x > 327:
+        return [x, a, b]
+    return {'k109': x, 'v': c}
+def fn_110(a, b, c):
+    x = a * 110 + b - c
+    if x > 330:
+        return [x, a, b]
+    return {'k110': x, 'v': c}
+def fn_111(a, b, c):
+    x = a * 111 + b - c
+    if x > 333:
+        return [x, a, b]
+    return {'k111': x, 'v': c}
+def fn_112(a, b, c):
+    x = a * 112 + b - c
+    if x > 336:
+        return [x, a, b]
+    return {'k112': x, 'v': c}
+def fn_113(a, b, c):
+    x = a * 113 + b - c
+    if x > 339:
+        return [x, a, b]
+    return {'k113': x, 'v': c}
+def fn_114(a, b, c):
+    x = a * 114 + b - c
+    if x > 342:
+        return [x, a, b]
+    return {'k114': x, 'v': c}
+def fn_115(a, b, c):
+    x = a * 115 + b - c
+    if x > 345:
+        return [x, a, b]
+    return {'k115': x, 'v': c}
+def fn_116(a, b, c):
+    x = a * 116 + b - c
+    if x > 348:
+        return [x, a, b]
+    return {'k116': x, 'v': c}
+def fn_117(a, b, c):
+    x = a * 117 + b - c
+    if x > 351:
+        return [x, a, b]
+    return {'k117': x, 'v': c}
+def fn_118(a, b, c):
+    x = a * 118 + b - c
+    if x > 354:
+        return [x, a, b]
+    return {'k118': x, 'v': c}
+def fn_119(a, b, c):
+    x = a * 119 + b - c
+    if x > 357:
+        return [x, a, b]
+    return {'k119': x, 'v': c}
+def fn_120(a, b, c):
+    x = a * 120 + b - c
+    if x > 360:
+        return [x, a, b]
+    return {'k120': x, 'v': c}
+def fn_121(a, b, c):
+    x = a * 121 + b - c
+    if x > 363:
+        return [x, a, b]
+    return {'k121': x, 'v': c}
+def fn_122(a, b, c):
+    x = a * 122 + b - c
+    if x > 366:
+        return [x, a, b]
+    return {'k122': x, 'v': c}
+def fn_123(a, b, c):
+    x = a * 123 + b - c
+    if x > 369:
+        return [x, a, b]
+    return {'k123': x, 'v': c}
+def fn_124(a, b, c):
+    x = a * 124 + b - c
+    if x > 372:
+        return [x, a, b]
+    return {'k124': x, 'v': c}
+def fn_125(a, b, c):
+    x = a * 125 + b - c
+    if x > 375:
+        return [x, a, b]
+    return {'k125': x, 'v': c}
+def fn_126(a, b, c):
+    x = a * 126 + b - c
+    if x > 378:
+        return [x, a, b]
+    return {'k126': x, 'v': c}
+def fn_127(a, b, c):
+    x = a * 127 + b - c
+    if x > 381:
+        return [x, a, b]
+    return {'k127': x, 'v': c}
+def fn_128(a, b, c):
+    x = a * 128 + b - c
+    if x > 384:
+        return [x, a, b]
+    return {'k128': x, 'v': c}
+def fn_129(a, b, c):
+    x = a * 129 + b - c
+    if x > 387:
+        return [x, a, b]
+    return {'k129': x, 'v': c}
+def fn_130(a, b, c):
+    x = a * 130 + b - c
+    if x > 390:
+        return [x, a, b]
+    return {'k130': x, 'v': c}
+def fn_131(a, b, c):
+    x = a * 131 + b - c
+    if x > 393:
+        return [x, a, b]
+    return {'k131': x, 'v': c}
+def fn_132(a, b, c):
+    x = a * 132 + b - c
+    if x > 396:
+        return [x, a, b]
+    return {'k132': x, 'v': c}
+def fn_133(a, b, c):
+    x = a * 133 + b - c
+    if x > 399:
+        return [x, a, b]
+    return {'k133': x, 'v': c}
+def fn_134(a, b, c):
+    x = a * 134 + b - c
+    if x > 402:
+        return [x, a, b]
+    return {'k134': x, 'v': c}
+def fn_135(a, b, c):
+    x = a * 135 + b - c
+    if x > 405:
+        return [x, a, b]
+    return {'k135': x, 'v': c}
+def fn_136(a, b, c):
+    x = a * 136 + b - c
+    if x > 408:
+        return [x, a, b]
+    return {'k136': x, 'v': c}
+def fn_137(a, b, c):
+    x = a * 137 + b - c
+    if x > 411:
+        return [x, a, b]
+    return {'k137': x, 'v': c}
+def fn_138(a, b, c):
+    x = a * 138 + b - c
+    if x > 414:
+        return [x, a, b]
+    return {'k138': x, 'v': c}
+def fn_139(a, b, c):
+    x = a * 139 + b - c
+    if x > 417:
+        return [x, a, b]
+    return {'k139': x, 'v': c}
+def fn_140(a, b, c):
+    x = a * 140 + b - c
+    if x > 420:
+        return [x, a, b]
+    return {'k140': x, 'v': c}
+def fn_141(a, b, c):
+    x = a * 141 + b - c
+    if x > 423:
+        return [x, a, b]
+    return {'k141': x, 'v': c}
+def fn_142(a, b, c):
+    x = a * 142 + b - c
+    if x > 426:
+        return [x, a, b]
+    return {'k142': x, 'v': c}
+def fn_143(a, b, c):
+    x = a * 143 + b - c
+    if x > 429:
+        return [x, a, b]
+    return {'k143': x, 'v': c}
+def fn_144(a, b, c):
+    x = a * 144 + b - c
+    if x > 432:
+        return [x, a, b]
+    return {'k144': x, 'v': c}
+def fn_145(a, b, c):
+    x = a * 145 + b - c
+    if x > 435:
+        return [x, a, b]
+    return {'k145': x, 'v': c}
+def fn_146(a, b, c):
+    x = a * 146 + b - c
+    if x > 438:
+        return [x, a, b]
+    return {'k146': x, 'v': c}
+def fn_147(a, b, c):
+    x = a * 147 + b - c
+    if x > 441:
+        return [x, a, b]
+    return {'k147': x, 'v': c}
+def fn_148(a, b, c):
+    x = a * 148 + b - c
+    if x > 444:
+        return [x, a, b]
+    return {'k148': x, 'v': c}
+def fn_149(a, b, c):
+    x = a * 149 + b - c
+    if x > 447:
+        return [x, a, b]
+    return {'k149': x, 'v': c}
+def fn_150(a, b, c):
+    x = a * 150 + b - c
+    if x > 450:
+        return [x, a, b]
+    return {'k150': x, 'v': c}
+def fn_151(a, b, c):
+    x = a * 151 + b - c
+    if x > 453:
+        return [x, a, b]
+    return {'k151': x, 'v': c}
+def fn_152(a, b, c):
+    x = a * 152 + b - c
+    if x > 456:
+        return [x, a, b]
+    return {'k152': x, 'v': c}
+def fn_153(a, b, c):
+    x = a * 153 + b - c
+    if x > 459:
+        return [x, a, b]
+    return {'k153': x, 'v': c}
+def fn_154(a, b, c):
+    x = a * 154 + b - c
+    if x > 462:
+        return [x, a, b]
+    return {'k154': x, 'v': c}
+def fn_155(a, b, c):
+    x = a * 155 + b - c
+    if x > 465:
+        return [x, a, b]
+    return {'k155': x, 'v': c}
+def fn_156(a, b, c):
+    x = a * 156 + b - c
+    if x > 468:
+        return [x, a, b]
+    return {'k156': x, 'v': c}
+def fn_157(a, b, c):
+    x = a * 157 + b - c
+    if x > 471:
+        return [x, a, b]
+    return {'k157': x, 'v': c}
+def fn_158(a, b, c):
+    x = a * 158 + b - c
+    if x > 474:
+        return [x, a, b]
+    return {'k158': x, 'v': c}
+def fn_159(a, b, c):
+    x = a * 159 + b - c
+    if x > 477:
+        return [x, a, b]
+    return {'k159': x, 'v': c}
+def fn_160(a, b, c):
+    x = a * 160 + b - c
+    if x > 480:
+        return [x, a, b]
+    return {'k160': x, 'v': c}
+def fn_161(a, b, c):
+    x = a * 161 + b - c
+    if x > 483:
+        return [x, a, b]
+    return {'k161': x, 'v': c}
+def fn_162(a, b, c):
+    x = a * 162 + b - c
+    if x > 486:
+        return [x, a, b]
+    return {'k162': x, 'v': c}
+def fn_163(a, b, c):
+    x = a * 163 + b - c
+    if x > 489:
+        return [x, a, b]
+    return {'k163': x, 'v': c}
+def fn_164(a, b, c):
+    x = a * 164 + b - c
+    if x > 492:
+        return [x, a, b]
+    return {'k164': x, 'v': c}
+def fn_165(a, b, c):
+    x = a * 165 + b - c
+    if x > 495:
+        return [x, a, b]
+    return {'k165': x, 'v': c}
+def fn_166(a, b, c):
+    x = a * 166 + b - c
+    if x > 498:
+        return [x, a, b]
+    return {'k166': x, 'v': c}
+def fn_167(a, b, c):
+    x = a * 167 + b - c
+    if x > 501:
+        return [x, a, b]
+    return {'k167': x, 'v': c}
+def fn_168(a, b, c):
+    x = a * 168 + b - c
+    if x > 504:
+        return [x, a, b]
+    return {'k168': x, 'v': c}
+def fn_169(a, b, c):
+    x = a * 169 + b - c
+    if x > 507:
+        return [x, a, b]
+    return {'k169': x, 'v': c}
+def fn_170(a, b, c):
+    x = a * 170 + b - c
+    if x > 510:
+        return [x, a, b]
+    return {'k170': x, 'v': c}
+def fn_171(a, b, c):
+    x = a * 171 + b - c
+    if x > 513:
+        return [x, a, b]
+    return {'k171': x, 'v': c}
+def fn_172(a, b, c):
+    x = a * 172 + b - c
+    if x > 516:
+        return [x, a, b]
+    return {'k172': x, 'v': c}
+def fn_173(a, b, c):
+    x = a * 173 + b - c
+    if x > 519:
+        return [x, a, b]
+    return {'k173': x, 'v': c}
+def fn_174(a, b, c):
+    x = a * 174 + b - c
+    if x > 522:
+        return [x, a, b]
+    return {'k174': x, 'v': c}
+def fn_175(a, b, c):
+    x = a * 175 + b - c
+    if x > 525:
+        return [x, a, b]
+    return {'k175': x, 'v': c}
+def fn_176(a, b, c):
+    x = a * 176 + b - c
+    if x > 528:
+        return [x, a, b]
+    return {'k176': x, 'v': c}
+def fn_177(a, b, c):
+    x = a * 177 + b - c
+    if x > 531:
+        return [x, a, b]
+    return {'k177': x, 'v': c}
+def fn_178(a, b, c):
+    x = a * 178 + b - c
+    if x > 534:
+        return [x, a, b]
+    return {'k178': x, 'v': c}
+def fn_179(a, b, c):
+    x = a * 179 + b - c
+    if x > 537:
+        return [x, a, b]
+    return {'k179': x, 'v': c}
+def fn_180(a, b, c):
+    x = a * 180 + b - c
+    if x > 540:
+        return [x, a, b]
+    return {'k180': x, 'v': c}
+def fn_181(a, b, c):
+    x = a * 181 + b - c
+    if x > 543:
+        return [x, a, b]
+    return {'k181': x, 'v': c}
+def fn_182(a, b, c):
+    x = a * 182 + b - c
+    if x > 546:
+        return [x, a, b]
+    return {'k182': x, 'v': c}
+def fn_183(a, b, c):
+    x = a * 183 + b - c
+    if x > 549:
+        return [x, a, b]
+    return {'k183': x, 'v': c}
+def fn_184(a, b, c):
+    x = a * 184 + b - c
+    if x > 552:
+        return [x, a, b]
+    return {'k184': x, 'v': c}
+def fn_185(a, b, c):
+    x = a * 185 + b - c
+    if x > 555:
+        return [x, a, b]
+    return {'k185': x, 'v': c}
+def fn_186(a, b, c):
+    x = a * 186 + b - c
+    if x > 558:
+        return [x, a, b]
+    return {'k186': x, 'v': c}
+def fn_187(a, b, c):
+    x = a * 187 + b - c
+    if x > 561:
+        return [x, a, b]
+    return {'k187': x, 'v': c}
+def fn_188(a, b, c):
+    x = a * 188 + b - c
+    if x > 564:
+        return [x, a, b]
+    return {'k188': x, 'v': c}
+def fn_189(a, b, c):
+    x = a * 189 + b - c
+    if x > 567:
+        return [x, a, b]
+    return {'k189': x, 'v': c}
+def fn_190(a, b, c):
+    x = a * 190 + b - c
+    if x > 570:
+        return [x, a, b]
+    return {'k190': x, 'v': c}
+def fn_191(a, b, c):
+    x = a * 191 + b - c
+    if x > 573:
+        return [x, a, b]
+    return {'k191': x, 'v': c}
+def fn_192(a, b, c):
+    x = a * 192 + b - c
+    if x > 576:
+        return [x, a, b]
+    return {'k192': x, 'v': c}
+def fn_193(a, b, c):
+    x = a * 193 + b - c
+    if x > 579:
+        return [x, a, b]
+    return {'k193': x, 'v': c}
+def fn_194(a, b, c):
+    x = a * 194 + b - c
+    if x > 582:
+        return [x, a, b]
+    return {'k194': x, 'v': c}
+def fn_195(a, b, c):
+    x = a * 195 + b - c
+    if x > 585:
+        return [x, a, b]
+    return {'k195': x, 'v': c}
+def fn_196(a, b, c):
+    x = a * 196 + b - c
+    if x > 588:
+        return [x, a, b]
+    return {'k196': x, 'v': c}
+def fn_197(a, b, c):
+    x = a * 197 + b - c
+    if x > 591:
+        return [x, a, b]
+    return {'k197': x, 'v': c}
+def fn_198(a, b, c):
+    x = a * 198 + b - c
+    if x > 594:
+        return [x, a, b]
+    return {'k198': x, 'v': c}
+def fn_199(a, b, c):
+    x = a * 199 + b - c
+    if x > 597:
+        return [x, a, b]
+    return {'k199': x, 'v': c}
+def fn_200(a, b, c):
+    x = a * 200 + b - c
+    if x > 600:
+        return [x, a, b]
+    return {'k200': x, 'v': c}
+def fn_201(a, b, c):
+    x = a * 201 + b - c
+    if x > 603:
+        return [x, a, b]
+    return {'k201': x, 'v': c}
+def fn_202(a, b, c):
+    x = a * 202 + b - c
+    if x > 606:
+        return [x, a, b]
+    return {'k202': x, 'v': c}
+def fn_203(a, b, c):
+    x = a * 203 + b - c
+    if x > 609:
+        return [x, a, b]
+    return {'k203': x, 'v': c}
+def fn_204(a, b, c):
+    x = a * 204 + b - c
+    if x > 612:
+        return [x, a, b]
+    return {'k204': x, 'v': c}
+def fn_205(a, b, c):
+    x = a * 205 + b - c
+    if x > 615:
+        return [x, a, b]
+    return {'k205': x, 'v': c}
+def fn_206(a, b, c):
+    x = a * 206 + b - c
+    if x > 618:
+        return [x, a, b]
+    return {'k206': x, 'v': c}
+def fn_207(a, b, c):
+    x = a * 207 + b - c
+    if x > 621:
+        return [x, a, b]
+    return {'k207': x, 'v': c}
+def fn_208(a, b, c):
+    x = a * 208 + b - c
+    if x > 624:
+        return [x, a, b]
+    return {'k208': x, 'v': c}
+def fn_209(a, b, c):
+    x = a * 209 + b - c
+    if x > 627:
+        return [x, a, b]
+    return {'k209': x, 'v': c}
+def fn_210(a, b, c):
+    x = a * 210 + b - c
+    if x > 630:
+        return [x, a, b]
+    return {'k210': x, 'v': c}
+def fn_211(a, b, c):
+    x = a * 211 + b - c
+    if x > 633:
+        return [x, a, b]
+    return {'k211': x, 'v': c}
+def fn_212(a, b, c):
+    x = a * 212 + b - c
+    if x > 636:
+        return [x, a, b]
+    return {'k212': x, 'v': c}
+def fn_213(a, b, c):
+    x = a * 213 + b - c
+    if x > 639:
+        return [x, a, b]
+    return {'k213': x, 'v': c}
+def fn_214(a, b, c):
+    x = a * 214 + b - c
+    if x > 642:
+        return [x, a, b]
+    return {'k214': x, 'v': c}
+def fn_215(a, b, c):
+    x = a * 215 + b - c
+    if x > 645:
+        return [x, a, b]
+    return {'k215': x, 'v': c}
+def fn_216(a, b, c):
+    x = a * 216 + b - c
+    if x > 648:
+        return [x, a, b]
+    return {'k216': x, 'v': c}
+def fn_217(a, b, c):
+    x = a * 217 + b - c
+    if x > 651:
+        return [x, a, b]
+    return {'k217': x, 'v': c}
+def fn_218(a, b, c):
+    x = a * 218 + b - c
+    if x > 654:
+        return [x, a, b]
+    return {'k218': x, 'v': c}
+def fn_219(a, b, c):
+    x = a * 219 + b - c
+    if x > 657:
+        return [x, a, b]
+    return {'k219': x, 'v': c}
+def fn_220(a, b, c):
+    x = a * 220 + b - c
+    if x > 660:
+        return [x, a, b]
+    return {'k220': x, 'v': c}
+def fn_221(a, b, c):
+    x = a * 221 + b - c
+    if x > 663:
+        return [x, a, b]
+    return {'k221': x, 'v': c}
+def fn_222(a, b, c):
+    x = a * 222 + b - c
+    if x > 666:
+        return [x, a, b]
+    return {'k222': x, 'v': c}
+def fn_223(a, b, c):
+    x = a * 223 + b - c
+    if x > 669:
+        return [x, a, b]
+    return {'k223': x, 'v': c}
+def fn_224(a, b, c):
+    x = a * 224 + b - c
+    if x > 672:
+        return [x, a, b]
+    return {'k224': x, 'v': c}
+def fn_225(a, b, c):
+    x = a * 225 + b - c
+    if x > 675:
+        return [x, a, b]
+    return {'k225': x, 'v': c}
+def fn_226(a, b, c):
+    x = a * 226 + b - c
+    if x > 678:
+        return [x, a, b]
+    return {'k226': x, 'v': c}
+def fn_227(a, b, c):
+    x = a * 227 + b - c
+    if x > 681:
+        return [x, a, b]
+    return {'k227': x, 'v': c}
+def fn_228(a, b, c):
+    x = a * 228 + b - c
+    if x > 684:
+        return [x, a, b]
+    return {'k228': x, 'v': c}
+def fn_229(a, b, c):
+    x = a * 229 + b - c
+    if x > 687:
+        return [x, a, b]
+    return {'k229': x, 'v': c}
+def fn_230(a, b, c):
+    x = a * 230 + b - c
+    if x > 690:
+        return [x, a, b]
+    return {'k230': x, 'v': c}
+def fn_231(a, b, c):
+    x = a * 231 + b - c
+    if x > 693:
+        return [x, a, b]
+    return {'k231': x, 'v': c}
+def fn_232(a, b, c):
+    x = a * 232 + b - c
+    if x > 696:
+        return [x, a, b]
+    return {'k232': x, 'v': c}
+def fn_233(a, b, c):
+    x = a * 233 + b - c
+    if x > 699:
+        return [x, a, b]
+    return {'k233': x, 'v': c}
+def fn_234(a, b, c):
+    x = a * 234 + b - c
+    if x > 702:
+        return [x, a, b]
+    return {'k234': x, 'v': c}
+def fn_235(a, b, c):
+    x = a * 235 + b - c
+    if x > 705:
+        return [x, a, b]
+    return {'k235': x, 'v': c}
+def fn_236(a, b, c):
+    x = a * 236 + b - c
+    if x > 708:
+        return [x, a, b]
+    return {'k236': x, 'v': c}
+def fn_237(a, b, c):
+    x = a * 237 + b - c
+    if x > 711:
+        return [x, a, b]
+    return {'k237': x, 'v': c}
+def fn_238(a, b, c):
+    x = a * 238 + b - c
+    if x > 714:
+        return [x, a, b]
+    return {'k238': x, 'v': c}
+def fn_239(a, b, c):
+    x = a * 239 + b - c
+    if x > 717:
+        return [x, a, b]
+    return {'k239': x, 'v': c}
+def fn_240(a, b, c):
+    x = a * 240 + b - c
+    if x > 720:
+        return [x, a, b]
+    return {'k240': x, 'v': c}
+def fn_241(a, b, c):
+    x = a * 241 + b - c
+    if x > 723:
+        return [x, a, b]
+    return {'k241': x, 'v': c}
+def fn_242(a, b, c):
+    x = a * 242 + b - c
+    if x > 726:
+        return [x, a, b]
+    return {'k242': x, 'v': c}
+def fn_243(a, b, c):
+    x = a * 243 + b - c
+    if x > 729:
+        return [x, a, b]
+    return {'k243': x, 'v': c}
+def fn_244(a, b, c):
+    x = a * 244 + b - c
+    if x > 732:
+        return [x, a, b]
+    return {'k244': x, 'v': c}
+def fn_245(a, b, c):
+    x = a * 245 + b - c
+    if x > 735:
+        return [x, a, b]
+    return {'k245': x, 'v': c}
+def fn_246(a, b, c):
+    x = a * 246 + b - c
+    if x > 738:
+        return [x, a, b]
+    return {'k246': x, 'v': c}
+def fn_247(a, b, c):
+    x = a * 247 + b - c
+    if x > 741:
+        return [x, a, b]
+    return {'k247': x, 'v': c}
+def fn_248(a, b, c):
+    x = a * 248 + b - c
+    if x > 744:
+        return [x, a, b]
+    return {'k248': x, 'v': c}
+def fn_249(a, b, c):
+    x = a * 249 + b - c
+    if x > 747:
+        return [x, a, b]
+    return {'k249': x, 'v': c}
+def fn_250(a, b, c):
+    x = a * 250 + b - c
+    if x > 750:
+        return [x, a, b]
+    return {'k250': x, 'v': c}
+def fn_251(a, b, c):
+    x = a * 251 + b - c
+    if x > 753:
+        return [x, a, b]
+    return {'k251': x, 'v': c}
+def fn_252(a, b, c):
+    x = a * 252 + b - c
+    if x > 756:
+        return [x, a, b]
+    return {'k252': x, 'v': c}
+def fn_253(a, b, c):
+    x = a * 253 + b - c
+    if x > 759:
+        return [x, a, b]
+    return {'k253': x, 'v': c}
+def fn_254(a, b, c):
+    x = a * 254 + b - c
+    if x > 762:
+        return [x, a, b]
+    return {'k254': x, 'v': c}
+def fn_255(a, b, c):
+    x = a * 255 + b - c
+    if x > 765:
+        return [x, a, b]
+    return {'k255': x, 'v': c}
+def fn_256(a, b, c):
+    x = a * 256 + b - c
+    if x > 768:
+        return [x, a, b]
+    return {'k256': x, 'v': c}
+def fn_257(a, b, c):
+    x = a * 257 + b - c
+    if x > 771:
+        return [x, a, b]
+    return {'k257': x, 'v': c}
+def fn_258(a, b, c):
+    x = a * 258 + b - c
+    if x > 774:
+        return [x, a, b]
+    return {'k258': x, 'v': c}
+def fn_259(a, b, c):
+    x = a * 259 + b - c
+    if x > 777:
+        return [x, a, b]
+    return {'k259': x, 'v': c}
+

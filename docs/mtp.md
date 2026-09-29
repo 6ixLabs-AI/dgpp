@@ -41,9 +41,11 @@ graph decode for MTP; the GLM diagnostic tool also has an eager speculative
 path. Graph serving works on one node when the model fits, using identity
 collectives.
 
-`engine.mtp_depth` accepts 1–3 and defaults to 1. Each step verifies
-`1 + depth` rows. GLM-5.3 and Qwen use scalar graphs beyond depth 1;
-GLM-4.7 supports deeper batched verification within its 32-row limit.
+`engine.mtp_depth` accepts 1–5 and defaults to 1 (DeepSeek-V4.1 defaults
+to its DSpark depth). Each step verifies `1 + depth` rows. GLM-5.3 uses
+scalar graphs beyond depth 1; Qwen and GLM-4.7 run batched draft chains at
+every depth within their row limits (Qwen: sixteen slots at depth 3, the
+64-row cap).
 At depth 1, GLM-5.3 and Qwen can batch up to four requests. The engine
 chooses among scalar and available batch graphs according to occupancy
 and `graph_batch_min_live`.

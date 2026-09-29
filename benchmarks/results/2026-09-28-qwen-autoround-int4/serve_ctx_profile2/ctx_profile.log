@@ -1,0 +1,2 @@
+ctx  11614 tok: completion  961 in  319 steps,   57.2 ms/step (engine), 3.01 tok/step, prefill (ttft) 7.03 s, decode wall 18.29 s
+ctx  12659 tok: completion 1000 in  363 steps,   57.1 ms/step (engine), 2.75 tok/step, prefill (ttft) 8.02 s, decode wall 20.82 s

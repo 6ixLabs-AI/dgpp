@@ -14,7 +14,7 @@ import subprocess
 import sys
 
 from cache_sync import activate, peer_cache, sync_snapshot
-from cluster_doctor import cache_root, cached_snapshot, checkpoint_size, require_head
+from cluster_doctor import cache_root, cached_snapshot, checkpoint_size, require_head, shard_bytes
 from site_env import cache_environment, config_argument, resolve_config, settings
 
 
@@ -35,6 +35,7 @@ def main(argv=None):
     parser.add_argument("--revision", default="main")
     parser.add_argument("--activate", action="store_true", help="explicitly select a non-main downloaded revision")
     parser.add_argument("--local-only", action="store_true", help="skip peers for this invocation")
+    parser.add_argument("--ngram-table-model", help="local-only: the repository holding the Qwen n-gram table's shards")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--sync-only", action="store_true", help="sync the active local snapshot without contacting Hugging Face")
     mode.add_argument("--verify-only", action="store_true", help="check active snapshots locally and over SSH, without downloads or writes")
@@ -50,6 +51,10 @@ def main(argv=None):
     if cfg:
         require_head(cfg["nodes"][0])
     model = cfg["model"] if cfg else args.model
+    # The Qwen n-gram table from another repository (engine.ngram_table_model,
+    # the AutoRound hybrid): downloaded and synced after the model, verified
+    # by shard headers alone (it is not a checkpoint of its own).
+    table_model = (cfg.get("engine", {}) or {}).get("ngram_table_model") if cfg else args.ngram_table_model
     env = {**os.environ, **(cfg["node_env"][0] if cfg else cache_environment(values))}
     root = args.cache_dir.expanduser() if args.cache_dir else cache_root(env)
     peers = list(enumerate(cfg["nodes"]))[1:] if cfg and not args.local_only else []
@@ -73,6 +78,20 @@ def main(argv=None):
             print(f"Verified rank {rank} ({host}): revision {snapshot.name}", flush=True)
         else:
             sync_snapshot(snapshot, target, cfg["node_env"][rank])
+    if table_model:
+        table = (cached_snapshot(table_model, root) if args.sync_only or args.verify_only
+                 else download(table_model, "main", root))
+        tsize = shard_bytes(table)
+        if cached_snapshot(table_model, root).resolve() != table.resolve():
+            raise ValueError("another revision of the table repository is active; activate it before syncing")
+        print(f"Verified on rank 0: n-gram table {table_model}, revision {table.name}, {tsize / 2**30:.1f} GiB of shards", flush=True)
+        for rank, host in peers:
+            target = f"{cfg['ssh_user']}@{host}"
+            if args.verify_only:
+                peer_cache(target, table_model, cfg["node_env"][rank], verify=True, revision=table.name)
+                print(f"Verified rank {rank} ({host}): table revision {table.name}", flush=True)
+            else:
+                sync_snapshot(table, target, cfg["node_env"][rank])
     print("Snapshot validation checks metadata and shard lengths; transfers use rsync content checksums.")
 
 

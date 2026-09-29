@@ -1,0 +1,5 @@
+2026-09-29 16:55:05.584 === SIGINT rank 0 (843886) — the stop record releases the peers
+2026-09-29 16:55:07.585 === op-stream identity (every rank)
+2026-09-29 16:55:07.586 192f42c1b6e605932170e0dfb9be9e63  /home/stephen/dgpp/log/deployments/ab0d8dd705def24d/serve_rank0.ops
+2026-09-29 16:55:07.586 op streams: identical across 1 ranks
+2026-09-29 16:55:07.586 === logs in /home/stephen/dgpp/log/deployments/ab0d8dd705def24d

@@ -1,0 +1,109 @@
+WARNING: CPU IP/backtrace sampling not supported, disabling.
+Try the 'nsys status --environment' command to learn more.
+
+WARNING: CPU context switch tracing not supported, disabling.
+Try the 'nsys status --environment' command to learn more.
+
+2026-09-29 04:33:06.176 INFO  dgpp-serve 0.1.0+g84028a497443.dirty (git 84028a497443)
+2026-09-29 04:33:06.176 INFO  config /home/stephen/workspace/dgpp-autoround/benchmarks/results/2026-09-28-qwen-autoround-int4/serve_round3/profile_ctx2k/world/cluster.resolved.json: model Saren/Qwen3.8-Flash-Next-W4A16-AutoRound-hybrid-MTP_int4RTN, world 1, rank 0, http :18080, fabric :29970, journal :29971
+2026-09-29 04:33:06.177 INFO  model Saren/Qwen3.8-Flash-Next-W4A16-AutoRound-hybrid-MTP_int4RTN -> /home/stephen/.cache/huggingface/hub/models--Saren--Qwen3.8-Flash-Next-W4A16-AutoRound-hybrid-MTP_int4RTN/snapshots/19f9710c8f6600a32e15fb98bc77613ee8ec369b
+2026-09-29 04:33:06.177 INFO  serve: SSE ping interval 30 s (-1 disables)
+2026-09-29 04:33:06.177 INFO  n-gram table shards from Qwen/Qwen3.8-Flash-Next-FP8 -> /home/stephen/.cache/huggingface/hub/models--Qwen--Qwen3.8-Flash-Next-FP8/snapshots/236dfdf285828023ca3bcd3f37366c58a3469b13
+2026-09-29 04:33:06.177 INFO  config: model=Saren/Qwen3.8-Flash-Next-W4A16-AutoRound-hybrid-MTP_int4RTN world=1 fabric=29970 journal=29971 conc=4 kv=262144 kvdt=bf16 ngt=mmap dw=fp8 mtpef=fp8 bfw=bf12+bf16 fp8head=gemv pf=bounded emsh=replicated maxtok=32768 queue=8 eos=1 graph=1 compact=0 mtp=1 mtpd=3 mss=0 msrow=8 msbase=28 mslam=0 msmin=1 msad=1 batchmin=2 cand=128 pcgib=3 adm=full win=256 pfbudget=4096 pfidle=4096 pmin=1024 phead=1 pace=-1 inflight=-1 reasoning_in_content=0 rs=off (digest 8e4cdbbbae1a8f16)
+2026-09-29 04:33:06.384 INFO  serve: model family qwen4_exp (/home/stephen/.cache/huggingface/hub/models--Saren--Qwen3.8-Flash-Next-W4A16-AutoRound-hybrid-MTP_int4RTN/snapshots/19f9710c8f6600a32e15fb98bc77613ee8ec369b)
+2026-09-29 04:33:06.384 INFO  serve: decode rows 16 (4 slot(s) x 4 row(s) per request, floor 8, the qwen4_exp family's cap 64)
+2026-09-29 04:33:06.384 WARN  generation config /home/stephen/.cache/huggingface/hub/models--Saren--Qwen3.8-Flash-Next-W4A16-AutoRound-hybrid-MTP_int4RTN/snapshots/19f9710c8f6600a32e15fb98bc77613ee8ec369b/generation_config.json omits min_p, repetition_penalty; using greedy-safe/neutral fallbacks for those fields
+2026-09-29 04:33:06.384 INFO  generation defaults: temperature=1 top_p=0.95 top_k=20 min_p=0 repetition_penalty=1
+2026-09-29 04:33:06.384 INFO  serve: sampling defaults temperature 1 top_p 0.95 top_k 20 min_p 0 repetition_penalty 1 (from generation_config.json; overrides: none)
+2026-09-29 04:33:06.384 INFO  serve: request context limit 262144 tokens — the lesser of the 262144-token positional ceiling (the checkpoint's own rope) and the 262144-token K/V pool (engine.kv_capacity 262144); one request may reach the limit, the pool is what seats them all
+2026-09-29 04:33:06.384 INFO  rank 0: prefix cache plan — 3 GiB budget, 27 slots of 110.317 MiB, 2.909 GiB allocated; cached K/V blocks share the 262144-token pool
+2026-09-29 04:33:06.537 INFO  tokenizer: loaded vocab 248044 merges 247587 added 33 (revision 0x5e5f67db24575059; qwen2 pattern, NFC, ignore_merges false)
+2026-09-29 04:33:06.552 INFO  serve: grammar vocabulary built (248320 ids, tool markers present, call-turn EOS 248046)
+2026-09-29 04:33:06.745 INFO  serve: JSON grammar tables built in 0.19 s
+2026-09-29 04:33:06.969 INFO  bus: a world of one — no lanes, every collective the identity
+2026-09-29 04:33:07.168 INFO  rank 0: process memory locked (mlockall MCL_CURRENT, 15537 MiB)
+2026-09-29 04:33:07.168 INFO  rank 0: resident image cache at /home/stephen/.cache/dgpp/resident
+2026-09-29 04:33:07.340 INFO  rank 0: memory plan for a 262144-token context — model weights (resident; the n-gram table mmap'ed from the checkpoint) 65.31 GiB; loader staging (pinned host, freed when the last layer is resident) 1.83 GiB (1.83 GiB pinned); gemm workspace (at least) 0.06 GiB; dense fp8 prefill bridge (the largest dense matrix in BF16) 0.06 GiB; n-gram table staging (pinned; the table mmap'ed from the checkpoint) 0.01 GiB (0.01 GiB pinned); request slot state (GDN recurrent/conv, PLE conv, context) 0.43 GiB; spec snapshot rows 0.04 GiB; GDN replay rows (checkpoint-and-replay: the post-conv q|k|v, a, beta of every decode row, two copies) 0.09 GiB; kv cache pool (K/V bf16, compressed index keys, rings) 6.70 GiB; activations (hyper state, rows, head) 3.94 GiB (0.01 GiB pinned); layer objects (GR sites, GDN, QSA, PLE) 4.50 GiB; moe scratch (routed slots, shared expert, graph tables) 0.97 GiB (0.01 GiB pinned); draft block (hyper-state window, ring snapshot, fusion scratch, mixer) 0.53 GiB (0.00 GiB pinned); vision tower weights (bf16, replicated) 0.84 GiB; vision workspace (patches, attention tiles, staged image rows) 0.29 GiB; prefix cache 2.91 GiB; engine 0.07 GiB
+2026-09-29 04:33:07.340 INFO  rank 0: memory plan total 88.59 GiB (83.74 GiB device + 4.86 GiB pinned) + 4.00 GiB headroom against 114.62 GiB free (device free 105.98 GiB of 121.63 GiB, host available 114.62 GiB)
+2026-09-29 04:33:07.340 INFO  memory ledger: rank 0 after the plan check — rss 1.88 GiB (anon 1.18, shmem 0.05, file 0.66; locked 15.17); device free 105.98 GiB, node available 114.62 GiB
+2026-09-29 04:33:07.340 INFO  memory ledger: rank 0 after the bus — rss 1.88 GiB (anon 1.18, shmem 0.05, file 0.66; locked 15.17); device free 105.98 GiB, node available 114.62 GiB
+2026-09-29 04:33:08.290 INFO  qwen loader: rank 0 resident footprint 65.3 GiB; device free 105.8 of 121.6 GiB, host available 114.4 GiB
+2026-09-29 04:33:09.208 INFO  qwen loader: rank 0 resident image /home/stephen/.cache/dgpp/resident/d7399133314692f1.img — 49/49 layers present, direct I/O
+2026-09-29 04:33:09.228 INFO  l2 prefetch: on, window budget 12 MiB, boundary rate light, layer rate light
+2026-09-29 04:33:09.541 INFO  qwen loader: rank 0 n-gram table rows [0, 320001446) mmap'ed from the checkpoint (48.67 GiB mapped, scale 0.00019931793)
+2026-09-29 04:33:13.978 INFO  memory ledger: rank 0 after the model — rss 5.74 GiB (anon 1.31, shmem 1.91, file 2.53; locked 15.15); device free 88.75 GiB, node available 97.39 GiB
+2026-09-29 04:33:13.978 INFO  rank 0: model constructed in 6.6s (resident, 4 request slots, 262144-token pool in bf16, 4096-row forwards)
+2026-09-29 04:33:13.978 INFO  rank 0: prefix cache on — 27 snapshot slot(s) of 110.3 MiB (3.00 GiB asked)
+2026-09-29 04:33:14.090 INFO  rank 0: graph engine samples on the device — 128 candidates per rank (16 rows x 1 ranks in a 327680-byte latency slot; the planned width is 128); constrained decoding available
+2026-09-29 04:33:14.091 INFO  rank 0: prefill budget 4096 tokens/tick (0 = full prompt)
+2026-09-29 04:33:14.091 INFO  memory ledger: rank 0 after the graph engine — rss 5.75 GiB (anon 1.31, shmem 1.91, file 2.53; locked 15.15); device free 85.77 GiB, node available 94.41 GiB
+2026-09-29 04:33:30.660 INFO  rank 0 bf12: nothing to pack — engine.dense_weights = fp8 already holds the dense projections and the head as block-FP8
+2026-09-29 04:33:30.664 INFO  rank 0: graph variant 0 shape: 1482 nodes, 1588 edges: kernel 1482 empty 0 memcpy 0 memset 0 host 0 event 0 other 0; max in-degree 2
+2026-09-29 04:33:30.672 INFO  rank 0: graph variant 0 instantiated — 24.0 MiB of device memory (15.3 GiB free)
+2026-09-29 04:33:30.675 INFO  rank 0: graph variant 1 shape: 1482 nodes, 1588 edges: kernel 1482 empty 0 memcpy 0 memset 0 host 0 event 0 other 0; max in-degree 2
+2026-09-29 04:33:30.683 INFO  rank 0: graph variant 1 instantiated — 26.8 MiB of device memory (15.3 GiB free)
+2026-09-29 04:33:30.683 INFO  rank 0: serving scalar graph variants 0/1 captured for request slot 0 (4 rows, MTP)
+2026-09-29 04:33:30.700 INFO  rank 0: graph variant 8 shape: 1975 nodes, 2081 edges: kernel 1975 empty 0 memcpy 0 memset 0 host 0 event 0 other 0; max in-degree 2
+2026-09-29 04:33:30.710 INFO  rank 0: graph variant 8 instantiated — 24.1 MiB of device memory (15.2 GiB free)
+2026-09-29 04:33:30.713 INFO  rank 0: graph variant 9 shape: 1975 nodes, 2081 edges: kernel 1975 empty 0 memcpy 0 memset 0 host 0 event 0 other 0; max in-degree 2
+2026-09-29 04:33:30.723 INFO  rank 0: graph variant 9 instantiated — 31.8 MiB of device memory (15.2 GiB free)
+2026-09-29 04:33:30.723 INFO  rank 0: serving row-batched graph variants 8/9 captured for 2 slots x 4 rows = 8 fixed rows, MTP (a batch is selected at 2+ live requests, the smallest that covers the live slots)
+2026-09-29 04:33:30.876 INFO  rank 0: graph variant 10 shape: 2469 nodes, 2769 edges: kernel 2469 empty 0 memcpy 0 memset 0 host 0 event 0 other 0; max in-degree 2
+2026-09-29 04:33:30.890 INFO  rank 0: graph variant 10 instantiated — 26.8 MiB of device memory (15.1 GiB free)
+2026-09-29 04:33:30.895 INFO  rank 0: graph variant 11 shape: 2469 nodes, 2769 edges: kernel 2469 empty 0 memcpy 0 memset 0 host 0 event 0 other 0; max in-degree 2
+2026-09-29 04:33:30.907 INFO  rank 0: graph variant 11 instantiated — 35.1 MiB of device memory (15.1 GiB free)
+2026-09-29 04:33:30.907 INFO  rank 0: serving row-batched graph variants 10/11 captured for 3 slots x 4 rows = 12 fixed rows, MTP (a batch is selected at 2+ live requests, the smallest that covers the live slots)
+2026-09-29 04:33:30.912 INFO  rank 0: graph variant 12 shape: 2475 nodes, 2775 edges: kernel 2475 empty 0 memcpy 0 memset 0 host 0 event 0 other 0; max in-degree 2
+2026-09-29 04:33:30.926 INFO  rank 0: graph variant 12 instantiated — 34.9 MiB of device memory (15.0 GiB free)
+2026-09-29 04:33:30.931 INFO  rank 0: graph variant 13 shape: 2475 nodes, 2775 edges: kernel 2475 empty 0 memcpy 0 memset 0 host 0 event 0 other 0; max in-degree 2
+2026-09-29 04:33:30.943 INFO  rank 0: graph variant 13 instantiated — 32.3 MiB of device memory (15.0 GiB free)
+2026-09-29 04:33:30.943 INFO  rank 0: serving row-batched graph variants 12/13 captured for 4 slots x 4 rows = 16 fixed rows, MTP (a batch is selected at 2+ live requests, the smallest that covers the live slots)
+2026-09-29 04:33:31.026 INFO  rank 0: graph variant 2 shape: 1482 nodes, 1588 edges: kernel 1482 empty 0 memcpy 0 memset 0 host 0 event 0 other 0; max in-degree 2
+2026-09-29 04:33:31.033 INFO  rank 0: graph variant 2 instantiated — 19.9 MiB of device memory (15.0 GiB free)
+2026-09-29 04:33:31.036 INFO  rank 0: graph variant 3 shape: 1482 nodes, 1588 edges: kernel 1482 empty 0 memcpy 0 memset 0 host 0 event 0 other 0; max in-degree 2
+2026-09-29 04:33:31.044 INFO  rank 0: graph variant 3 instantiated — 34.2 MiB of device memory (14.9 GiB free)
+2026-09-29 04:33:31.044 INFO  rank 0: serving scalar graph variants 2/3 captured for request slot 1 (4 rows, MTP)
+2026-09-29 04:33:31.130 INFO  rank 0: graph variant 4 shape: 1482 nodes, 1588 edges: kernel 1482 empty 0 memcpy 0 memset 0 host 0 event 0 other 0; max in-degree 2
+2026-09-29 04:33:31.138 INFO  rank 0: graph variant 4 instantiated — 24.5 MiB of device memory (14.9 GiB free)
+2026-09-29 04:33:31.141 INFO  rank 0: graph variant 5 shape: 1482 nodes, 1588 edges: kernel 1482 empty 0 memcpy 0 memset 0 host 0 event 0 other 0; max in-degree 2
+2026-09-29 04:33:31.149 INFO  rank 0: graph variant 5 instantiated — 26.3 MiB of device memory (14.9 GiB free)
+2026-09-29 04:33:31.149 INFO  rank 0: serving scalar graph variants 4/5 captured for request slot 2 (4 rows, MTP)
+2026-09-29 04:33:31.232 INFO  rank 0: graph variant 6 shape: 1482 nodes, 1588 edges: kernel 1482 empty 0 memcpy 0 memset 0 host 0 event 0 other 0; max in-degree 2
+2026-09-29 04:33:31.239 INFO  rank 0: graph variant 6 instantiated — 19.2 MiB of device memory (14.8 GiB free)
+2026-09-29 04:33:31.242 INFO  rank 0: graph variant 7 shape: 1482 nodes, 1588 edges: kernel 1482 empty 0 memcpy 0 memset 0 host 0 event 0 other 0; max in-degree 2
+2026-09-29 04:33:31.251 INFO  rank 0: graph variant 7 instantiated — 27.1 MiB of device memory (14.8 GiB free)
+2026-09-29 04:33:31.251 INFO  rank 0: serving scalar graph variants 6/7 captured for request slot 3 (4 rows, MTP)
+2026-09-29 04:33:31.251 INFO  rank 0: warm capture complete — 4 scalar variants and the row batches for 2 slots, 3 slots, 4 slots recorded before the first request
+2026-09-29 04:33:31.252 INFO  memory ledger: rank 0 after the warm capture — rss 6.45 GiB (anon 1.98, shmem 1.94, file 2.53; locked 15.15); device free 14.80 GiB, node available 23.48 GiB
+2026-09-29 04:33:31.252 INFO  rank 0: graph variants warm-captured in 17.16s
+2026-09-29 04:33:31.409 INFO  tokenizer: loaded vocab 248044 merges 247587 added 33 (revision 0x5e5f67db24575059; qwen2 pattern, NFC, ignore_merges false)
+2026-09-29 04:33:31.409 INFO  serve: tokenizer 0x5e5f67db24575059, template 0xf1e3dcaebbfd5341 loaded
+2026-09-29 04:33:31.409 INFO  serve: image inputs enabled (1024 visual tokens per image max)
+2026-09-29 04:33:31.409 INFO  serve: prefix cache on — 27 snapshot slots, 2 boundary token(s)
+2026-09-29 04:33:31.410 INFO  serve: sampling available — defaults temperature 1 top_p 0.95 top_k 20 min_p 0 repetition_penalty 1; seedless requests draw a fresh seed each
+2026-09-29 04:33:31.410 INFO  serve: tool calls available (the template's markers are in the tokenizer); tool_choice/parallel_tool_calls enforced by constrained decoding; reasoning on reasoning_content
+2026-09-29 04:33:31.410 INFO  serve: default chat template kwargs {}
+2026-09-29 04:33:31.410 INFO  serve: HTTP request body limit 268435456 bytes
+2026-09-29 04:33:31.410 INFO  serve: engine progress deadline 120 s (scheduler passes, prefill progress and completed collectives)
+2026-09-29 04:33:31.410 INFO  memory ledger: rank 0 at listening — rss 6.58 GiB (anon 2.11, shmem 1.94, file 2.53; locked 15.15); device free 14.67 GiB, node available 23.35 GiB
+2026-09-29 04:33:31.410 INFO  serve: listening on :18080 — qwen (boot 24.9s); endpoints: POST /v1/chat/completions, POST /v1/completions, GET /v1/models, GET /health, GET /metrics, GET /v1/metrics
+2026-09-29 04:33:31.616 INFO  sched: request 'chatcmpl-15b4eaa2751c6474' starting prefill in slot 0 (87 prompt tokens)
+2026-09-29 04:33:31.902 INFO  sched: request 'chatcmpl-15b4eaa2751c6474' prefix cache miss — 3 cut(s), the cache is empty
+2026-09-29 04:33:31.902 INFO  sched: request 'chatcmpl-15b4eaa2751c6474' admitted to slot 0 (reserve 3 blocks; pool 3/4096 blocks in use) — first token 1596
+2026-09-29 04:33:33.112 INFO  rank 0: slot 0 closed: 21 sampled decode steps, 0 fallbacks
+2026-09-29 04:33:33.113 INFO  sched: request 'chatcmpl-15b4eaa2751c6474' retired (steps): 64 tok in 1.2 s — prefill 87 tok (0 cached) in 285 ms; decode 63 tok / 21 passes in 0.9 s: 68.1 tok/s, 14.7 ms/tok, 44 ms/pass, 3.00 tok/pass, accept p1 86 % p2 62 % p3 62 %
+2026-09-29 04:33:33.155 INFO  sched: request 'chatcmpl-15b4eaa2751c6475' starting prefill in slot 0 (16087 prompt tokens)
+2026-09-29 04:33:33.155 INFO  sched: request 'chatcmpl-15b4eaa2751c6475' prefix cache miss — 6 cut(s), the cache is empty
+2026-09-29 04:33:33.155 INFO  sched: request 'chatcmpl-15b4eaa2751c6475' prefilling in slot 0 (4096 tokens/tick)
+2026-09-29 04:33:42.721 INFO  stats: rank 0 | 11.3 s | decode 5.7 tok/s, 18.7 ms/tok, 57.0 ms/step (21 steps / 64 tok, 11 % of wall) | mtp 3.05 tok/step/req, accept p1 86 % p2 62 % p3 62 % | prefill 1 prompt / 16167 tok, 1429 tok/s, 0.61 ms/tok, 9852 ms avg (87 % of wall), 0 tok cached (0/2 hits) | live 1, queued 0 | pool 259/4096 blocks (6 %) | prefix cache 0/27 entries | 1 prefilling | requests +2 (shed 0, cancelled 0)
+2026-09-29 04:33:42.821 INFO  sched: request 'chatcmpl-15b4eaa2751c6475' admitted to slot 0 (reserve 258 blocks; pool 259/4096 blocks in use) — first token 1596
+2026-09-29 04:33:52.077 INFO  rank 0: slot 0 closed: 149 sampled decode steps, 0 fallbacks
+2026-09-29 04:33:52.078 INFO  sched: request 'chatcmpl-15b4eaa2751c6475' retired (steps): 400 tok in 18.9 s — prefill 16087 tok (0 cached) in 9666 ms; decode 399 tok / 149 passes in 9.3 s: 43.1 tok/s, 23.2 ms/tok, 62 ms/pass, 2.68 tok/pass, accept p1 73 % p2 53 % p3 42 %
+2026-09-29 04:33:52.134 INFO  serve: stop — 0 in-flight request(s) retired through the drain pass, the queue shed, in 0 ms
+2026-09-29 04:33:52.155 INFO  serve: stopped cleanly
+2026-09-29 04:33:52.215 INFO  rank 0: graph engine sampling summary — 170 sampled decode steps, 0 served by the exact gather fallback (0.0%), 128 candidates per rank
+Collecting data...
+Generating '/tmp/nsys-report-7b53.qdstrm'
+[1/1] [0%                          ] r0.nsys-rep[1/1] [0%                          ] r0.nsys-rep[1/1] [=====31%                    ] r0.nsys-rep[1/1] [===23%                      ] r0.nsys-rep[1/1] [===24%                      ] r0.nsys-rep[1/1] [====25%                     ] r0.nsys-rep[1/1] [====26%                     ] r0.nsys-rep[1/1] [====27%                     ] r0.nsys-rep[1/1] [===22%                      ] r0.nsys-rep[1/1] [====27%                     ] r0.nsys-rep[1/1] [===22%                      ] r0.nsys-rep[1/1] [========41%                 ] r0.nsys-rep[1/1] [======35%                   ] r0.nsys-rep[1/1] [=====30%                    ] r0.nsys-rep[1/1] [====26%                     ] r0.nsys-rep[1/1] [===23%                      ] r0.nsys-rep[1/1] [==21%                       ] r0.nsys-rep[1/1] [==19%                       ] r0.nsys-rep[1/1] [=17%                        ] r0.nsys-rep[1/1] [=16%                        ] r0.nsys-rep[1/1] [=15%                        ] r0.nsys-rep[1/1] [14%                         ] r0.nsys-rep[1/1] [13%                         ] r0.nsys-rep[1/1] [12%                         ] r0.nsys-rep[1/1] [11%                         ] r0.nsys-rep[1/1] [10%                         ] r0.nsys-rep[1/1] [9%                          ] r0.nsys-rep[1/1] [8%                          ] r0.nsys-rep[1/1] [7%                          ] r0.nsys-rep[1/1] [6%                          ] r0.nsys-rep[1/1] [10%                         ] r0.nsys-rep[1/1] [12%                         ] r0.nsys-rep[1/1] [=15%                        ] r0.nsys-rep[1/1] [==19%                       ] r0.nsys-rep[1/1] [===22%                      ] r0.nsys-rep[1/1] [====25%                     ] r0.nsys-rep[1/1] [====28%                     ] r0.nsys-rep[1/1] [=====31%                    ] r0.nsys-rep[1/1] [======34%                   ] r0.nsys-rep[1/1] [======35%                   ] r0.nsys-rep[1/1] [=======37%                  ] r0.nsys-rep[1/1] [========40%                 ] r0.nsys-rep[1/1] [========42%                 ] r0.nsys-rep[1/1] [=========44%                ] r0.nsys-rep[1/1] [=========46%                ] r0.nsys-rep[1/1] [==========47%               ] r0.nsys-rep[1/1] [==========49%               ] r0.nsys-rep[1/1] [===========51%              ] r0.nsys-rep[1/1] [===========52%              ] r0.nsys-rep[1/1] [============54%             ] r0.nsys-rep[1/1] [============56%             ] r0.nsys-rep[1/1] [============57%             ] r0.nsys-rep[1/1] [=============59%            ] r0.nsys-rep[1/1] [=============60%            ] r0.nsys-rep[1/1] [==============62%           ] r0.nsys-rep[1/1] [==============64%           ] r0.nsys-rep[1/1] [===============65%          ] r0.nsys-rep[1/1] [================68%         ] r0.nsys-rep[1/1] [================71%         ] r0.nsys-rep[1/1] [=================73%        ] r0.nsys-rep[1/1] [========================100%] r0.nsys-rep[1/1] [========================100%] r0.nsys-rep
+Generated:
+	/home/stephen/workspace/dgpp-autoround/benchmarks/results/2026-09-28-qwen-autoround-int4/serve_round3/profile_ctx2k/r0.nsys-rep

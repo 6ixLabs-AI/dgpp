@@ -1,0 +1,30 @@
+OK   rank 0 (192.168.88.11) platform: Linux aarch64; supported target is Linux/aarch64 GB10
+OK   rank 0 (192.168.88.11) Python: 3.12.3; Python 3.10+ is required
+OK   rank 0 (192.168.88.11) commands: python3, timeout, ldd, ssh, scp, curl, jq
+OK   rank 0 (192.168.88.11) node address: rank 0 address 192.168.88.11 belongs to this host
+OK   rank 0 (192.168.88.11) GPU: NVIDIA GB10, 12.1, [N/A]
+OK   rank 0 (192.168.88.11) logs/staging: /home/stephen/dgpp/log/deployments/ab0d8dd705def24d: parent /home/stephen/dgpp/log/deployments/ab0d8dd705def24d, 108.9 GiB free
+OK   rank 0 (192.168.88.11) resident cache: ~/.cache/dgpp/resident: parent /home/stephen/.cache/dgpp/resident, 108.9 GiB free
+OK   rank 0 (192.168.88.11) model cache: /home/stephen/.cache/huggingface/hub: parent /home/stephen/.cache/huggingface/hub, 108.9 GiB free
+OK   rank 0 (192.168.88.11) checkpoint: /home/stephen/.cache/huggingface/hub/models--Saren--Qwen3.8-Flash-Next-W4A16-AutoRound-hybrid-MTP_int4RTN/snapshots/19f9710c8f6600a32e15fb98bc77613ee8ec369b: 66.6 GiB; all indexed shards have consistent lengths (not a content hash check)
+OK   rank 0 (192.168.88.11) n-gram table: /home/stephen/.cache/huggingface/hub/models--Qwen--Qwen3.8-Flash-Next-FP8/snapshots/236dfdf285828023ca3bcd3f37366c58a3469b13: 172.8 GiB of shards
+OK   rank 0 (192.168.88.11) available memory: 116.3 GiB; startup enforces the exact model memory plan
+OK   rank 0 (192.168.88.11) HTTP port: 0.0.0.0:18080 is available
+OK   rank 0 (192.168.88.11) runtime libraries: all binary dependencies resolve
+OK   rank 0 (192.168.88.11) server version: dgpp-serve 0.1.0+g84028a497443.dirty (git 84028a497443, cuda 13.0)
+Preflight: 0 failed check(s). No files were installed and no services were started or stopped.
+2026-09-29 07:49:50.676 === staging dgpp-serve and the config to the peers
+2026-09-29 07:49:50.676 === rank 0 on 192.168.88.11 (HTTP :18080, fabric :29970, journal :29971)
+2026-09-29 07:49:50.676 head pid 3828391
+2026-09-29 07:59:50.918 TIMEOUT waiting for rank 0 serving (600s)
+  2026-09-29 07:49:51.420 INFO  rank 0: process memory locked (mlockall MCL_CURRENT, 14546 MiB)
+  2026-09-29 07:49:51.420 INFO  rank 0: resident image cache at /home/stephen/.cache/dgpp/resident
+  2026-09-29 07:49:51.596 INFO  rank 0: memory plan for a 262144-token context — model weights (resident; the n-gram table mmap'ed from the checkpoint) 65.31 GiB; loader staging (pinned host, freed when
+  2026-09-29 07:49:51.597 INFO  rank 0: memory plan total 88.85 GiB (83.99 GiB device + 4.86 GiB pinned) + 4.00 GiB headroom against 115.45 GiB free (device free 106.30 GiB of 121.63 GiB, host available
+  2026-09-29 07:49:51.597 INFO  memory ledger: rank 0 after the plan check — rss 1.13 GiB (anon 0.43, shmem 0.05, file 0.65; locked 14.21); device free 106.30 GiB, node available 115.45 GiB
+  2026-09-29 07:49:51.597 INFO  memory ledger: rank 0 after the bus — rss 1.13 GiB (anon 0.43, shmem 0.05, file 0.65; locked 14.21); device free 106.30 GiB, node available 115.45 GiB
+  2026-09-29 07:49:52.473 INFO  qwen loader: rank 0 resident footprint 65.3 GiB; device free 106.1 of 121.6 GiB, host available 115.3 GiB
+  2026-09-29 07:49:53.380 INFO  qwen loader: rank 0 resident image /home/stephen/.cache/dgpp/resident/d7399133314692f1.img — 49/49 layers present, direct I/O
+  2026-09-29 07:49:53.396 INFO  l2 prefetch: on, window budget 12 MiB, boundary rate light, layer rate light
+  2026-09-29 07:49:54.170 ERROR serve: weight bump OOM
+cluster configuration: rank 0 did not become ready

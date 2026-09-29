@@ -366,6 +366,9 @@ def model_action(requested, cfg):
     try:
         root = cluster_doctor.cache_root({**os.environ, **cfg["node_env"][0]})
         cluster_doctor.checkpoint_size(cluster_doctor.cached_snapshot(cfg["model"], root))
+        table_model = (cfg.get("engine", {}) or {}).get("ngram_table_model")
+        if table_model:
+            cluster_doctor.shard_bytes(cluster_doctor.cached_snapshot(table_model, root))
         return "sync"
     except (OSError, ValueError, KeyError, TypeError):
         return "download"

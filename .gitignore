@@ -55,6 +55,8 @@ glm_tp_fixture_fp4/
 glm_tp_fixture_wide/
 qwen_engine_fixture/
 qwen_loader_fixture/
+qwen_loader_gptq_fixture/
+qwen_loader_nvfp4_fixture/
 glm_dsa_loader_fixture/
 mimo_loader_fixture/
 mimo_loader_image_cache/

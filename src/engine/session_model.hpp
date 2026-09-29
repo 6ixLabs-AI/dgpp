@@ -192,6 +192,7 @@ class SessionModel : public PrefillReporting {
   Outputs session_step(int req, int64_t token_id) { return session_verify(req, std::vector<int64_t>{token_id}); }
   Outputs session_verify(int req, const std::vector<int64_t>& token_ids);
   void session_rollback(int req, int accepted);
+  void head_dump_flush() {}  // a family may shadow this (QwenModel's head dump)
   void session_close(int req);
   int64_t session_position(int req) const {
     check_req(req, "session_position");
@@ -1136,8 +1137,18 @@ void SessionModel<D>::session_rollback(int req, int accepted) {
     throw std::invalid_argument("session_rollback: accepted rows must be in [1, " + std::to_string(T) + "]");
   const int64_t pos = session_pos_[static_cast<size_t>(req)];
   if (pos < T) throw std::invalid_argument("session_rollback: no verify to retract");
-  if (accepted == T) return;  // every row landed in place already
   const GlmSpecSegments segs = derived().spec_segments(req, 0);
+  if (segs.replay_dst != nullptr) {
+    // A checkpoint-and-replay family (kernels/glm_spec.hpp): this pass's
+    // saved rows become the next pass's replay source and the accepted
+    // count its pending rows — every step, retraction or not (the callers
+    // run this path on every eager verify).
+    session_detail::d2d(segs.replay_dst, segs.replay_src, segs.replay_bytes, stream_);
+    const int32_t acc = accepted;
+    DGPP_CUDA_OK(cudaMemcpyAsync(segs.replay_pending, &acc, sizeof(acc), cudaMemcpyHostToDevice, stream_));
+    DGPP_CUDA_OK(cudaStreamSynchronize(stream_));  // a pageable source: staged before this returns anyway
+  }
+  if (accepted == T) return;  // every row landed in place already
   for (int i = 0; i < segs.count; ++i) {
     const GlmSpecSegment& s = segs.seg[i];
     session_detail::d2d(s.dst,
@@ -1365,6 +1376,7 @@ void SessionModel<D>::session_graph_settle(int req, int accepted, int rows) {
   // the draft in the graph the block's counter moved by the same rows.
   session_pos_[static_cast<size_t>(req)] += accepted;
   if (graph_has_draft_) mtp_pos_[static_cast<size_t>(req)] += accepted;
+  derived().head_dump_flush();
 }
 
 template <class D>
@@ -1539,6 +1551,9 @@ void SessionModel<D>::session_graph_capture_commit_batch(const PickVerdict* devi
       for (int i = 0; i < segments.count; ++i)
         segments.seg[i].request_stride_bytes = reinterpret_cast<uintptr_t>(next.seg[i].dst) -
                                                reinterpret_cast<uintptr_t>(segments.seg[i].dst);
+      if (segments.replay_dst != nullptr)
+        segments.replay_request_stride_bytes = reinterpret_cast<uintptr_t>(next.replay_dst) -
+                                               reinterpret_cast<uintptr_t>(segments.replay_dst);
 #ifndef NDEBUG
       // Mapped commits require each destination to be affine in the physical request ID.
       for (int q = 0; q < max_requests_; ++q) {

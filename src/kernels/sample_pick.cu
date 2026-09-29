@@ -264,6 +264,7 @@ __global__ void __launch_bounds__(kChunkThreads)
                           double* __restrict__ maxes, const PickVerdict* __restrict__ row_select,
                           int source_row_stride, const int32_t* request_map) {
   __shared__ float fred[32];
+  __shared__ uint64_t kred[32];
   const int c = blockIdx.x;
   const int row = blockIdx.y;
   const int q = row / rows_per_request;
@@ -271,11 +272,25 @@ __global__ void __launch_bounds__(kChunkThreads)
   const int t = row % rows_per_request;
   const RowSpec rs = row_spec(specs, q, positions, position_stride, masks, mask_stride, row,
                               row_select != nullptr, request_map);
-  if (!rs.sampled) return;
   const int nchunks = gridDim.x;
   float* slice = logits + source_row(row, q, rows_per_request, row_select,
                                      source_row_stride) * vocab_count;
   const int i = c * kChunkThreads + threadIdx.x;
+  if (!rs.sampled) {
+    // The greedy row's argmax, chunked (2026-09-29): this chunk's smallest
+    // composite key, carried to the row block through its `maxes` slot (a
+    // greedy row has no normalizer) as the key's 64-bit pattern. The row
+    // block then reduces nchunks keys instead of walking the whole slice
+    // with one block (117 us per 248K-id row on the GB10, four times per
+    // depth-3 pass); the min over the chunk minima is the min over the
+    // slice, so the pick is bitwise the one-block walk's.
+    if (!rs.active) return;
+    uint64_t key = i < vocab_count ? composite_key(slice[i], vocab_begin + i) : kKeyMax;
+    key = block_min_key(key, kred);
+    if (threadIdx.x == 0)
+      maxes[static_cast<size_t>(row) * nchunks + c] = __longlong_as_double(static_cast<long long>(key));
+    return;
+  }
   float scaled = -INFINITY;
   if (i < vocab_count) {
     float l = slice[i];
@@ -542,11 +557,13 @@ __global__ void __launch_bounds__(kLocalThreads) sample_local_kernel(
       locals[row].second_logit = -INFINITY;
     }
   } else if (!rs.sampled) {
-    // The greedy row: the canonical argmax (the smallest composite key),
+    // The greedy row: the canonical argmax (the smallest composite key)
+    // over the chunk minima sample_prepare_kernel left in `maxes`,
     // written as the one candidate; every other slot carries the empty id.
     uint64_t best = kKeyMax;
-    for (int i = tid; i < vocab_count; i += kLocalThreads) {
-      const uint64_t key = composite_key(slice[i], vocab_begin + i);
+    for (int j = tid; j < nchunks; j += kLocalThreads) {
+      const uint64_t key = static_cast<uint64_t>(
+          __double_as_longlong(maxes[static_cast<size_t>(row) * nchunks + j]));
       best = key < best ? key : best;
     }
     best = block_min_key(best, kred);

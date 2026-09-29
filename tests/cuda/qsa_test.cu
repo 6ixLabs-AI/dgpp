@@ -806,6 +806,51 @@ DGPP_TEST(qsa_listed_attention_and_gate_match_the_reference) {
       require_bf16("attention n_split=" + std::to_string(n_split), s, n_split == 1 ? 2e-3 : 4e-3, 0.01);
     }
   }
+  // The decode kernel's two gather forms (the cp.async phases and the
+  // serial gather) leave bitwise the same partials: the arithmetic is the
+  // same sequence either way.
+  for (int n_split : {1, 3}) {
+    const size_t part = static_cast<size_t>(rows) * n_split * g.local_heads;
+    std::vector<uint8_t> got[2];
+    for (int form = 0; form < 2; ++form) {
+      DevBuf m_ws(part * 4), l_ws(part * 4), c_ws(part * g.dim * 4);
+      dgpp::qsa_attn_partial_gather(ptr<uint16_t>(dqonly), static_cast<int64_t>(g.local_heads) * g.dim, ptr<uint16_t>(kc),
+                                    ptr<uint16_t>(vc), ptr<int32_t>(sf.dreq), ptr<int32_t>(dtopk), g.max_selected(),
+                                    ptr<int32_t>(dcounts), rows, n_split, g.local_heads, g.kv_heads, g.dim,
+                                    g.block_tokens, ptr<int32_t>(sf.f.dtable), g.blocks_per_request, 1.0f / 16.0f,
+                                    mptr<float>(m_ws), mptr<float>(l_ws), mptr<float>(c_ws), st, form, 0, 0);
+      DGPP_CUDA_OK(cudaStreamSynchronize(st));
+      const std::vector<uint8_t> m = down<uint8_t>(m_ws, part * 4), l = down<uint8_t>(l_ws, part * 4),
+                                 c = down<uint8_t>(c_ws, part * g.dim * 4);
+      got[form].insert(got[form].end(), m.begin(), m.end());
+      got[form].insert(got[form].end(), l.begin(), l.end());
+      got[form].insert(got[form].end(), c.begin(), c.end());
+    }
+    require_bitwise("async gather partials == serial gather partials, n_split=" + std::to_string(n_split), got[0].data(),
+                    got[1].data(), got[0].size());
+    // Every head of a kv head in one block, several heads per warp: the
+    // same partials, bitwise (the fixture's three heads per kv head as one
+    // warp of three, and as a block of three one-head warps).
+    for (const int hpw : {1, 3}) {
+      DevBuf m_ws(part * 4), l_ws(part * 4), c_ws(part * g.dim * 4);
+      dgpp::qsa_attn_partial_gather(ptr<uint16_t>(dqonly), static_cast<int64_t>(g.local_heads) * g.dim, ptr<uint16_t>(kc),
+                                    ptr<uint16_t>(vc), ptr<int32_t>(sf.dreq), ptr<int32_t>(dtopk), g.max_selected(),
+                                    ptr<int32_t>(dcounts), rows, n_split, g.local_heads, g.kv_heads, g.dim,
+                                    g.block_tokens, ptr<int32_t>(sf.f.dtable), g.blocks_per_request, 1.0f / 16.0f,
+                                    mptr<float>(m_ws), mptr<float>(l_ws), mptr<float>(c_ws), st, 1,
+                                    g.local_heads / g.kv_heads, hpw);
+      DGPP_CUDA_OK(cudaStreamSynchronize(st));
+      std::vector<uint8_t> got2;
+      const std::vector<uint8_t> m = down<uint8_t>(m_ws, part * 4), l = down<uint8_t>(l_ws, part * 4),
+                                 c = down<uint8_t>(c_ws, part * g.dim * 4);
+      got2.insert(got2.end(), m.begin(), m.end());
+      got2.insert(got2.end(), l.begin(), l.end());
+      got2.insert(got2.end(), c.begin(), c.end());
+      require_bitwise("heads-per-kv block, " + std::to_string(hpw) + " heads per warp == serial partials, n_split=" +
+                          std::to_string(n_split),
+                      got2.data(), got[0].data(), got2.size());
+    }
+  }
 }
 
 DGPP_TEST(qsa_prefill_partials_preserve_arithmetic_and_graph_replay) {

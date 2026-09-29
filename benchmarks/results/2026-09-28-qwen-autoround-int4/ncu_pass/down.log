@@ -1,0 +1,4 @@
+2026-09-29 03:47:18.229 === Saren/Qwen3.8-Flash-Next-W4A16-AutoRound-hybrid-MTP_int4RTN on 1 node(s) [world] (deploy/cluster_qwen-3.8-flash-next_autoround-int4_w1.json): no rank recorded as running; nothing to stop
+2026-09-29 03:47:18.229 === op-stream identity (every rank)
+2026-09-29 03:47:18.229 WARN: no /home/stephen/workspace/dgpp-autoround/benchmarks/results/2026-09-28-qwen-autoround-int4/ncu_pass/world/serve_rank0.ops
+2026-09-29 03:47:18.229 === logs in /home/stephen/workspace/dgpp-autoround/benchmarks/results/2026-09-28-qwen-autoround-int4/ncu_pass/world

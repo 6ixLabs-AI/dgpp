@@ -1,0 +1,33 @@
+2026-09-29 03:00:27.401 INFO  dgpp-serve 0.1.0+g84028a497443.dirty (git 84028a497443)
+2026-09-29 03:00:27.401 INFO  config /home/stephen/workspace/dgpp-autoround/benchmarks/results/2026-09-28-qwen-autoround-int4/ncu_pass/world/cluster.resolved.json: model Saren/Qwen3.8-Flash-Next-W4A16-AutoRound-hybrid-MTP_int4RTN, world 1, rank 0, http :18080, fabric :29970, journal :29971
+2026-09-29 03:00:27.401 INFO  model Saren/Qwen3.8-Flash-Next-W4A16-AutoRound-hybrid-MTP_int4RTN -> /home/stephen/.cache/huggingface/hub/models--Saren--Qwen3.8-Flash-Next-W4A16-AutoRound-hybrid-MTP_int4RTN/snapshots/19f9710c8f6600a32e15fb98bc77613ee8ec369b
+2026-09-29 03:00:27.401 INFO  serve: SSE ping interval 30 s (-1 disables)
+2026-09-29 03:00:27.401 INFO  n-gram table shards from Qwen/Qwen3.8-Flash-Next-FP8 -> /home/stephen/.cache/huggingface/hub/models--Qwen--Qwen3.8-Flash-Next-FP8/snapshots/236dfdf285828023ca3bcd3f37366c58a3469b13
+2026-09-29 03:00:27.401 INFO  config: model=Saren/Qwen3.8-Flash-Next-W4A16-AutoRound-hybrid-MTP_int4RTN world=1 fabric=29970 journal=29971 conc=4 kv=262144 kvdt=bf16 ngt=mmap dw=fp8 mtpef=fp8 bfw=bf12+bf16 fp8head=gemv pf=bounded emsh=replicated maxtok=32768 queue=8 eos=1 graph=1 compact=0 mtp=1 mtpd=3 mss=0 msrow=8 msbase=28 mslam=0 msmin=1 msad=1 batchmin=2 cand=128 pcgib=3 adm=full win=256 pfbudget=4096 pfidle=4096 pmin=1024 phead=1 pace=-1 inflight=-1 reasoning_in_content=0 rs=off (digest 8e4cdbbbae1a8f16)
+2026-09-29 03:00:27.645 INFO  serve: model family qwen4_exp (/home/stephen/.cache/huggingface/hub/models--Saren--Qwen3.8-Flash-Next-W4A16-AutoRound-hybrid-MTP_int4RTN/snapshots/19f9710c8f6600a32e15fb98bc77613ee8ec369b)
+2026-09-29 03:00:27.645 INFO  serve: decode rows 16 (4 slot(s) x 4 row(s) per request, floor 8, the qwen4_exp family's cap 64)
+2026-09-29 03:00:27.645 WARN  generation config /home/stephen/.cache/huggingface/hub/models--Saren--Qwen3.8-Flash-Next-W4A16-AutoRound-hybrid-MTP_int4RTN/snapshots/19f9710c8f6600a32e15fb98bc77613ee8ec369b/generation_config.json omits min_p, repetition_penalty; using greedy-safe/neutral fallbacks for those fields
+2026-09-29 03:00:27.645 INFO  generation defaults: temperature=1 top_p=0.95 top_k=20 min_p=0 repetition_penalty=1
+2026-09-29 03:00:27.645 INFO  serve: sampling defaults temperature 1 top_p 0.95 top_k 20 min_p 0 repetition_penalty 1 (from generation_config.json; overrides: none)
+2026-09-29 03:00:27.645 INFO  serve: request context limit 262144 tokens — the lesser of the 262144-token positional ceiling (the checkpoint's own rope) and the 262144-token K/V pool (engine.kv_capacity 262144); one request may reach the limit, the pool is what seats them all
+2026-09-29 03:00:27.645 INFO  rank 0: prefix cache plan — 3 GiB budget, 27 slots of 110.317 MiB, 2.909 GiB allocated; cached K/V blocks share the 262144-token pool
+2026-09-29 03:00:27.792 INFO  tokenizer: loaded vocab 248044 merges 247587 added 33 (revision 0x5e5f67db24575059; qwen2 pattern, NFC, ignore_merges false)
+2026-09-29 03:00:27.809 INFO  serve: grammar vocabulary built (248320 ids, tool markers present, call-turn EOS 248046)
+2026-09-29 03:00:27.987 INFO  serve: JSON grammar tables built in 0.18 s
+2026-09-29 03:00:28.228 INFO  bus: a world of one — no lanes, every collective the identity
+2026-09-29 03:00:28.616 INFO  rank 0: process memory locked (mlockall MCL_CURRENT, 14947 MiB)
+2026-09-29 03:00:28.616 INFO  rank 0: resident image cache at /home/stephen/.cache/dgpp/resident
+2026-09-29 03:00:28.786 INFO  rank 0: memory plan for a 262144-token context — model weights (resident; the n-gram table mmap'ed from the checkpoint) 65.31 GiB; loader staging (pinned host, freed when the last layer is resident) 1.83 GiB (1.83 GiB pinned); gemm workspace (at least) 0.06 GiB; dense fp8 prefill bridge (the largest dense matrix in BF16) 0.06 GiB; n-gram table staging (pinned; the table mmap'ed from the checkpoint) 0.01 GiB (0.01 GiB pinned); request slot state (GDN recurrent/conv, PLE conv, context) 0.43 GiB; spec snapshot rows 0.04 GiB; GDN replay rows (checkpoint-and-replay: the post-conv q|k|v, a, beta of every decode row, two copies) 0.09 GiB; kv cache pool (K/V bf16, compressed index keys, rings) 6.70 GiB; activations (hyper state, rows, head) 3.94 GiB (0.01 GiB pinned); layer objects (GR sites, GDN, QSA, PLE) 4.50 GiB; moe scratch (routed slots, shared expert, graph tables) 0.97 GiB (0.01 GiB pinned); draft block (hyper-state window, ring snapshot, fusion scratch, mixer) 0.53 GiB (0.00 GiB pinned); vision tower weights (bf16, replicated) 0.84 GiB; vision workspace (patches, attention tiles, staged image rows) 0.29 GiB; prefix cache 2.91 GiB; engine 0.07 GiB
+2026-09-29 03:00:28.786 INFO  rank 0: memory plan total 88.59 GiB (83.74 GiB device + 4.86 GiB pinned) + 4.00 GiB headroom against 114.61 GiB free (device free 106.85 GiB of 121.63 GiB, host available 114.61 GiB)
+2026-09-29 03:00:28.786 INFO  memory ledger: rank 0 after the plan check — rss 1.40 GiB (anon 0.59, shmem 0.05, file 0.76; locked 14.60); device free 106.85 GiB, node available 114.61 GiB
+2026-09-29 03:00:28.786 INFO  memory ledger: rank 0 after the bus — rss 1.40 GiB (anon 0.59, shmem 0.05, file 0.76; locked 14.60); device free 106.85 GiB, node available 114.61 GiB
+2026-09-29 03:00:29.673 INFO  qwen loader: rank 0 resident footprint 65.3 GiB; device free 106.7 of 121.6 GiB, host available 114.4 GiB
+2026-09-29 03:00:30.587 INFO  qwen loader: rank 0 resident image /home/stephen/.cache/dgpp/resident/d7399133314692f1.img — 49/49 layers present, direct I/O
+2026-09-29 03:00:30.604 INFO  l2 prefetch: on, window budget 12 MiB, boundary rate light, layer rate light
+2026-09-29 03:00:30.907 INFO  qwen loader: rank 0 n-gram table rows [0, 320001446) mmap'ed from the checkpoint (48.67 GiB mapped, scale 0.00019931793)
+2026-09-29 03:00:35.238 INFO  memory ledger: rank 0 after the model — rss 5.25 GiB (anon 0.71, shmem 1.91, file 2.63; locked 14.57); device free 89.69 GiB, node available 97.45 GiB
+2026-09-29 03:00:35.238 INFO  rank 0: model constructed in 6.5s (resident, 4 request slots, 262144-token pool in bf16, 4096-row forwards)
+2026-09-29 03:00:35.238 INFO  rank 0: prefix cache on — 27 snapshot slot(s) of 110.3 MiB (3.00 GiB asked)
+2026-09-29 03:00:35.339 INFO  rank 0: graph engine samples on the device — 128 candidates per rank (16 rows x 1 ranks in a 327680-byte latency slot; the planned width is 128); constrained decoding available
+2026-09-29 03:00:35.340 INFO  rank 0: prefill budget 4096 tokens/tick (0 = full prompt)
+2026-09-29 03:00:35.340 INFO  memory ledger: rank 0 after the graph engine — rss 5.25 GiB (anon 0.71, shmem 1.91, file 2.63; locked 14.57); device free 86.71 GiB, node available 94.47 GiB

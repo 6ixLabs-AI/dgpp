@@ -35,7 +35,8 @@ struct QwenMoeWeights {
   const GlmQuantMatrix* shared_fp8 = nullptr;  // dense_weights fp8: gate, up, down (the bf16 three null)
   int64_t shared_inter = 0;                    // S: this rank's shared slice
   const GlmQuantMatrix* experts = nullptr;     // [n_experts * 3] gate, up, down (FP8 block form)
-  const GlmFp4Matrix* experts_fp4 = nullptr;   // the NVFP4 form instead (one of the two is set)
+  const GlmFp4Matrix* experts_fp4 = nullptr;   // the NVFP4 form instead
+  const GlmPackedMatrix* experts_packed = nullptr;  // the packed-int form (the AutoRound hybrid); exactly one of the three is set
   float act_scale_w13 = 0.0f, act_scale_w2 = 0.0f;  // W4A4 activation scales (0: dynamic)
   const float* act_scales_dev = nullptr;             // [2] on the device, from the layer image
 };
@@ -111,6 +112,13 @@ class QwenMoeLayer {
   QwenMoeWeights w_;
   GlmMoeConfig cfg_;
   IGemm& gemm_;
+  // The shared expert's gate/up half on a side stream beside the routed
+  // experts (2026-09-29): it reads only the layer's input, and its 21 us
+  // launch ran on the chain after the routed stream at 55–61 % of the
+  // line rate (a small matrix's ramp). Forked at enqueue_decode's start,
+  // joined before the down half. DGPP_QWEN_SHARED_SIDE=off keeps the chain.
+  cudaStream_t shared_side_ = nullptr;
+  cudaEvent_t shared_fork_ = nullptr, shared_join_ = nullptr;
   int mma_from_rows_ = 0;
   int max_tokens_;
   GlmMoeLayer routed_;

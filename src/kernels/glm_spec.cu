@@ -50,9 +50,25 @@ __global__ void spec_commit_kernel(const PickVerdict* __restrict__ verdict, int 
   if (req < 0) return;
   const int accepted = verdict->accepted;
   if (accepted <= 0) return;  // fixed-batch padding slot
-  if (blockIdx.x == 0 && blockIdx.y == 0 && threadIdx.x == 0) session_pos[req] += accepted;
+  if (blockIdx.x == 0 && blockIdx.y == 0 && threadIdx.x == 0) {
+    session_pos[req] += accepted;
+    if (segments.replay_pending != nullptr) segments.replay_pending[req] = accepted;
+  }
+  if (segments.replay_dst != nullptr && blockIdx.y == static_cast<unsigned>(segments.count)) {
+    // The replay family's rows: this pass's saved inputs become the next
+    // pass's replay source, whatever the verdict (it replays `accepted`).
+    const size_t units = segments.replay_bytes / kUnit;
+    const uint4* src = reinterpret_cast<const uint4*>(
+        static_cast<const char*>(segments.replay_src) + static_cast<size_t>(req) * segments.replay_request_stride_bytes);
+    uint4* dst = reinterpret_cast<uint4*>(static_cast<char*>(segments.replay_dst) +
+                                          static_cast<size_t>(req) * segments.replay_request_stride_bytes);
+    for (size_t i = static_cast<size_t>(blockIdx.x) * kCopyThreads + threadIdx.x;
+         i < units; i += static_cast<size_t>(gridDim.x) * kCopyThreads)
+      dst[i] = src[i];
+    return;
+  }
   if (accepted >= rows) return;  // every row stood: nothing to retract
-  if (blockIdx.y >= segments.count) return;  // position-only configuration
+  if (blockIdx.y >= static_cast<unsigned>(segments.count)) return;  // position-only configuration
 
   const GlmSpecSegment& s = segments.seg[blockIdx.y];
   const size_t units = s.bytes / kUnit;
@@ -418,12 +434,20 @@ void glm_spec_commit(const PickVerdict* verdict, int rows, const GlmSpecSegments
           " must be 16-byte aligned with 16-byte-multiple sizes");
     max_units = std::max(max_units, s.bytes / kUnit);
   }
+  const bool replay = segments.replay_dst != nullptr;
+  if (replay) {
+    if (!aligned16(segments.replay_dst) || !aligned16(segments.replay_src) || segments.replay_bytes % kUnit != 0 ||
+        segments.replay_request_stride_bytes % kUnit != 0 || segments.replay_pending == nullptr)
+      throw std::invalid_argument("glm_spec_commit: the replay rows must be 16-byte aligned with a pending counter");
+    max_units = std::max(max_units, segments.replay_bytes / kUnit);
+  }
   // A single block still runs (the position advance) when no segment
-  // exists; otherwise enough blocks to stream the largest segment.
+  // exists; otherwise enough blocks to stream the largest segment. The
+  // replay family's copy runs as one more y-slice (index `count`).
   const unsigned chunks = static_cast<unsigned>(
       std::min<size_t>(1024, (max_units + kCopyThreads - 1) / kCopyThreads));
   const dim3 grid(std::max(1u, chunks),
-                  static_cast<unsigned>(std::max(1, segments.count)));
+                  static_cast<unsigned>(std::max(1, segments.count + (replay ? 1 : 0))));
   spec_commit_kernel<<<grid, kCopyThreads, 0, stream>>>(verdict, rows, segments, session_pos,
                                                         request_map, batch_index);
   DGPP_CUDA_OK(cudaGetLastError());
@@ -460,6 +484,19 @@ void glm_device_copy(void* dst, const void* src, size_t bytes,
       std::min<size_t>((units + 255) / 256, 1024));
   device_copy_kernel<<<blocks, 256, 0, stream>>>(
       static_cast<uint4*>(dst), static_cast<const uint4*>(src), units);
+  DGPP_CUDA_OK(cudaGetLastError());
+}
+
+namespace {
+__global__ void store_u8x2_kernel(uint8_t* __restrict__ dst, uint8_t a, uint8_t b) {
+  dst[0] = a;
+  dst[1] = b;
+}
+}  // namespace
+
+void glm_device_store_u8x2(uint8_t* dst, uint8_t a, uint8_t b, cudaStream_t stream) {
+  if (dst == nullptr) throw std::invalid_argument("glm_device_store_u8x2: null");
+  store_u8x2_kernel<<<1, 1, 0, stream>>>(dst, a, b);
   DGPP_CUDA_OK(cudaGetLastError());
 }
 

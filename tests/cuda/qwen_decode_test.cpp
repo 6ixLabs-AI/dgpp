@@ -136,14 +136,18 @@ int audit(QwenModel& ref, const std::vector<int64_t>& prompt, const Transcript& 
   const size_t P = prompt.size();
   int hard = 0, soft = 0;
   double worst_l2 = 0;
+  std::string per_row;
   for (size_t i = 0; i < t.rows.size(); ++i) {
     const float* want = f.logits.data() + (P - 1 + i) * static_cast<size_t>(V);
     const RowCompare c = compare_row(t.rows[i].data(), want, V);
     worst_l2 = std::max(worst_l2, c.l2);
     if (!c.top1_equal) (c.near_tie ? soft : hard) += 1;
+    char buf[32];
+    std::snprintf(buf, sizeof buf, "%s%.2g", i ? " " : "", c.l2);
+    per_row += buf;
   }
-  std::printf("[ .. ] %s: %zu rows vs the re-forward — worst relative l2 %.3g, top-1 hard %d near-tie %d\n",
-              what, t.rows.size(), worst_l2, hard, soft);
+  std::printf("[ .. ] %s: %zu rows vs the re-forward — worst relative l2 %.3g, top-1 hard %d near-tie %d (per row: %s)\n",
+              what, t.rows.size(), worst_l2, hard, soft, per_row.c_str());
   require(hard == 0, std::string(what) + ": a top-1 mismatch beyond the near-tie margin");
   require(worst_l2 < l2_budget, std::string(what) + ": relative l2 over budget");
   return soft;
@@ -159,6 +163,7 @@ int run_prefill_head(const std::string& dir) {
     ~RestoreDenseWeights() { dgpp::QwenLayerStream::set_dense_weights_fp8(fp8); }
   } restore{old_fp8};
   for (const bool fp8 : {false, true}) {
+    if (cfg.dense_fp8_shipped && !fp8) continue;  // the hybrid ships fp8: no bf16 dense form
     dgpp::QwenLayerStream::set_dense_weights_fp8(fp8);
     for (const bool mma : {false, true}) {
       if (!fp8 && mma) continue;
@@ -187,6 +192,7 @@ int run_prefill_head(const std::string& dir) {
 // ---- the fixture gates ----------------------------------------------------------
 int run_fixture(const std::string& dir, bool fp8_head = false) {
   const QwenTextConfig cfg = QwenTextConfig::from_json_file((fs::path(dir) / "config.json").string());
+  if (cfg.dense_fp8_shipped) dgpp::QwenLayerStream::set_dense_weights_fp8(true);
   const std::vector<int64_t> A = smoke_tokens(cfg, 23, 0x9E3779B97F4A7C15ull);
   const std::vector<int64_t> B = smoke_tokens(cfg, 17, 0xD1B54A32D192ED03ull);
   QwenModel m(cfg, dir, /*max_tokens=*/64, /*max_cache_tokens=*/256, QwenResidency::Resident, nullptr,
@@ -781,7 +787,11 @@ int run_fixture(const std::string& dir, bool fp8_head = false) {
   // Prefill, the draft block and the decode that continues are bitwise the
   // bf16 build's, under either value of the key (this family keeps both
   // forms resident).
-  {
+  // Under the fp8 dense stack (the AutoRound hybrid's fixture) nothing is
+  // offered to the companions — the block is the FP8 fixture's gate.
+  if (dgpp::QwenLayerStream::dense_weights_fp8()) {
+    std::printf("[ .. ] bf16_weights: nothing packs under the fp8 dense stack; the FP8 fixture gates the companions\n");
+  } else {
     struct Restore {
       ~Restore() { dgpp::set_bf16_residency(dgpp::Bf16Residency::Checkpoint); }
     } restore;
@@ -939,7 +949,7 @@ int run_checkpoint(const std::string& dir, const std::vector<int64_t>& ids, int 
 
 int main(int argc, char** argv) {
   std::string fixture, checkpoint, ids_text;
-  bool fp8_head = false, prefill_head = false;
+  bool fp8_head = false, prefill_head = false, dense_fp8 = false;
   int steps = 4;
   int layers_extra = -1;
   for (int i = 1; i < argc; ++i) {
@@ -949,12 +959,15 @@ int main(int argc, char** argv) {
       fp8_head = true;
     else if (a == "--prefill-head")
       prefill_head = true;
+    else if (a == "--dense-fp8")  // the whole run under engine.dense_weights = fp8
+      dense_fp8 = true;
     else if (a == "--checkpoint-dir" && i + 1 < argc) checkpoint = argv[++i];
     else if (a == "--ids" && i + 1 < argc) ids_text = argv[++i];
     else if (a == "--steps" && i + 1 < argc) steps = std::stoi(argv[++i]);
     else if (a == "--layers" && i + 1 < argc) layers_extra = std::stoi(argv[++i]);
   }
   try {
+    if (dense_fp8) dgpp::QwenLayerStream::set_dense_weights_fp8(true);
     if (!fixture.empty()) return prefill_head ? run_prefill_head(fixture) : run_fixture(fixture, fp8_head);
     if (!checkpoint.empty()) {
       std::vector<int64_t> ids;

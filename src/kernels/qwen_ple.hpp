@@ -78,6 +78,14 @@ void qwen_ple_gather_bf16(const uint8_t* table, int64_t row_begin, int64_t rows,
 // so out is bitwise the device gather's. `staged` may be pinned host memory.
 void qwen_ple_gather_staged_bf16(const uint8_t* staged, float scale, int n, int heads_local,
                                  int head_dim, uint16_t* out, cudaStream_t stream);
+// The staging handshake's device half (2026-09-29): after the hash kernel,
+// publishes the walk's row count and a sequence number to pinned words the
+// gather thread polls (the ids are already in pinned memory). One thread:
+// *pinned_rows = rows, then seq = ++*device_seq released to *pinned_seq.
+// The gather kernel's turn waits on the thread's answer through
+// glm_stage_wait (kernels/glm_spec.hpp). Capturable.
+void qwen_ple_publish_stage(uint64_t* device_seq, uint64_t* pinned_seq, int32_t* pinned_rows, int rows,
+                            cudaStream_t stream);
 
 void qwen_ple_gate_bf16(const uint16_t* key_n, const uint16_t* query_n,
                         const uint16_t* value, uint16_t* gated, int n, int hc,

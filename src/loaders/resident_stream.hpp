@@ -54,6 +54,7 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -68,6 +69,19 @@
 #include "loaders/weight_build.hpp"
 
 namespace dgpp {
+
+namespace detail {
+// A family may declare `static std::string extra_shard_dir()` and
+// `static bool admit_extra_tensor(const std::string&)` (the Qwen n-gram
+// table from another snapshot); the stream scans that directory only when
+// both exist.
+template <class F, class = void>
+struct has_extra_shard_dir : std::false_type {};
+template <class F>
+struct has_extra_shard_dir<F, std::void_t<decltype(F::extra_shard_dir()),
+                                          decltype(F::admit_extra_tensor(std::string{}))>>
+    : std::true_type {};
+}  // namespace detail
 
 enum class LoaderResidency { Streaming, Resident };
 enum class LoaderHeadSharding { Full, VocabSharded };
@@ -256,6 +270,36 @@ ResidentLayerStream<F>::ResidentLayerStream(const Config& cfg, const std::string
       present.emplace(t.name, typename F::PresentMap::mapped_type{t.dtype, t.shape});
     });
     shards_.push_back(std::move(f));
+  }
+  // A family's extra shard directory (the Qwen n-gram table from another
+  // snapshot): only the tensors its filter admits, and only when the
+  // checkpoint's own shards did not carry them. Everything else in those
+  // shards is ignored — never a duplicate, never unexpected.
+  if constexpr (detail::has_extra_shard_dir<F>::value) {
+    const std::string extra = F::extra_shard_dir();
+    if (!extra.empty()) {
+      if (!fs::is_directory(extra))
+        throw std::runtime_error(std::string(F::who()) + ": the extra shard directory is not a directory: " + extra);
+      std::vector<fs::path> extra_paths;
+      for (const auto& entry : fs::directory_iterator(extra))
+        if (entry.path().extension() == ".safetensors") extra_paths.push_back(entry.path());
+      std::sort(extra_paths.begin(), extra_paths.end());
+      size_t admitted = 0;
+      for (const auto& path : extra_paths) {
+        auto f = SafetensorsFile::open(path.string());
+        bool used = false;
+        f->for_each([&](const TensorInfo& t) {
+          if (!F::admit_extra_tensor(t.name) || tensors_.count(t.name)) return;
+          tensors_.emplace(t.name, &t);
+          present.emplace(t.name, typename F::PresentMap::mapped_type{t.dtype, t.shape});
+          used = true;
+          ++admitted;
+        });
+        if (used) shards_.push_back(std::move(f));
+      }
+      if (admitted == 0)
+        throw std::runtime_error(std::string(F::who()) + ": no admissible tensor in the extra shard directory " + extra);
+    }
   }
   F::validate_binding(cfg_, present);
   F::check_sources(cfg_, tensors_);

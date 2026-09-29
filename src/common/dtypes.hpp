@@ -91,6 +91,38 @@ DGPP_HD inline uint16_t float_to_bf16_bits(float f) {
   return static_cast<uint16_t>(u >> 16);
 }
 
+// IEEE binary16 (F16) — the GPTQ / AutoRound scale dtype (2026-09-28,
+// docs/qwen38_autoround_int4_plan.md D1). Widening is exact (subnormals
+// are man x 2^-24, exact in fp32); narrowing rounds to nearest even.
+DGPP_HD inline float fp16_bits_to_float(uint16_t h) {
+  const uint32_t sign = static_cast<uint32_t>(h & 0x8000u) << 16;
+  const uint32_t exp = (h >> 10) & 0x1Fu;
+  const uint32_t man = h & 0x3FFu;
+  if (exp == 0) {
+    const float v = static_cast<float>(man) * 5.9604644775390625e-08f;  // 2^-24
+    return std::bit_cast<float>(std::bit_cast<uint32_t>(v) | sign);
+  }
+  if (exp == 31) return std::bit_cast<float>(sign | 0x7F800000u | (man << 13));
+  return std::bit_cast<float>(sign | ((exp + 112u) << 23) | (man << 13));
+}
+
+inline uint16_t float_to_fp16_bits(float f) {
+  const uint32_t u = std::bit_cast<uint32_t>(f);
+  const uint16_t sign = static_cast<uint16_t>((u >> 16) & 0x8000u);
+  const uint32_t a = u & 0x7FFFFFFFu;
+  if (a > 0x7F800000u) return static_cast<uint16_t>(sign | 0x7E00u);  // NaN
+  if (a >= 0x47800000u) return static_cast<uint16_t>(sign | 0x7C00u);  // >= 2^16: inf
+  if (a < 0x38800000u) {  // below 2^-14: subnormal or zero, in units of 2^-24
+    const float v = std::bit_cast<float>(a) * 16777216.0f;
+    return static_cast<uint16_t>(sign | static_cast<uint32_t>(std::nearbyint(v)));
+  }
+  const uint32_t mant = a & 0x7FFFFFu, exp = a >> 23;
+  uint32_t half = ((exp - 112u) << 10) | (mant >> 13);
+  const uint32_t rem = mant & 0x1FFFu;
+  if (rem > 0x1000u || (rem == 0x1000u && (half & 1u))) half += 1u;
+  return static_cast<uint16_t>(sign | half);
+}
+
 // e4m3 (OCP FN, bias 7): no infinities, max finite 448, 0x7F/0xFF => NaN.
 DGPP_HD inline float fp8_e4m3_bits_to_float(uint8_t v) {
   uint32_t sign = static_cast<uint32_t>(v >> 7) << 31;

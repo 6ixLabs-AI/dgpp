@@ -125,6 +125,7 @@ struct WorldSettings {
   std::string dense_weights = "checkpoint";  // the Qwen dense stack's form
   std::string mtp_expert_format = "fp8";      // the Qwen MTP draft experts: fp8 | bf16_fused
   std::string bf16_weights = "checkpoint";   // the bf16 decode weights' resident form: checkpoint | bf12 | bf12+bf16
+  std::string draft_vocab;                   // the Qwen draft head's vocabulary slice (.npy of ids); empty = whole
   std::string prefill = "bounded";           // the DeepSeek-V4.1 prefill mode: bounded | exact
   std::optional<dgpp::RopeScaling> rope_scaling;  // the opt-in YaRN ramp: absent = plain
   std::string embed_sharding = "replicated";  // the full GLM-5.3's embedding: replicated | vocab

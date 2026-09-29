@@ -65,6 +65,14 @@ def checkpoint_size(snapshot):
     # (`encoding/encoding.py`; the checkpoint ships no template).
     if not (snapshot / "chat_template.jinja").is_file() and not (snapshot / "encoding" / "encoding.py").is_file():
         raise ValueError(f"missing chat_template.jinja (or encoding/encoding.py) in {snapshot}")
+    return shard_bytes(snapshot)
+
+
+def shard_bytes(snapshot):
+    """Validate the safetensors shards' headers and lengths (the index's, or
+    every shard in the directory — the Qwen n-gram table repository) and
+    return their indexed bytes."""
+    snapshot = Path(snapshot)
     index = snapshot / "model.safetensors.index.json"
     if index.is_file():
         metadata = json.loads(index.read_text())
@@ -72,8 +80,12 @@ def checkpoint_size(snapshot):
         if not isinstance(weight_map, dict) or not weight_map or any(not isinstance(v, str) for v in weight_map.values()):
             raise ValueError("checkpoint index has no weight_map")
         names = sorted(set(weight_map.values()))
-    else:
+    elif (snapshot / "model.safetensors").is_file():
         names = ["model.safetensors"]
+    else:
+        names = sorted(p.name for p in snapshot.glob("*.safetensors"))
+        if not names:  # a missing checkpoint, as a missing shard is: OSError
+            raise FileNotFoundError(f"no safetensors shards in {snapshot}")
     total = 0
     for name in names:
         if not isinstance(name, str) or Path(name).name != name:
@@ -230,6 +242,16 @@ def probe(spec):
             record("checkpoint", "fail", f"checkpoint missing, incomplete or ambiguous: {error}; "
                    "on rank 0 run python3 scripts/download_model.py --config FILE "
                    "with this deployment's filename; add --sync-only if rank 0 already has the complete checkpoint")
+        # The Qwen n-gram table from another snapshot (engine.ngram_table_model):
+        # its shards' headers and lengths, nothing else is required of it.
+        if spec.get("table_model"):
+            try:
+                table = cached_snapshot(spec["table_model"], cache_root(env))
+                tsize = shard_bytes(table)
+                record("n-gram table", "ok", f"{table}: {tsize / 2**30:.1f} GiB of shards")
+            except (OSError, ValueError, KeyError, TypeError) as error:
+                record("n-gram table", "fail", f"the table snapshot is missing, incomplete or ambiguous: {error}; "
+                       "python3 scripts/download_model.py --config FILE downloads it beside the model")
     try:
         memory = next(line for line in Path("/proc/meminfo").read_text().splitlines() if line.startswith("MemAvailable:"))
         record("available memory", "ok", f"{int(memory.split()[1]) / 2**20:.1f} GiB; startup enforces the exact model memory plan")
@@ -314,6 +336,7 @@ def check_cluster(cfg, binary, log_dir, stage_dir, user, peer_binary=None, *, lo
         if local_only and rank:
             continue
         spec = {"rank": rank, "nodes": cfg["nodes"], "model": cfg["model"],
+                "table_model": (cfg.get("engine", {}) or {}).get("ngram_table_model"),
                 "ports": cfg["ports"], "http_bind": cfg["http"]["bind_host"],
                 "env": cfg["node_env"][rank], "binary": binary if rank == 0 else peer_binary,
                 "preparing": preparing,
@@ -365,6 +388,9 @@ if __name__ == "__main__":
             result.update(snapshot=str(snapshot), size=checkpoint_size(snapshot))
             if spec.get("revision") and snapshot.name != spec["revision"]:
                 parser.exit(2, "active peer revision differs from the head; run download_model.py --config FILE --sync-only\n")
+            if spec.get("table_model"):
+                table = cached_snapshot(spec["table_model"], root)
+                result.update(table_snapshot=str(table), table_size=shard_bytes(table))
         print(json.dumps(result))
     else:
         print(json.dumps(probe(spec)))

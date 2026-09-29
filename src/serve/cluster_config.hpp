@@ -55,6 +55,13 @@ struct ClusterConfig {
     // on the NVMe behind the page cache and gathers each step's rows on
     // the host — the single-Spark deployment.
     std::string ngram_table = "resident";
+    // Where the Qwen n-gram table's shards live when the checkpoint does not
+    // carry them (the AutoRound hybrid, docs/qwen38_autoround_int4_plan.md
+    // D6): a Hugging Face repository id resolved through the model cache
+    // like `model` — the FP8 release (`Qwen/Qwen3.8-Flash-Next-FP8`, whose
+    // shards hold the table) or the extracted table repo. Only the table's
+    // tensors are taken from it. Empty: the checkpoint's own shards.
+    std::string ngram_table_model;
     // The Qwen dense stack's form: "checkpoint" (the default:
     // the BF16 the checkpoint ships) or "fp8" (every dense projection
     // encoded to block FP8 at load — the same recipe as the FP8 releases;
@@ -78,6 +85,16 @@ struct ClusterConfig {
     // bf16 bytes in place, +0.75 of those matrices' memory). The memory
     // plan carries either (common/bf16_residency.hpp).
     std::string bf16_weights = "checkpoint";
+    // The opt-in draft vocabulary slice (2026-09-29, the Qwen3.8 hybrid;
+    // docs/qwen38_autoround_int4_plan.md §6.7): a .npy of token ids (int32
+    // or int64, one dimension) — the MTP draft head scores only those rows
+    // of the lm head (every other id is -inf for the draft), so a draft
+    // step reads that slice instead of the whole head. The target verifies
+    // every draft, so outputs are unchanged; only the draft acceptance can
+    // move (a token outside the set is never proposed). Empty (the
+    // default): the draft scores the whole vocabulary. Never counted toward
+    // a headline number; tools/build_draft_vocab.py builds a set.
+    std::string draft_vocab;
     // The DeepSeek-V4.1 prefill mode (docs/deepseek_v41_flash_plan.md
     // §1.8): "bounded" (the default: the encoder over every prompt row,
     // the decoder over the last window rows — the model's own serving

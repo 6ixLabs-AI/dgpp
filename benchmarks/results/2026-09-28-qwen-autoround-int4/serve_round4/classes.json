@@ -1,0 +1,41 @@
+{
+ "model": "qwen",
+ "max_tokens": 300,
+ "classes": {
+  "chat": {
+   "id": "chatcmpl-02d8de73cb35c843",
+   "wall_s": 9.117,
+   "completion_tokens": 300,
+   "finish": "length",
+   "head": "We need answer user: \"Explain, in a few paragraphs, why a CUDA graph replay can be faster than launching the same kernels eagerly, and what it costs.\" Need produce final with few paragraphs. Need expl"
+  },
+  "code": {
+   "id": "chatcmpl-02d8de73cb35c844",
+   "wall_s": 7.015,
+   "completion_tokens": 300,
+   "finish": "length",
+   "head": "We need answer user: \"Write a Python module that parses an OpenAI-style SSE stream of chat completion chunks into a single message object, with type hints, docstrings, and a small set of unit tests us"
+  },
+  "prose": {
+   "id": "chatcmpl-02d8de73cb35c845",
+   "wall_s": 6.45,
+   "completion_tokens": 300,
+   "finish": "length",
+   "head": "We need to respond to user: \"Write a long, detailed history of the Roman Republic from its founding to the rise of Augustus, one era per paragraph.\" Need produce final answer. Need likely one era per "
+  },
+  "json": {
+   "id": "chatcmpl-02d8de73cb35c846",
+   "wall_s": 6.037,
+   "completion_tokens": 300,
+   "finish": "length",
+   "head": "We need to answer user: \"Return a JSON array of 25 objects, each with the fields country, capital, population_millions and currency, for 25 different countries. Output only the JSON.\"\n\nNeed produce fi"
+  },
+  "math": {
+   "id": "chatcmpl-02d8de73cb35c847",
+   "wall_s": 5.734,
+   "completion_tokens": 300,
+   "finish": "length",
+   "head": "We need answer user: \"A train leaves city A at 60 km/h and another leaves city B, 450 km away, at 90 km/h toward it 30 minutes later. Work out step by step when and where they meet, then generalize th"
+  }
+ }
+}

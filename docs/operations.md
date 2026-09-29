@@ -552,7 +552,7 @@ on an otherwise idle server to compare the longest client update pause
 with the budget disabled and enabled. Keep the same tag and prompt size
 in matched fresh-server runs so the long prompt has no cached prefix.
 
-**The draft depth** (`engine.mtp_depth`, `--mtp-depth`, 1–3, with `mtp`)
+**The draft depth** (`engine.mtp_depth`, `--mtp-depth`, 1–5, with `mtp`)
 is the number of draft tokens verified per decode step. Depth 1 is the
 two-row step: the pending token and one draft through the main stack, the
 draft block proposing the next draft. A deeper step feeds 1 + depth rows,
