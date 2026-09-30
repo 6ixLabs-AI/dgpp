@@ -10,7 +10,7 @@ import sys
 import tempfile
 
 
-LENGTHS = (127, 128, 129, 256, 513, 1024)
+LENGTHS = (127, 128, 129, 256, 513, 1024, 2047, 2048, 2049, 2051, 2052, 2053)
 VOCAB = 512
 
 
@@ -83,7 +83,7 @@ def main():
                 env["DGPP_QSA_WARP"] = mode
             subprocess.run([executable, "--qsa-prefill", str(root / "fixture"),
                             "--logits", str(output)],
-                           env=env, check=True, timeout=75)
+                           env=env, check=True, timeout=150)
             cases[mode] = read_logits(output)
         compare(cases["default"], cases["0"])
 

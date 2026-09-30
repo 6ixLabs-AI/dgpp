@@ -454,13 +454,22 @@ int run_qsa_prefill(const std::string& dir, const std::string& logits_path) {
   replace("\"num_attention_heads\": 4", "\"num_attention_heads\": 24");
   replace("\"indexer_budget\": 64", "\"indexer_budget\": 2048");
   const auto tc = dgpp::minijson::parse(text);
-  const auto qc = dgpp::minijson::parse(qwenfx::tiny_quant_json());
+  const char* nvfp4 = std::getenv("DGPP_TEST_QWEN_NVFP4");
+  const char* quant =
+      nvfp4 && nvfp4[0] == '1' ? qwenfx::tiny_nvfp4_quant_json() : qwenfx::tiny_quant_json();
+  const auto qc = dgpp::minijson::parse(quant);
   const QwenTextConfig cfg = QwenTextConfig::parse(tc.root, &qc.root);
-  qwenfx::write_fixture(cfg, dir, text.c_str());
-  QwenModel model(cfg, dir, 1024, 2048, dgpp::QwenResidency::Resident);
+  qwenfx::write_fixture(cfg, dir, text.c_str(), quant);
+  const char* dense = std::getenv("DGPP_TEST_DENSE_FP8");
+  dgpp::QwenLayerStream::set_dense_weights_fp8(dense && dense[0] == '1');
+  // Keep the session's four-token-aligned chunk capacity above every case,
+  // so this comparison uses the same prefill geometry as forward().
+  QwenModel model(cfg, dir, 2056, 4096, dgpp::QwenResidency::Resident);
   std::ofstream logits(logits_path, std::ios::binary);
   require(logits.good(), "qsa prefill: cannot open logits file");
-  for (const int count : {127, 128, 129, 256, 513, 1024}) {
+  // The 512-pool budget includes the incomplete tail through 2051 tokens;
+  // token 2052 completes pool 513 and requires scoring and selection.
+  for (const int count : {127, 128, 129, 256, 513, 1024, 2047, 2048, 2049, 2051, 2052, 2053}) {
     const auto tokens = smoke_tokens(cfg, count);
     const auto first = model.forward(tokens);
     const auto again = model.forward(tokens);
