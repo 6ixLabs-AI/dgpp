@@ -875,8 +875,8 @@ void Qwen35Model::mtp_run_rows(int req, const int64_t* tokens, int64_t first_pos
     qrows.num_requests = num_requests;
     full_->enqueue(x_, T, qrows, cache, attn_out_, stream_);
   }
-  add_inplace_bf16(mtp_r_, attn_out_, static_cast<size_t>(T) * H, stream_);
-  qwen_rmsnorm_bf16(mtp_r_, r.post_norm, x_, T, H, eps, stream_);
+  // Fused residual-add + post norm (bitwise the pair): one launch.
+  qwen_add_rmsnorm_bf16(mtp_r_, attn_out_, r.post_norm, x_, T, H, eps, stream_);
   dense_mlp(x_, mlp_out_, T, r.mlp, stream_, cfg_.num_hidden_layers, first_pos > 0 && !decode_row);
   add_inplace_bf16(mtp_r_, mlp_out_, static_cast<size_t>(T) * H, stream_);
   if (head_rows == 0) return;  // prefill rows fill the cache; no head
@@ -1019,13 +1019,12 @@ Qwen35Model::Outputs Qwen35Model::run_rows(const RowRun& run) {
       }
       ++full_ord;
     }
-    add_inplace_bf16(resid_, attn_out_, static_cast<size_t>(T) * H, stream_);
-    qwen_rmsnorm_bf16(resid_, r.post_norm, x_, T, H, eps, stream_);
+    // Fused residual-add + post norm (bitwise the pair): one launch.
+    qwen_add_rmsnorm_bf16(resid_, attn_out_, r.post_norm, x_, T, H, eps, stream_);
     // A resume chunk's short tail takes the per-tensor MLP like the
     // attention resume above; group spans start at pos0 (resume false).
     // Decode/verify walks (run.decode) keep their exact GEMV dispatch.
-    bool mlp_resume = false;
-    if (!run.decode) {
+    bool mlp_resume = false;    if (!run.decode) {
       if (run.num_spans > 0) {
         for (int sp = 0; sp < run.num_spans; ++sp)
           mlp_resume = mlp_resume || run.span_pos0[sp] > 0;
