@@ -335,4 +335,62 @@ class SampledSpeculator {
   int accepted_drafts_ = 0;
 };
 
+// The DFlash2 drafter's eager greedy driver (models/qwen/dflash2.hpp):
+// the same exact verify/judge/rollback as GreedySpeculator — the fed rows
+// are the pending token plus the drafter's block proposals, the accepted
+// prefix commits, the rest rolls back — but the proposal comes from one
+// block forward + selector walk (model.dflash2_draft) instead of the MTP
+// block's chained rows. When the drafter cannot propose (pool exhausted,
+// context bound) it proposes nothing: the step degrades to the plain T=1
+// decode and the draft is retried next step.
+template <class Model>
+class DFlash2Speculator {
+ public:
+  using PickRows = SpecPickRows;
+
+  DFlash2Speculator(Model& model, int req, PickRows pick_rows)
+      : model_(model), req_(req), pick_rows_(std::move(pick_rows)) {
+    if (!model_.dflash2_enabled())
+      throw std::invalid_argument("DFlash2Speculator: the model has no DFlash2 drafter");
+  }
+
+  // After session_prefill: `first` is the pick off the prefill logits; it
+  // anchors the first block.
+  void start(int32_t first) {
+    next_ = first;
+    drafts_.clear();
+    model_.dflash2_draft(req_, next_, &drafts_);
+  }
+
+  std::vector<int32_t> step() {
+    std::vector<int64_t> fed{next_};
+    for (int32_t d : drafts_) fed.push_back(d);
+    const int T = static_cast<int>(fed.size());
+    const auto out = model_.session_verify(req_, fed);
+    const std::vector<int32_t> winners = pick_rows_(local_row_maxes(out, T));
+    const SpecVerdict v = judge_verify(fed, winners);
+    if (T > 1) model_.session_rollback(req_, v.accepted, T);
+    ++steps_;
+    accepted_drafts_ += v.accepted - 1;
+    next_ = v.next;
+    drafts_.clear();
+    model_.dflash2_draft(req_, next_, &drafts_);
+    return v.committed;
+  }
+
+  int32_t next() const { return next_; }
+  const std::vector<int32_t>& drafts() const { return drafts_; }
+  int steps() const { return steps_; }
+  int accepted_drafts() const { return accepted_drafts_; }
+
+ private:
+  Model& model_;
+  int req_ = 0;
+  PickRows pick_rows_;
+  int32_t next_ = -1;
+  std::vector<int32_t> drafts_;
+  int steps_ = 0;
+  int accepted_drafts_ = 0;
+};
+
 }  // namespace dgpp

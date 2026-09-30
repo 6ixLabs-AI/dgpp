@@ -293,6 +293,13 @@ struct ServeFamily {
   virtual std::unique_ptr<dgpp::sched::SchedulerEngine> make_eager_engine(
       int slots, dgpp::DecodePick pick, dgpp::DecodeSample sample,
       const dgpp::text::GrammarVocab* grammar, int prefix_slots) = 0;
+  // The block drafter's checkpoint directory (DFlash2; empty = none).
+  // Called after construction, before plan/build. Families without a
+  // drafter refuse it.
+  virtual void set_draft_model(const std::string& dir) {
+    if (!dir.empty())
+      throw std::invalid_argument(std::string(name()) + ": no block drafter (dflash_model) support");
+  }
 };
 
 // GLM-5.3-Flash: the DSA pool's block and pool-id geometry, the latent
@@ -772,6 +779,7 @@ struct MimoFamily final : ServeFamily {
 struct Qwen35Family final : ServeFamily {
   dgpp::Qwen35TextConfig cfg;
   std::string ckpt;
+  std::string dflash;  // the DFlash2 drafter's checkpoint dir (empty: off)
   std::vector<int64_t> eos_;
   std::unique_ptr<dgpp::Qwen35Model> model;
   Qwen35Family(const std::string& checkpoint)
@@ -795,8 +803,8 @@ struct Qwen35Family final : ServeFamily {
   dgpp::MemoryPlan plan(int forward_rows, int64_t context, int rank, int world_, bool fabric, int slots,
                         bool mtp, int decode_rows) const override {
     return dgpp::Qwen35Model::plan_memory(cfg, forward_rows, context, fabric ? rank : 0, fabric ? world_ : 1,
-                                          fabric ? dgpp::LoaderResidency::Resident : dgpp::LoaderResidency::Streaming,
-                                          slots, fabric && mtp, decode_rows);
+                                          fabric || !dflash.empty() ? dgpp::LoaderResidency::Resident : dgpp::LoaderResidency::Streaming,
+                                          slots, fabric && mtp, decode_rows, dflash);
   }
   size_t snapshot_bytes(int world_, bool mtp) const override {
     return dgpp::Qwen35Model::session_snapshot_bytes(cfg, world_, mtp);
@@ -805,9 +813,11 @@ struct Qwen35Family final : ServeFamily {
                    int64_t pool_tokens, int slots, bool mtp, int decode_rows) override {
     model = std::make_unique<dgpp::Qwen35Model>(
         cfg, ckpt, forward_rows, pool_tokens,
-        fabric ? dgpp::LoaderResidency::Resident : dgpp::LoaderResidency::Streaming, reducer, fabric ? rank : 0,
-        fabric ? world_ : 1, slots, decode_rows, fabric && mtp);
+        fabric || !dflash.empty() ? dgpp::LoaderResidency::Resident : dgpp::LoaderResidency::Streaming,
+        reducer, fabric ? rank : 0,
+        fabric ? world_ : 1, slots, decode_rows, fabric && mtp, dflash);
   }
+  void set_draft_model(const std::string& dir) override { dflash = dir; }
   void destroy_model() override { model.reset(); }
   size_t model_snapshot_bytes() const override { return model ? model->session_snapshot_bytes() : 0; }
   std::unique_ptr<ServeGraphEngine> make_graph_engine(dgpp::net::CollectiveBus* bus, int rank,
@@ -1235,7 +1245,8 @@ int main(int argc, char** argv) {
       "    [--graph-batch-min-live N (default min(2, max-concurrency);\n"
       "      must be in [1, max-concurrency])]\n"
       "      (the row batch needs max-concurrency * (1 + mtp depth) <= 8)\n"
-      "    [--mtp-depth N]  draft tokens per step (1..5; the verify runs 1+N rows)\n"
+      "    [--mtp-depth N]  draft tokens per step (1..7; the verify runs 1+N rows)\n"
+      "    [--dflash-model DIR_OR_ID]  DFlash2 block drafter checkpoint (replaces --mtp; eager world-1)\n"
       "    [--mtp-schedule]  the confidence-scheduled verify depth (DeepSeek-V4.1's\n"
       "      DSpark): a step verifies only the drafts whose prefix survival beats\n"
       "      the value of a verify row; greedy slots; exact\n"
@@ -1279,7 +1290,7 @@ int main(int argc, char** argv) {
       "    per-token, per-window and per-cache-decision lines sit at DEBUG\n"
       "    (DGPP_LOG_LEVEL=debug)\n";
 
-  std::string ckpt, model_id, peer;
+  std::string ckpt, model_id, peer, dflash_model;
   uint16_t port = 8080, fabric_port = 29970, journal_port = 29971;
   int64_t kv_capacity = 8192;
   int64_t http_max_body_bytes = dgpp::serve::kDefaultHttpMaxBodyBytes;
@@ -1410,6 +1421,7 @@ int main(int argc, char** argv) {
     no_eos = e.no_eos;
     decode_graph = e.decode_graph;
     mtp = e.mtp;
+    if (dflash_model.empty()) dflash_model = e.dflash_model;  // the flag wins
     mtp_depth = e.mtp_depth;
     mtp_depth_explicit = e.mtp_depth_set;
     mtp_schedule = e.mtp_schedule;
@@ -1500,6 +1512,7 @@ int main(int argc, char** argv) {
     else if (a == "--graph-batch-min-live")
       graph_batch_min_live = std::stoi(next());
     else if (a == "--mtp") mtp = true;
+    else if (a == "--dflash-model") dflash_model = next();
     else if (a == "--no-mtp") mtp = false;  // the plain T=1 world from an MTP template (the A/B knob)
     else if (a == "--mtp-depth") {
       mtp_depth = std::stoi(next());
@@ -1566,6 +1579,31 @@ int main(int argc, char** argv) {
     return true;
   };
   if (!model_id.empty() && !resolve_model()) return 1;
+  // The DFlash2 block drafter (models/qwen/dflash2.hpp): a standalone
+  // checkpoint (a directory or a cached HF id) that replaces the MTP
+  // draft. v1 is the eager world-1 path (graph capture refuses).
+  std::string dflash_dir;
+  if (!dflash_model.empty()) {
+    if (mtp) {
+      DGPP_LOG_ERROR("engine.dflash_model replaces engine.mtp: enable one or the other, not both");
+      return 2;
+    }
+    if (world > 1 || decode_graph) {
+      DGPP_LOG_ERROR("engine.dflash_model is the eager world-1 path: no fabric (world 1) and no --decode-graph");
+      return 2;
+    }
+    if (std::filesystem::is_directory(dflash_model)) {
+      dflash_dir = dflash_model;
+    } else {
+      std::string err;
+      dflash_dir = dgpp::hf::model_dir(dflash_model, &err);
+      if (dflash_dir.empty()) {
+        DGPP_LOG_ERROR("dflash_model {}: {}", dflash_model, err);
+        return 1;
+      }
+    }
+    DGPP_LOG_INFO("dflash2 drafter -> {}", dflash_dir);
+  }
   // The MTP depth a family defaults (DeepSeek-V4.1's DSpark block verifies
   // five drafts): resolved on every rank before the settings record leaves
   // rank 0, from the checkpoint's architecture alone.
@@ -1601,7 +1639,7 @@ int main(int argc, char** argv) {
         "batchmin={} cand={} "
         "pcgib={} adm={} win={} pfbudget={} pfidle={} pmin={} phead={} pace={} inflight={} "
         "reasoning_in_content={} "
-        "rs={}",
+        "rs={} dflash={}",
         model_id.empty() ? ckpt : model_id, world, fabric_port, journal_port, max_concurrency,
         kv_capacity, kv_dtype, ngram_table, dense_weights, mtp_expert_format, bf16_weights, fp8_head, prefill,
         embed_sharding, default_max_tokens, queue_limit, no_eos ? 0 : 1, decode_graph ? 1 : 0,
@@ -1615,7 +1653,8 @@ int main(int argc, char** argv) {
                                    rope_scaling->original_max_position_embeddings,
                                    rope_scaling->beta_fast, rope_scaling->beta_slow,
                                    rope_scaling->attn_factor, rope_scaling->mrope_cache_factor)
-                     : "off");
+                     : "off",
+        dflash_model.empty() ? "off" : dflash_model);
   };
   if ((world > 1 || rank > 0) && !memory_plan_only) {
     try {
@@ -1945,8 +1984,8 @@ int main(int argc, char** argv) {
                    mtp_schedule_row_ms, mtp_schedule_base_ms, mtp_schedule_lambda, mtp_schedule_min_depth);
     return 2;
   }
-  if (mtp_depth < 1 || mtp_depth > 5) {
-    DGPP_LOG_ERROR("--mtp-depth must be in [1, 5], got {}", mtp_depth);
+  if (mtp_depth < 1 || mtp_depth > 7) {
+    DGPP_LOG_ERROR("--mtp-depth must be in [1, 7], got {}", mtp_depth);
     return 2;
   }
   if (!mtp && mtp_depth != 1) {
@@ -2017,6 +2056,14 @@ int main(int argc, char** argv) {
     // everything below the engine interface comes from it.
     std::unique_ptr<ServeFamily> family =
         make_family(ckpt, world, kv_format, rope_scaling, fp8_head == "mma");
+    if (!dflash_dir.empty()) {
+      try {
+        family->set_draft_model(dflash_dir);
+      } catch (const std::exception& e) {
+        DGPP_LOG_ERROR("{}", e.what());
+        return 2;
+      }
+    }
     if (fp8_head == "mma" && std::string(family->name()) != "qwen4_exp") {
       DGPP_LOG_ERROR("engine.fp8_head mma requires the Qwen family and engine.dense_weights fp8");
       return 1;

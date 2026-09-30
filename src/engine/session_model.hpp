@@ -202,6 +202,9 @@ class SessionModel : public PrefillReporting {
   Outputs session_step(int req, int64_t token_id) { return session_verify(req, std::vector<int64_t>{token_id}); }
   Outputs session_verify(int req, const std::vector<int64_t>& token_ids);
   void session_rollback(int req, int accepted);
+  // Rollback after a verify of exactly `rows` rows (the block drafter's
+  // verifies are 1..kSpecRows wide and vary with the proposal).
+  void session_rollback(int req, int accepted, int rows);
   void head_dump_flush() {}  // a family may shadow this (QwenModel's head dump)
   void session_close(int req);
   int64_t session_position(int req) const {
@@ -1187,8 +1190,13 @@ typename SessionModel<D>::Outputs SessionModel<D>::session_verify(int req, const
 
 template <class D>
 void SessionModel<D>::session_rollback(int req, int accepted) {
+  session_rollback(req, accepted, decode_rows_);
+}
+
+template <class D>
+void SessionModel<D>::session_rollback(int req, int accepted, int rows) {
   check_req(req, "session_rollback");
-  const int T = decode_rows_;
+  const int T = rows;
   if (accepted < 1 || accepted > T)
     throw std::invalid_argument("session_rollback: accepted rows must be in [1, " + std::to_string(T) + "]");
   const int64_t pos = session_pos_[static_cast<size_t>(req)];

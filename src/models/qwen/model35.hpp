@@ -28,6 +28,7 @@
 #include "models/quant_matrix.hpp"
 #include "models/qwen/config.hpp"
 #include "models/qwen/config35.hpp"
+#include "models/qwen/dflash2.hpp"
 #include "models/qwen/layers.hpp"
 #include "models/qwen/loader.hpp"
 #include "models/qwen/loader35.hpp"
@@ -42,6 +43,13 @@ struct Qwen35KvPoolShape {
   int block_tokens = 0;
   int max_requests = 0;
   int64_t token_slots = 0;  // pool capacity in tokens, a multiple of block_tokens
+  // The DFlash2 drafter's planes (0 without a drafter): extra layers in
+  // the SAME block table with their own kv geometry — the draft reads its
+  // context through the request's own block spans, so prefix sharing and
+  // the positional overwrite-rollback apply to them verbatim.
+  int draft_layers = 0;
+  int draft_kv_heads = 0;
+  int draft_dim = 0;
 };
 
 // The Full layers' paged K/V caches: per-layer K and V bf16 rows for the
@@ -70,7 +78,9 @@ class Qwen35KvPool {
   const PagedBlockTable& blocks() const { return table_; }
 
   // The kernels' view of one layer's caches (the shared table inside).
+  // layer < shape().layers: a Full layer; above: a DFlash2 draft plane.
   QwenFullAttnCache view(int layer) const;
+  int total_planes() const { return shape_.layers + shape_.draft_layers; }
 
   // ---- block management (the shared table's protocol) --------------------
   bool ensure_request_blocks(int req, int64_t tokens, cudaStream_t stream) {
@@ -104,8 +114,16 @@ class Qwen35KvPool {
   PagedBlockTable table_;
   uint16_t* k_base_ = nullptr;  // [layers][token_slots][kv_heads * dim]
   uint16_t* v_base_ = nullptr;
+  uint16_t* dk_base_ = nullptr;  // [draft_layers][token_slots][dkv * ddim]
+  uint16_t* dv_base_ = nullptr;
   size_t kv_row_elems() const { return static_cast<size_t>(shape_.kv_heads) * shape_.dim; }
   size_t layer_kv_elems() const { return static_cast<size_t>(shape_.token_slots) * kv_row_elems(); }
+  size_t draft_row_elems() const {
+    return static_cast<size_t>(shape_.draft_kv_heads) * shape_.draft_dim;
+  }
+  size_t draft_layer_kv_elems() const {
+    return static_cast<size_t>(shape_.token_slots) * draft_row_elems();
+  }
   void check_req(int req, const char* what) const;
 };
 
@@ -120,9 +138,13 @@ void qwen35_mtp_concat_bf16(const uint16_t* e, const uint16_t* h, uint16_t* out,
 class Qwen35Model : public SessionModel<Qwen35Model> {
  public:
   using Base = SessionModel<Qwen35Model>;
+  // `dflash2_dir` (a directory holding the drafter's config.json + shards)
+  // replaces the MTP draft with the DFlash2 block drafter: mutually
+  // exclusive with `mtp`, eager-path only (graph capture refuses).
   Qwen35Model(const Qwen35TextConfig& cfg, const std::string& checkpoint_dir, int max_tokens,
               int64_t max_cache_tokens, LoaderResidency residency, BoundaryReducer* boundary, int rank,
-              int world, int max_requests, int decode_rows, bool mtp = false);
+              int world, int max_requests, int decode_rows, bool mtp = false,
+              const std::string& dflash2_dir = "");
   ~Qwen35Model();
 
   static constexpr int decode_rows_cap() { return 32; }
@@ -137,7 +159,8 @@ class Qwen35Model : public SessionModel<Qwen35Model> {
   size_t session_snapshot_bytes() const { return session_snapshot_bytes(cfg_, 1, mtp_); }
   static MemoryPlan plan_memory(const Qwen35TextConfig& cfg, int max_tokens, int64_t max_cache_tokens,
                                 int rank, int world, LoaderResidency residency, int max_requests,
-                                bool mtp = false, int decode_rows = 0);
+                                bool mtp = false, int decode_rows = 0,
+                                const std::string& dflash2_dir = "");
 
   const Qwen35TextConfig& config() const { return cfg_; }
 
@@ -174,6 +197,21 @@ class Qwen35Model : public SessionModel<Qwen35Model> {
                     bool capture, int head_rows, int batch_requests);
   Outputs mtp_forward(const std::vector<int64_t>& token_ids);
 
+  // ---- the DFlash2 drafter --------------------------------------------------
+  // With a drafter loaded, every run_rows pass also feeds the draft planes:
+  // the tap layers' residual streams accumulate through the split fc, get
+  // the hidden_norm, and land as each draft layer's paged K/V at the run's
+  // positions (rejected verify rows land too and are masked by position —
+  // the plane needs no rollback, the same overwrite protocol as the MTP
+  // plane). dflash2_draft then runs the block: [bonus, mask x drafts]
+  // through the five bidirectional layers over the plane context, and the
+  // selector's greedy walk proposes the `drafts()` following tokens.
+  bool dflash2_enabled() const { return dflash2_; }
+  int dflash2_drafts() const { return dflash2_ ? dfcfg_.drafts() : 0; }
+  // False without a draft (pool exhausted / context bound): the caller
+  // runs the step without speculation.
+  bool dflash2_draft(int req, int64_t bonus, std::vector<int32_t>* drafts);
+
  private:
   void build_layer_objects(const Qwen35LayerResident& r);
   void dense_mlp(const uint16_t* x, uint16_t* out, int tokens, const Qwen35DenseMlpResident& m,
@@ -192,6 +230,11 @@ class Qwen35Model : public SessionModel<Qwen35Model> {
   // The bound layer's per-tensor attention view (disabled when PT is off).
   QwenPtAttnView pt_gdn_view(int layer) const;
   QwenPtAttnView pt_full_view(int layer) const;
+  // One run's fused features into the draft planes (rows [0, T) at the
+  // staged req/position metadata), chunked over the feature scratch.
+  void dflash2_store_features(int T, const int32_t* d_req, const int64_t* d_pos);
+  // The 64-element fp32 1/theta^(2i/128) table for the draft's rope.
+  float* df_inv_freq_ = nullptr;
   float* gdn_rec(int slot, int ord) const {
     return gdn_rec_base_ + (static_cast<size_t>(slot) * num_gdn_ + ord) * rec_elems_;
   }
@@ -257,6 +300,35 @@ class Qwen35Model : public SessionModel<Qwen35Model> {
   uint16_t *mtp_e_ = nullptr, *mtp_en_ = nullptr, *mtp_hn_ = nullptr, *mtp_hin_ = nullptr;
   uint16_t *mtp_cat_ = nullptr, *mtp_r_ = nullptr, *mtp_h_ = nullptr;
   bool mtp_ = false;
+  // The DFlash2 drafter (null unless a drafter directory was given): the
+  // fp32 feature accumulator and its per-tap GEMM output at max_tokens
+  // rows, the chunked hidden_norm / per-layer K/V scratch, the block
+  // forward's query_rows-row activations, the candidate/selector buffers,
+  // and pinned staging for the eager draft (no captures).
+  bool dflash2_ = false;
+  DFlash2Config dfcfg_;
+  DFlash2Weights dfw_;
+  std::vector<int> df_tap_;  // per main-layer index: the fc slice, else -1
+  float* df_acc_ = nullptr;   // [max_tokens, H] F32 (the sum_t tap @ fc_t^T)
+  float* df_t32_ = nullptr;   // [max_tokens, H] F32 (one tap GEMM's out)
+  uint16_t* df_norm_ = nullptr;   // [df_rows_cap, H] BF16 (hidden_norm)
+  uint16_t* df_kv_ = nullptr;     // [df_rows_cap, 2*KW] BF16 (one layer's k|v)
+  uint16_t *df_resid_ = nullptr, *df_x_ = nullptr, *df_xc_ = nullptr, *df_qkv_ = nullptr;
+  uint16_t *df_q_ = nullptr, *df_attn_ = nullptr, *df_o_ = nullptr, *df_mlp_ = nullptr;
+  uint16_t *df_gate_ = nullptr, *df_up_ = nullptr;  // [query_rows, draft I]
+  int32_t* df_zero_ = nullptr;  // [query_rows] zeros (the single-request append view)
+  uint16_t* df_delta_ = nullptr;  // [query_rows, 2*taps*groups] the conv deltas
+  uint16_t* df_h_ = nullptr;      // [query_rows, H] the draft's final norm rows
+  float* df_logits_ = nullptr;    // [drafts, V] F32 (the mask rows' head rows)
+  float* df_hidden32_ = nullptr;  // [drafts, rank] F32 (hidden_projection)
+  int32_t* df_ids_ = nullptr;     // [drafts, top_k]
+  float* df_sc_ = nullptr;        // [drafts, top_k]
+  int32_t* df_tok_ = nullptr;     // [drafts] device
+  int32_t* df_tok_h_ = nullptr;   // pinned
+  int64_t* df_pos_ = nullptr;     // [query_rows] device
+  int64_t* df_tokens_ = nullptr;  // [query_rows] device
+  int64_t* df_io64_h_ = nullptr;  // pinned: query_rows positions then tokens
+  static constexpr int df_rows_cap() { return 2048; }
   // Model-owned GDN state: [max_requests][num_gdn][elems], plus the
   // verify's per-row snapshots ([max_decode_rows][num_gdn][elems]) the
   // speculative rollback reads (engine/session_model.hpp's commit).

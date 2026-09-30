@@ -41,7 +41,7 @@ graph decode for MTP; the GLM diagnostic tool also has an eager speculative
 path. Graph serving works on one node when the model fits, using identity
 collectives.
 
-`engine.mtp_depth` accepts 1–5 and defaults to 1 (DeepSeek-V4.1 defaults
+`engine.mtp_depth` accepts 1–7 and defaults to 1 (DeepSeek-V4.1 defaults
 to its DSpark depth). Each step verifies `1 + depth` rows. GLM-5.3 uses
 scalar graphs beyond depth 1; Qwen and GLM-4.7 run batched draft chains at
 every depth within their row limits (Qwen: sixteen slots at depth 3, the
@@ -55,6 +55,34 @@ acceptance, prompt class, context and concurrency. Use the memory plan
 before increasing capacity, and measure tokens per step as well as step
 latency. [Operations](operations.md) describes the depth tradeoff, and
 [benchmarks](benchmarks.md) records the results for each model.
+
+Deeper drafts add verification work and state. Their benefit depends on
+acceptance, prompt class, context and concurrency. Use the memory plan
+before increasing capacity, and measure tokens per step as well as step
+latency. [Operations](operations.md) describes the depth tradeoff, and
+[benchmarks](benchmarks.md) records the results for each model.
+
+## The DFlash2 block drafter (Qwen3.5 family)
+
+DFlash2 (`src/models/qwen/dflash2.hpp`) replaces the MTP draft with an
+external block drafter checkpoint (`z-lab/Qwen3.8-27B-DFlash2`): five
+bidirectional Qwen3 layers that turn the target's tapped hidden states
+(layers `[5,19,33,47,61]` through a fused `fc` + RMSNorm) and a block of
+masked slots into seven drafts in one non-autoregressive pass, plus a
+low-rank pairwise selector that walks top-16 candidates per slot. The
+drafter shares the target's embedding and lm head and keeps its K/V in
+five extra planes of the main pool, so prefix caching and rollback ride
+the existing protocol.
+
+Serve it with the drafter checkpoint in `engine.dflash_model` (or
+`--dflash-model DIR_OR_ID`) and `engine.mtp` / `engine.decode_graph`
+off — the drafter is the eager world-1 path (see
+`deploy/cluster_qwen3.8-27b-fp8-dflash2_w1.example.json`). Acceptance
+is the ordinary greedy verify: the eight fed rows (pending token +
+drafts) run through the target, the accepted prefix commits and the
+rest rolls back, so the transcript stays exact. The lane's exit
+criterion (performance plan §7) is to beat the best native-MTP
+configuration; until it does, the MTP recipe remains the default.
 
 ## Recorded GLM-5.3 result
 

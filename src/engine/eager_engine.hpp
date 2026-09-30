@@ -27,6 +27,7 @@
 #include "sample/sampler.hpp"
 #include "sched/scheduler.hpp"
 #include "text/tool_grammar.hpp"
+#include "engine/speculative.hpp"
 
 namespace dgpp {
 
@@ -61,6 +62,7 @@ class EagerEngineAdapter : public sched::SchedulerEngine {
         pending_(static_cast<size_t>(max_requests), -1),
         state_(static_cast<size_t>(max_requests)),
         arena_(model, prefix_slots) {
+    spec_.resize(static_cast<size_t>(max_requests));
     if constexpr (requires { model_->set_prefill_monitor(prefill_monitor()); })
       model_->set_prefill_monitor(prefill_monitor());
   }
@@ -155,6 +157,9 @@ class EagerEngineAdapter : public sched::SchedulerEngine {
     info.chunk_tokens = Model::prefill_chunk_tokens();
     if constexpr (requires { model_->mtp_enabled(); })
       info.prefill_lookahead = model_->mtp_enabled();
+    // The DFlash2 planes at position p are functions of token p too.
+    if constexpr (requires { model_->dflash2_enabled(); })
+      info.prefill_lookahead = info.prefill_lookahead || model_->dflash2_enabled();
     if constexpr (requires { model_->prefill_bounded(); })
       info.body_snapshots = !model_->prefill_bounded();
     return info;
@@ -243,6 +248,33 @@ class EagerEngineAdapter : public sched::SchedulerEngine {
       throw std::logic_error("generation step on a slot without a pending "
                              "token");
     SlotState& s = state_.at(static_cast<size_t>(req));
+    if constexpr (requires { model_->dflash2_enabled(); }) {
+      if (model_->dflash2_enabled()) {
+        auto& sp = spec_.at(static_cast<size_t>(req));
+        const bool plain_greedy = s.params.temperature <= 0.0f && !s.report_logprobs &&
+                                  s.bias.empty() && !s.grammar &&
+                                  s.params.repetition_penalty == 1.0f &&
+                                  s.params.frequency_penalty == 0.0f &&
+                                  s.params.presence_penalty == 0.0f;
+        // Keep a live speculation only while the slot stays plain greedy and
+        // one full block of verify rows fits the context; anything else
+        // runs the exact plain step (and retries later).
+        const bool fits = model_->session_position(req) + 1 + model_->dflash2_drafts() <=
+                          model_->max_context();
+        if (sp && (!plain_greedy || !fits)) sp.reset();
+        if (plain_greedy && fits) {
+          if (!sp) {
+            sp = std::make_unique<DFlash2Speculator<Model>>(*model_, req, rows_pick());
+            sp->start(static_cast<int32_t>(pending));
+          }
+          std::vector<int32_t> committed = sp->step();
+          pending = sp->next();
+          for (int32_t t : committed) s.context.push_back(t);
+          s.context.push_back(static_cast<int32_t>(pending));
+          return committed;
+        }
+      }
+    }
     const int32_t next = decide(s, model_->session_step(req, pending));
     s.context.push_back(next);
     pending = next;
@@ -274,6 +306,7 @@ class EagerEngineAdapter : public sched::SchedulerEngine {
   }
   void close(int req) override {
     pending_.at(static_cast<size_t>(req)) = -1;
+    spec_.at(static_cast<size_t>(req)).reset();
     // A reopened slot is greedy until the scheduler arms it again.
     state_.at(static_cast<size_t>(req)) = SlotState{};
     model_->session_close(req);
@@ -356,6 +389,19 @@ class EagerEngineAdapter : public sched::SchedulerEngine {
   std::vector<int64_t> pending_;
   std::vector<SlotState> state_;
   PrefixArena<Model> arena_;  // the prefix cache's snapshot slots (M7)
+  // DFlash2 drafter drivers, one per slot (only used when the model has a
+  // drafter; eager greedy semantics, exact under greedy verify).
+  std::vector<std::unique_ptr<DFlash2Speculator<Model>>> spec_;
+
+  // The world-1 rows pick: each row's local max is already the winner.
+  static SpecPickRows rows_pick() {
+    return [](const std::vector<sample::Candidate>& locals) {
+      std::vector<int32_t> w;
+      w.reserve(locals.size());
+      for (const auto& c : locals) w.push_back(c.id);
+      return w;
+    };
+  }
 };
 
 // The world-1 pick: full-vocab argmax over the fp32 logits row. The closure

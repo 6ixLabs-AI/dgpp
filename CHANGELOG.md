@@ -6,6 +6,21 @@ The history by milestone. The dated engineering record in
 
 ## Unreleased
 
+- **The DFlash2 block drafter on the Qwen3.5-family native engine**
+  (2026-10-01, plan §7): `engine.dflash_model` (or `--dflash-model`) serves
+  `z-lab/Qwen3.8-27B-DFlash2` — five bidirectional draft layers fed by
+  target taps `[5,19,33,47,61]`, 2-tap dynamic grouped convs and the
+  rank-256 top-16 selector — instead of the MTP draft (the two are
+  mutually exclusive; `mtp_depth` widened to 1–7 with `kSpecRows` 8 and
+  `kSpecMaxDrafts` 7, the DSpark block unchanged). The drafter rides the
+  main pool's five extra planes, the shared embed/lm head, the prefix
+  cache's lookahead and the greedy verify/rollback, so transcripts stay
+  exact; the recipe is eager world-1 (`decode_graph` off) and the graph
+  engine refuses capture with a drafter loaded. Kernel references in
+  `dflash2_kernels_test`, the config gates in `unit_tests`; the exit
+  comparison against the best MTP depth is open
+  (`deploy/cluster_qwen3.8-27b-fp8-dflash2_w1.example.json`).
+
 - **Serve Qwen3.8-27B-FP8 on the native engine, with MTP**
   (2026-10-01): a new family, `qwen3_5` — the 27B dense model, 64 layers
   of Gated-Delta-Net (48) and full-attention (16) — served from its native

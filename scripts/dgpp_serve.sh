@@ -8,6 +8,7 @@
 # Examples:
 #   dgpp_serve.sh start                                              # RadixArk Flash-Next NVFP4 (default)
 #   dgpp_serve.sh start deploy/cluster_qwen3.8-27b-fp8-mtp_w1.example.json  # Qwen3.8-27B-FP8 + MTP
+#   dgpp_serve.sh start deploy/cluster_qwen3.8-27b-fp8-dflash2_w1.example.json  # Qwen3.8-27B-FP8 + DFlash2 drafter (eager)
 #   dgpp_serve.sh start [CONFIG]   - launch dgpp-serve in the background
 #   dgpp_serve.sh stop             - SIGTERM the server (SIGKILL on timeout)
 #   dgpp_serve.sh restart [CONFIG] - stop, then start

@@ -194,6 +194,7 @@ add_library(dgpp_kernels STATIC
   src/kernels/dsv41_dspark.cu
   src/kernels/csa2.cu
   src/kernels/qwen_mtp.cu
+  src/kernels/dflash2.cu
   src/kernels/qsa.cu
   src/kernels/qsa_warp.cu
   src/kernels/qsa_prefill.cu
@@ -403,7 +404,8 @@ dgpp_set_common(dgpp_models_qwen)
 add_library(dgpp_models_qwen_loader STATIC
   src/models/qwen/vision.cpp
   src/models/qwen/loader.cpp
-  src/models/qwen/loader35.cpp)
+  src/models/qwen/loader35.cpp
+  src/models/qwen/dflash2.cpp)
 target_include_directories(dgpp_models_qwen_loader PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(dgpp_models_qwen_loader PUBLIC dgpp_models_qwen dgpp_loaders dgpp_kernels CUDA::cudart dgpp_device_ranges)
 dgpp_set_common(dgpp_models_qwen_loader)
@@ -765,6 +767,7 @@ add_executable(unit_tests
   tests/unit/qwen_binding_test.cpp
   tests/unit/qwen35_config_test.cpp
   tests/unit/qwen35_binding_test.cpp
+  tests/unit/qwen_dflash2_config_test.cpp
   tests/unit/qwen_rope_scaling_test.cpp
   tests/unit/glm4_config_test.cpp
   tests/unit/glm4_binding_test.cpp
@@ -779,7 +782,8 @@ add_executable(unit_tests
   src/core/trace.cpp)
 target_include_directories(unit_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(unit_tests PRIVATE CUDA::cudart dgpp_loaders
-                                        dgpp_models_glm dgpp_models_qwen dgpp_models_glm4
+                                        dgpp_models_glm dgpp_models_qwen dgpp_models_qwen_loader
+                                        dgpp_models_glm4
                                         dgpp_models_glm_dsa dgpp_models_dsv41 dgpp_models_mimo
                                         dgpp_rope_scaling
                                         dgpp_net dgpp_serve Threads::Threads)
@@ -1008,6 +1012,12 @@ target_include_directories(qwen_norm_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/sr
 target_link_libraries(qwen_norm_test PRIVATE dgpp_models_qwen dgpp_kernels CUDA::cudart Threads::Threads)
 dgpp_set_common(qwen_norm_test)
 add_test(NAME qwen_norm_test COMMAND qwen_norm_test)
+
+add_executable(dflash2_kernels_test tests/cuda/dflash2_kernels_test.cu)
+target_include_directories(dflash2_kernels_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/tests/cuda)
+target_link_libraries(dflash2_kernels_test PRIVATE dgpp_kernels CUDA::cudart Threads::Threads)
+dgpp_set_common(dflash2_kernels_test)
+add_test(NAME dflash2_kernels_test COMMAND dflash2_kernels_test)
 
 add_executable(gdn_test tests/cuda/gdn_test.cu)
 target_include_directories(gdn_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/tests/cuda)

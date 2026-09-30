@@ -357,11 +357,14 @@ parallel block prediction followed by lightweight candidate-path selection
 and local convolutions. Implement the released architecture and reference
 behavior rather than treating it as a generic small autoregressive model.
 
-I did not verify a target-matched DFlash2 checkpoint for
-Qwen3.8-Flash-Next. The Qwen3.8-27B drafter is for a different model.
-Checkpoint compatibility—or training a new drafter—is a prerequisite for
-that lane. Similarly, the [DeepSpec released checkpoint table](https://github.com/deepseek-ai/DeepSpec#released-checkpoints)
-does not establish a drop-in DSpark drafter for every dgpp model.
+The released `z-lab/Qwen3.8-27B-DFlash2` checkpoint is target-matched to
+Qwen/Qwen3.8-27B — its config names that base model — and is served by
+the native engine today
+(`deploy/cluster_qwen3.8-27b-fp8-dflash2_w1.example.json`,
+[mtp.md](mtp.md#the-dflash2-block-drafter-qwen35-family)). No
+target-matched drafter is established for Qwen3.8-Flash-Next or, from
+the [DeepSpec released checkpoint table](https://github.com/deepseek-ai/DeepSpec#released-checkpoints),
+for every dgpp model; each new lane needs its own checkpoint check.
 
 ### Implementation sequence
 
@@ -401,6 +404,25 @@ verification matches its distribution, and per-class end-to-end results
 beat the best native-MTP configuration at acceptable memory cost. High
 acceptance alone is not success. Exact speculation does not undo quality
 changes introduced by a different target quantization.
+
+### Status (2026-10-01, Qwen3.8-27B lane)
+
+Steps 3–6 are implemented for the Qwen3.5-family target
+(`src/models/qwen/dflash2.*`, `src/kernels/dflash2.*`, the `dflash2_*`
+methods of `Qwen35Model`, `DFlash2Speculator`): the drafter loads
+independently with its weights and planes in the memory plan, taps
+capture through the five `fc` slices with fp32 accumulation, the five
+draft layers run bidirectional sliding-window attention over pool
+planes with the 2-tap dynamic grouped convs, the selector walks the
+rank-256 pairwise scores greedily, and acceptance is the greedy
+verify/rollback of eight rows (`kSpecRows`/`kSpecMaxDrafts` generalized
+6/5 → 8/7; the DSpark block is unchanged). Eager greedy C1 only: the
+graph engine refuses capture with a drafter loaded, batching and
+sampled verification (the selector's conditional proposal) are open.
+The GLM-Flash lane (step 2's mHC-tap capture) is untouched. Exit is
+measured, not yet claimed: the GSM8K/C1 comparisons against
+`cluster_qwen3.8-27b-fp8-mtp_w1.example.json`'s best depth are
+outstanding.
 
 ## 8. P1 experiments / P3 implementation: remaining single-stream wins
 
