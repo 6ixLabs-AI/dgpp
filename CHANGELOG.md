@@ -6,6 +6,29 @@ The history by milestone. The dated engineering record in
 
 ## Unreleased
 
+- **The hybrid's prefill: the n-gram rows of the next chunk gathered
+  while this one runs** (2026-09-30, round 19 of the
+  [record](benchmarks/results/2026-09-28-qwen-autoround-int4/README.md)):
+  a scalar prefill chunk hashes the following chunk's tokens (its n-gram
+  context this chunk's last two) and publishes them on a second staging
+  channel the gather thread serves while this chunk's layers run; the next
+  chunk claims the rows by request, position, row count and a token check
+  and skips its own gather. The PLE layer's wait for the table — 1.08 s of
+  GPU time on a 32K prefill, the gather of ~65K table rows a chunk from
+  NVMe outrunning the two layers before it — is gone: −0.65..−0.75 s at
+  32K when the table's pages are cold, level when the page cache holds
+  them; bitwise (the long-prompt sha on every leg; an in-situ self-check,
+  `DGPP_QWEN_PLE_PRESTAGE_CHECK=1`, gathers both channels and compares
+  them; `DGPP_QWEN_PLE_PRESTAGE=0` keeps the one channel). The round also
+  served the author's vLLM stack on the same box for a kernel-level
+  comparison (their expert GEMM 1.8x ours per token, their fp8 dense GEMMs
+  and bf16 partials; our attention, indexer, hyper-connection glue and
+  n-gram path level or ahead) and left two opt-in forms: the expert GEMM
+  with its weight fragments decoded in registers and three pipeline stages
+  (`DGPP_PACKQ_GEMM=wide3`, bitwise, level), the gate and up projections
+  as one launch (`DGPP_MOE_PACKQ_PAIR=1`, bitwise, level) and the down
+  projection's bf16 partials (`DGPP_MOE_PACKQ_DOWN_BF16=1`, −3..−4 %, not
+  bitwise, off).
 - **The hybrid's prefill: the expert GEMM's weight stream kept ahead of
   the copies** (2026-09-29, round 18 of the
   [record](benchmarks/results/2026-09-28-qwen-autoround-int4/README.md)):

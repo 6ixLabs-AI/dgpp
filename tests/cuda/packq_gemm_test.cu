@@ -221,6 +221,43 @@ DGPP_TEST(packq_gemm_grouped_maps_padding_and_graph) {
         require(std::memcmp(listed.p, out.p, static_cast<size_t>(total) * os * 4) == 0,
                 "the listed launch must be bitwise the segment-major one");
     }
+    if (bits == 4) {
+      // The paired launch: projection 1 (w) and projection 0 (other) in one
+      // launch, each bitwise its own launch.
+      Buffer<uint16_t> pa(static_cast<size_t>(total) * os), pb(static_cast<size_t>(total) * os);
+      Buffer<uint16_t> sb(static_cast<size_t>(total) * os);
+      std::fill(pa.p, pa.p + static_cast<size_t>(total) * os, uint16_t{0x1234});
+      std::fill(pb.p, pb.p + static_cast<size_t>(total) * os, uint16_t{0x1234});
+      std::fill(sb.p, sb.p + static_cast<size_t>(total) * os, uint16_t{0x1234});
+      dgpp::launch_moe_grouped_mma_packq_bf16(a.p, k, segs.p, ns, tokens, views.p, 1, pa.p, os, n, k, bits,
+                                              stream, rows.p, sf, /*variant=*/1, tiles.p, tile_count.p, tile_cap,
+                                              pb.p, /*which2=*/0);
+      dgpp::launch_moe_grouped_mma_packq_bf16(a.p, k, segs.p, ns, tokens, views.p, 0, sb.p, os, n, k, bits,
+                                              stream, rows.p, sf, /*variant=*/1);
+      DGPP_CUDA_OK(cudaStreamSynchronize(stream));
+      require(std::memcmp(pa.p, bf.p, static_cast<size_t>(total) * os * 2) == 0,
+              "the paired launch's first projection must be bitwise its own launch");
+      require(std::memcmp(pb.p, sb.p, static_cast<size_t>(total) * os * 2) == 0,
+              "the paired launch's second projection must be bitwise its own launch");
+    }
+    if (bits == 4) {
+      // The register-decode three-stage form (variant 2), listed and
+      // segment-major: bitwise the decoded-tile kernel.
+      Buffer<float> reg(static_cast<size_t>(total) * os);
+      std::fill(reg.p, reg.p + static_cast<size_t>(total) * os, -12345.f);
+      dgpp::launch_moe_grouped_mma_packq_f32(a.p, k, segs.p, ns, /*max_rows=*/1, views.p, 1, reg.p, os, n, k,
+                                             bits, stream, rows.p, sf, /*variant=*/2, tiles.p, tile_count.p,
+                                             tile_cap);
+      DGPP_CUDA_OK(cudaStreamSynchronize(stream));
+      require(std::memcmp(reg.p, out.p, static_cast<size_t>(total) * os * 4) == 0,
+              "the register-decode kernel must be bitwise the decoded-tile one (listed)");
+      std::fill(reg.p, reg.p + static_cast<size_t>(total) * os, -12345.f);
+      dgpp::launch_moe_grouped_mma_packq_f32(a.p, k, segs.p, ns, tokens, views.p, 1, reg.p, os, n, k, bits,
+                                             stream, rows.p, sf, /*variant=*/2);
+      DGPP_CUDA_OK(cudaStreamSynchronize(stream));
+      require(std::memcmp(reg.p, out.p, static_cast<size_t>(total) * os * 4) == 0,
+              "the register-decode kernel must be bitwise the decoded-tile one (segment-major)");
+    }
     oracle_check(w, gathered.p, k, out.p, os, total);
     for (int row = 0; row < total; ++row) {
       require(std::memcmp(out.p + row * os, ref.p + row * n, n * 4) == 0,

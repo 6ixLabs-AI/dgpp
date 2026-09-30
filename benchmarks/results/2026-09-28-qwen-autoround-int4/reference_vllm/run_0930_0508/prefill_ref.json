@@ -1,0 +1,80 @@
+{
+  "model": "qwen",
+  "seed": 7,
+  "tag": "ref-1790745252",
+  "data_sha256": "3730d312f6e3440559ace48831e51066acaca737f6eabec99bccb9e4b3c39d14",
+  "samples": [
+    {
+      "requested_tokens": 2048,
+      "repeat": 0,
+      "prompt_tokens": 2058,
+      "cached_tokens": 0,
+      "ttft_s": 1.4874095369596034,
+      "wall_s": 1.4874651849968359,
+      "tok_per_s_ttft": 1383.6135569002292,
+      "ms_per_token_ttft": 0.7227451588724992,
+      "steps": 1.0,
+      "ctx_tokens_scheduled": 2058.0
+    },
+    {
+      "requested_tokens": 2048,
+      "repeat": 1,
+      "prompt_tokens": 2050,
+      "cached_tokens": 0,
+      "ttft_s": 1.1220748239429668,
+      "wall_s": 1.1221051919274032,
+      "tok_per_s_ttft": 1826.972636990738,
+      "ms_per_token_ttft": 0.5473535726551058,
+      "steps": 1.0,
+      "ctx_tokens_scheduled": 2050.0
+    },
+    {
+      "requested_tokens": 8192,
+      "repeat": 0,
+      "prompt_tokens": 8158,
+      "cached_tokens": 0,
+      "ttft_s": 5.394692088011652,
+      "wall_s": 5.3947633360512555,
+      "tok_per_s_ttft": 1512.2271794027142,
+      "ms_per_token_ttft": 0.6612763039975058,
+      "steps": 7.0,
+      "ctx_tokens_scheduled": 8216.0
+    },
+    {
+      "requested_tokens": 8192,
+      "repeat": 1,
+      "prompt_tokens": 8062,
+      "cached_tokens": 0,
+      "ttft_s": 4.419038405991159,
+      "wall_s": 4.419095735065639,
+      "tok_per_s_ttft": 1824.3788035582256,
+      "ms_per_token_ttft": 0.5481317794580947,
+      "steps": 2.0,
+      "ctx_tokens_scheduled": 8062.0
+    },
+    {
+      "requested_tokens": 32768,
+      "repeat": 0,
+      "prompt_tokens": 32516,
+      "cached_tokens": 0,
+      "ttft_s": 15.754397101001814,
+      "wall_s": 15.75444225303363,
+      "tok_per_s_ttft": 2063.931725951755,
+      "ms_per_token_ttft": 0.48451215097188505,
+      "steps": 5.0,
+      "ctx_tokens_scheduled": 32516.0
+    },
+    {
+      "requested_tokens": 32768,
+      "repeat": 1,
+      "prompt_tokens": 32586,
+      "cached_tokens": 0,
+      "ttft_s": 15.416250802925788,
+      "wall_s": 15.416281346930191,
+      "tok_per_s_ttft": 2113.743504602016,
+      "ms_per_token_ttft": 0.4730942982546427,
+      "steps": 5.0,
+      "ctx_tokens_scheduled": 32586.0
+    }
+  ]
+}

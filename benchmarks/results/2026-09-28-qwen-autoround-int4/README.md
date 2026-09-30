@@ -1210,3 +1210,206 @@ prefill 77.3–118.6 (75.8–120.1); the parcels: 3,855 tokens cold prefill
 decode 57.0 / 57.1 / 58.6 ms a pass at 2.97 / 3.19 / 3.11 tokens a pass —
 the decode rows within noise of round 14, the prefill −10 / −10 / −9 %.
 These are the document's cells now.
+
+**Session W — the shipped binary's prefill, profiled at 32K and 8K**
+(`serve_prefill_profile_r18/`, 2026-09-30 04:19–04:21; nsys, the prefill
+probe's one-token request at 4,096-token chunks; 32K: 19.54 s of GPU time
+under the tracer for 32,186 tokens (18.5 s unprofiled, 17.8 s in the
+document's measurement); 8K: 5.39 s for 8,192 (4.43 unprofiled)):
+
+| bucket | 32K s | 32K share | 8K share | floor at 32K |
+|---|---|---|---|---|
+| elementwise glue (combine_norm 1.22, accumulation 1.24, mix_finish 0.68, combine_dots 0.44, fp8 dequant 0.45, swiglu 0.27, gated norm 0.22, rounding 0.11, rope/norm 0.08) | 4.7 | 24 % | 24 % | ≤ 0.8 (the four-stream state read and written once a site) |
+| expert GEMMs (wide gate/up 2.78 at 2.58 ms a launch, down 2.22 at 4.11) | 5.0 | 26 % | 29 % | 2.4 compute at the cuBLAS peak; 2.1 weights at 4K chunks, 1.0 at 8K |
+| dense GEMMs (nvjet 2.56, cutlass 0.73) | 3.3 | 17 % | 15 % | near the bf16 cuBLAS peak |
+| GDN chunk recurrence (state 1.09, prep 0.69) | 1.8 | 9 % | 9 % | unmeasured |
+| QSA prefill attention 1.05 + indexer 0.90 | 2.0 | 10 % | 6 % | ~0.5 |
+| n-gram table wait (stage_wait) | 1.1 | 5.5 % | < 1 % | 0 (overlappable) |
+| router dots | 0.6 | 3 % | 3 % | 0.06 |
+
+Against the author's README figure (~2,100–2,200 tok/s: a live per-step
+rate at 8,192-token chunks, SEQS 16, the n-gram table in another
+machine's RAM over RDMA; the model card itself publishes decode rates
+only) ours is 1,840 tok/s at 8K–32K and 1,580 at 2K. The compute floor
+for ~6B active parameters at 32K is 4.5–7 s on this GPU; both stacks sit
+2.5–3.5x above it. The reference's stack: NVIDIA's model package in the
+`vllm/vllm-openai:qwen38-flash-next` image, GPTQ-Marlin experts (~75 % of
+the tensor peak at large M against our ~45 %), the flash-linear-attention
+Triton chunk kernels, compiled elementwise math, 8,192-token chunks. The
+ledger's order: the glue fused to one pass a site (−2..−3 s), the expert
+GEMM at Marlin-class efficiency with the register-side decode and three
+stages (−2 s, then 8K chunks pay), the n-gram gather a chunk ahead (−1 s),
+the router as a GEMM and the QSA prefill forms (−0.5..−1 s): ~−6 s bitwise,
+~2,800 tok/s. Not bitwise, the user's call: the down projection's bf16
+intermediate (−0.9 s), the fp8 dense stack on the fp8 tensor cores
+(−1.5 s). Recommended first: the author's stack profiled on this box.
+
+**Session X — the author's stack on this box** (2026-09-30 04:47–05:22;
+`~/claude-scratch/2026-09-30-reference-vllm/`: the author's repository at
+5e8ae8a built on the pinned `vllm/vllm-openai:qwen38-flash-next` base
+(vLLM 0.1.dev20073, torch 2.13/cu130, NVIDIA's `qwen3_8_flash_next/nvidia`
+model package), served with their `serve.sh` settings — MTP 3, 8 seqs,
+8,192-token chunks, prefix cache, DET_TOPK, DRAFT_VOCAB, the n-gram table
+mmap'ed from the local FP8 snapshot, NOT over RDMA — and probed with our
+prompts (the same GSM8K prose, seed 7, thinking off, max_tokens 1, the
+visible TTFT). Two launcher lessons: their draft-vocabulary patch reads
+the checkpoint index at the fixed `/model` path, and their
+`splitting_ops` list must be copied verbatim (the PLE mmap op
+`vllm::ple_mmap_lookup` copies device ids to the host and cannot run
+under CUDA graph capture).
+
+| prompt | reference TTFT, two repeats | reference best | ours (session U) |
+|---|---|---|---|
+| 2K (2,058 tok) | 1.487 / 1.122 s | 1.12 s (1,827 tok/s) | 1.294 s |
+| 8K | 5.395 (7 scheduler steps) / 4.419 s | 4.42 s (1,824 tok/s) | 4.417 s |
+| 32K | 15.754 / 15.416 s | 15.42 s (2,114 tok/s) | 17.817 s |
+
+The published ~2,100–2,200 tok/s is reproduced at 32K on an NVMe-backed
+table; at 2K–8K the reference runs ~1,825 tok/s. Its first request at a
+new length is slow (shape warm-up); best-of-two is its steady state. The
+smoke test's `word` × 8,000 prompt gives 2,371 tok/s (degenerate routing
+keeps the expert weights in L2) and its repeat hits the prefix cache
+(10,825). Against the best-of-two we are level at 8K and 13 % behind at
+2K and 32K. The first nsys report lost the probe phase (the engine
+process's CUDA buffers at the SIGINT shutdown); session X4 flushes them
+every 5 s.
+
+**Session X4 — the reference's kernels** (`run_nsys_0930_0523/`, nsys
+with 5 s CUDA buffer flushes; the trace still loses its last ~40 s at the
+SIGINT shutdown, but holds three complete 8,192-token chunks of the 32K
+prefill: 3.21 / 3.43 s of GPU time each, and 0.35–0.43 s of GPU idle
+between chunks — its n-gram gather runs synchronously at each chunk's
+start, ~130K table rows from NVMe). Per 8,192 tokens against our r18
+profile (two 4,096-token chunks, 4.9 s under the tracer):
+
+| kernel class | reference, 8,192 tokens | ours, 8,192 tokens | note |
+|---|---|---|---|
+| routed experts | Marlin 677 ms (102 launches, 6.6 ms: w13 and w2 per layer) | wide packed 1,250 ms (gate 2.58 + up 2.58 + down 4.11 ms per 4,096) | theirs 1.8x faster; bf16 activations and partials, atomic-add split-k |
+| dense projections | cutlass fp8 blockwise GEMM 580 ms | nvjet/cutlass bf16 822 ms + fp8 dequant 114 ms | fp8 tensor cores with the block scales in the epilogue (not bitwise our bf16 chain) |
+| QSA prefill attention + indexer + top-k | 416 + 66 + 34 = 516 ms | 263 + 191 + 34 = 488 ms | level |
+| hyper-connection glue | combine_norm 297 + gate_mix 166 = 463 ms | combine_norm 304 + mix_finish 170 + combine_dots 109 = 583 ms | level once combine_norm reaches the line rate |
+| MoE partial sum | moe_sum (bf16) 97 ms | accumulation (fp32 ordered) 310 ms | −0.2 s per 8K with bf16 partials (not bitwise) |
+| GDN recurrence | 462 ms (FLA chunk kernels + conv + norm) | 540 ms | −0.08 s per 8K |
+| swiglu | 66 ms | 67 ms | level |
+| n-gram gather | ~400 ms idle per chunk | 56 ms per 4,096 chunk (112 per 8K), 0 with the chunk-ahead staging | ours ahead |
+
+The reference's 32K TTFT of 15.4 s is ~4 x 3.4 s of GPU work plus ~1.5 s
+of gather gaps; ours 17.8 s is 8 x 2.2 s. The gap is the expert GEMM
+(−0.55 s per 8K), the fp8 dense stack (−0.35 s) and the bf16 partials
+(−0.2 s); everything else is level or ours. Bitwise levers left on our
+side: the expert GEMM's efficiency (their Marlin at ~65 % of the tensor
+peak against our ~45 %: the register-decode three-stage form, and w13
+as one launch halving the activation re-reads), the GDN chunk kernels,
+combine_norm to the line rate, the router dots, the chunk-ahead gather.
+The user's call: fp8 dense GEMMs on the tensor cores with block scales
+(−1.4 s at 32K), bf16 down partials (−0.9 s at 32K).
+
+**Session Y — the round-19 levers on the fabric** (`serve_r19_levers/`,
+05:39–05:51; the r18 binary against the r19 one — the router tile at
+four tokens a warp, the combine-norm's batched loads, the chunk-ahead
+n-gram staging — and the r19 binary's `DGPP_PACKQ_GEMM=wide3`
+(register-decode three-stage expert GEMM) and `DGPP_MOE_PACKQ_DOWN_BF16=1`
+(bf16 down partials, not bitwise) legs; prefill probe 2K/8K/32K × 3, the
+long-prompt sha):
+
+| leg | 2K | 8K | 32K | sha |
+|---|---|---|---|---|
+| r18 base a / b | 1.324 / 1.282 s | 4.576 / 4.386 s | 17.723 / 17.694 s | 927ffd8a |
+| r19 default a / b | 1.296 / 1.301 | 4.406 / 4.414 | 17.902 / 17.910 | **5d614d0e** |
+| r19 wide3 | 1.312 | 4.474 | 18.174 | 5d614d0e |
+| r19 bf16 down partials | 1.264 | 4.233 | 17.350 | 5d614d0e |
+
+Base leg a ran on a page cache the reference runs had displaced. The
+default was level at 2K/8K, +1 % at 32K, and NOT bitwise. The
+register-decode kernel adds nothing in situ (as on the idle-GPU bench:
+gate Zipf 3.5–3.6 vs 3.5–3.6 ms, uniform 3.2 vs 3.2, down 5.9–6.1 vs
+5.9–6.2, L2-resident 2.1–2.3 vs 2.1–2.4). The bf16 partials −3..−4 %
+across the lengths; on this one prompt the 40-token greedy completion is
+identical to the r19 default's (the sha change is not theirs).
+
+**Session Z — the sha change isolated** (`serve_r19_prestage/`, 05:52–05:56):
+`DGPP_QWEN_PLE_PRESTAGE=0` on the r19 binary gives 1.302 / 4.457 /
+17.952 s and the base's sha 927ffd8a — the router and the combine-norm are
+bitwise and buy nothing measurable; the prestage is the change. Its
+self-check (`DGPP_QWEN_PLE_PRESTAGE_CHECK=1`: both channels gathered,
+compared at the PLE layer) showed, on every interior 4,096-row chunk,
+exactly as many differing rows from row 0 as the FOLLOWING chunk has
+(4,096 → 3,796 → 9 → 0): the prestage buffer is single, and the next
+chunk's prestage — issued at the chunk's start — overwrote it while this
+chunk's rows still sat there. Fixed by issuing the prestage after the PLE
+layer's gather consumed the staging (the wait and the conversion precede
+the new publish in stream order), and by keying a chunk's claim on the
+request id and a first/last-token check as well as the ids pointer, rows
+and position. Session Z2 verifies.
+
+**Session Z2 — the prestage fixed, verified** (`serve_r19_prestage2/`,
+05:59–06:07): the self-check leg reports 0 differing rows and 0 differing
+hash ids on every matched chunk (the 4,096-row chunks included) and the
+base's sha 927ffd8a; the default twice and the r18 base once, all on a
+warm page cache: r19 1.294 / 4.410 / 17.794 and 1.302 / 4.413 / 17.860 s
+against r18 1.296 / 4.410 / 17.791 — level, and the sha 927ffd8a on every
+leg.
+
+**Session W2 — the r19 binary profiled at 32K** (`serve_prefill_profile_r19/`;
+`compare_profiles.py` in the job tmp against the r18 profile, the same
+31,955 kernels): stage_wait 1,078 → 21 ms (the prestage does remove the
+gather wait, −1.06 s of GPU time at 32K under the tracer), the router's
+four-token tile 607 → 859 ms (+253: 2.09 vs 1.48 ms a launch — slower in
+situ, reverted), the combine-norm's batched loads 1,216 → 1,208 ms
+(neutral, reverted); everything else within ±40 ms. Under the tracer the
+r19 burst is 18.6 s of GPU time against r18's 19.4; the probes on a warm
+cache are level because the r18 wait is short there (its gathers hit the
+page cache): the prestage's value is the cold-table case (the first
+requests after a boot, a table displaced by other traffic), measured in
+session Z3 with the caches dropped before every boot.
+
+**Session Z3 — the prestage with a cold table** (`serve_r19_prestage_cold/`,
+06:12–06:18; the r18 binary against r19b — the chunk-ahead staging alone,
+the router and combine-norm forms as shipped, the register-decode kernel
+and the bf16 partials opt-in — the page caches dropped before every boot,
+the 32K probe twice per leg (the first cold, the second on rows the first
+did not touch), the long-prompt sha):
+
+| leg | 32K r0 / r1 | median | sha |
+|---|---|---|---|
+| r18 base a | 18.505 / 18.341 s | 18.423 | 927ffd8a |
+| r19b a | 17.710 / 17.652 s | 17.681 | 927ffd8a |
+| r18 base b | 18.640 / 18.410 s | 18.525 | 927ffd8a |
+| r19b b | 17.873 / 17.904 s | 17.889 | 927ffd8a |
+
+−0.65..−0.75 s at 32K when the table is cold (−4 %), level when warm
+(session Z2), bitwise. SHIPPED: `DGPP_QWEN_PLE_PRESTAGE=0` keeps the
+one-channel staging, `DGPP_QWEN_PLE_PRESTAGE_CHECK=1` runs both and
+compares. The round's other forms: the four-token router tile (bitwise,
++0.25 s at 32K in situ) and the combine-norm's batched loads (bitwise,
+neutral) reverted; the register-decode three-stage expert GEMM kept as
+`DGPP_PACKQ_GEMM=wide3` (bitwise, level); the bf16 down partials kept as
+`DGPP_MOE_PACKQ_DOWN_BF16=1` (−3..−4 % at every length, not bitwise,
+default off). Against the reference on this box (session X) the standing
+is now: 2K 1.29 vs 1.12 s, 8K 4.41 vs 4.42, 32K 17.7 (cold 17.7–17.9)
+vs 15.42 (its cold-table number, 15.4–15.8).
+
+**Session P — gate and up as one launch** (`serve_r19_pair/`, 06:36–06:45;
+the wide kernel's n-tiles past the gate's width take the up projection's
+view and output, each token row gathered once for both — bitwise by
+construction and in `packq_gemm_test`; `DGPP_MOE_PACKQ_PAIR=1`): the bench
+said −17 % (Zipf) / −9 % (uniform) on gate+up, but its second projection
+re-reads the first's weights from L2; on the fabric, two launches
+1.329 / 4.434 / 17.601 and 1.282 / 4.348 / 17.556 s against one launch
+1.267 / 4.379 / 17.659 and 1.294 / 4.382 / 17.677 — level to +1 %, sha
+927ffd8a on every leg. Opt-in, default off: the activation re-gather is
+not what bounds the kernel either.
+
+**ncu on the shipped wide kernel, device memory** (the Zipf gate launch,
+3.70 ms under the profiler): tensor pipe 40 % of peak sustained, memory
+throughput 60 % (L2), issue 0.29 a scheduler-cycle with 0.48 eligible of
+3.96 warps; the warp cycles: barrier 24 %, wait 15 %, long scoreboard
+15 %, math pipe throttle 12 %, mio throttle 11 %, selected 7 %. The
+kernel is issue-side bound — two barriers a k-step and the
+ldmatrix/mma dependency chain of a 32 x 32 warp tile — not DRAM-bound;
+the reference's Marlin reaches ~65 % on the same layer. The next form is
+a larger warp tile (more MMAs per ldmatrix and per barrier: 64 x 64 per
+warp, or a 128-wide block) with the same per-element chain; the two
+accuracy trades (the scale folded into the bf16 fragment, bf16 partials)
+remain the user's decision. The reference launcher, probe and breakdown
+scripts are copied to `reference_vllm/` beside this file.

@@ -51,7 +51,7 @@ double as_float(T x) {
 template <typename Out>
 void run(int m, int n, int k, int bits, int experts, int top_k, int iters, bool hot, int sf, int variant,
          const std::string& baseline_mode, const std::string& dist, bool tiles_on, bool gather,
-         bool same_weights, bool shuffle_rows, bool device_copy) {
+         bool same_weights, bool shuffle_rows, bool device_copy, bool pair) {
   using namespace dgpp;
   std::mt19937 rng(0x6144512);
   const int group = sf == 0 ? 64 : 128;
@@ -198,6 +198,10 @@ void run(int m, int n, int k, int bits, int experts, int top_k, int iters, bool 
     DGPP_CUDA_OK(cudaDeviceSynchronize());
   }
   const bool listed = tiles_on && experts > 1;
+  // --pair 1 (bf16, timing only): the candidate also runs a second
+  // projection of the same view in the launch (the gate+up form); the
+  // second output is not compared.
+  Buffer<Out> pair_out(pair ? static_cast<size_t>(rows) * n : 1);
   // The baseline: the GEMV core, or (--baseline mma0) the narrow tensor-core
   // kernel; the candidate: the tensor-core kernel at --variant (-1 default).
   auto launch = [&](bool mma) {
@@ -224,7 +228,8 @@ void run(int m, int n, int k, int bits, int experts, int top_k, int iters, bool 
       if (tc)
         launch_moe_grouped_mma_packq_bf16(a_p, k, segs_p, experts, m, views_p, 0, out, n, n, k,
                                           bits, nullptr, gather ? act_rows_p : nullptr, sf, var,
-                                          mma && listed ? tiles.p : nullptr, tile_count.p, tile_cap);
+                                          mma && listed ? tiles.p : nullptr, tile_count.p, tile_cap,
+                                          mma && pair ? pair_out.p : nullptr, 0);
       else
         launch_moe_grouped_gemv_packq_bf16(gather ? a_gathered.p : a_p, k, segs_p, experts, m, 0, views_p, 0,
                                            out, n, n, k, bits, nullptr, sf);
@@ -268,7 +273,7 @@ void run(int m, int n, int k, int bits, int experts, int top_k, int iters, bool 
 
 int main(int argc, char** argv) try {
   int m = 256, n = 512, k = 6144, bits = 4, experts = 256, top_k = 8, iters = 5, sf = 0, variant = -1, tiles = 1,
-      gather = 0, same_weights = 0, shuffle_rows = 0, device_copy = 0;
+      gather = 0, same_weights = 0, shuffle_rows = 0, device_copy = 0, pair = 0;
   std::string distribution = "uniform", output = "bf16", baseline = "gemv";
   for (int i = 1; i < argc; i += 2) {
     if (i + 1 == argc) throw std::invalid_argument("missing option value");
@@ -307,6 +312,8 @@ int main(int argc, char** argv) try {
       shuffle_rows = std::stoi(value);
     else if (key == "--device-copy")
       device_copy = std::stoi(value);
+    else if (key == "--pair")
+      pair = std::stoi(value);
     else
       throw std::invalid_argument("unknown option: " + key);
   }
@@ -316,10 +323,10 @@ int main(int argc, char** argv) try {
     throw std::invalid_argument("invalid shape or options");
   if (output == "f32")
     run<float>(m, n, k, bits, experts, top_k, iters, distribution == "hot", sf, variant, baseline, distribution,
-               tiles != 0, gather != 0, same_weights != 0, shuffle_rows != 0, device_copy != 0);
+               tiles != 0, gather != 0, same_weights != 0, shuffle_rows != 0, device_copy != 0, pair != 0);
   else
     run<uint16_t>(m, n, k, bits, experts, top_k, iters, distribution == "hot", sf, variant, baseline, distribution,
-                  tiles != 0, gather != 0, same_weights != 0, shuffle_rows != 0, device_copy != 0);
+                  tiles != 0, gather != 0, same_weights != 0, shuffle_rows != 0, device_copy != 0, pair != 0);
 } catch (const std::exception& e) {
   std::fprintf(stderr, "packq_prefill_bench: %s\n", e.what());
   return 1;
