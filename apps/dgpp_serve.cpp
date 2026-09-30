@@ -1247,6 +1247,7 @@ int main(int argc, char** argv) {
       "      (the row batch needs max-concurrency * (1 + mtp depth) <= 8)\n"
       "    [--mtp-depth N]  draft tokens per step (1..7; the verify runs 1+N rows)\n"
       "    [--dflash-model DIR_OR_ID]  DFlash2 block drafter checkpoint (replaces --mtp; eager world-1)\n"
+      "    [--no-dflash]  run plain from a drafter template (the A/B knob)\n"
       "    [--mtp-schedule]  the confidence-scheduled verify depth (DeepSeek-V4.1's\n"
       "      DSpark): a step verifies only the drafts whose prefix survival beats\n"
       "      the value of a verify row; greedy slots; exact\n"
@@ -1513,6 +1514,7 @@ int main(int argc, char** argv) {
       graph_batch_min_live = std::stoi(next());
     else if (a == "--mtp") mtp = true;
     else if (a == "--dflash-model") dflash_model = next();
+    else if (a == "--no-dflash") dflash_model.clear();  // the plain path from a drafter template (the A/B knob)
     else if (a == "--no-mtp") mtp = false;  // the plain T=1 world from an MTP template (the A/B knob)
     else if (a == "--mtp-depth") {
       mtp_depth = std::stoi(next());
@@ -2346,7 +2348,7 @@ int main(int argc, char** argv) {
     knobs.fixed_seed = fixed_seed;
     knobs.reasoning_in_content = reasoning_in_content;
     knobs.default_chat_template_kwargs = default_chat_template_kwargs;
-    knobs.mtp = mtp;
+    knobs.mtp = mtp || !dflash_dir.empty();  // the throughput line's MTP group (the drafter reports through it)
     knobs.stats_interval_s = stats_interval_s;
     knobs.position_ceiling = position_ceiling;
     knobs.kv_pool_tokens = pool_tokens;

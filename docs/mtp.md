@@ -77,12 +77,15 @@ the existing protocol.
 Serve it with the drafter checkpoint in `engine.dflash_model` (or
 `--dflash-model DIR_OR_ID`) and `engine.mtp` / `engine.decode_graph`
 off — the drafter is the eager world-1 path (see
-`deploy/cluster_qwen3.8-27b-fp8-dflash2_w1.example.json`). Acceptance
+`deploy/cluster_qwen3.8-27b-fp8-dflash2_w1.example.json`;
+`--no-dflash` runs the same recipe plain). Acceptance
 is the ordinary greedy verify: the eight fed rows (pending token +
 drafts) run through the target, the accepted prefix commits and the
-rest rolls back, so the transcript stays exact. The lane's exit
-criterion (performance plan §7) is to beat the best native-MTP
-configuration; until it does, the MTP recipe remains the default.
+rest rolls back, so the transcript stays exact. The throughput line
+carries the drafter's per-position acceptance in the usual MTP group.
+The lane's exit criterion (performance plan §7) is to beat the best
+native-MTP configuration; until it does, the MTP recipe remains the
+default.
 
 ## Recorded GLM-5.3 result
 

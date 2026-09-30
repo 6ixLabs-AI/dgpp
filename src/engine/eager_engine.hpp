@@ -261,7 +261,7 @@ class EagerEngineAdapter : public sched::SchedulerEngine {
         // runs the exact plain step (and retries later).
         const bool fits = model_->session_position(req) + 1 + model_->dflash2_drafts() <=
                           model_->max_context();
-        if (sp && (!plain_greedy || !fits)) sp.reset();
+        if (sp && (!plain_greedy || !fits)) retire_spec(sp);
         if (plain_greedy && fits) {
           if (!sp) {
             sp = std::make_unique<DFlash2Speculator<Model>>(*model_, req, rows_pick());
@@ -306,7 +306,7 @@ class EagerEngineAdapter : public sched::SchedulerEngine {
   }
   void close(int req) override {
     pending_.at(static_cast<size_t>(req)) = -1;
-    spec_.at(static_cast<size_t>(req)).reset();
+    if constexpr (requires { model_->dflash2_enabled(); }) retire_spec(spec_.at(static_cast<size_t>(req)));
     // A reopened slot is greedy until the scheduler arms it again.
     state_.at(static_cast<size_t>(req)) = SlotState{};
     model_->session_close(req);
@@ -392,6 +392,56 @@ class EagerEngineAdapter : public sched::SchedulerEngine {
   // DFlash2 drafter drivers, one per slot (only used when the model has a
   // drafter; eager greedy semantics, exact under greedy verify).
   std::vector<std::unique_ptr<DFlash2Speculator<Model>>> spec_;
+  // The drafter's per-position acceptance counters, engine-wide: retired
+  // drivers fold in here, live ones read on top (the MTP stats group).
+  uint64_t spec_att_[8] = {}, spec_acc_[8] = {};
+
+  template <class S>
+  void retire_spec(S& sp) {
+    if constexpr (requires { sp->attempts(0); }) {
+      if (sp) {
+        for (int p = 0; p < 8; ++p) {
+          spec_att_[p] += sp->attempts(p);
+          spec_acc_[p] += sp->accepts(p);
+        }
+        sp.reset();
+      }
+    }
+  }
+
+  sched::SchedulerEngine::MtpAcceptance mtp_acceptance() const override {
+    sched::SchedulerEngine::MtpAcceptance a;
+    if constexpr (requires { model_->dflash2_drafts(); }) {
+      if (model_->dflash2_enabled()) a.depth = model_->dflash2_drafts();
+      for (int p = 0; p < 8; ++p) {
+        a.attempts[p] = spec_att_[p];
+        a.accepts[p] = spec_acc_[p];
+        for (const auto& sp : spec_)
+          if (sp) {
+            a.attempts[p] += sp->attempts(p);
+            a.accepts[p] += sp->accepts(p);
+          }
+      }
+    }
+    return a;
+  }
+
+  sched::SchedulerEngine::MtpAcceptance mtp_acceptance(int req) const override {
+    sched::SchedulerEngine::MtpAcceptance a;
+    if constexpr (requires { model_->dflash2_drafts(); }) {
+      const auto& sp = spec_.at(static_cast<size_t>(req));
+      if (sp) {
+        a.depth = model_->dflash2_drafts();
+        for (int p = 0; p < 8; ++p) {
+          a.attempts[p] = sp->attempts(p);
+          a.accepts[p] = sp->accepts(p);
+        }
+      }
+    }
+    (void)req;
+    return a;
+  }
+
 
   // The world-1 rows pick: each row's local max is already the winner.
   static SpecPickRows rows_pick() {

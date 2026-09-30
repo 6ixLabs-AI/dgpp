@@ -372,6 +372,11 @@ class DFlash2Speculator {
     if (T > 1) model_.session_rollback(req_, v.accepted, T);
     ++steps_;
     accepted_drafts_ += v.accepted - 1;
+    // The scheduler's MTP group, per draft position (sched MtpAcceptance).
+    for (int p = 0; p < static_cast<int>(drafts_.size()); ++p) {
+      ++attempts_[p & 7];
+      if (p < v.accepted - 1) ++accepts_[p & 7];
+    }
     next_ = v.next;
     drafts_.clear();
     model_.dflash2_draft(req_, next_, &drafts_);
@@ -382,6 +387,8 @@ class DFlash2Speculator {
   const std::vector<int32_t>& drafts() const { return drafts_; }
   int steps() const { return steps_; }
   int accepted_drafts() const { return accepted_drafts_; }
+  uint64_t attempts(int p) const { return attempts_[p]; }
+  uint64_t accepts(int p) const { return accepts_[p]; }
 
  private:
   Model& model_;
@@ -391,6 +398,8 @@ class DFlash2Speculator {
   std::vector<int32_t> drafts_;
   int steps_ = 0;
   int accepted_drafts_ = 0;
+  uint64_t attempts_[8] = {};
+  uint64_t accepts_[8] = {};
 };
 
 }  // namespace dgpp
