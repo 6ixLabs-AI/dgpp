@@ -425,7 +425,9 @@ first; change one setting at a time and measure the effect on your workload
 Every key here keeps the model's outputs exactly except the three
 `engine.prefill_*` levers, which trade prefill arithmetic for speed and are
 off unless a deployment turns them on (see
-[accuracy and correctness](#accuracy-and-correctness)).
+[accuracy and correctness](#accuracy-and-correctness)). Engine behavior is
+set here, in the deployment file; an environment variable never selects a
+kernel, a lever or a threshold.
 
 | Key | Required | Purpose and when to change it | Default |
 |---|---|---|---|
@@ -444,6 +446,11 @@ off unless a deployment turns them on (see
 | `engine.prefill_bf16_partials` | no | Qwen3.8 AutoRound hybrid prefill lever: the packed expert chain's down projection is written in bf16 and its per-expert partials summed from bf16 (half the bytes a prefill chunk writes and reads back; the reference stack's form). Not bitwise the default fp32 chain: served transcripts can differ within the quantized model's tolerance. Off by default; the AutoRound template turns it on (−3 to −7 % cold prefill, evals inside the default chain's band; [benchmarks](docs/benchmarks.md) list both rows). | false |
 | `engine.prefill_fold_scales` | no | Qwen3.8 AutoRound hybrid prefill lever: the wide packed expert GEMM folds each group's scale into the bf16 weight values and keeps one fp32 accumulator across K (Marlin's form; no per-group fma). Not bitwise the default chain. Off by default and measured as no gain (+3 % at 32K): no template turns it on. | false |
 | `engine.prefill_fp8_gemm` | no | Qwen prefill lever under `engine.dense_weights: "fp8"`: prefill-shaped dense projections run on the fp8 tensor cores from per-token 1×128 e4m3 activations with the checkpoint's 128×128 weight scales (the reference stack's blockwise GEMM) instead of dequantizing each matrix to bf16 for cuBLASLt. Not bitwise the dequantized chain (the activations are quantized). Off by default; requires `dense_weights` fp8; the AutoRound template turns it on beside `prefill_bf16_partials` (0 to −3 % alone). | false |
+| `engine.expert_gemm` | no | Packed int4 expert GEMM form for prefill (Qwen3.8 AutoRound hybrid, full GLM-5.3): `wide` (the 64×128 tensor-core tile, eight warps), `wide3` (register decode, three stages), `wide4` / `wide4r` (the four-warp forms), `narrow` (the 32×64 kernel). All bitwise; `wide` is the measured best. | `wide` |
+| `engine.expert_gemm_prefetch` | no | How many k-steps ahead the expert GEMM prefetches its weight and activation lines into L2, 0–16 (0 disables). Bitwise. | 3 |
+| `engine.expert_tile_list` | no | Launch the expert GEMM over a compact list of the routed segments' tiles instead of a grid over the longest segment. Bitwise; off only for diagnosis. | true |
+| `engine.expert_gemm_pair` | no | Run the expert gate and up projections as one launch. Bitwise; measured level, off by default. | false |
+| `engine.ngram_prestage` | no | Qwen: gather the next prefill chunk's n-gram table rows while the current chunk runs (with `ngram_table: "mmap"`). Bitwise; off keeps the one-channel staging. | true |
 | `engine.graph_batch_min_live` | no | Active-request count at which decode switches from scalar to batched graphs. A lower threshold starts batching earlier; batching may improve throughput while doing extra padded-row work. 0 chooses min(2, `max_concurrency`); explicit values must be 1 through `max_concurrency`. | 0 (automatic) |
 | `engine.sampling_candidates` | no | Number of candidate tokens gathered per rank on the sampled-token fast path, 1–256. Smaller values reduce routine work but may trigger more full-gather fallbacks. The fallback preserves sampling correctness; this is not the client's `top_k` parameter. | 128 |
 | `engine.bulk_pace_gbps` | no | Sender pacing rate per queue pair for bulk/prefill communication, in gigabits per second. Negative derives the rate from link speed; 0 disables pacing. Override only when measuring network contention—this is not an API throughput limit. | -1 (automatic) |

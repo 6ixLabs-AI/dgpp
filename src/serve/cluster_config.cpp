@@ -226,6 +226,19 @@ ClusterConfig parse_cluster_config(const std::string& json, const std::string& w
           e.prefill_fold_scales = boolean(x, ek, what);
         } else if (p.key == "prefill_fp8_gemm") {
           e.prefill_fp8_gemm = boolean(x, ek, what);
+        } else if (p.key == "expert_gemm") {
+          e.expert_gemm = text(x, ek, what);
+          if (e.expert_gemm != "wide" && e.expert_gemm != "wide3" && e.expert_gemm != "wide4" &&
+              e.expert_gemm != "wide4r" && e.expert_gemm != "narrow")
+            fail(what, "'" + ek + "' must be \"wide\", \"wide3\", \"wide4\", \"wide4r\" or \"narrow\"");
+        } else if (p.key == "expert_gemm_prefetch") {
+          e.expert_gemm_prefetch = static_cast<int>(integer(x, ek, what, 0, 16));
+        } else if (p.key == "expert_tile_list") {
+          e.expert_tile_list = boolean(x, ek, what);
+        } else if (p.key == "expert_gemm_pair") {
+          e.expert_gemm_pair = boolean(x, ek, what);
+        } else if (p.key == "ngram_prestage") {
+          e.ngram_prestage = boolean(x, ek, what);
         } else if (p.key == "prefill") {
           e.prefill = text(x, ek, what);
           if (e.prefill != "bounded" && e.prefill != "exact")

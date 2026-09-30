@@ -1145,11 +1145,7 @@ void QwenPleLayer::stage(const int64_t* tokens, int rows, const int32_t* req_ids
 void QwenPleLayer::prestage(const int64_t* host_ids, int rows, int64_t pos0, int req, int32_t ctx_t1,
                             int32_t ctx_t2, cudaStream_t stream) {
   if (!staged() || host_node_ || host_ids == nullptr || rows <= 0 || rows > max_tokens_) return;
-  static const bool enabled = [] {
-    const char* e = std::getenv("DGPP_QWEN_PLE_PRESTAGE");
-    return e == nullptr || e[0] != '0';  // default on; =0 keeps the one-channel staging
-  }();
-  if (!enabled) return;
+  if (!QwenLayerStream::ngram_prestage()) return;  // engine.ngram_prestage (default on)
   check_staged();
   // The previous prestage, if still unclaimed, is dropped: its gather ran
   // or runs to completion (the thread answers every publish) and nothing

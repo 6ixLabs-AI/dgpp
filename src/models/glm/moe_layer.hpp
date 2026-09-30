@@ -206,7 +206,7 @@ class GlmMoeLayer {
                             const MoeTile* tiles = nullptr,
                             const int32_t* tile_count = nullptr, int tile_cap = 0);
   // Whether the routed chain's tensor-core launches take the tile list: the
-  // wide packed int4 kernel (DGPP_MOE_TILE_LIST=0 keeps the max_rows grid).
+  // wide packed int4 kernel (engine.expert_tile_list = false keeps the max_rows grid).
   bool packq_tile_list() const;
   int tile_list_for(MoeExpertKernel kernel, int n_segs, int routed_rows, cudaStream_t stream);
   // Longest routed segment for grid sizing (the grouped launchers document
@@ -325,7 +325,11 @@ class GlmMoeLayer {
   // stack's form). fold_scales: the wide packed GEMM with each group's
   // scale folded into the bf16 weight values and one fp32 accumulator
   // (kernels/packq_gemm variant 3).
-  static void set_prefill_options(bool bf16_partials, bool fold_scales);
+  // tile_list (engine.expert_tile_list, default on): the compact tile list
+  // for the wide kernels instead of the max_rows grid (bitwise). pair
+  // (engine.expert_gemm_pair, default off): gate and up as one launch
+  // (bitwise; measured level). No environment switch sets any of these.
+  static void set_prefill_options(bool bf16_partials, bool fold_scales, bool tile_list = true, bool pair = false);
   static bool prefill_bf16_partials();
   static bool prefill_fold_scales();
   size_t view_table_entries_ = 0;         // (n_experts + 1) * 3

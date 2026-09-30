@@ -129,6 +129,11 @@ struct WorldSettings {
   bool prefill_bf16_partials = false;        // the opt-in prefill levers (2026-09-30); absent legacy field = off
   bool prefill_fold_scales = false;
   bool prefill_fp8_gemm = false;
+  std::string expert_gemm = "wide";          // the packed expert GEMM's form (2026-09-30); absent legacy field = wide
+  int expert_gemm_prefetch = 3;
+  bool expert_tile_list = true;
+  bool expert_gemm_pair = false;
+  bool ngram_prestage = true;
   std::string prefill = "bounded";           // the DeepSeek-V4.1 prefill mode: bounded | exact
   std::optional<dgpp::RopeScaling> rope_scaling;  // the opt-in YaRN ramp: absent = plain
   std::string embed_sharding = "replicated";  // the full GLM-5.3's embedding: replicated | vocab

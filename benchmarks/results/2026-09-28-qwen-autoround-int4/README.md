@@ -1497,3 +1497,50 @@ The benchmarks-document row for the levers-on template: C1 engine
 failing on a port collision — its four loopback worlds bound 29968–29971,
 the deployment defaults' fabric and journal ports, so it could not start
 beside a live deployment; moved to 29980+ and passing alone (3/3).
+
+## Round 21 — the expert GEMM's warp tile (2026-09-30, 16:10–16:42)
+
+The wide kernel parameterized on its warp count (`kWarps`; plan §6.16):
+four warps at 64 x 32 / 32 x 32 / 16 x 32 by the segment's rows, the
+staged tiles, the decode and every element's chain unchanged — variants 4
+(decoded tile, two stages) and 5 (register decode, three stages),
+`engine.expert_gemm: "wide4" | "wide4r"` (the round's env switch became a key before it shipped); bitwise the eight-warp kernel in
+`packq_gemm_test` (listed and segment-major), 208–218 registers at 128
+threads, two blocks per SM, no spills. The bench (`--m 4096 --sf 1
+--experts 512 --top-k 10 --device-copy 1 --gather 1 --tiles 1`): Zipf
+gate/up v1 3.36–3.39 ms, v2 3.35–3.39, v4 3.41–3.42, v5 3.27–3.30; Zipf
+down 4.30–4.38 / 4.30–4.39 / 4.31–4.43 / 4.28–4.29; hot routing (the
+in-situ regime: the recorded profile's launches take 1.9 / 2.4 ms per
+4,096-token chunk) gate/up v1 2.39 → v5 2.25, down 3.22 → 3.18; the
+prefetch distance (3 / 6 / 10) moves nothing.
+
+**Sessions R21 / R21b** (`serve_r21/`, `serve_r21b/`; one binary, the
+form by env, the exact-chain config; a checkpoint transfer on the node
+16:28–16:35 spoiled base2 and wide4r2 — their repeats at 6.7–7.0 s for
+8K and 22.8 s for 32K — and the clean re-run followed it):
+
+| leg | 2K | 8K | 32K | sha |
+|---|---|---|---|---|
+| base1 (cold) | 1.339 | 4.449 | 17.628 | 927ffd8a |
+| wide4r1 | 1.297 | 4.342 | 17.686 | 927ffd8a |
+| base3 | 1.293 | 4.376 | 17.689 | 927ffd8a |
+| wide4r3 | 1.301 | 4.326 | 17.639 | 927ffd8a |
+| base4 | 1.294 | 4.381 | 17.698 | 927ffd8a |
+
++0.6 / −1.2 / −0.3 % against a 0.1 % base band: the eight-warp form stays
+the default, the four-warp forms stay as opt-ins — as config keys: the
+round's env switches became `engine.expert_gemm`, `engine.expert_gemm_prefetch`,
+`engine.expert_tile_list`, `engine.expert_gemm_pair` and `engine.ngram_prestage`
+before it shipped (the policy: nothing that controls engine behavior is an
+environment variable). **Session R21f** (`serve_r21f/`, 17:23–17:27): the
+converted binary on the default config 1.348 / 4.447 / 17.638 (cold first
+leg) and on a config carrying `"expert_gemm": "wide4r"` 1.291 / 4.311 /
+17.628, the server log reading `expert GEMM settings: form=wide4r` from the
+resolved config alone, sha 927ffd8a on both. (The session's production
+restore then failed on the HTTP port because its edited `up` and its
+unedited `down` named different configs; the leftover hybrid was stopped
+by hand and production restored at 17:28.) The kernel in situ runs
+at 63–67 % of the measured dense bf16 rate; the warp tile was not the
+bound. Next for this kernel: the 128-row block tile (B-tile reuse), a few
+percent; `dsv41_tp_test`'s ports moved off the deployment defaults in
+round 20.

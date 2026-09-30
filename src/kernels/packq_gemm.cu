@@ -13,32 +13,35 @@
 namespace dgpp {
 
 // The kernel choice: 1 = the wide tile (the default for int4 rows), 0 =
-// the narrow kernel; DGPP_PACKQ_GEMM=narrow turns the default to 0.
-int packq_gemm_variant_default() {
-  static const int v = [] {
-    const char* e = std::getenv("DGPP_PACKQ_GEMM");
-    if (e && std::string(e) == "narrow") return 0;
-    if (e && std::string(e) == "wide3") return 2;  // the register-decode three-stage form
-    return 1;
-  }();
-  return v;
+// the narrow kernel; engine.expert_gemm = "narrow" turns the default to 0.
+// The form and the prefetch distance are deployment settings
+// (engine.expert_gemm, engine.expert_gemm_prefetch; 2026-09-30 — no
+// environment switch selects a kernel), set once before the first launch.
+namespace {
+int g_packq_form = 1;      // the wide decoded-tile kernel
+int g_packq_prefetch = 3;  // steps ahead
+}  // namespace
+int packq_gemm_form_index(const std::string& name) {
+  if (name == "narrow") return 0;
+  if (name == "wide") return 1;
+  if (name == "wide3") return 2;   // the register-decode three-stage form
+  if (name == "wide4") return 4;   // four warps at 64 x 32 (round 21)
+  if (name == "wide4r") return 5;  // four warps, register decode, three stages
+  return -1;
 }
+void packq_gemm_set_form(int variant) { g_packq_form = variant; }
+void packq_gemm_set_prefetch(int steps) { g_packq_prefetch = std::max(0, steps); }
+int packq_gemm_variant_default() { return g_packq_form; }
 
-// DGPP_PACKQ_PREFETCH=N: the wide kernel prefetches step g+N's lines into
-// L2 while issuing step g (0 = off). Default 3 (2026-09-29, the
+// engine.expert_gemm_prefetch = N: the wide kernel prefetches step g+N's
+// lines into L2 while issuing step g (0 = off). Default 3 (2026-09-29, the
 // device-memory bench at 4,096 tokens x top-10 over 512 experts, Zipf
 // routing: gate 4.6-5.0 -> 3.5-3.7 ms at any distance 1-3, down 6.8-7.1
 // -> 6.0 at 3; the managed-memory bench had hidden it behind its page
 // mapping cost). The two-stage pipeline holds one step of latency; the
 // weight stream is the launch's DRAM traffic and the prefetch keeps it
 // ahead of the copies.
-int packq_gemm_prefetch_ahead() {
-  static const int v = [] {
-    const char* e = std::getenv("DGPP_PACKQ_PREFETCH");
-    return e ? std::max(0, std::atoi(e)) : 3;
-  }();
-  return v;
-}
+int packq_gemm_prefetch_ahead() { return g_packq_prefetch; }
 
 namespace {
 constexpr int kM = 32, kN = 64, kThreads = 128;
@@ -258,8 +261,8 @@ __global__ __launch_bounds__(kThreads) void packq_gemm_kernel(
 // m16n8k16 steps per 64-code group in k order into a fresh partial, then
 // one fp32 fma with the group's scale — bitwise the same D. Int4, row
 // layout, both scale formats; int8 and the plane layout keep the kernel
-// above. DGPP_PACKQ_GEMM=narrow keeps it for every shape.
-constexpr int kWideM = 64, kWideN = 128, kWideK = 64, kWideThreads = 256, kWideStages = 2;
+// above. engine.expert_gemm = "narrow" keeps it for every shape.
+constexpr int kWideM = 64, kWideN = 128, kWideK = 64, kWideStages = 2;
 constexpr int kWideMinBlocks = 2;
 // The register-decode form (2026-09-30, variant 2): no decoded-weight tile
 // in shared memory — each warp decodes its B fragments from the staged
@@ -341,33 +344,50 @@ __device__ __forceinline__ void prefetch_l2(const void* p) {
 // scale folded into the decoded bf16 weight values — bf16(code x scale) —
 // and one fp32 accumulator across K (the Marlin form: no per-group partial,
 // no per-group fma). Decoded-tile path only.
-template <typename OutT, int SF, int M16, int kStages, bool kRegB, bool kFold>
+// kWarps (2026-09-30, round 21): eight warps at 32 x 32 (the shipped form)
+// or four warps at 64 x 32 / 32 x 32 / 16 x 32 by the rows the segment
+// fills — each ldmatrix feeds twice the mma and each barrier covers twice
+// the work; the staged tiles, the decode and every element's chain are
+// the same, so both are bitwise.
+template <typename OutT, int SF, int M16, int kStages, bool kRegB, bool kFold, int kWarps>
 __device__ __forceinline__ void wide_tile(const WideCtx<OutT>& c) {
-  constexpr int kMI = M16 == 4 ? 2 : 1;   // m16 tiles per warp
-  constexpr int kNJ = M16 == 1 ? 2 : 4;   // n8 tiles per warp
+  static_assert(kWarps == 8 || kWarps == 4, "eight or four warps");
+  constexpr int kThreads = kWarps * 32;
+  constexpr int kMI = kWarps == 8 ? (M16 == 4 ? 2 : 1) : M16;          // m16 tiles per warp
+  constexpr int kNJ = kWarps == 8 ? (M16 == 1 ? 2 : 4) : 4;            // n8 tiles per warp
   constexpr int kScaleGroup = packq_gemv::ScaleFmt<SF>::group;
   const int tid = threadIdx.x, warp = tid / 32, lane = tid % 32;
   const int r = lane / 4, cc = (lane % 4) * 2;
-  const int row_base = M16 == 4 ? (warp / 4) * 32 : (M16 == 2 ? (warp / 4) * 16 : 0);
-  const int col_base = M16 == 1 ? warp * 16 : (warp % 4) * 32;
+  const int row_base = kWarps == 8 ? (M16 == 4 ? (warp / 4) * 32 : (M16 == 2 ? (warp / 4) * 16 : 0)) : 0;
+  const int col_base = kWarps == 8 ? (M16 == 1 ? warp * 16 : (warp % 4) * 32) : warp * 32;
   // The issue path holds no global round trip on the barrier's critical
-  // path: each thread's two activation rows (idx = tid and tid + 256 map
-  // to rows tid / 8 and tid / 8 + 32 for every k-step) resolve their source
-  // row once here, its code row likewise, and the column's scale for a
-  // step is read one step ahead into a register.
+  // path: each thread's activation rows (eight threads a row, kThreads / 8
+  // rows a pass, kACopies passes over the 64-row tile) resolve their
+  // source row once here, its code rows likewise, and the column's scale
+  // for a step is read one step ahead into a register.
+  constexpr int kARows = kThreads / 8, kACopies = kWideM / kARows;
+  constexpr int kBCopies = (kWideN * 2) / kThreads;  // 16-byte code pieces a thread stages
   const int arow0 = tid / 8, acol = (tid % 8) * 8;
-  int asrc[2];
-  bool avalid[2];
+  int asrc[kACopies];
+  bool avalid[kACopies];
 #pragma unroll
-  for (int h = 0; h < 2; ++h) {
-    const int row = arow0 + h * 32;
+  for (int h = 0; h < kACopies; ++h) {
+    const int row = arow0 + h * kARows;
     avalid[h] = c.m0 + row < c.m;
     const int gathered = c.row0 + c.m0 + row;
     asrc[h] = avalid[h] ? (c.act_rows ? c.act_rows[gathered] : gathered) : 0;
   }
-  const int brow = tid / 2, bcol = (tid % 2) * 16;
-  const bool bvalid = c.n0 + brow < c.n;
-  const uint8_t* brow_ptr = c.weights + static_cast<size_t>(bvalid ? c.n0 + brow : 0) * c.row_bytes + bcol;
+  int brow[kBCopies], bcol[kBCopies];
+  bool bvalid[kBCopies];
+  const uint8_t* brow_ptr[kBCopies];
+#pragma unroll
+  for (int h = 0; h < kBCopies; ++h) {
+    const int piece = tid + h * kThreads;
+    brow[h] = piece / 2;
+    bcol[h] = (piece % 2) * 16;
+    bvalid[h] = c.n0 + brow[h] < c.n;
+    brow_ptr[h] = c.weights + static_cast<size_t>(bvalid[h] ? c.n0 + brow[h] : 0) * c.row_bytes + bcol[h];
+  }
   const bool scale_lane = tid < kWideN && c.n0 + tid < c.n;
   const uint16_t* scale_ptr = c.scales + static_cast<size_t>(scale_lane ? c.n0 + tid : 0) * c.scale_groups;
   auto scale_of = [&](int group) -> float {
@@ -376,8 +396,8 @@ __device__ __forceinline__ void wide_tile(const WideCtx<OutT>& c) {
   auto issue = [&](int group, int slot, float scale_value) {
     uint16_t* as = c.a + static_cast<size_t>(slot) * kWideM * kWideAStride;
 #pragma unroll
-    for (int h = 0; h < 2; ++h) {
-      const int row = arow0 + h * 32;
+    for (int h = 0; h < kACopies; ++h) {
+      const int row = arow0 + h * kARows;
       const uint16_t* src = c.act + static_cast<size_t>(asrc[h]) * c.act_stride + group * kWideK + acol;
       if (c.vector_act) {
         copy16(as + row * kWideAStride + acol, src, avalid[h]);
@@ -387,7 +407,9 @@ __device__ __forceinline__ void wide_tile(const WideCtx<OutT>& c) {
       }
     }
     uint8_t* bs = c.bc + static_cast<size_t>(slot) * kWideN * kWideCodeStride;
-    copy16(bs + brow * kWideCodeStride + bcol, brow_ptr + group * (kWideK / 2), bvalid);
+#pragma unroll
+    for (int h = 0; h < kBCopies; ++h)
+      copy16(bs + brow[h] * kWideCodeStride + bcol[h], brow_ptr[h] + group * (kWideK / 2), bvalid[h]);
     if (tid < kWideN) c.scale[slot * kWideN + tid] = scale_value;
     // The L2 prefetch of a later step's lines (c.prefetch_ahead steps past
     // this one): the two-stage pipeline hides one step of latency, and a
@@ -397,11 +419,13 @@ __device__ __forceinline__ void wide_tile(const WideCtx<OutT>& c) {
       const int pg = group + c.prefetch_ahead;
       if (acol == 0) {
 #pragma unroll
-        for (int h = 0; h < 2; ++h)
+        for (int h = 0; h < kACopies; ++h)
           if (avalid[h]) prefetch_l2(c.act + static_cast<size_t>(asrc[h]) * c.act_stride + pg * kWideK);
       }
-      if (bcol == 0 && bvalid && ((pg * (kWideK / 2)) % 128) == 0)
-        prefetch_l2(brow_ptr + pg * (kWideK / 2));
+#pragma unroll
+      for (int h = 0; h < kBCopies; ++h)
+        if (bcol[h] == 0 && bvalid[h] && ((pg * (kWideK / 2)) % 128) == 0)
+          prefetch_l2(brow_ptr[h] + pg * (kWideK / 2));
     }
   };
 
@@ -412,10 +436,12 @@ __device__ __forceinline__ void wide_tile(const WideCtx<OutT>& c) {
   for (int pg = 0; pg < c.prefetch_ahead && pg < c.groups; ++pg) {
     if (acol == 0) {
 #pragma unroll
-      for (int h = 0; h < 2; ++h)
+      for (int h = 0; h < kACopies; ++h)
         if (avalid[h]) prefetch_l2(c.act + static_cast<size_t>(asrc[h]) * c.act_stride + pg * kWideK);
     }
-    if (bcol == 0 && bvalid && ((pg * (kWideK / 2)) % 128) == 0) prefetch_l2(brow_ptr + pg * (kWideK / 2));
+#pragma unroll
+    for (int h = 0; h < kBCopies; ++h)
+      if (bcol[h] == 0 && bvalid[h] && ((pg * (kWideK / 2)) % 128) == 0) prefetch_l2(brow_ptr[h] + pg * (kWideK / 2));
   }
   const int prologue = c.groups < kStages - 1 ? c.groups : kStages - 1;
   for (int g = 0; g < prologue; ++g) {
@@ -434,28 +460,32 @@ __device__ __forceinline__ void wide_tile(const WideCtx<OutT>& c) {
       commit();
       next_scale = g + 1 < c.groups ? scale_of(g + 1) : 0.f;
     }
-    // Decode this step's codes once: thread -> (row n, half): 16 bytes.
+    // Decode this step's codes once: thread -> (row n, half) pieces of 16 bytes.
     if constexpr (!kRegB) {
       const uint8_t* bs = c.bc + static_cast<size_t>(slot) * kWideN * kWideCodeStride;
-      const int row = tid / 2, half = tid % 2;
-      const uint4 codes = *reinterpret_cast<const uint4*>(bs + row * kWideCodeStride + half * 16);
-      const uint32_t w[4] = {codes.x, codes.y, codes.z, codes.w};
-      uint16_t* dst = c.bd + row * kWideDStride + half * 32;
-      [[maybe_unused]] const float fs = kFold ? c.scale[slot * kWideN + row] : 1.f;
 #pragma unroll
-      for (int q = 0; q < 4; ++q) {
-        uint4 o;
-        o.x = decode_byte(w[q] & 0xFFu);
-        o.y = decode_byte((w[q] >> 8) & 0xFFu);
-        o.z = decode_byte((w[q] >> 16) & 0xFFu);
-        o.w = decode_byte(w[q] >> 24);
-        if constexpr (kFold) {
-          o.x = fold_scale(o.x, fs);
-          o.y = fold_scale(o.y, fs);
-          o.z = fold_scale(o.z, fs);
-          o.w = fold_scale(o.w, fs);
+      for (int h = 0; h < kBCopies; ++h) {
+        const int piece = tid + h * kThreads;
+        const int row = piece / 2, half = piece % 2;
+        const uint4 codes = *reinterpret_cast<const uint4*>(bs + row * kWideCodeStride + half * 16);
+        const uint32_t w[4] = {codes.x, codes.y, codes.z, codes.w};
+        uint16_t* dst = c.bd + row * kWideDStride + half * 32;
+        [[maybe_unused]] const float fs = kFold ? c.scale[slot * kWideN + row] : 1.f;
+#pragma unroll
+        for (int q = 0; q < 4; ++q) {
+          uint4 o;
+          o.x = decode_byte(w[q] & 0xFFu);
+          o.y = decode_byte((w[q] >> 8) & 0xFFu);
+          o.z = decode_byte((w[q] >> 16) & 0xFFu);
+          o.w = decode_byte(w[q] >> 24);
+          if constexpr (kFold) {
+            o.x = fold_scale(o.x, fs);
+            o.y = fold_scale(o.y, fs);
+            o.z = fold_scale(o.z, fs);
+            o.w = fold_scale(o.w, fs);
+          }
+          *reinterpret_cast<uint4*>(dst + q * 8) = o;
         }
-        *reinterpret_cast<uint4*>(dst + q * 8) = o;
       }
       __syncthreads();
     }
@@ -539,8 +569,8 @@ __device__ __forceinline__ void wide_tile(const WideCtx<OutT>& c) {
       }
 }
 
-template <typename OutT, bool Grouped, int SF, int kStages, bool kRegB, bool kFold>
-__global__ __launch_bounds__(kWideThreads, kWideMinBlocks) void packq_gemm_wide_kernel(
+template <typename OutT, bool Grouped, int SF, int kStages, bool kRegB, bool kFold, int kWarps>
+__global__ __launch_bounds__(kWarps * 32, kWideMinBlocks) void packq_gemm_wide_kernel(
     const uint16_t* __restrict__ act, size_t act_stride, const uint8_t* __restrict__ weights,
     const uint16_t* __restrict__ scales, const MoeSegment* __restrict__ segs,
     const MoeExpertView* __restrict__ views, int which, const int32_t* __restrict__ act_rows,
@@ -606,13 +636,13 @@ __global__ __launch_bounds__(kWideThreads, kWideMinBlocks) void packq_gemm_wide_
   c.row_bytes = k / 2;
   c.vector_act = vector_act;
   const int rows_here = m - c.m0 < kWideM ? m - c.m0 : kWideM;
-  if (rows_here <= 16) wide_tile<OutT, SF, 1, kStages, kRegB, kFold>(c);
-  else if (rows_here <= 32) wide_tile<OutT, SF, 2, kStages, kRegB, kFold>(c);
-  else wide_tile<OutT, SF, 4, kStages, kRegB, kFold>(c);
+  if (rows_here <= 16) wide_tile<OutT, SF, 1, kStages, kRegB, kFold, kWarps>(c);
+  else if (rows_here <= 32) wide_tile<OutT, SF, 2, kStages, kRegB, kFold, kWarps>(c);
+  else wide_tile<OutT, SF, 4, kStages, kRegB, kFold, kWarps>(c);
 }
 
 
-template <typename OutT, bool Grouped, int SF, int kStages, bool kRegB, bool kFold>
+template <typename OutT, bool Grouped, int SF, int kStages, bool kRegB, bool kFold, int kWarps>
 void launch_wide(const uint16_t* act, size_t act_stride, const uint8_t* weights, const uint16_t* scales,
                  const MoeSegment* segs, int n_segs, const MoeExpertView* views, int which,
                  const int32_t* act_rows, OutT* out, size_t out_stride, int m, int n, int k,
@@ -621,7 +651,7 @@ void launch_wide(const uint16_t* act, size_t act_stride, const uint8_t* weights,
   constexpr size_t kSmem = wide_smem_bytes(kStages, kRegB);
   static bool opted = false;
   if (!opted) {
-    DGPP_CUDA_OK(cudaFuncSetAttribute(packq_gemm_wide_kernel<OutT, Grouped, SF, kStages, kRegB, kFold>,
+    DGPP_CUDA_OK(cudaFuncSetAttribute(packq_gemm_wide_kernel<OutT, Grouped, SF, kStages, kRegB, kFold, kWarps>,
                                       cudaFuncAttributeMaxDynamicSharedMemorySize, static_cast<int>(kSmem)));
     opted = true;
   }
@@ -629,7 +659,7 @@ void launch_wide(const uint16_t* act, size_t act_stride, const uint8_t* weights,
   const bool listed = Grouped && tiles != nullptr;
   const dim3 grid(n_tiles * (listed ? tile_cap : (m + kWideM - 1) / kWideM), listed ? 1 : n_segs);
   const bool vector_act = reinterpret_cast<uintptr_t>(act) % 16 == 0 && act_stride % 8 == 0;
-  packq_gemm_wide_kernel<OutT, Grouped, SF, kStages, kRegB, kFold><<<grid, kWideThreads, kSmem, stream>>>(
+  packq_gemm_wide_kernel<OutT, Grouped, SF, kStages, kRegB, kFold, kWarps><<<grid, kWarps * 32, kSmem, stream>>>(
       act, act_stride, weights, scales, segs, views, which, act_rows, out, out_stride, m, n, k, n_tiles,
       vector_act, listed ? tiles : nullptr, listed ? tile_count : nullptr, packq_gemm_prefetch_ahead(),
       Grouped ? out2 : nullptr, which2);
@@ -660,20 +690,23 @@ void launch(const uint16_t* act, size_t act_stride, const uint8_t* weights, cons
   if (variant < 0) variant = packq_gemm_variant_default();
   // variant 3 (engine.prefill_fold_scales; NOT bitwise): the decoded-tile
   // kernel with the group scales folded into the bf16 values.
-  if ((variant == 1 || variant == 2 || variant == 3) && bits == 4 && !planes) {
-#define DGPP_WIDE(SF_, ST_, RB_, FD_)                                                                          \
-  launch_wide<OutT, Grouped, SF_, ST_, RB_, FD_>(act, act_stride, weights, scales, segs, n_segs, views, which, \
-                                                  act_rows, out, out_stride, m, n, k, stream, tiles,          \
-                                                  tile_count, tile_cap, out2, which2)
-    if (scale_fmt == packq_gemv::kScaleF16G128) {
-      if (variant == 2) DGPP_WIDE(packq_gemv::kScaleF16G128, kWideStagesReg, true, false);
-      else if (variant == 3) DGPP_WIDE(packq_gemv::kScaleF16G128, kWideStages, false, true);
-      else DGPP_WIDE(packq_gemv::kScaleF16G128, kWideStages, false, false);
-    } else {
-      if (variant == 2) DGPP_WIDE(packq_gemv::kScaleBf16G64, kWideStagesReg, true, false);
-      else if (variant == 3) DGPP_WIDE(packq_gemv::kScaleBf16G64, kWideStages, false, true);
-      else DGPP_WIDE(packq_gemv::kScaleBf16G64, kWideStages, false, false);
-    }
+  // variants 4 / 5 (2026-09-30, round 21): the four-warp forms of 1 / 2.
+  if (variant >= 1 && variant <= 5 && bits == 4 && !planes) {
+#define DGPP_WIDE(SF_, ST_, RB_, FD_, WP_)                                                                     \
+  launch_wide<OutT, Grouped, SF_, ST_, RB_, FD_, WP_>(act, act_stride, weights, scales, segs, n_segs, views,   \
+                                                       which, act_rows, out, out_stride, m, n, k, stream,      \
+                                                       tiles, tile_count, tile_cap, out2, which2)
+#define DGPP_WIDE_SF(SF_)                                                    \
+  do {                                                                       \
+    if (variant == 2) DGPP_WIDE(SF_, kWideStagesReg, true, false, 8);        \
+    else if (variant == 3) DGPP_WIDE(SF_, kWideStages, false, true, 8);      \
+    else if (variant == 4) DGPP_WIDE(SF_, kWideStages, false, false, 4);     \
+    else if (variant == 5) DGPP_WIDE(SF_, kWideStagesReg, true, false, 4);   \
+    else DGPP_WIDE(SF_, kWideStages, false, false, 8);                       \
+  } while (0)
+    if (scale_fmt == packq_gemv::kScaleF16G128) DGPP_WIDE_SF(packq_gemv::kScaleF16G128);
+    else DGPP_WIDE_SF(packq_gemv::kScaleBf16G64);
+#undef DGPP_WIDE_SF
 #undef DGPP_WIDE
     return;
   }

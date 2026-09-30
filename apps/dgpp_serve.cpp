@@ -75,6 +75,7 @@
 #include "loaders/architecture.hpp"
 #include "models/glm/fabric_engine.hpp"
 #include "models/glm/moe_layer.hpp"
+#include "kernels/packq_gemm.hpp"
 #include "models/glm/forward.hpp"
 #include "models/glm/gen_engine.hpp"
 #include "models/qwen/config.hpp"
@@ -1222,6 +1223,11 @@ int main(int argc, char** argv) {
   bool prefill_bf16_partials = false;       // the opt-in prefill levers (engine.prefill_*; 2026-09-30)
   bool prefill_fold_scales = false;
   bool prefill_fp8_gemm = false;
+  std::string expert_gemm = "wide";         // the packed expert GEMM's form and companions (engine.expert_*)
+  int expert_gemm_prefetch = 3;
+  bool expert_tile_list = true;
+  bool expert_gemm_pair = false;
+  bool ngram_prestage = true;               // engine.ngram_prestage (Qwen)
   std::string prefill = "bounded";  // the DeepSeek-V4.1 prefill: bounded | exact
   // The opt-in YaRN rope ramp (engine.rope_scaling): absent = the plain
   // table, the default and the behaviour every earlier build had.
@@ -1317,6 +1323,11 @@ int main(int argc, char** argv) {
     prefill_bf16_partials = e.prefill_bf16_partials;
     prefill_fold_scales = e.prefill_fold_scales;
     prefill_fp8_gemm = e.prefill_fp8_gemm;
+    expert_gemm = e.expert_gemm;
+    expert_gemm_prefetch = e.expert_gemm_prefetch;
+    expert_tile_list = e.expert_tile_list;
+    expert_gemm_pair = e.expert_gemm_pair;
+    ngram_prestage = e.ngram_prestage;
     prefill = e.prefill;
     rope_scaling = e.rope_scaling;
     embed_sharding = e.embed_sharding;
@@ -1400,6 +1411,11 @@ int main(int argc, char** argv) {
     else if (a == "--prefill-bf16-partials") prefill_bf16_partials = true;
     else if (a == "--prefill-fold-scales") prefill_fold_scales = true;
     else if (a == "--prefill-fp8-gemm") prefill_fp8_gemm = true;
+    else if (a == "--expert-gemm") expert_gemm = next();
+    else if (a == "--expert-gemm-prefetch") expert_gemm_prefetch = std::stoi(next());
+    else if (a == "--no-expert-tile-list") expert_tile_list = false;
+    else if (a == "--expert-gemm-pair") expert_gemm_pair = true;
+    else if (a == "--no-ngram-prestage") ngram_prestage = false;
     else if (a == "--prefill") prefill = next();
     else if (a == "--embed-sharding") embed_sharding = next();
     else if (a == "--memory-plan") memory_plan_only = true;
@@ -1561,6 +1577,11 @@ int main(int argc, char** argv) {
         ws.prefill_bf16_partials = prefill_bf16_partials;
         ws.prefill_fold_scales = prefill_fold_scales;
         ws.prefill_fp8_gemm = prefill_fp8_gemm;
+        ws.expert_gemm = expert_gemm;
+        ws.expert_gemm_prefetch = expert_gemm_prefetch;
+        ws.expert_tile_list = expert_tile_list;
+        ws.expert_gemm_pair = expert_gemm_pair;
+        ws.ngram_prestage = ngram_prestage;
         ws.prefill = prefill;
         ws.rope_scaling = rope_scaling;
         ws.embed_sharding = embed_sharding;
@@ -1621,6 +1642,11 @@ int main(int argc, char** argv) {
         prefill_bf16_partials = ws.prefill_bf16_partials;
         prefill_fold_scales = ws.prefill_fold_scales;
         prefill_fp8_gemm = ws.prefill_fp8_gemm;
+        expert_gemm = ws.expert_gemm;
+        expert_gemm_prefetch = ws.expert_gemm_prefetch;
+        expert_tile_list = ws.expert_tile_list;
+        expert_gemm_pair = ws.expert_gemm_pair;
+        ngram_prestage = ws.ngram_prestage;
         prefill = ws.prefill;
         rope_scaling = ws.rope_scaling;
         embed_sharding = ws.embed_sharding;
@@ -1738,8 +1764,26 @@ int main(int argc, char** argv) {
     DGPP_LOG_ERROR("engine.prefill_fp8_gemm requires engine.dense_weights fp8");
     return 2;
   }
-  dgpp::GlmMoeLayer::set_prefill_options(prefill_bf16_partials, prefill_fold_scales);
+  // The packed expert GEMM's form and companions (engine.expert_*,
+  // engine.ngram_prestage): deployment settings, never environment switches.
+  const int expert_form = dgpp::packq_gemm_form_index(expert_gemm);
+  if (expert_form < 0) {
+    DGPP_LOG_ERROR("engine.expert_gemm must be wide, wide3, wide4, wide4r or narrow, got '{}'", expert_gemm);
+    return 2;
+  }
+  if (expert_gemm_prefetch < 0 || expert_gemm_prefetch > 16) {
+    DGPP_LOG_ERROR("engine.expert_gemm_prefetch must be 0..16, got {}", expert_gemm_prefetch);
+    return 2;
+  }
+  dgpp::packq_gemm_set_form(expert_form);
+  dgpp::packq_gemm_set_prefetch(expert_gemm_prefetch);
+  dgpp::GlmMoeLayer::set_prefill_options(prefill_bf16_partials, prefill_fold_scales, expert_tile_list,
+                                         expert_gemm_pair);
   dgpp::QwenLayerStream::set_prefill_fp8_gemm(prefill_fp8_gemm);
+  dgpp::QwenLayerStream::set_ngram_prestage(ngram_prestage);
+  if (expert_gemm != "wide" || expert_gemm_prefetch != 3 || !expert_tile_list || expert_gemm_pair || !ngram_prestage)
+    DGPP_LOG_INFO("expert GEMM settings: form={} prefetch={} tile_list={} pair={} ngram_prestage={}", expert_gemm,
+                  expert_gemm_prefetch, expert_tile_list ? 1 : 0, expert_gemm_pair ? 1 : 0, ngram_prestage ? 1 : 0);
   if (prefill_bf16_partials || prefill_fold_scales || prefill_fp8_gemm)
     DGPP_LOG_INFO("prefill levers on (not bitwise the default chain): bf16_partials={} fold_scales={} fp8_gemm={}",
                   prefill_bf16_partials ? 1 : 0, prefill_fold_scales ? 1 : 0, prefill_fp8_gemm ? 1 : 0);

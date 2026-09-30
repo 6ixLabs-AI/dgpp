@@ -880,7 +880,7 @@ once into a bf16 shared tile (nibble | 0x4300 is 128 + code in bf16
 exactly, less 136 exactly code − 8) so the MMA loop is ldmatrix and mma,
 the same four m16n8k16 steps per 64-code group into a fresh partial then
 one fp32 fma with the group's scale as the narrow kernel (−8 / −12 % on
-the bench's gate/up and down shapes; `DGPP_PACKQ_GEMM=narrow` keeps the
+the bench's gate/up and down shapes; `engine.expert_gemm: "narrow"` (a config key since round 21; it was an environment switch) keeps the
 old); the prefill's combine riding the next site's norm pass
 (`defer_combine` returns the pending combine for prefill rows, so
 `combine_norm` replaces `combine_apply` + `group_rmsnorm`); the prefill
@@ -909,13 +909,13 @@ rows through a row map (`--gather 1`) from cudaMalloc memory
 of page mapping and masked everything):
 
 1. **The compact tile list** (`launch_moe_tile_list`, `MoeTile`; the
-   layer's `tile_list_for`; `DGPP_MOE_TILE_LIST=0` keeps the max_rows
+   layer's `tile_list_for`; `engine.expert_tile_list: false` keeps the max_rows
    grid): (segment, first row) per real 64-row tile, a 1-D grid of
    n-tiles × capacity blocks, the capacity bounded on the host without a
    sync — so the per-layer `routed_seg_max_rows` sync is gone on that
    path. Bitwise (the same blocks do the same tiles). The empty blocks
    were not the cost: gate/up unchanged, down −6..−16 %.
-2. **The L2 prefetch of the step three ahead** (`DGPP_PACKQ_PREFETCH`,
+2. **The L2 prefetch of the step three ahead** (`engine.expert_gemm_prefetch`,
    default 3): the two-stage pipeline holds one step of latency and the
    weight stream — 419 MB a launch, the launch's DRAM traffic — was not
    overlapping the compute (with the weights L2-resident the same launch
@@ -1062,6 +1062,71 @@ therefore turns on `prefill_bf16_partials` and `prefill_fp8_gemm`; the
 fold stays off everywhere. The benchmarks document lists the default and
 the levers-on rows (decode cells re-measured under the pair: the levers
 touch prefill-shaped launches only).
+
+### 6.16 The expert GEMM's warp tile (2026-09-30, round 21)
+
+The round-19 reading of the in-situ ncu profile — tensor pipe 40 %,
+barrier 24 % and wait 15 % of the warp cycles on a 32 x 32 warp tile —
+suggested the kernel was issue-bound and that a wider warp tile (twice
+the mma per ldmatrix and per barrier) would return ~10 % of the prefill.
+Built as a template parameter of the wide kernel (`kWarps`): four warps at
+64 x 32 / 32 x 32 / 16 x 32 by the rows the segment fills (variant 4, the
+decoded-tile form; variant 5, the register-decode three-stage form;
+`engine.expert_gemm: "wide4" | "wide4r"`), the staged tiles, the decode and every
+element's chain unchanged — bitwise the eight-warp kernel in
+`packq_gemm_test` (listed and segment-major), 208–218 registers at 128
+threads, two blocks per SM, no spills.
+
+The bench (`packq_prefill_bench --m 4096 --sf 1 --experts 512 --top-k 10
+--device-copy 1 --gather 1 --tiles 1`, ms):
+
+| routing | shape | v1 (shipped) | v2 | v4 | v5 |
+|---|---|---|---|---|---|
+| zipf (segments avg 80 rows) | gate/up 640 x 2560 | 3.36–3.39 | 3.35–3.39 | 3.41–3.42 | 3.27–3.30 |
+| zipf | down 2560 x 640 | 4.30–4.38 | 4.30–4.39 | 4.31–4.43 | 4.28–4.29 |
+| hot (a few experts, no segment under 64 rows) | gate/up | 2.39 | | | 2.25 |
+| hot | down | 3.22 | | | 3.18 |
+
+The prefetch distance (3, 6, 10) moves nothing on either form. The
+reading was wrong about the bound: under Zipf routing the launch is a
+mix of weight streaming (419 MB a projection, a 1.5 ms floor at line
+rate; a segment under 16 rows is pure streaming) and compute, and the
+kernel sits within ~1.45x of the larger floor, so the warp tile returns
+2–3 %; under hot routing — the in-situ regime, where the recorded
+profile's launches take 1.9 ms (gate/up) and 2.4 ms (down) per
+4,096-token chunk — the kernel runs at 56–60 TF, 63–67 % of the
+measured dense bf16 rate (Marlin's class), and the four-warp
+register-decode form is 6 % faster on gate/up, 1.5 % on down: about −2 %
+of the prefill in situ, not the −10 % estimated. The lever that remains
+in the hot regime is B-tile reuse across more rows — a 128-row block
+tile (the decode and the B ldmatrix amortized over twice the rows) with
+a tile list that emits 128-row tiles for the large segments — worth
+perhaps another 8–10 % of the launch, i.e. −2..−3 % of the prefill.
+
+On the fabric (record sessions R21 / R21b; one binary, the form by env;
+cold prefill 2K / 8K / 32K, the 17K-prompt greedy sha every leg
+927ffd8a): a checkpoint transfer on the node from 16:28 to 16:35 spoiled
+one base and one four-warp leg (repeats at 6.7–7.0 s for 8K and 22.8 s
+for 32K); the clean legs around it:
+
+| leg | 2K | 8K | 32K |
+|---|---|---|---|
+| base1 (cold) | 1.339 | 4.449 | 17.628 |
+| wide4r1 | 1.297 | 4.342 | 17.686 |
+| base3 | 1.293 | 4.376 | 17.689 |
+| wide4r3 | 1.301 | 4.326 | 17.639 |
+| base4 | 1.294 | 4.381 | 17.698 |
+
+Against the 0.1 % base band: +0.6 / −1.2 / −0.3 %. Real at 8K, level
+elsewhere, bitwise. The eight-warp form stays the default (the headline
+cells do not move); variants 4 and 5 stay in the tree as tested opt-ins
+(`engine.expert_gemm`) and the `kWarps` parameterization is the
+base for the 128-row tile. The estimate that opened the round (−10 to
+−12 %) assumed an issue-bound kernel; the measurement says the in-situ
+launches already run at 63–67 % of the dense bf16 rate, so the remaining
+expert-GEMM lever is B-tile reuse, worth a few percent, and the larger
+prefill terms are now the dense stack (the fp8 GEMM at the bf16 rate,
+§6.15) and the per-chunk glue.
 
 ## 7. Defect list
 

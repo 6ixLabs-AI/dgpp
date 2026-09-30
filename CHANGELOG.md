@@ -6,6 +6,26 @@ The history by milestone. The dated engineering record in
 
 ## Unreleased
 
+- **Engine behavior is set by the deployment config, not the environment**
+  (2026-09-30): the switches this campaign had added as environment
+  variables are `engine.*` keys — `expert_gemm` (`wide` | `wide3` | `wide4` |
+  `wide4r` | `narrow`; was `DGPP_PACKQ_GEMM`), `expert_gemm_prefetch` (was
+  `DGPP_PACKQ_PREFETCH`), `expert_tile_list` (was `DGPP_MOE_TILE_LIST`),
+  `expert_gemm_pair` (was `DGPP_MOE_PACKQ_PAIR`) and `ngram_prestage` (was
+  `DGPP_QWEN_PLE_PRESTAGE`) — parsed and validated with the config, carried
+  to every rank in the worker record, applied through setters (the env reads
+  are gone; `packq_prefill_bench --prefetch N` sets the distance). The
+  remaining environment switches in the tree are the next sweep.
+- **The packed expert GEMM parameterized on its warp count** (2026-09-30,
+  round 21 of the [record](benchmarks/results/2026-09-28-qwen-autoround-int4/README.md),
+  plan §6.16): four-warp forms at 64 x 32 warp tiles (`engine.expert_gemm:
+  "wide4"`, the decoded tile; `"wide4r"`, register decode and three stages),
+  bitwise the shipped eight-warp kernel and gated so in `packq_gemm_test`.
+  Measured −2..−6 % on the launch in the bench and +0.6 / −1.2 / −0.3 % of
+  cold prefill on the fabric: the default stays the eight-warp form, the new
+  ones are opt-ins, and the record corrects the round's estimate (the
+  in-situ launches already run at 63–67 % of the dense bf16 rate).
+
 - **The prefill's accuracy trades as deployment keys, off by default**
   (2026-09-30, round 20 of the
   [record](benchmarks/results/2026-09-28-qwen-autoround-int4/README.md),

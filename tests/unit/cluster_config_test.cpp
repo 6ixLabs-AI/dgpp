@@ -121,8 +121,16 @@ DGPP_TEST(cluster_config_parses_fills_defaults_and_derives_the_world) {
               c.engine.rendezvous_timeout_ms == 120000 && !c.engine.reasoning_in_content &&
               c.engine.kv_dtype == "bf16" && c.engine.bf16_weights == "checkpoint" &&
               c.engine.fp8_head == "gemv" && !c.engine.prefill_bf16_partials && !c.engine.prefill_fold_scales &&
-              !c.engine.prefill_fp8_gemm,
+              !c.engine.prefill_fp8_gemm && c.engine.expert_gemm == "wide" && c.engine.expert_gemm_prefetch == 3 &&
+              c.engine.expert_tile_list && !c.engine.expert_gemm_pair && c.engine.ngram_prestage,
           "the engine defaults");
+  // The expert GEMM's form and companions (2026-09-30): keys, not environment switches.
+  const auto xg = dgpp::serve::parse_cluster_config(
+      R"({"model":"m","nodes":["h"],"engine":{"expert_gemm":"wide4r","expert_gemm_prefetch":0,"expert_tile_list":false,"expert_gemm_pair":true,"ngram_prestage":false}})",
+      "t");
+  require(xg.engine.expert_gemm == "wide4r" && xg.engine.expert_gemm_prefetch == 0 && !xg.engine.expert_tile_list &&
+              xg.engine.expert_gemm_pair && !xg.engine.ngram_prestage,
+          "the expert GEMM keys parse");
   // The opt-in prefill levers (2026-09-30): off unless the config says so.
   for (const std::string key : {"prefill_bf16_partials", "prefill_fold_scales", "prefill_fp8_gemm"}) {
     const auto on = dgpp::serve::parse_cluster_config(
@@ -305,6 +313,10 @@ DGPP_TEST(cluster_config_refusesUnknownKeysAndBadValuesByName) {
        "'engine.prefill_fold_scales' must be true or false"},
       {R"({"model":"m","nodes":["h"],"engine":{"prefill_fp8_gemm":"on"}})",
        "'engine.prefill_fp8_gemm' must be true or false"},
+      {R"({"model":"m","nodes":["h"],"engine":{"expert_gemm":"fast"}})",
+       "'engine.expert_gemm' must be \"wide\", \"wide3\", \"wide4\", \"wide4r\" or \"narrow\""},
+      {R"({"model":"m","nodes":["h"],"engine":{"expert_tile_list":"yes"}})",
+       "'engine.expert_tile_list' must be true or false"},
       {R"({"model":"m","nodes":["h"],"engine":{"fp8_head":"auto"}})",
        "'engine.fp8_head' must be \"gemv\" or \"mma\""},
       {R"({"model":"m","nodes":["h"],"engine":{"fp8_head":true}})",

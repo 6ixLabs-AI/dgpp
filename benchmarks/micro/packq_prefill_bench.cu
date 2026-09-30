@@ -300,6 +300,8 @@ int main(int argc, char** argv) try {
       sf = std::stoi(value);
     else if (key == "--variant")
       variant = std::stoi(value);
+    else if (key == "--prefetch")
+      dgpp::packq_gemm_set_prefetch(std::stoi(value));  // the L2 prefetch distance (default 3)
     else if (key == "--baseline")
       baseline = value;
     else if (key == "--tiles")

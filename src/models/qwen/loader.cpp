@@ -1127,6 +1127,11 @@ bool g_prefill_fp8_gemm = false;
 }
 void QwenLayerStream::set_prefill_fp8_gemm(bool on) { g_prefill_fp8_gemm = on; }
 bool QwenLayerStream::prefill_fp8_gemm() { return g_prefill_fp8_gemm; }
+namespace {
+bool g_ngram_prestage = true;
+}
+void QwenLayerStream::set_ngram_prestage(bool on) { g_ngram_prestage = on; }
+bool QwenLayerStream::ngram_prestage() { return g_ngram_prestage; }
 // Bit 8: the NVFP4 experts' activation scales live in the layer image (a
 // resident image written without them is rebuilt, not misread).
 uint64_t QwenLoaderFamily::loader_format() {
