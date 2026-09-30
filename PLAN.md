@@ -197,7 +197,12 @@ one-, three- and eight-split references, including model-level dispatch checks. 
 uses exact radix selection above 2048 pools, retaining the score arithmetic,
 tie order and workspace. QSA scoring storage follows the per-request context
 rather than the shared pool (2026-09-28), and no decode row is staged past the
-positional ceiling. Group admission is bitwise the prefills alone (2026-09-28:
+positional ceiling. Prefill scoring launches follow the visible history, and
+rows that select every pool bypass scoring and sorting. This shared Qwen path
+has NVFP4 coverage with BF16 and FP8 dense projections; a bounded decode-grid
+experiment was rejected after regressions on wider batches. See the
+[launch and selection validation](benchmarks/results/2026-09-30-qsa-launch-selection.md).
+Group admission is bitwise the prefills alone (2026-09-28:
 cuts only where a snapshot can stand, the prefill head over the mirrored rows).
 Grouped Qwen continuation and
 GLM-Flash row expansion are the next targets in the

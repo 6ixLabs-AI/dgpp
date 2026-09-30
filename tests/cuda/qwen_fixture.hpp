@@ -223,10 +223,13 @@ inline void write_fixture_for(const QwenTextConfig& cfg, const std::string& dir)
 
 // The engine test's fixture config: DGPP_TEST_QWEN_GPTQ=1 selects the
 // AutoRound hybrid (its dense stack ships as fp8: the test's main puts the
-// loader in the fp8 dense mode for the process).
+// loader in the fp8 dense mode for the process). DGPP_TEST_QWEN_NVFP4=1
+// selects NVFP4 experts, independently of the test's dense-weight mode.
 inline QwenTextConfig test_config() {
   const char* g = std::getenv("DGPP_TEST_QWEN_GPTQ");
   if (g != nullptr && g[0] == '1') return tiny_gptq_config();
+  const char* n = std::getenv("DGPP_TEST_QWEN_NVFP4");
+  if (n != nullptr && n[0] == '1') return tiny_nvfp4_config();
   return tiny_config();
 }
 

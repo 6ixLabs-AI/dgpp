@@ -436,7 +436,16 @@ set_tests_properties(qwen_forward_smoke PROPERTIES DEPENDS qwen_forward_fixture)
 add_test(NAME qwen_qsa_prefill
   COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/cuda/qwen_qsa_prefill_test.py
           $<TARGET_FILE:qwen_forward_test>)
-set_tests_properties(qwen_qsa_prefill PROPERTIES RUN_SERIAL TRUE TIMEOUT 180)
+set_tests_properties(qwen_qsa_prefill PROPERTIES RUN_SERIAL TRUE TIMEOUT 360)
+# QSA always sees BF16 activations, across both expert formats and dense modes.
+foreach(_dense_fp8 IN ITEMS 0 1)
+  add_test(NAME qwen_qsa_prefill_nvfp4_dense_${_dense_fp8}
+    COMMAND ${CMAKE_COMMAND} -E env DGPP_TEST_QWEN_NVFP4=1 DGPP_TEST_DENSE_FP8=${_dense_fp8}
+            ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/cuda/qwen_qsa_prefill_test.py
+            $<TARGET_FILE:qwen_forward_test>)
+  set_tests_properties(qwen_qsa_prefill_nvfp4_dense_${_dense_fp8}
+    PROPERTIES RUN_SERIAL TRUE TIMEOUT 360 LABELS "gpu")
+endforeach()
 # The same model under the engine's YaRN knob (engine.rope_scaling, factor 2
 # over the fixture's 4096 native positions): the table, the mscale and the
 # lifted ceiling through a whole forward, and logits that differ from the
@@ -1416,6 +1425,13 @@ add_test(NAME qwen_engine_gptq
   COMMAND ${CMAKE_COMMAND} -E env DGPP_TEST_QWEN_GPTQ=1 DGPP_TEST_DENSE_FP8=1 DGPP_TEST_FILTER=loopback_world_2
           $<TARGET_FILE:qwen_engine_test>)
 set_tests_properties(qwen_engine_gptq PROPERTIES RESOURCE_LOCK qwen_engine_world LABELS "gpu;rdma" RUN_SERIAL TRUE)
+foreach(_dense_fp8 IN ITEMS 0 1)
+  add_test(NAME qwen_engine_nvfp4_dense_${_dense_fp8}
+    COMMAND ${CMAKE_COMMAND} -E env DGPP_TEST_QWEN_NVFP4=1 DGPP_TEST_DENSE_FP8=${_dense_fp8}
+            DGPP_TEST_FILTER=wide $<TARGET_FILE:qwen_engine_test>)
+  set_tests_properties(qwen_engine_nvfp4_dense_${_dense_fp8}
+    PROPERTIES RESOURCE_LOCK qwen_engine_world LABELS "gpu;rdma" RUN_SERIAL TRUE)
+endforeach()
 set_tests_properties(qwen_engine_test qwen_engine_row_independent qwen_engine_bf12 PROPERTIES RESOURCE_LOCK qwen_engine_world)
 set_tests_properties(qwen_engine_row_independent qwen_engine_bf12 PROPERTIES LABELS "gpu;rdma" RUN_SERIAL TRUE)
 add_test(NAME qwen_engine_fp8_wide
@@ -1825,6 +1841,7 @@ if(DGPP_ENABLE_IBV)
   set_tests_properties(nic_regress_selftest PROPERTIES LABELS "gpu;rdma" RUN_SERIAL TRUE)
 endif()
 set_tests_properties(qwen_engine_row_independent qwen_engine_bf12
+  qwen_engine_nvfp4_dense_0 qwen_engine_nvfp4_dense_1
   qwen_engine_fp8_wide qwen_engine_fp8_mtp3_rows32
   qwen_engine_mtp3_rows32_row_independent qwen_engine_fp8_mtp3_rows64
   qwen_engine_mtp3_rows64_row_independent

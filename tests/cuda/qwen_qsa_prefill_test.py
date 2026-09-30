@@ -10,7 +10,7 @@ import sys
 import tempfile
 
 
-LENGTHS = (127, 128, 129, 256, 513, 1024)
+LENGTHS = (127, 128, 129, 256, 513, 1024, 2047, 2048, 2049, 2051, 2052, 2053)
 VOCAB = 512
 
 
@@ -31,7 +31,7 @@ def read_logits(path):
     return cases
 
 
-def compare(warp, partial):
+def compare(warp, partial, require_difference=True):
     changed_cases = 0
     for count in LENGTHS:
         got, want = warp[count], partial[count]
@@ -63,7 +63,7 @@ def compare(warp, partial):
                     raise AssertionError(f"{count} rows, row {row}: winner differs by {gap} BF16 ulps")
         print(f"[ OK ] {count} rows: worst relative L2 {worst_l2:.4g}, "
               f"{flips} near-tie winner changes, worst gap {worst_gap:.4g} BF16 ulps")
-    if not changed_cases:
+    if require_difference and not changed_cases:
         raise AssertionError("fixture did not exercise the warp/partial numerical difference")
 
 
@@ -83,9 +83,13 @@ def main():
                 env["DGPP_QSA_WARP"] = mode
             subprocess.run([executable, "--qsa-prefill", str(root / "fixture"),
                             "--logits", str(output)],
-                           env=env, check=True, timeout=75)
+                           env=env, check=True, timeout=150)
             cases[mode] = read_logits(output)
-        compare(cases["default"], cases["0"])
+        # The FP8 fixture pins dispatch sensitivity. NVFP4 expert rounding
+        # can hide the attention's small arithmetic differences, so exact
+        # agreement is valid there; every per-row numerical gate still holds.
+        compare(cases["default"], cases["0"],
+                require_difference=os.environ.get("DGPP_TEST_QWEN_NVFP4") != "1")
 
 
 if __name__ == "__main__":

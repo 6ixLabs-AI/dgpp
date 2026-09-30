@@ -96,13 +96,21 @@ void require(bool condition, const std::string& what) {
 
 int main(int argc, char** argv) {
   try {
-    int rows = 2, iters = 30, warmup = 5;
+    int rows = 2, iters = 30, warmup = 5, capacity = 0;
     std::vector<int> pools{16384, 65322, 131072};
-    bool graph = false;
+    bool graph = false, visible_bound = false, skip_select_all = false;
     for (int i = 1; i < argc; ++i) {
       const std::string arg = argv[i];
       if (arg == "--graph") {
         graph = true;
+        continue;
+      }
+      if (arg == "--visible-bound") {
+        visible_bound = true;
+        continue;
+      }
+      if (arg == "--skip-select-all") {
+        skip_select_all = true;
         continue;
       }
       if (i + 1 == argc) throw std::invalid_argument("missing value for " + arg);
@@ -124,11 +132,14 @@ int main(int argc, char** argv) {
           iters = value;
         else if (arg == "--warmup")
           warmup = value;
+        else if (arg == "--capacity")
+          capacity = value;
         else
           throw std::invalid_argument("unknown option " + arg);
       }
     }
     require(rows > 0 && rows <= 2048 && iters > 0 && warmup >= 0, "invalid rows/iterations");
+    require(capacity >= 0 && capacity <= (1 << 21), "invalid workspace capacity");
     for (int n : pools) require(n > 0 && n < (1 << 21) && 4 * n >= rows, "invalid pool count");
     int device;
     DGPP_CUDA_OK(cudaGetDevice(&device));
@@ -143,7 +154,9 @@ int main(int argc, char** argv) {
     constexpr int heads = 4, dim = 128, kpool = 4, ppb = 16, select_k = 512;
     constexpr int max_selected = select_k * kpool + kpool - 1;
     for (int n : pools) {
-      const int blocks = (n + ppb - 1) / ppb, stride = blocks * ppb;
+      const int blocks = (n + ppb - 1) / ppb;
+      const int stride = capacity ? capacity : blocks * ppb;
+      require(stride >= n, "workspace capacity smaller than visible pools");
       std::vector<uint16_t> q(static_cast<size_t>(rows) * heads * dim),
           cache(static_cast<size_t>(stride) * dim);
       std::mt19937 rng(20260921);
@@ -167,7 +180,8 @@ int main(int argc, char** argv) {
       dp.upload(pos);
       auto score = [&] {
         dgpp::qsa_index_score(dq.p, heads * dim, dr.p, dp.p, rows, dt.p, blocks, dc.p, ppb, heads,
-                              dim, kpool, keys.p, stride, stream);
+                              dim, kpool, keys.p, stride, stream, visible_bound ? n : -1,
+                              skip_select_all ? select_k : 0);
       };
       auto select = [&] {
         dgpp::qsa_select_from_keys(keys.p, stride, dp.p, rows, select_k, kpool, max_selected,
@@ -191,9 +205,11 @@ int main(int argc, char** argv) {
           std::memcpy(&bits, &value, sizeof(bits));
           const uint32_t sortable = bits >> 31 ? ~bits : bits | 0x80000000u;
           const uint64_t key = (static_cast<uint64_t>(~sortable) << 21) | p;
-          require(got_keys[static_cast<size_t>(r) * stride + p] == key,
-                  "score key differs from host oracle");
-          ++checked_keys;
+          if (!skip_select_all || visible > select_k) {
+            require(got_keys[static_cast<size_t>(r) * stride + p] == key,
+                    "score key differs from host oracle");
+            ++checked_keys;
+          }
         }
         std::vector<int32_t> ids, tokens;
         dgpp::qwen_ref::qsa_select(scores, select_k, ids);
@@ -223,14 +239,17 @@ int main(int argc, char** argv) {
                                                : stage == "combined" ? dim * 2 + 8
                                                                      : 0);
           std::printf(
-              "{\"rows\":%d,\"pools\":%d,\"graph\":%s,\"cache\":\"%s\",\"stage\":\"%s\","
+              "{\"rows\":%d,\"pools\":%d,\"capacity\":%d,\"visible_bound\":%s,\"skip_select_all\":%"
+              "s,"
+              "\"graph\":%s,\"cache\":\"%s\",\"stage\":\"%s\","
               "\"iterations\":%d,\"median_us\":%.3f,\"mean_us\":%.3f,\"min_us\":%.3f,\"p95_us\":%."
               "3f,"
               "\"logical_input_GB_s\":%.3f,\"oracle_keys\":%zu,\"oracle_tokens\":%zu,"
               "\"mismatches\":0}\n",
-              rows, n, graph ? "true" : "false", cold ? "cold" : "warm", stage.c_str(), iters,
-              median, mean, times.front(), times[(times.size() - 1) * 95 / 100],
-              bytes / (median * 1000), checked_keys, checked_tokens);
+              rows, n, stride, visible_bound ? "true" : "false", skip_select_all ? "true" : "false",
+              graph ? "true" : "false", cold ? "cold" : "warm", stage.c_str(), iters, median, mean,
+              times.front(), times[(times.size() - 1) * 95 / 100], bytes / (median * 1000),
+              checked_keys, checked_tokens);
           std::fflush(stdout);
         }
       }
