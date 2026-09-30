@@ -35,6 +35,7 @@ enable_language(CUDA)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 option(DGPP_WERROR "Treat compiler warnings as errors" OFF)
+option(DGPP_BUILD_BENCHMARKS "Build platform, kernel and transport microbenchmarks" ON)
 set(DGPP_SANITIZE "" CACHE STRING "Host sanitizer (address or undefined)")
 set_property(CACHE DGPP_SANITIZE PROPERTY STRINGS "" address undefined)
 
@@ -1677,102 +1678,111 @@ if(DGPP_ENABLE_IBV)
   set_tests_properties(bus_selftest PROPERTIES SKIP_RETURN_CODE 2)
 endif()
 
-add_executable(micro_mem_bw benchmarks/micro/mem_bw.cu src/common/log.cpp)
-target_link_libraries(micro_mem_bw PRIVATE CUDA::cudart Threads::Threads)
-dgpp_set_common(micro_mem_bw)
+# Serving does not depend on the standalone benchmark sources.
+if(DGPP_BUILD_BENCHMARKS)
+  # Benchmark sources can be locally ignored or omitted from a checkout.
+  # Check every source, including auxiliary translation units, before defining
+  # the target so no target properties refer to a skipped benchmark.
+  function(dgpp_add_benchmark target)
+    cmake_parse_arguments(BENCH "" "" "SOURCES;LIBRARIES;INCLUDE_DIRECTORIES" ${ARGN})
+    foreach(source IN LISTS BENCH_SOURCES)
+      if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${source}")
+        message(STATUS "Skipping benchmark ${target}: missing ${source}")
+        return()
+      endif()
+    endforeach()
+    add_executable(${target} ${BENCH_SOURCES})
+    target_link_libraries(${target} PRIVATE ${BENCH_LIBRARIES})
+    if(BENCH_INCLUDE_DIRECTORIES)
+      target_include_directories(${target} PRIVATE ${BENCH_INCLUDE_DIRECTORIES})
+    endif()
+    dgpp_set_common(${target})
+  endfunction()
 
-add_executable(micro_zerocopy benchmarks/micro/zerocopy.cu src/common/log.cpp)
-target_link_libraries(micro_zerocopy PRIVATE CUDA::cudart Threads::Threads)
-dgpp_set_common(micro_zerocopy)
+  dgpp_add_benchmark(micro_mem_bw
+    SOURCES benchmarks/micro/mem_bw.cu src/common/log.cpp
+    LIBRARIES CUDA::cudart Threads::Threads)
 
-add_executable(micro_gemv_bw benchmarks/micro/gemv_bw.cu)
-target_include_directories(micro_gemv_bw PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(micro_gemv_bw PRIVATE dgpp_kernels CUDA::cudart)
-dgpp_set_common(micro_gemv_bw)
+  dgpp_add_benchmark(micro_zerocopy
+    SOURCES benchmarks/micro/zerocopy.cu src/common/log.cpp
+    LIBRARIES CUDA::cudart Threads::Threads)
 
-add_executable(micro_gemm_peak benchmarks/micro/gemm_peak.cu src/common/log.cpp)
-target_link_libraries(micro_gemm_peak PRIVATE CUDA::cudart CUDA::cublasLt)
-dgpp_set_common(micro_gemm_peak)
+  dgpp_add_benchmark(micro_gemv_bw
+    SOURCES benchmarks/micro/gemv_bw.cu
+    LIBRARIES dgpp_kernels CUDA::cudart)
 
-add_executable(kda_bench benchmarks/micro/kda_bench.cu src/common/log.cpp)
-target_link_libraries(kda_bench PRIVATE dgpp_models_kda CUDA::cudart CUDA::cublasLt)
-dgpp_set_common(kda_bench)
+  dgpp_add_benchmark(micro_gemm_peak
+    SOURCES benchmarks/micro/gemm_peak.cu src/common/log.cpp
+    LIBRARIES CUDA::cudart CUDA::cublasLt)
 
-add_executable(moe_slot_bench benchmarks/micro/moe_slot_bench.cu src/common/log.cpp)
-add_executable(qwen_dense_bench benchmarks/micro/qwen_dense_bench.cu src/common/log.cpp)
-target_include_directories(qwen_dense_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(qwen_dense_bench PRIVATE dgpp_kernels CUDA::cudart)
-dgpp_set_common(qwen_dense_bench)
-add_executable(mhc_site_bench benchmarks/micro/mhc_site_bench.cu src/common/log.cpp)
-target_include_directories(mhc_site_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(mhc_site_bench PRIVATE dgpp_kernels CUDA::cudart)
-dgpp_set_common(mhc_site_bench)
-add_executable(moe_tile_bench benchmarks/micro/moe_tile_bench.cu src/common/log.cpp)
-target_include_directories(moe_tile_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(moe_tile_bench PRIVATE dgpp_models_glm_loader dgpp_models_glm CUDA::cudart CUDA::cublasLt)
-dgpp_set_common(moe_tile_bench)
-add_executable(moe_prefill_bench benchmarks/micro/moe_prefill_bench.cu benchmarks/micro/moe_prefill_variants.cu)
-target_include_directories(moe_prefill_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(moe_prefill_bench PRIVATE dgpp_kernels CUDA::cudart)
-dgpp_set_common(moe_prefill_bench)
-add_executable(packq_prefill_bench benchmarks/micro/packq_prefill_bench.cu)
-target_include_directories(packq_prefill_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(packq_prefill_bench PRIVATE dgpp_kernels CUDA::cudart)
-dgpp_set_common(packq_prefill_bench)
-target_include_directories(moe_slot_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(moe_slot_bench PRIVATE dgpp_models_glm_loader dgpp_models_glm CUDA::cudart CUDA::cublasLt)
-dgpp_set_common(moe_slot_bench)
+  dgpp_add_benchmark(kda_bench
+    SOURCES benchmarks/micro/kda_bench.cu src/common/log.cpp
+    LIBRARIES dgpp_models_kda CUDA::cudart CUDA::cublasLt)
 
-add_executable(mimo_step_bench benchmarks/micro/mimo_step_bench.cu src/common/log.cpp)
-target_include_directories(mimo_step_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(mimo_step_bench PRIVATE dgpp_models_moe dgpp_models_glm dgpp_kernels CUDA::cudart CUDA::cublasLt)
-dgpp_set_common(mimo_step_bench)
+  dgpp_add_benchmark(moe_slot_bench
+    SOURCES benchmarks/micro/moe_slot_bench.cu src/common/log.cpp
+    LIBRARIES dgpp_models_glm_loader dgpp_models_glm CUDA::cudart CUDA::cublasLt)
+  dgpp_add_benchmark(qwen_dense_bench
+    SOURCES benchmarks/micro/qwen_dense_bench.cu src/common/log.cpp
+    LIBRARIES dgpp_kernels CUDA::cudart)
+  dgpp_add_benchmark(mhc_site_bench
+    SOURCES benchmarks/micro/mhc_site_bench.cu src/common/log.cpp
+    LIBRARIES dgpp_kernels CUDA::cudart)
+  dgpp_add_benchmark(moe_tile_bench
+    SOURCES benchmarks/micro/moe_tile_bench.cu src/common/log.cpp
+    LIBRARIES dgpp_models_glm_loader dgpp_models_glm CUDA::cudart CUDA::cublasLt)
+  dgpp_add_benchmark(moe_prefill_bench
+    SOURCES benchmarks/micro/moe_prefill_bench.cu benchmarks/micro/moe_prefill_variants.cu
+    LIBRARIES dgpp_kernels CUDA::cudart)
+  dgpp_add_benchmark(packq_prefill_bench
+    SOURCES benchmarks/micro/packq_prefill_bench.cu
+    LIBRARIES dgpp_kernels CUDA::cudart)
 
-add_executable(dsa_select_bench benchmarks/micro/dsa_select_bench.cu)
-target_include_directories(dsa_select_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(dsa_select_bench PRIVATE dgpp_models_dsa CUDA::cudart)
-dgpp_set_common(dsa_select_bench)
+  dgpp_add_benchmark(mimo_step_bench
+    SOURCES benchmarks/micro/mimo_step_bench.cu src/common/log.cpp
+    LIBRARIES dgpp_models_moe dgpp_models_glm dgpp_kernels CUDA::cudart CUDA::cublasLt)
 
-add_executable(qsa_prefill_bench benchmarks/micro/qsa_prefill_bench.cu)
-target_link_libraries(qsa_prefill_bench PRIVATE dgpp_kernels CUDA::cudart)
-dgpp_set_common(qsa_prefill_bench)
+  dgpp_add_benchmark(dsa_select_bench
+    SOURCES benchmarks/micro/dsa_select_bench.cu
+    LIBRARIES dgpp_models_dsa CUDA::cudart)
 
-add_executable(qsa_index_bench benchmarks/micro/qsa_index_bench.cu)
-target_link_libraries(qsa_index_bench PRIVATE dgpp_models_qwen dgpp_kernels CUDA::cudart)
-dgpp_set_common(qsa_index_bench)
+  dgpp_add_benchmark(qsa_prefill_bench
+    SOURCES benchmarks/micro/qsa_prefill_bench.cu
+    LIBRARIES dgpp_kernels CUDA::cudart)
 
-add_executable(csa2_select_bench benchmarks/micro/csa2_select_bench.cu)
-target_link_libraries(csa2_select_bench PRIVATE dgpp_kernels CUDA::cudart)
-dgpp_set_common(csa2_select_bench)
+  dgpp_add_benchmark(qsa_index_bench
+    SOURCES benchmarks/micro/qsa_index_bench.cu
+    LIBRARIES dgpp_models_qwen dgpp_kernels CUDA::cudart)
 
-add_executable(dsa_bench benchmarks/micro/dsa_bench.cu src/common/log.cpp)
-target_link_libraries(dsa_bench PRIVATE dgpp_models_dsa CUDA::cudart CUDA::cublasLt)
-dgpp_set_common(dsa_bench)
+  dgpp_add_benchmark(csa2_select_bench
+    SOURCES benchmarks/micro/csa2_select_bench.cu
+    LIBRARIES dgpp_kernels CUDA::cudart)
 
-if(DGPP_ENABLE_IBV)
-  add_executable(micro_gdr_probe benchmarks/micro/gdr_probe.cpp src/common/log.cpp)
-  target_link_libraries(micro_gdr_probe PRIVATE CUDA::cudart)
-  dgpp_set_common(micro_gdr_probe)
-  target_link_libraries(micro_gdr_probe PRIVATE ${IBVERBS_LIBRARY})
-  target_include_directories(micro_gdr_probe PRIVATE ${IBVERBS_INCLUDE_DIR})
+  dgpp_add_benchmark(dsa_bench
+    SOURCES benchmarks/micro/dsa_bench.cu src/common/log.cpp
+    LIBRARIES dgpp_models_dsa CUDA::cudart CUDA::cublasLt)
 
-  # The send-doorbell mapping probe (2026-09-19): mlx5 direct verbs, only
-  # where libmlx5 is installed.
-  find_library(MLX5_LIBRARY NAMES mlx5)
-  if(MLX5_LIBRARY)
-    add_executable(micro_uar_probe benchmarks/micro/uar_probe.cpp)
-    dgpp_set_common(micro_uar_probe)
-    target_link_libraries(micro_uar_probe PRIVATE ${MLX5_LIBRARY} ${IBVERBS_LIBRARY} CUDA::cudart)
-    target_include_directories(micro_uar_probe PRIVATE ${IBVERBS_INCLUDE_DIR})
+  if(DGPP_ENABLE_IBV)
+    dgpp_add_benchmark(micro_gdr_probe
+      SOURCES benchmarks/micro/gdr_probe.cpp src/common/log.cpp
+      LIBRARIES CUDA::cudart ${IBVERBS_LIBRARY}
+      INCLUDE_DIRECTORIES ${IBVERBS_INCLUDE_DIR})
+
+    # The send-doorbell mapping probe (2026-09-19): mlx5 direct verbs, only
+    # where libmlx5 is installed.
+    find_library(MLX5_LIBRARY NAMES mlx5)
+    if(MLX5_LIBRARY)
+      dgpp_add_benchmark(micro_uar_probe
+        SOURCES benchmarks/micro/uar_probe.cpp
+        LIBRARIES ${MLX5_LIBRARY} ${IBVERBS_LIBRARY} CUDA::cudart
+        INCLUDE_DIRECTORIES ${IBVERBS_INCLUDE_DIR})
+    endif()
+
+    dgpp_add_benchmark(micro_ibv_smoke
+      SOURCES benchmarks/micro/ibv_smoke.cpp src/net/nic_visibility.cu src/common/log.cpp
+      LIBRARIES ${IBVERBS_LIBRARY} CUDA::cudart
+      INCLUDE_DIRECTORIES ${IBVERBS_INCLUDE_DIR})
   endif()
-
-  add_executable(micro_ibv_smoke
-    benchmarks/micro/ibv_smoke.cpp
-    src/net/nic_visibility.cu
-    src/common/log.cpp)
-  target_link_libraries(micro_ibv_smoke PRIVATE ${IBVERBS_LIBRARY} CUDA::cudart)
-  target_include_directories(micro_ibv_smoke PRIVATE ${IBVERBS_INCLUDE_DIR})
-  dgpp_set_common(micro_ibv_smoke)
 endif()
 
 # Labels describe resources, not coverage guarantees. Some real-checkpoint

@@ -307,6 +307,10 @@ use a custom build directory. The separate `ci` preset retains debug symbols
 in `build-ci/` for [testing](testing.md); deploy that build explicitly with
 `--bin build-ci/dgpp-serve` when diagnosing a problem.
 
+The `release` and `spark-cross` presets leave microbenchmarks out of the build
+configuration. To build them, configure with `-DDGPP_BUILD_BENCHMARKS=ON` and
+select the desired target; see [benchmark build instructions](../benchmarks/README.md#build).
+
 CMake searches `PATH` and the conventional `/usr/local/cuda/bin` location.
 For a different installation, or after a failed configure, select the compiler
 explicitly and clear the old configure cache:

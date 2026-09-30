@@ -6,6 +6,11 @@ The history by milestone. The dated engineering record in
 
 ## Unreleased
 
+- **Restore clean-checkout builds** ([#70](https://github.com/HawkBearPig/dgpp/issues/70)):
+  skip optional microbenchmark targets when any of their source files are
+  absent, including the locally ignored `qwen_dense_bench.cu`.
+  `DGPP_BUILD_BENCHMARKS` controls these targets; production presets disable
+  them. Missing files under `benchmarks/` no longer block configuration.
 - **The hybrid's prefill: the n-gram rows of the next chunk gathered
   while this one runs** (2026-09-30, round 19 of the
   [record](benchmarks/results/2026-09-28-qwen-autoround-int4/README.md)):
