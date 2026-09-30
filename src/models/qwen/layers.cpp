@@ -541,7 +541,7 @@ void QwenGdnLayer::in_projections(const uint16_t* x, int tokens, cudaStream_t st
 void QwenGdnLayer::enqueue(const uint16_t* x, float* recurrent_state, uint16_t* conv_state,
                            uint16_t* out, int tokens, cudaStream_t stream,
                            const KdaStateSnapshots& rec_snap, const KdaConvSnapshots& conv_snap,
-                           const KdaReplay& replay, bool resume = false) {
+                           const KdaReplay& replay, bool resume) {
   if (tokens <= 0) return;
   if (tokens > max_tokens_) throw std::invalid_argument("QwenGdnLayer: tokens exceed max_tokens");
   if (!(w_.in_proj_qkv || w_.in_proj_qkv_fp8.payload) || !w_.conv || !(w_.in_proj_z || w_.in_proj_z_fp8.payload) ||
