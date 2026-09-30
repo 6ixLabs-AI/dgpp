@@ -294,8 +294,23 @@ class QwenPleLayer {
   // node) — every path stages from the device's own tokens and context,
   // so nothing mirrors them on the host.
   bool staged() const { return table_.mmap != nullptr; }
+  // `host_ids` / `pos0` (a scalar prefill chunk's host ids and first
+  // position) let stage() recognize the chunk a prestage() already
+  // gathered and skip its own hash and gather.
   void stage(const int64_t* tokens, int rows, const int32_t* req_ids, const int64_t* pos,
-             const int32_t* req_spans, int num_requests, const int32_t* ctx, cudaStream_t stream);
+             const int32_t* req_spans, int num_requests, const int32_t* ctx, cudaStream_t stream,
+             const int64_t* host_ids = nullptr, int64_t pos0 = -1, int req = -1);
+  // The chunk-ahead staging (2026-09-30; the thread form only): the NEXT
+  // chunk's rows hashed from its host ids (uploaded here), their n-gram
+  // context the current chunk's last two tokens, and published on a second
+  // channel the gather thread serves while this chunk's layers run — the
+  // 32K prefill profile had 56 ms of stage_wait a 4,096-token chunk, the
+  // gather of 65K table rows from NVMe outrunning the two layers before
+  // the PLE layer. The next stage() with matching (host_ids, rows, pos0)
+  // takes the prestaged rows; anything else drops them. Decode steps
+  // between the chunks keep the main channel (their captured graphs).
+  void prestage(const int64_t* host_ids, int rows, int64_t pos0, int req, int32_t ctx_t1, int32_t ctx_t2,
+                cudaStream_t stream);
   // A staging that failed on the host (an id outside the table) surfaces
   // here — the next stage() throws it too.
   void check_staged() const;
@@ -361,6 +376,33 @@ class QwenPleLayer {
   uint64_t* d_wait_seq_ = nullptr;   // device: the wait count
   uint64_t* h_done_seq_ = nullptr;   // pinned: the thread's answer
   uint32_t* h_late_ = nullptr;       // pinned: a wait that timed out
+  // The prestage channel (see prestage()): its pinned ids and staging, its
+  // publish / done words, the device inputs its hash kernel reads.
+  int32_t* h_pre_ids_ = nullptr;
+  int32_t* pre_ids_ = nullptr;
+  uint8_t* pre_staged_ = nullptr;
+  uint64_t* d_pre_seq_ = nullptr;
+  uint64_t* h_pre_seq_ = nullptr;
+  int32_t* h_pre_rows_ = nullptr;
+  uint64_t* d_pre_wait_seq_ = nullptr;
+  uint64_t* h_pre_done_seq_ = nullptr;
+  uint64_t* h_pre_need_ = nullptr;     // pinned: the wait word's resync value
+  int64_t* d_pre_tokens_ = nullptr;
+  int64_t* d_pre_pos_ = nullptr;
+  int32_t* d_pre_req_ = nullptr;
+  int32_t* d_pre_spans_ = nullptr;
+  int32_t* d_pre_ctx_ = nullptr;
+  int64_t* h_pre_tokens_ = nullptr;
+  int64_t* h_pre_pos_ = nullptr;
+  int32_t* h_pre_ctx_ = nullptr;
+  const int64_t* pre_host_ids_ = nullptr;  // the prestaged chunk's identity
+  int pre_rows_ = 0;
+  int64_t pre_pos0_ = -1;
+  int pre_req_ = -1;
+  uint64_t pre_publishes_ = 0;
+  bool pre_pending_ = false;   // a prestage published, not yet claimed
+  bool use_pre_ = false;       // the pending stage reads the prestage channel
+  bool pre_check_ = false;     // the self-check: both channels gathered, compared at embed()
   std::thread gather_thread_;
   std::atomic<bool> gather_stop_{false};
   std::atomic<int> gather_error_{0};

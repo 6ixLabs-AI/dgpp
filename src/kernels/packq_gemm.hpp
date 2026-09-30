@@ -17,7 +17,9 @@ constexpr int kPackqMmaFromRows = 128;
 // These explicit GEMM entry points do not change the GEMV decode launchers.
 // `variant` (2026-09-29): -1 = the default kernel (the 64 x 128 wide tile
 // for int4 rows unless DGPP_PACKQ_GEMM=narrow), 0 = the narrow 32 x 64
-// kernel, 1 = the wide one. Both give bitwise the same D.
+// kernel, 1 = the wide one, 2 (2026-09-30, DGPP_PACKQ_GEMM=wide3) = the
+// wide tile with its B fragments decoded in registers and three pipeline
+// stages. All give bitwise the same D.
 void launch_packq_gemm_bf16(const uint16_t* act, size_t act_stride, const GlmPackedMatrix& w,
                             uint16_t* out, int m, int n, int k, cudaStream_t stream);
 void launch_packq_gemm_f32(const uint16_t* act, size_t act_stride, const GlmPackedMatrix& w,
@@ -41,6 +43,11 @@ void launch_packq_gemm_f32_variant(const uint16_t* act, size_t act_stride, const
 // blocks do the same tiles: bitwise). Any max_rows > 0 is accepted with a
 // list; the narrow kernel ignores the list and keeps the max_rows grid.
 constexpr int kPackqGemmWideRows = 64;
+// `out2` / `which2` (2026-09-30, the bf16 form): a second projection of the
+// same segments in the same launch — the wide kernel's n-tiles past `n`
+// read view `which2` and write `out2` (the same stride), each token row
+// gathered once for both; every element's chain is the separate launch's
+// (bitwise). The gate and up projections of the packed chain run so.
 void launch_moe_grouped_mma_packq_bf16(const uint16_t* act, size_t act_stride,
                                        const MoeSegment* segs, int n_segs, int max_rows,
                                        const MoeExpertView* views, int which, uint16_t* out,
@@ -48,7 +55,8 @@ void launch_moe_grouped_mma_packq_bf16(const uint16_t* act, size_t act_stride,
                                        cudaStream_t stream, const int32_t* act_rows = nullptr,
                                        int scale_fmt = 0, int variant = -1,
                                        const MoeTile* tiles = nullptr,
-                                       const int32_t* tile_count = nullptr, int tile_cap = 0);
+                                       const int32_t* tile_count = nullptr, int tile_cap = 0,
+                                       uint16_t* out2 = nullptr, int which2 = -1);
 void launch_moe_grouped_mma_packq_f32(const uint16_t* act, size_t act_stride,
                                       const MoeSegment* segs, int n_segs, int max_rows,
                                       const MoeExpertView* views, int which, float* out,

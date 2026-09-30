@@ -136,6 +136,12 @@ class SessionModel : public PrefillReporting {
     const int64_t* span_pos0 = nullptr;
     const int32_t* span_lens = nullptr;
     int num_spans = 0;
+    // The scalar prefill's following chunk (host ids, rows, first
+    // position; next_T 0 when this is the last), for a family that can
+    // stage the next chunk's inputs while this one runs.
+    const int64_t* next_ids = nullptr;
+    int next_T = 0;
+    int64_t next_pos0 = 0;
   };
   // The staged inputs of a walk (begin_run).
   struct RowInputs {
@@ -813,6 +819,16 @@ void SessionModel<D>::prefill_chunk(PrefillCursor& cursor, int64_t budget) {
   for (auto* at = snap; at != nullptr; at = at->next)
     run.last_chunk |= !at->taken && at->position == c1;
   cursor.span_start = run.last_chunk;
+  if (c1 < end) {
+    // The chunk after this one on the same grid and cuts.
+    int64_t c2 = cursor.cut_index < cursor.cuts.size() ? cursor.cuts[cursor.cut_index] : end;
+    if (budget > 0) c2 = std::min(c2, (c1 / budget + 1) * budget);
+    if (c2 > c1 && c2 - c1 <= max_tokens_) {
+      run.next_ids = ids + (c1 - start);
+      run.next_T = static_cast<int>(c2 - c1);
+      run.next_pos0 = c1;
+    }
+  }
   Outputs chunk = derived().run_rows(run);
   out.logits = std::move(chunk.logits);
   out.final_hidden_bits = std::move(chunk.final_hidden_bits);

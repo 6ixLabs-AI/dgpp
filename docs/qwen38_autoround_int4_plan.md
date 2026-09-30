@@ -936,6 +936,45 @@ latency still on the table. On the fabric (session U, four legs, bitwise
 by the long-prompt sha): 2K 1.40 → 1.29 s, 8K 4.61 → 4.42, 32K 18.46 →
 17.82 (−7 / −4 / −4 %); 32K at 1,840 tok/s.
 
+### 6.14 The reference on this box, and round 19 (2026-09-30)
+
+The author's stack — their repository on the pinned
+`vllm/vllm-openai:qwen38-flash-next` image with NVIDIA's model package,
+their serve settings, the n-gram table mmap'ed from the local FP8 snapshot
+— served here and probed with our prompts: best of two 1.12 / 4.42 / 15.42
+s at 2K / 8K / 32K against our 1.29 / 4.41 / 17.7. The card's ~2,100 tok/s
+holds at 32K on an NVMe-backed table; at 2K–8K the reference runs ~1,825.
+Its kernels per 8,192-token chunk (nsys inside the container; the trace
+loses its last ~40 s at shutdown even with buffer flushes, but complete
+chunks were captured): Marlin experts 677 ms against our 1,250; fp8
+blockwise cutlass dense GEMMs 580 against our bf16 822 + dequant 114;
+moe_sum over bf16 partials 97 against our fp32 ordered 310; the GDN chunk
+kernels 462 against 540; the QSA attention, indexer and the
+hyper-connection glue level; its n-gram gather a synchronous ~0.4 s gap
+per chunk against our 56 ms per 4,096-token chunk. Their lead is the
+expert GEMM's efficiency (a bitwise problem on our side) and two
+accuracy trades (fp8 activations on the dense stack, bf16 partials).
+
+Round 19 (`benchmarks/results/2026-09-28-qwen-autoround-int4/README.md`,
+sessions X–Z3): SHIPPED the chunk-ahead n-gram staging — the next chunk's
+rows hashed from its host ids and gathered on a second channel the gather
+thread serves while this chunk's layers run, issued after the PLE layer
+consumed the staging (its first form, issued at the chunk's start,
+overwrote the one buffer under the chunk still reading it: the in-situ
+self-check counted exactly the following chunk's rows corrupted), the
+claim keyed on the request, rows, position, ids pointer and a first/last
+token check. −0.65..−0.75 s at 32K with a cold table, level when warm,
+bitwise. Measured and not shipped: the four-token router tile (+0.25 s at
+32K in situ), the combine-norm's batched loads (neutral), the
+register-decode three-stage expert GEMM (level; opt-in), the gate and up
+projections as one launch (level to +1 %; opt-in). The bf16 down
+partials (−3..−4 %, not bitwise) stay opt-in. Left: the expert GEMM at
+~40–45 % of the tensor peak against Marlin's ~65 % — ncu on device
+memory shows it issue-side bound (barrier 24 %, wait 15 %, long
+scoreboard 15 % of the warp cycles; two barriers a k-step, a 32 x 32
+warp tile), so the next form is a larger warp tile with the same chain —
+and the two accuracy trades.
+
 ## 7. Defect list
 
 Each item is a measured or suspected distance from a floor, with its fix.

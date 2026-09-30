@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "model": "qwen",
+  "tag": "profile-8192-1790742034",
+  "seed": 7,
+  "thinking": false,
+  "interval_s": 0,
+  "data_sha256": "3730d312f6e3440559ace48831e51066acaca737f6eabec99bccb9e4b3c39d14",
+  "calibration": {
+    "prompt_sha256": "d92e9dcb25d412ca77987663d5546c5ed79e57bc6796ea6d20981299bc19294f",
+    "usage": {
+      "prompt_tokens": 561,
+      "completion_tokens": 1,
+      "total_tokens": 562,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      },
+      "completion_tokens_details": {
+        "reasoning_tokens": 0
+      }
+    },
+    "finish": "length",
+    "text": "The",
+    "wall_ms": 504.82119410298765,
+    "ttft_ms": 504.7765380004421
+  },
+  "samples": [
+    {
+      "prompt_sha256": "08c724621e1ae7591aaa696ed0d00d3c5994a08e25781016c66ed8ed8c710420",
+      "usage": {
+        "prompt_tokens": 8151,
+        "completion_tokens": 1,
+        "total_tokens": 8152,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0
+        }
+      },
+      "finish": "length",
+      "text": "The",
+      "wall_ms": 4440.086232032627,
+      "ttft_ms": 4440.009417012334,
+      "prompt_tokens": 8151,
+      "cached_tokens": 0,
+      "computed_tokens": 8151,
+      "prefill_ms": 4424.8,
+      "prefill_ms_per_token": 0.5428536375904797,
+      "requested_tokens": 8192,
+      "repeat": 0
+    }
+  ]
+}

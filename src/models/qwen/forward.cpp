@@ -912,7 +912,9 @@ QwenModel::Outputs QwenModel::run_rows(const RowRun& run) {
   // host's gather forked off here, joined at the PLE layer's turn.
   if (has_ple_ && table_.mmap) {
     if (!ple_) build_layer_objects(loader_.load_layer(cfg_.ple_layer()));
-    ple_->stage(tokens, T, d_req, d_pos, d_spans, num_requests, d_ctx_, stream_);
+    const bool scalar_prefill = !run.decode && run.num_spans == 0 && run.batch_requests == 0;
+    ple_->stage(tokens, T, d_req, d_pos, d_spans, num_requests, d_ctx_, stream_,
+                scalar_prefill ? run.ids : nullptr, scalar_prefill ? run.pos0 : -1, scalar_prefill ? run.req : -1);
   }
   glm_embed_bcast_streams(globals_.embed, tokens, r_, T, H, stream_);
   // Image rows replace the embedding at their prompt positions; the tower
@@ -964,6 +966,16 @@ QwenModel::Outputs QwenModel::run_rows(const RowRun& run) {
       QwenGrSite::apply_pending(r_, pend, T, H, stream_);  // finish() reads and writes R
       pend = {};
       ple_->embed(tokens, T, d_req, d_pos, d_spans, num_requests, d_ctx_, stream_);
+      // The next chunk of this prompt gathered while the rest of this one
+      // runs (its n-gram context: this chunk's last two tokens). Issued
+      // here, after the gather kernel consumed the staging, so the one
+      // prestage buffer is never rewritten under a chunk still reading it
+      // (the wait and the conversion precede the new publish in stream
+      // order).
+      if (table_.mmap && !run.decode && run.num_spans == 0 && run.batch_requests == 0 && run.next_T > 0 &&
+          run.next_ids != nullptr && T >= 2)
+        ple_->prestage(run.next_ids, run.next_T, run.next_pos0, run.req, static_cast<int32_t>(run.ids[T - 1]),
+                       static_cast<int32_t>(run.ids[T - 2]), stream_);
       // The context AFTER every row into the spec rows, the last real
       // row's in place (the hash above read the incoming context).
       qwen_ple_context_rows(tokens, T, d_req, d_pos, d_spans, num_requests, d_ctx_, spec_ctx_, stream_);

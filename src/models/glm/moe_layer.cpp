@@ -765,7 +765,17 @@ void GlmMoeLayer::grouped_expert_chain(MoeExpertKernel kernel,
   // unless DGPP_MOE_W4A4_F32_DOWN=1; only without a shared segment, whose
   // rows would share the buffer in fp32.
   static const bool f32_down = std::getenv("DGPP_MOE_W4A4_F32_DOWN") != nullptr;
-  down_bf16_ = w4a4 && shared_seg == nullptr && !f32_down;
+  // OPT-IN, NOT BITWISE (2026-09-30, DGPP_MOE_PACKQ_DOWN_BF16=1): the packed
+  // chain's down projection written in bf16 and accumulated from bf16
+  // partials (the reference stack's form: half the 419 MB a 4,096-token
+  // chunk writes and reads back); the fp32 partials' ordered chain is the
+  // default and the served transcripts' contract.
+  static const bool packq_down_bf16 = [] {
+    const char* e = std::getenv("DGPP_MOE_PACKQ_DOWN_BF16");
+    return e != nullptr && e[0] != '\0' && e[0] != '0';
+  }();
+  const bool packq_mma_bf16_down = packq && kernel == MoeExpertKernel::kMma && packq_down_bf16;
+  down_bf16_ = (w4a4 || packq_mma_bf16_down) && shared_seg == nullptr && !f32_down;
   if (w4a4) {
     static const bool logged = [&] {
       DGPP_LOG_INFO("moe: W4A4 NVFP4 prefill experts on ({} activation scale; DGPP_MOE_W4A4=0 turns it off)",
@@ -839,7 +849,13 @@ void GlmMoeLayer::grouped_expert_chain(MoeExpertKernel kernel,
   auto gemm_f32 = [&](const MoeSegment* sg, int ns, int mr, int split, int k,
                       bool routed_arg) {
     const bool routed = routed_arg || shared_fp4;
-    if (packq && mma)
+    if (packq && mma && down_bf16_)
+      launch_moe_grouped_mma_packq_bf16(d_act_, I_max, sg, ns, mr, d_views_prefill_, 2,
+                                        reinterpret_cast<uint16_t*>(d_down_), H, H, k,
+                                        routed_arg ? routed_bits : shared_bits, stream, nullptr,
+                                        routed_arg ? routed_sf : 0, -1, routed_arg ? tiles : nullptr,
+                                        tile_count, tile_cap);
+    else if (packq && mma)
       launch_moe_grouped_mma_packq_f32(d_act_, I_max, sg, ns, mr, d_views_prefill_, 2, d_down_, H,
                                        H, k, routed_arg ? routed_bits : shared_bits, stream,
                                        nullptr, routed_arg ? routed_sf : 0, -1,
@@ -868,9 +884,23 @@ void GlmMoeLayer::grouped_expert_chain(MoeExpertKernel kernel,
       launch_moe_grouped_gemv_f32(d_act_, I_max, sg, ns, mr, split, d_views_prefill_,
                                   2, d_down_, H, H, k, stream);
   };
-  gemm_bf16(segs, n_segs, max_rows, 0, 0, d_gate_, I_r, true);
+  // The packed tensor-core chain can run gate and up as one launch (each
+  // token row gathered once for both): DGPP_MOE_PACKQ_PAIR=1. Off by
+  // default (2026-09-30, session P: level to +1 % on the fabric against
+  // two launches — the activation re-gather is not what bounds the kernel).
+  static const bool packq_pair = [] {
+    const char* e = std::getenv("DGPP_MOE_PACKQ_PAIR");
+    return e != nullptr && e[0] != '\0' && e[0] != '0';
+  }();
+  const bool paired = packq && mma && packq_pair && routed_bits == 4;
+  if (paired)
+    launch_moe_grouped_mma_packq_bf16(hidden, H, segs, n_segs, max_rows, d_views_prefill_, 0, d_gate_, I_max,
+                                      I_r, H, routed_bits, stream, d_rows_, routed_sf, -1, tiles, tile_count,
+                                      tile_cap, d_up_, 1);
+  else
+    gemm_bf16(segs, n_segs, max_rows, 0, 0, d_gate_, I_r, true);
   if (shared_seg) gemm_bf16(shared_seg, 1, tokens, shared_split, 0, d_gate_, I_s, false);
-  gemm_bf16(segs, n_segs, max_rows, 0, 1, d_up_, I_r, true);
+  if (!paired) gemm_bf16(segs, n_segs, max_rows, 0, 1, d_up_, I_r, true);
   if (shared_seg) gemm_bf16(shared_seg, 1, tokens, shared_split, 1, d_up_, I_s, false);
   // The down projection's activations to NVFP4 (routed rows; the shared
   // expert's rows, when present, sit past them and keep the bf16 path).

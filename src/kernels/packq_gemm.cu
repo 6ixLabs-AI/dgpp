@@ -17,7 +17,9 @@ namespace dgpp {
 int packq_gemm_variant_default() {
   static const int v = [] {
     const char* e = std::getenv("DGPP_PACKQ_GEMM");
-    return (e && std::string(e) == "narrow") ? 0 : 1;
+    if (e && std::string(e) == "narrow") return 0;
+    if (e && std::string(e) == "wide3") return 2;  // the register-decode three-stage form
+    return 1;
   }();
   return v;
 }
@@ -259,14 +261,23 @@ __global__ __launch_bounds__(kThreads) void packq_gemm_kernel(
 // above. DGPP_PACKQ_GEMM=narrow keeps it for every shape.
 constexpr int kWideM = 64, kWideN = 128, kWideK = 64, kWideThreads = 256, kWideStages = 2;
 constexpr int kWideMinBlocks = 2;
+// The register-decode form (2026-09-30, variant 2): no decoded-weight tile
+// in shared memory — each warp decodes its B fragments from the staged
+// codes on the MMA path (two bytes a fragment, the same decode_byte, the
+// same values in the same slots: bitwise) — so three stages (two steps of
+// lookahead) fit two blocks per SM.
+constexpr int kWideStagesReg = 3;
 static_assert(kWideM == kPackqGemmWideRows, "the tile list's row count is the wide kernel's m-tile");
 constexpr int kWideAStride = kWideK + 8;         // bf16 elements per staged activation row
 constexpr int kWideCodeStride = kWideK / 2;      // bytes per staged int4 code row (consecutive 16-byte halves: no conflicts)
 constexpr int kWideDStride = kWideK + 8;         // bf16 elements per decoded weight row
-constexpr size_t kWideSmem = static_cast<size_t>(kWideStages) * kWideM * kWideAStride * 2 +
-                             static_cast<size_t>(kWideStages) * kWideN * kWideCodeStride +
-                             static_cast<size_t>(kWideN) * kWideDStride * 2 +
-                             static_cast<size_t>(kWideStages) * kWideN * 4;
+constexpr size_t wide_smem_bytes(int stages, bool regb) {
+  return static_cast<size_t>(stages) * kWideM * kWideAStride * 2 +
+         static_cast<size_t>(stages) * kWideN * kWideCodeStride +
+         (regb ? size_t{0} : static_cast<size_t>(kWideN) * kWideDStride * 2) +
+         static_cast<size_t>(stages) * kWideN * 4;
+}
+
 
 __device__ __forceinline__ void wait_pending(int n) {
   if (n == 0) asm volatile("cp.async.wait_group 0;" ::);
@@ -320,7 +331,7 @@ __device__ __forceinline__ void prefetch_l2(const void* p) {
   asm volatile("prefetch.global.L2 [%0];" ::"l"(p));
 }
 
-template <typename OutT, int SF, int M16>
+template <typename OutT, int SF, int M16, int kStages, bool kRegB>
 __device__ __forceinline__ void wide_tile(const WideCtx<OutT>& c) {
   constexpr int kMI = M16 == 4 ? 2 : 1;   // m16 tiles per warp
   constexpr int kNJ = M16 == 1 ? 2 : 4;   // n8 tiles per warp
@@ -396,25 +407,25 @@ __device__ __forceinline__ void wide_tile(const WideCtx<OutT>& c) {
     }
     if (bcol == 0 && bvalid && ((pg * (kWideK / 2)) % 128) == 0) prefetch_l2(brow_ptr + pg * (kWideK / 2));
   }
-  const int prologue = c.groups < kWideStages - 1 ? c.groups : kWideStages - 1;
+  const int prologue = c.groups < kStages - 1 ? c.groups : kStages - 1;
   for (int g = 0; g < prologue; ++g) {
     issue(g, g, next_scale);
     commit();
     next_scale = g + 1 < c.groups ? scale_of(g + 1) : 0.f;
   }
   for (int group = 0; group < c.groups; ++group) {
-    const int slot = group % kWideStages;
-    if (group + kWideStages - 2 < c.groups) wait_pending(kWideStages - 2);
+    const int slot = group % kStages;
+    if (group + kStages - 2 < c.groups) wait_pending(kStages - 2);
     else wait_pending(0);
     __syncthreads();  // stage `group` visible; every warp is done with the previous step's tiles
-    if (group + kWideStages - 1 < c.groups) {
-      const int g = group + kWideStages - 1;
-      issue(g, g % kWideStages, next_scale);
+    if (group + kStages - 1 < c.groups) {
+      const int g = group + kStages - 1;
+      issue(g, g % kStages, next_scale);
       commit();
       next_scale = g + 1 < c.groups ? scale_of(g + 1) : 0.f;
     }
     // Decode this step's codes once: thread -> (row n, half): 16 bytes.
-    {
+    if constexpr (!kRegB) {
       const uint8_t* bs = c.bc + static_cast<size_t>(slot) * kWideN * kWideCodeStride;
       const int row = tid / 2, half = tid % 2;
       const uint4 codes = *reinterpret_cast<const uint4*>(bs + row * kWideCodeStride + half * 16);
@@ -429,9 +440,10 @@ __device__ __forceinline__ void wide_tile(const WideCtx<OutT>& c) {
         o.w = decode_byte(w[q] >> 24);
         *reinterpret_cast<uint4*>(dst + q * 8) = o;
       }
+      __syncthreads();
     }
-    __syncthreads();
     const uint16_t* as = c.a + static_cast<size_t>(slot) * kWideM * kWideAStride;
+    const uint8_t* bs_codes = c.bc + static_cast<size_t>(slot) * kWideN * kWideCodeStride;
     float partial[kMI][kNJ][4] = {};
 #pragma unroll
     for (int kk = 0; kk < kWideK; kk += 16) {
@@ -440,17 +452,32 @@ __device__ __forceinline__ void wide_tile(const WideCtx<OutT>& c) {
       for (int i = 0; i < kMI; ++i)
         ldsm_x4(af[i], as + (row_base + i * 16 + lane % 16) * kWideAStride + kk + (lane / 16) * 8);
       uint32_t bf[kNJ][2];
+      if constexpr (kRegB) {
+        // The B fragment from the codes: row n = lane / 4 of the n8 tile, k
+        // pairs (2q, 2q+1) and (2q+8, 2q+9) for q = lane % 4 — bytes q and
+        // q + 4 of the row's 8-byte k16 chunk; decode_byte puts the even k
+        // in the low half, as the decoded tile's ldmatrix did.
+        const int q = lane & 3;
 #pragma unroll
-      for (int jj = 0; jj < kNJ / 2; ++jj) {
-        // Two n8 tiles per x4: matrices 0/1 = tile 2jj at k 0..7 / 8..15, 2/3 = tile 2jj+1.
-        const int tile = col_base + jj * 16 + (lane / 16) * 8 + lane % 8;
-        const int kpart = ((lane / 8) % 2) * 8;
-        uint32_t q[4];
-        ldsm_x4(q, c.bd + tile * kWideDStride + kk + kpart);
-        bf[jj * 2][0] = q[0];
-        bf[jj * 2][1] = q[1];
-        bf[jj * 2 + 1][0] = q[2];
-        bf[jj * 2 + 1][1] = q[3];
+        for (int j = 0; j < kNJ; ++j) {
+          const int n = col_base + j * 8 + (lane >> 2);
+          const uint2 cw = *reinterpret_cast<const uint2*>(bs_codes + n * kWideCodeStride + (kk >> 1));
+          bf[j][0] = decode_byte((cw.x >> (8 * q)) & 0xFFu);
+          bf[j][1] = decode_byte((cw.y >> (8 * q)) & 0xFFu);
+        }
+      } else {
+#pragma unroll
+        for (int jj = 0; jj < kNJ / 2; ++jj) {
+          // Two n8 tiles per x4: matrices 0/1 = tile 2jj at k 0..7 / 8..15, 2/3 = tile 2jj+1.
+          const int tile = col_base + jj * 16 + (lane / 16) * 8 + lane % 8;
+          const int kpart = ((lane / 8) % 2) * 8;
+          uint32_t q4[4];
+          ldsm_x4(q4, c.bd + tile * kWideDStride + kk + kpart);
+          bf[jj * 2][0] = q4[0];
+          bf[jj * 2][1] = q4[1];
+          bf[jj * 2 + 1][0] = q4[2];
+          bf[jj * 2 + 1][1] = q4[3];
+        }
       }
 #pragma unroll
       for (int i = 0; i < kMI; ++i)
@@ -491,20 +518,21 @@ __device__ __forceinline__ void wide_tile(const WideCtx<OutT>& c) {
       }
 }
 
-template <typename OutT, bool Grouped, int SF>
+template <typename OutT, bool Grouped, int SF, int kStages, bool kRegB>
 __global__ __launch_bounds__(kWideThreads, kWideMinBlocks) void packq_gemm_wide_kernel(
     const uint16_t* __restrict__ act, size_t act_stride, const uint8_t* __restrict__ weights,
     const uint16_t* __restrict__ scales, const MoeSegment* __restrict__ segs,
     const MoeExpertView* __restrict__ views, int which, const int32_t* __restrict__ act_rows,
     OutT* __restrict__ out, size_t out_stride, int m, int n, int k, int n_tiles, bool vector_act,
-    const MoeTile* __restrict__ tiles, const int32_t* __restrict__ tile_count, int prefetch_ahead) {
+    const MoeTile* __restrict__ tiles, const int32_t* __restrict__ tile_count, int prefetch_ahead,
+    OutT* __restrict__ out2, int which2) {
   extern __shared__ __align__(16) uint8_t wide_smem[];
   WideCtx<OutT> c;
   c.prefetch_ahead = prefetch_ahead;
   c.a = reinterpret_cast<uint16_t*>(wide_smem);
-  c.bc = wide_smem + static_cast<size_t>(kWideStages) * kWideM * kWideAStride * 2;
-  c.bd = reinterpret_cast<uint16_t*>(c.bc + static_cast<size_t>(kWideStages) * kWideN * kWideCodeStride);
-  c.scale = reinterpret_cast<float*>(c.bd + static_cast<size_t>(kWideN) * kWideDStride);
+  c.bc = wide_smem + static_cast<size_t>(kStages) * kWideM * kWideAStride * 2;
+  c.bd = reinterpret_cast<uint16_t*>(c.bc + static_cast<size_t>(kStages) * kWideN * kWideCodeStride);
+  c.scale = reinterpret_cast<float*>(c.bd + (kRegB ? size_t{0} : static_cast<size_t>(kWideN) * kWideDStride));
   c.row0 = 0;
   c.m0 = (blockIdx.x / n_tiles) * kWideM;
   if constexpr (Grouped) {
@@ -522,12 +550,26 @@ __global__ __launch_bounds__(kWideThreads, kWideMinBlocks) void packq_gemm_wide_
     const MoeSegment seg = segs[seg_index];
     c.row0 = seg.row0;
     m = seg.rows;
+    // The paired launch (2026-09-30, gate and up in one): the n-tiles past
+    // the first projection's width take the second projection's view and
+    // output — every output element's chain is its own launch's.
+    int tile_n = blockIdx.x % n_tiles;
+    if (out2 != nullptr) {
+      const int per = n_tiles / 2;  // the first projection's tiles, then the second's
+      if (tile_n >= per) {
+        tile_n -= per;
+        which = which2;
+        out = out2;
+      }
+    }
+    c.n0 = tile_n * kWideN;
     const MoeExpertView view = views[seg.expert * 3 + which];
     weights = view.payload;
     scales = view.packed_scales;
+  } else {
+    c.n0 = (blockIdx.x % n_tiles) * kWideN;
   }
   if (c.m0 >= m) return;
-  c.n0 = (blockIdx.x % n_tiles) * kWideN;
   c.act = act;
   c.act_stride = act_stride;
   c.weights = weights;
@@ -543,30 +585,33 @@ __global__ __launch_bounds__(kWideThreads, kWideMinBlocks) void packq_gemm_wide_
   c.row_bytes = k / 2;
   c.vector_act = vector_act;
   const int rows_here = m - c.m0 < kWideM ? m - c.m0 : kWideM;
-  if (rows_here <= 16) wide_tile<OutT, SF, 1>(c);
-  else if (rows_here <= 32) wide_tile<OutT, SF, 2>(c);
-  else wide_tile<OutT, SF, 4>(c);
+  if (rows_here <= 16) wide_tile<OutT, SF, 1, kStages, kRegB>(c);
+  else if (rows_here <= 32) wide_tile<OutT, SF, 2, kStages, kRegB>(c);
+  else wide_tile<OutT, SF, 4, kStages, kRegB>(c);
 }
 
 
-template <typename OutT, bool Grouped, int SF>
+template <typename OutT, bool Grouped, int SF, int kStages, bool kRegB>
 void launch_wide(const uint16_t* act, size_t act_stride, const uint8_t* weights, const uint16_t* scales,
                  const MoeSegment* segs, int n_segs, const MoeExpertView* views, int which,
                  const int32_t* act_rows, OutT* out, size_t out_stride, int m, int n, int k,
-                 cudaStream_t stream, const MoeTile* tiles, const int32_t* tile_count, int tile_cap) {
+                 cudaStream_t stream, const MoeTile* tiles, const int32_t* tile_count, int tile_cap,
+                 OutT* out2, int which2) {
+  constexpr size_t kSmem = wide_smem_bytes(kStages, kRegB);
   static bool opted = false;
   if (!opted) {
-    DGPP_CUDA_OK(cudaFuncSetAttribute(packq_gemm_wide_kernel<OutT, Grouped, SF>,
-                                      cudaFuncAttributeMaxDynamicSharedMemorySize, static_cast<int>(kWideSmem)));
+    DGPP_CUDA_OK(cudaFuncSetAttribute(packq_gemm_wide_kernel<OutT, Grouped, SF, kStages, kRegB>,
+                                      cudaFuncAttributeMaxDynamicSharedMemorySize, static_cast<int>(kSmem)));
     opted = true;
   }
-  const int n_tiles = (n + kWideN - 1) / kWideN;
+  const int n_tiles = ((n + kWideN - 1) / kWideN) * (Grouped && out2 != nullptr ? 2 : 1);
   const bool listed = Grouped && tiles != nullptr;
   const dim3 grid(n_tiles * (listed ? tile_cap : (m + kWideM - 1) / kWideM), listed ? 1 : n_segs);
   const bool vector_act = reinterpret_cast<uintptr_t>(act) % 16 == 0 && act_stride % 8 == 0;
-  packq_gemm_wide_kernel<OutT, Grouped, SF><<<grid, kWideThreads, kWideSmem, stream>>>(
+  packq_gemm_wide_kernel<OutT, Grouped, SF, kStages, kRegB><<<grid, kWideThreads, kSmem, stream>>>(
       act, act_stride, weights, scales, segs, views, which, act_rows, out, out_stride, m, n, k, n_tiles,
-      vector_act, listed ? tiles : nullptr, listed ? tile_count : nullptr, packq_gemm_prefetch_ahead());
+      vector_act, listed ? tiles : nullptr, listed ? tile_count : nullptr, packq_gemm_prefetch_ahead(),
+      Grouped ? out2 : nullptr, which2);
   DGPP_CUDA_OK(cudaGetLastError());
 }
 
@@ -588,18 +633,23 @@ void launch(const uint16_t* act, size_t act_stride, const uint8_t* weights, cons
             const MoeSegment* segs, int n_segs, const MoeExpertView* views, int which,
             const int32_t* act_rows, OutT* out, size_t out_stride, int m, int n, int k, int bits,
             int scale_fmt, cudaStream_t stream, bool planes = false, int variant = -1,
-            const MoeTile* tiles = nullptr, const int32_t* tile_count = nullptr, int tile_cap = 0) {
+            const MoeTile* tiles = nullptr, const int32_t* tile_count = nullptr, int tile_cap = 0,
+            OutT* out2 = nullptr, int which2 = -1) {
   check_shape(act, act_stride, out, out_stride, n, k, bits, scale_fmt);
   if (variant < 0) variant = packq_gemm_variant_default();
-  if (variant == 1 && bits == 4 && !planes) {
-    if (scale_fmt == packq_gemv::kScaleF16G128)
-      launch_wide<OutT, Grouped, packq_gemv::kScaleF16G128>(act, act_stride, weights, scales, segs, n_segs, views,
-                                                            which, act_rows, out, out_stride, m, n, k, stream,
-                                                            tiles, tile_count, tile_cap);
-    else
-      launch_wide<OutT, Grouped, packq_gemv::kScaleBf16G64>(act, act_stride, weights, scales, segs, n_segs, views,
-                                                            which, act_rows, out, out_stride, m, n, k, stream,
-                                                            tiles, tile_count, tile_cap);
+  if ((variant == 1 || variant == 2) && bits == 4 && !planes) {
+#define DGPP_WIDE(SF_, ST_, RB_)                                                                             \
+  launch_wide<OutT, Grouped, SF_, ST_, RB_>(act, act_stride, weights, scales, segs, n_segs, views, which,   \
+                                             act_rows, out, out_stride, m, n, k, stream, tiles, tile_count, \
+                                             tile_cap, out2, which2)
+    if (scale_fmt == packq_gemv::kScaleF16G128) {
+      if (variant == 2) DGPP_WIDE(packq_gemv::kScaleF16G128, kWideStagesReg, true);
+      else DGPP_WIDE(packq_gemv::kScaleF16G128, kWideStages, false);
+    } else {
+      if (variant == 2) DGPP_WIDE(packq_gemv::kScaleBf16G64, kWideStagesReg, true);
+      else DGPP_WIDE(packq_gemv::kScaleBf16G64, kWideStages, false);
+    }
+#undef DGPP_WIDE
     return;
   }
   // The narrow kernel (and int8 rows) keep the segment-major grid: m is the
@@ -607,6 +657,7 @@ void launch(const uint16_t* act, size_t act_stride, const uint8_t* weights, cons
   (void)tiles;
   (void)tile_count;
   (void)tile_cap;
+  if (out2 != nullptr) throw std::invalid_argument("packq_gemm: the paired launch is the wide int4 kernel's");
   const int n_tiles = (n + kN - 1) / kN;
   const dim3 grid(n_tiles * ((m + kM - 1) / kM), n_segs);
   const bool vector_act = reinterpret_cast<uintptr_t>(act) % 16 == 0 && act_stride % 8 == 0;
@@ -653,8 +704,10 @@ void grouped(const uint16_t* act, size_t act_stride, const MoeSegment* segs, int
              int max_rows, const MoeExpertView* views, int which, OutT* out, size_t out_stride,
              int n, int k, int bits, cudaStream_t stream, const int32_t* act_rows, int scale_fmt,
              int variant = -1, const MoeTile* tiles = nullptr, const int32_t* tile_count = nullptr,
-             int tile_cap = 0) {
+             int tile_cap = 0, OutT* out2 = nullptr, int which2 = -1) {
   if (n_segs <= 0 || n <= 0) return;
+  if (out2 != nullptr && (which2 < 0 || which2 > 2))
+    throw std::invalid_argument("packq_gemm: the paired projection index is out of range");
   if (!segs || !views || max_rows <= 0 || which < 0 || which > 2 || n_segs > 65535)
     throw std::invalid_argument(
         "packq_gemm: invalid segments, max_rows, views or projection index");
@@ -662,7 +715,7 @@ void grouped(const uint16_t* act, size_t act_stride, const MoeSegment* segs, int
     throw std::invalid_argument("packq_gemm: a tile list needs its count and capacity");
   launch<OutT, true>(act, act_stride, nullptr, nullptr, segs, n_segs, views, which, act_rows, out,
                      out_stride, max_rows, n, k, bits, scale_fmt, stream, false, variant, tiles,
-                     tile_count, tile_cap);
+                     tile_count, tile_cap, out2, which2);
 }
 }  // namespace
 
@@ -687,9 +740,9 @@ void launch_moe_grouped_mma_packq_bf16(const uint16_t* a, size_t stride, const M
                                        uint16_t* out, size_t os, int n, int k, int bits,
                                        cudaStream_t stream, const int32_t* rows, int scale_fmt,
                                        int variant, const MoeTile* tiles, const int32_t* tile_count,
-                                       int tile_cap) {
+                                       int tile_cap, uint16_t* out2, int which2) {
   grouped(a, stride, segs, ns, mr, views, which, out, os, n, k, bits, stream, rows, scale_fmt, variant,
-          tiles, tile_count, tile_cap);
+          tiles, tile_count, tile_cap, out2, which2);
 }
 void launch_moe_grouped_mma_packq_f32(const uint16_t* a, size_t stride, const MoeSegment* segs,
                                       int ns, int mr, const MoeExpertView* views, int which,

@@ -831,6 +831,33 @@ QwenPleLayer::QwenPleLayer(const QwenPleResident& w, const QwenNgramTableResiden
       *h_hash_rows_ = 0;
       *h_done_seq_ = 0;
       *h_late_ = 0;
+      // The prestage channel.
+      DGPP_CUDA_OK(cudaHostAlloc(reinterpret_cast<void**>(&h_pre_ids_), M * static_cast<size_t>(heads_) * 4,
+                                 cudaHostAllocMapped));
+      DGPP_CUDA_OK(cudaHostGetDevicePointer(reinterpret_cast<void**>(&pre_ids_), h_pre_ids_, 0));
+      DGPP_CUDA_OK(cudaHostAlloc(reinterpret_cast<void**>(&pre_staged_),
+                                 M * static_cast<size_t>(w_.hash_heads) * head_dim_, cudaHostAllocMapped));
+      DGPP_CUDA_OK(cudaMalloc(reinterpret_cast<void**>(&d_pre_seq_), sizeof(uint64_t)));
+      DGPP_CUDA_OK(cudaMemset(d_pre_seq_, 0, sizeof(uint64_t)));
+      DGPP_CUDA_OK(cudaMalloc(reinterpret_cast<void**>(&d_pre_wait_seq_), sizeof(uint64_t)));
+      DGPP_CUDA_OK(cudaMemset(d_pre_wait_seq_, 0, sizeof(uint64_t)));
+      DGPP_CUDA_OK(cudaHostAlloc(reinterpret_cast<void**>(&h_pre_seq_), sizeof(uint64_t), cudaHostAllocMapped));
+      DGPP_CUDA_OK(cudaHostAlloc(reinterpret_cast<void**>(&h_pre_rows_), sizeof(int32_t), cudaHostAllocMapped));
+      DGPP_CUDA_OK(cudaHostAlloc(reinterpret_cast<void**>(&h_pre_done_seq_), sizeof(uint64_t), cudaHostAllocMapped));
+      DGPP_CUDA_OK(cudaHostAlloc(reinterpret_cast<void**>(&h_pre_need_), sizeof(uint64_t), cudaHostAllocMapped));
+      *h_pre_seq_ = 0;
+      *h_pre_rows_ = 0;
+      *h_pre_done_seq_ = 0;
+      *h_pre_need_ = 0;
+      DGPP_CUDA_OK(cudaMalloc(reinterpret_cast<void**>(&d_pre_tokens_), M * sizeof(int64_t)));
+      DGPP_CUDA_OK(cudaMalloc(reinterpret_cast<void**>(&d_pre_pos_), M * sizeof(int64_t)));
+      DGPP_CUDA_OK(cudaMalloc(reinterpret_cast<void**>(&d_pre_req_), M * sizeof(int32_t)));
+      DGPP_CUDA_OK(cudaMemset(d_pre_req_, 0, M * sizeof(int32_t)));
+      DGPP_CUDA_OK(cudaMalloc(reinterpret_cast<void**>(&d_pre_spans_), 2 * sizeof(int32_t)));
+      DGPP_CUDA_OK(cudaMalloc(reinterpret_cast<void**>(&d_pre_ctx_), 4 * sizeof(int32_t)));
+      DGPP_CUDA_OK(cudaHostAlloc(reinterpret_cast<void**>(&h_pre_tokens_), M * sizeof(int64_t), cudaHostAllocDefault));
+      DGPP_CUDA_OK(cudaHostAlloc(reinterpret_cast<void**>(&h_pre_pos_), M * sizeof(int64_t), cudaHostAllocDefault));
+      DGPP_CUDA_OK(cudaHostAlloc(reinterpret_cast<void**>(&h_pre_ctx_), 8 * sizeof(int32_t), cudaHostAllocDefault));
       gather_thread_ = std::thread([this] { gather_loop(); });
     }
   } else {
@@ -866,6 +893,22 @@ QwenPleLayer::~QwenPleLayer() {
     if (h_hash_rows_) cudaFreeHost(h_hash_rows_);
     if (h_done_seq_) cudaFreeHost(h_done_seq_);
     if (h_late_) cudaFreeHost(h_late_);
+    if (h_pre_ids_) cudaFreeHost(h_pre_ids_);
+    if (pre_staged_) cudaFreeHost(pre_staged_);
+    if (d_pre_seq_) cudaFree(d_pre_seq_);
+    if (d_pre_wait_seq_) cudaFree(d_pre_wait_seq_);
+    if (h_pre_seq_) cudaFreeHost(h_pre_seq_);
+    if (h_pre_rows_) cudaFreeHost(h_pre_rows_);
+    if (h_pre_done_seq_) cudaFreeHost(h_pre_done_seq_);
+    if (h_pre_need_) cudaFreeHost(h_pre_need_);
+    if (d_pre_tokens_) cudaFree(d_pre_tokens_);
+    if (d_pre_pos_) cudaFree(d_pre_pos_);
+    if (d_pre_req_) cudaFree(d_pre_req_);
+    if (d_pre_spans_) cudaFree(d_pre_spans_);
+    if (d_pre_ctx_) cudaFree(d_pre_ctx_);
+    if (h_pre_tokens_) cudaFreeHost(h_pre_tokens_);
+    if (h_pre_pos_) cudaFreeHost(h_pre_pos_);
+    if (h_pre_ctx_) cudaFreeHost(h_pre_ctx_);
   } else {
     cudaFree(ids_);
   }
@@ -956,24 +999,56 @@ void QwenPleLayer::check_staged() const {
 // runs before the gather kernel), gathers the published rows' n-gram
 // vectors into the staging, answers with the same sequence.
 void QwenPleLayer::gather_loop() {
-  uint64_t seen = 0;
-  while (!gather_stop_.load(std::memory_order_acquire)) {
+  uint64_t seen = 0, seen_pre = 0;
+  auto fail = [this](const std::exception& e) {
+    gather_what_ = e.what();
+    gather_error_.store(1, std::memory_order_release);
+    DGPP_LOG_ERROR("QwenPleLayer: the n-gram gather failed: {}", e.what());
+  };
+  auto serve_main = [&]() -> bool {
     const uint64_t v = __atomic_load_n(h_hash_seq_, __ATOMIC_ACQUIRE);
-    if (v == seen) {
-      timespec ts{0, 5000};
-      nanosleep(&ts, nullptr);
-      continue;
-    }
+    if (v == seen) return false;
     seen = v;
     const int rows = __atomic_load_n(h_hash_rows_, __ATOMIC_ACQUIRE);
     try {
       if (table_.mmap) table_.mmap->gather(h_ids_, rows, heads_, w_.hash_head_begin, w_.hash_heads, staged_);
     } catch (const std::exception& e) {
-      gather_what_ = e.what();
-      gather_error_.store(1, std::memory_order_release);
-      DGPP_LOG_ERROR("QwenPleLayer: the n-gram gather failed: {}", e.what());
+      fail(e);
     }
     __atomic_store_n(h_done_seq_, v, __ATOMIC_RELEASE);
+    return true;
+  };
+  while (!gather_stop_.load(std::memory_order_acquire)) {
+    const bool served = serve_main();
+    const uint64_t vp = h_pre_seq_ ? __atomic_load_n(h_pre_seq_, __ATOMIC_ACQUIRE) : seen_pre;
+    if (vp != seen_pre) {
+      // The prestage: gathered in pieces, the main channel served between
+      // them (a decode step's rows between two chunks must not wait out a
+      // whole chunk's gather).
+      seen_pre = vp;
+      const int rows = __atomic_load_n(h_pre_rows_, __ATOMIC_ACQUIRE);
+      constexpr int kPiece = 512;
+      const size_t row_ids = static_cast<size_t>(heads_);
+      const size_t row_bytes = static_cast<size_t>(w_.hash_heads) * head_dim_;
+      try {
+        for (int r0 = 0; r0 < rows; r0 += kPiece) {
+          if (gather_stop_.load(std::memory_order_acquire)) break;
+          serve_main();
+          const int n = std::min(kPiece, rows - r0);
+          if (table_.mmap)
+            table_.mmap->gather(h_pre_ids_ + r0 * row_ids, n, heads_, w_.hash_head_begin, w_.hash_heads,
+                                pre_staged_ + r0 * row_bytes);
+        }
+      } catch (const std::exception& e) {
+        fail(e);
+      }
+      __atomic_store_n(h_pre_done_seq_, vp, __ATOMIC_RELEASE);
+      continue;
+    }
+    if (!served) {
+      timespec ts{0, 5000};
+      nanosleep(&ts, nullptr);
+    }
   }
 }
 
@@ -986,12 +1061,33 @@ size_t QwenPleLayer::staging_bytes(const QwenTextConfig& cfg, int hash_heads, in
 
 void QwenPleLayer::stage(const int64_t* tokens, int rows, const int32_t* req_ids, const int64_t* pos,
                          const int32_t* req_spans, int num_requests, const int32_t* ctx,
-                         cudaStream_t stream) {
+                         cudaStream_t stream, const int64_t* host_ids, int64_t pos0, int req) {
   if (!staged()) throw std::logic_error("QwenPleLayer: stage() without the mmap'ed table");
   if (rows <= 0) return;
   if (rows > max_tokens_) throw std::invalid_argument("QwenPleLayer: rows exceed max_tokens");
   if (staged_rows_ != 0) throw std::logic_error("QwenPleLayer: stage() twice without embed()");
   check_staged();
+  if (pre_pending_) {
+    // The chunk a prestage gathered: its rows are on the prestage channel.
+    pre_pending_ = false;
+    // The key: the same request, rows and first position, the same host ids
+    // pointer AND the same first and last token (a prompt vector's address
+    // can be reused by a later request).
+    if (host_ids != nullptr && host_ids == pre_host_ids_ && rows == pre_rows_ && pos0 == pre_pos0_ &&
+        req == pre_req_ && host_ids[0] == h_pre_tokens_[0] && host_ids[rows - 1] == h_pre_tokens_[rows - 1]) {
+      use_pre_ = true;
+      staged_rows_ = rows;
+      // DGPP_QWEN_PLE_PRESTAGE_CHECK=1: run the main staging too and compare
+      // the two gathers at embed() (a bitwise self-check of the mechanism).
+      static const bool check = [] {
+        const char* e = std::getenv("DGPP_QWEN_PLE_PRESTAGE_CHECK");
+        return e != nullptr && e[0] != '\0' && e[0] != '0';
+      }();
+      if (!check) return;
+      pre_check_ = true;
+      staged_rows_ = 0;  // fall through to the main path's hash and publish
+    }
+  }
   qwen_ple_hash_ids_rows(tokens, rows, req_ids, pos, req_spans, num_requests, ctx, eos_, d_mult_,
                          d_vocab_, d_offset_, heads_, heads_per_ngram_, ids_, stream);
   if (!host_node_) {
@@ -1025,6 +1121,46 @@ void QwenPleLayer::stage(const int64_t* tokens, int rows, const int32_t* req_ids
   staged_rows_ = rows;
 }
 
+void QwenPleLayer::prestage(const int64_t* host_ids, int rows, int64_t pos0, int req, int32_t ctx_t1,
+                            int32_t ctx_t2, cudaStream_t stream) {
+  if (!staged() || host_node_ || host_ids == nullptr || rows <= 0 || rows > max_tokens_) return;
+  static const bool enabled = [] {
+    const char* e = std::getenv("DGPP_QWEN_PLE_PRESTAGE");
+    return e == nullptr || e[0] != '0';  // default on; =0 keeps the one-channel staging
+  }();
+  if (!enabled) return;
+  check_staged();
+  // The previous prestage, if still unclaimed, is dropped: its gather ran
+  // or runs to completion (the thread answers every publish) and nothing
+  // waits on it. Its pinned inputs may still be read by that copy, so the
+  // walk's own sync (the caller runs eagerly) has passed before this call
+  // reuses them.
+  pre_pending_ = false;
+  std::memcpy(h_pre_tokens_, host_ids, static_cast<size_t>(rows) * sizeof(int64_t));
+  for (int i = 0; i < rows; ++i) h_pre_pos_[i] = pos0 + i;
+  h_pre_ctx_[0] = ctx_t1;
+  h_pre_ctx_[1] = ctx_t2;
+  h_pre_ctx_[2] = 0;
+  h_pre_ctx_[3] = 0;
+  h_pre_ctx_[4] = 0;
+  h_pre_ctx_[5] = rows;  // the one span: start 0, len rows
+  DGPP_CUDA_OK(cudaMemcpyAsync(d_pre_tokens_, h_pre_tokens_, static_cast<size_t>(rows) * sizeof(int64_t),
+                               cudaMemcpyHostToDevice, stream));
+  DGPP_CUDA_OK(cudaMemcpyAsync(d_pre_pos_, h_pre_pos_, static_cast<size_t>(rows) * sizeof(int64_t),
+                               cudaMemcpyHostToDevice, stream));
+  DGPP_CUDA_OK(cudaMemcpyAsync(d_pre_ctx_, h_pre_ctx_, 4 * sizeof(int32_t), cudaMemcpyHostToDevice, stream));
+  DGPP_CUDA_OK(cudaMemcpyAsync(d_pre_spans_, h_pre_ctx_ + 4, 2 * sizeof(int32_t), cudaMemcpyHostToDevice, stream));
+  qwen_ple_hash_ids_rows(d_pre_tokens_, rows, d_pre_req_, d_pre_pos_, d_pre_spans_, 1, d_pre_ctx_, eos_, d_mult_,
+                         d_vocab_, d_offset_, heads_, heads_per_ngram_, pre_ids_, stream);
+  qwen_ple_publish_stage(d_pre_seq_, h_pre_seq_, h_pre_rows_, rows, stream);
+  ++pre_publishes_;
+  pre_host_ids_ = host_ids;
+  pre_rows_ = rows;
+  pre_pos0_ = pos0;
+  pre_req_ = req;
+  pre_pending_ = true;
+}
+
 void QwenPleLayer::embed(const int64_t* tokens, int rows, const int32_t* req_ids, const int64_t* pos,
                          const int32_t* req_spans, int num_requests, const int32_t* ctx,
                          cudaStream_t stream) {
@@ -1034,6 +1170,36 @@ void QwenPleLayer::embed(const int64_t* tokens, int rows, const int32_t* req_ids
     if (staged_rows_ != rows) throw std::logic_error("QwenPleLayer: embed() without a matching stage()");
     if (host_node_) {
       DGPP_CUDA_OK(cudaStreamWaitEvent(stream, join_, 0));
+    } else if (use_pre_) {
+      // The prestage channel's answer: the wait word set to the publish
+      // count less one (a dropped prestage leaves no wait behind), then
+      // the same wait kernel; the rows from the prestage staging.
+      use_pre_ = false;
+      *h_pre_need_ = pre_publishes_ - 1;
+      DGPP_CUDA_OK(cudaMemcpyAsync(d_pre_wait_seq_, h_pre_need_, sizeof(uint64_t), cudaMemcpyHostToDevice, stream));
+      glm_stage_wait(h_pre_done_seq_, d_pre_wait_seq_, h_late_, /*timeout_ns=*/int64_t{120} * 1000000000, stream);
+      if (pre_check_) {
+        // The self-check: the main channel's gather as well, then the two
+        // stagings compared on the host (the stream synced here).
+        pre_check_ = false;
+        glm_stage_wait(h_done_seq_, d_wait_seq_, h_late_, /*timeout_ns=*/int64_t{120} * 1000000000, stream);
+        DGPP_CUDA_OK(cudaStreamSynchronize(stream));
+        const size_t row_bytes = static_cast<size_t>(w_.hash_heads) * head_dim_;
+        size_t bad_rows = 0, first_bad = static_cast<size_t>(-1);
+        for (size_t t = 0; t < static_cast<size_t>(rows); ++t)
+          if (std::memcmp(staged_ + t * row_bytes, pre_staged_ + t * row_bytes, row_bytes) != 0) {
+            ++bad_rows;
+            if (first_bad == static_cast<size_t>(-1)) first_bad = t;
+          }
+        size_t bad_ids = 0;
+        for (size_t i = 0; i < static_cast<size_t>(rows) * heads_; ++i)
+          if (h_ids_[i] != h_pre_ids_[i]) ++bad_ids;
+        DGPP_LOG_INFO("QwenPleLayer: prestage self-check: rows {} — staging rows differing {} (first {}), hash ids differing {}",
+                      rows, bad_rows, first_bad == static_cast<size_t>(-1) ? -1 : static_cast<long long>(first_bad), bad_ids);
+      }
+      qwen_ple_gather_staged_bf16(pre_staged_, table_.scale, rows, w_.hash_heads, head_dim_, e_, stream);
+      staged_rows_ = 0;
+      return;
     } else {
       // The device waits for the thread's answer (a 2 us poll; a walk's
       // rows arrive within a few hundred microseconds of the publish).
