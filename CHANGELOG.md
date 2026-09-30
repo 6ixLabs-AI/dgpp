@@ -6,6 +6,37 @@ The history by milestone. The dated engineering record in
 
 ## Unreleased
 
+- **The prefill's accuracy trades as deployment keys, off by default**
+  (2026-09-30, round 20 of the
+  [record](benchmarks/results/2026-09-28-qwen-autoround-int4/README.md),
+  plan §6.15): `engine.prefill_bf16_partials` (the packed expert chain's
+  down projection in bf16, its partials summed from bf16 — the former
+  `DGPP_MOE_PACKQ_DOWN_BF16` env knob is gone), `engine.prefill_fold_scales`
+  (the wide packed expert GEMM with each group's scale folded into the
+  bf16 weight values and one fp32 accumulator; kernel variant 3) and
+  `engine.prefill_fp8_gemm` (the block-FP8 dense stack's prefill-shaped
+  products on the fp8 tensor cores from per-token 1 x 128 e4m3 activations
+  with the checkpoint's 128 x 128 weight scales — `kernels/fp8_gemm`, a new
+  quantizer + mma.sync e4m3 GEMM with per-group fp32 promotion; requires
+  `dense_weights: "fp8"`). None is bitwise the default chain; each is
+  gated in its kernel test (2^-7 relative RMS of the exact chain for the
+  fold; 1e-7 of the exact sum of its quantized inputs and 2.5–2.8 % of the
+  dequantized chain for the fp8 GEMM), refused with the wrong type in the
+  config, forwarded to every rank in the worker record, and documented in
+  docs/operations.md and the README key table. Measured on the fabric
+  (one Spark, the hybrid, cold prefill 2K / 8K / 32K against 1.29 / 4.37 /
+  17.64 s): the bf16 partials −6.6 / −3.8 / −2.8 %, the fp8 GEMM −3.1 /
+  −0.3 / −0.2 % (its kernel runs at cuBLASLt's bf16 rate: 86–98 TF, ~35 %
+  of the fp8 peak, the gap recorded), the fold −1.0 / +2.0 / +3.6 % (a
+  measured loss: it stays off); the bf16 partials + fp8 GEMM pair 1.21 /
+  4.23 / 17.10 s (−6.3 / −3.2 / −3.1 %) with HumanEval 159/164, GSM8K
+  291/300, extraction 100/100 against the default chain's 159 / 292 / 100.
+  The AutoRound example template turns on `prefill_bf16_partials` and
+  `prefill_fp8_gemm` (evals inside the default chain's band; the benchmarks
+  list the default and the levers-on rows); the fold stays off everywhere.
+  The README gains an accuracy-and-correctness section and
+  docs/optimizing_performance.md the levers' guide.
+
 - **Restore clean-checkout builds** ([#70](https://github.com/HawkBearPig/dgpp/issues/70)):
   skip optional microbenchmark targets when any of their source files are
   absent, including the locally ignored `qwen_dense_bench.cu`.

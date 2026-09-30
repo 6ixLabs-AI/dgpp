@@ -220,6 +220,12 @@ ClusterConfig parse_cluster_config(const std::string& json, const std::string& w
             fail(what, "'" + ek + "' must be \"checkpoint\", \"bf12\" or \"bf12+bf16\"");
         } else if (p.key == "draft_vocab") {
           e.draft_vocab = text(x, ek, what);
+        } else if (p.key == "prefill_bf16_partials") {
+          e.prefill_bf16_partials = boolean(x, ek, what);
+        } else if (p.key == "prefill_fold_scales") {
+          e.prefill_fold_scales = boolean(x, ek, what);
+        } else if (p.key == "prefill_fp8_gemm") {
+          e.prefill_fp8_gemm = boolean(x, ek, what);
         } else if (p.key == "prefill") {
           e.prefill = text(x, ek, what);
           if (e.prefill != "bounded" && e.prefill != "exact")

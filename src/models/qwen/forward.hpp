@@ -264,6 +264,11 @@ class QwenModel : public SessionModel<QwenModel> {
   void build_layer_objects(const QwenLayerResident& r);
   void lm_head_logits(const uint16_t* hidden, int rows, cudaStream_t stream, bool last_row_only = false);
   static size_t dense_bridge_bytes(const QwenTextConfig& cfg, const QwenLocalGeometry& geo);
+  // The opt-in fp8 prefill GEMM's activation scratch (engine.prefill_fp8_gemm):
+  // the widest dense k of this rank's slice, and the scratch's bytes for
+  // max_tokens rows (e4m3 rows plus their 1 x 128 fp32 scales).
+  static size_t dense_max_cols(const QwenTextConfig& cfg, const QwenLocalGeometry& geo);
+  static size_t fp8_act_scratch_bytes(const QwenTextConfig& cfg, const QwenLocalGeometry& geo, int max_tokens);
   size_t dense_bridge_bytes_ = 0;
   static QwenMoeWeights moe_view(const QwenMoeResident& m);
   float* gdn_rec(int req, int ordinal) const;

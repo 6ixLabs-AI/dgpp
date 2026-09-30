@@ -42,6 +42,12 @@ struct QwenGemmWorkspace {
   // against 2.0 s for a 2K prompt, measured).
   uint16_t* dequant = nullptr;
   size_t dequant_bytes = 0;
+  // The opt-in fp8 prefill GEMM's activation scratch (engine.prefill_fp8_gemm,
+  // 2026-09-30, kernels/fp8_gemm): e4m3 rows and their 1 x 128 scales for
+  // max_tokens rows of the widest dense k. Null: the dequant bridge above.
+  uint8_t* a8 = nullptr;
+  float* a8_scales = nullptr;
+  size_t a8_bytes = 0;  // a8's capacity (rows x k)
   // The dense sites' lowering (kernels/gemm.hpp dense_gemv_rows): the GEMV
   // chunks and the fused multi-problem launches to gemv_rows; fp8 rows from
   // mma_from_rows take the streaming tensor-core GEMM (0: never).

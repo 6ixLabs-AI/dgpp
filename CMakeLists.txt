@@ -164,6 +164,7 @@ add_library(dgpp_kernels STATIC
   src/kernels/kda.cu
   src/kernels/dsa.cu
   src/kernels/fp8_dequant.cu
+  src/kernels/fp8_gemm.cu
   src/kernels/fp4_gemv.cu
   src/kernels/packq_gemv.cu
   src/kernels/packq_gemm.cu
@@ -1538,6 +1539,13 @@ dgpp_set_common(packq_gemm_test)
 add_test(NAME packq_gemm_test COMMAND packq_gemm_test)
 set_tests_properties(packq_gemm_test PROPERTIES SKIP_RETURN_CODE 2 LABELS "gpu")
 
+add_executable(fp8_gemm_test tests/cuda/fp8_gemm_test.cu)
+target_include_directories(fp8_gemm_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(fp8_gemm_test PRIVATE dgpp_kernels CUDA::cudart)
+dgpp_set_common(fp8_gemm_test)
+add_test(NAME fp8_gemm_test COMMAND fp8_gemm_test)
+set_tests_properties(fp8_gemm_test PROPERTIES SKIP_RETURN_CODE 2 LABELS "gpu")
+
 add_executable(scale_gemm_test
   tests/cuda/scale_gemm_test.cu
   tests/cuda/scale_gemm_checkpoint.cpp)
@@ -1737,6 +1745,10 @@ if(DGPP_BUILD_BENCHMARKS)
   dgpp_add_benchmark(packq_prefill_bench
     SOURCES benchmarks/micro/packq_prefill_bench.cu
     LIBRARIES dgpp_kernels CUDA::cudart)
+
+  dgpp_add_benchmark(fp8_gemm_bench
+    SOURCES benchmarks/micro/fp8_gemm_bench.cu
+    LIBRARIES dgpp_kernels CUDA::cudart CUDA::cublasLt)
 
   dgpp_add_benchmark(mimo_step_bench
     SOURCES benchmarks/micro/mimo_step_bench.cu src/common/log.cpp

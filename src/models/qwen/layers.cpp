@@ -25,6 +25,7 @@
 #include "kernels/rope_scaling.hpp"
 #include "kernels/qwen_gr.hpp"
 #include "kernels/fp8_dequant.hpp"
+#include "kernels/fp8_gemm.hpp"
 #include "kernels/scale_gemm.hpp"
 #include "kernels/qwen_norm.hpp"
 #include "kernels/qwen_ple.hpp"
@@ -71,6 +72,26 @@ void gemm_dense(const QwenGemmWorkspace& g, const uint16_t* act, int64_t act_str
     // Prefill-shaped (above the scale GEMM's GEMV lowering): through the
     // BF16 interface on the dequantized matrix when the bridge holds it.
     const size_t bf16_bytes = static_cast<size_t>(n) * static_cast<size_t>(k) * 2;
+    // OPT-IN, NOT BITWISE (engine.prefill_fp8_gemm, 2026-09-30): the
+    // product on the fp8 tensor cores from per-token e4m3 activations
+    // (kernels/fp8_gemm) when the shape fits its contract; otherwise the
+    // bridge below.
+    // Not below 1,024 columns: the quantizer's pass over the activation
+    // (3 bytes a value at line rate) costs 494 / n of the GEMM's time
+    // (the [320 x 10240] GR down: +60 % measured), while the fp8 GEMM
+    // itself runs at cuBLAS's rate and saves the dequant alone.
+    if (m > 128 && n >= 1024 && g.a8 && QwenLayerStream::prefill_fp8_gemm() && k % 128 == 0 && w8.scale_block_cols == 128 &&
+        static_cast<size_t>(m) * static_cast<size_t>(k) <= g.a8_bytes && act_stride % 4 == 0 &&
+        (reinterpret_cast<uintptr_t>(act) % 8) == 0) {
+      launch_fp8_quantize_rows(act, static_cast<size_t>(act_stride), m, k, g.a8, g.a8_scales, stream);
+      if (out_type == GemmOut::F32)
+        launch_fp8_gemm_f32(g.a8, g.a8_scales, w8.payload, w8.scales, w8.scale_block_rows, static_cast<float*>(out),
+                            m, n, k, stream, static_cast<size_t>(n));
+      else
+        launch_fp8_gemm_bf16(g.a8, g.a8_scales, w8.payload, w8.scales, w8.scale_block_rows,
+                             static_cast<uint16_t*>(out), m, n, k, stream, static_cast<size_t>(n));
+      return;
+    }
     if (m > 128 && g.dequant && bf16_bytes <= g.dequant_bytes) {
       launch_fp8_dequant_blocks(w8.payload, w8.scales, g.dequant, n, k, stream);
       gemm_bf16(g, act, act_stride, g.dequant, out, out_type, m, n, k, stream);

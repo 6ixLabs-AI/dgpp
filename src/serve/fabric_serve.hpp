@@ -126,6 +126,9 @@ struct WorldSettings {
   std::string mtp_expert_format = "fp8";      // the Qwen MTP draft experts: fp8 | bf16_fused
   std::string bf16_weights = "checkpoint";   // the bf16 decode weights' resident form: checkpoint | bf12 | bf12+bf16
   std::string draft_vocab;                   // the Qwen draft head's vocabulary slice (.npy of ids); empty = whole
+  bool prefill_bf16_partials = false;        // the opt-in prefill levers (2026-09-30); absent legacy field = off
+  bool prefill_fold_scales = false;
+  bool prefill_fp8_gemm = false;
   std::string prefill = "bounded";           // the DeepSeek-V4.1 prefill mode: bounded | exact
   std::optional<dgpp::RopeScaling> rope_scaling;  // the opt-in YaRN ramp: absent = plain
   std::string embed_sharding = "replicated";  // the full GLM-5.3's embedding: replicated | vocab

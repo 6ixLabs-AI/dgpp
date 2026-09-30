@@ -105,6 +105,13 @@ QwenModel::QwenModel(const QwenTextConfig& cfg, const std::string& checkpoint_di
     dense_bridge_bytes_ = dense_bridge_bytes(cfg_, loader_.geometry());
     gw_.dequant = dev_alloc<uint16_t>(dense_bridge_bytes_ / 2);
     gw_.dequant_bytes = dense_bridge_bytes_;
+    if (QwenLayerStream::prefill_fp8_gemm()) {
+      // The opt-in fp8 GEMM's activations (engine.prefill_fp8_gemm).
+      const size_t kmax = dense_max_cols(cfg_, loader_.geometry());
+      gw_.a8_bytes = static_cast<size_t>(max_tokens_) * kmax;
+      gw_.a8 = dev_alloc<uint8_t>(gw_.a8_bytes);
+      gw_.a8_scales = dev_alloc<float>(static_cast<size_t>(max_tokens_) * (kmax / 128));
+    }
   }
   // The dense sites' lowering (kernels/gemm.hpp dense_gemv_rows): the GEMV
   // chunks (and the fused multi-problem launches) to the bound, cuBLASLt's
@@ -292,6 +299,9 @@ QwenModel::MemoryPlan QwenModel::plan_memory(const QwenTextConfig& cfg, int max_
   if (QwenLayerStream::dense_weights_fp8())
     plan.add("dense fp8 prefill bridge (the largest dense matrix in BF16)",
              dense_bridge_bytes(cfg, QwenLocalGeometry::from_config(cfg, tp_rank, tp_world, head)));
+  if (QwenLayerStream::dense_weights_fp8() && QwenLayerStream::prefill_fp8_gemm())
+    plan.add("dense fp8 prefill activations (e4m3 rows + 1x128 scales; engine.prefill_fp8_gemm)",
+             fp8_act_scratch_bytes(cfg, QwenLocalGeometry::from_config(cfg, tp_rank, tp_world, head), max_tokens));
   if (has_ple && QwenLayerStream::ngram_table_mmap()) {
     // The table stays on the NVMe behind the page cache (nothing
     // reserved); the walk's ids and staged rows are pinned.
@@ -405,6 +415,8 @@ QwenModel::~QwenModel() {
   cudaFreeHost(h_route_weights_);
   cudaFree(gemm_ws_);
   if (gw_.dequant) cudaFree(gw_.dequant);
+  if (gw_.a8) cudaFree(gw_.a8);
+  if (gw_.a8_scales) cudaFree(gw_.a8_scales);
   cudaFree(mtp_ring_snapshot_);
   cudaFree(mtp_chain_ring_);
   cudaFree(mtp_hin_);
@@ -452,6 +464,22 @@ size_t QwenModel::dense_bridge_bytes(const QwenTextConfig& cfg, const QwenLocalG
   take(W, static_cast<size_t>(cfg.ple_embed_dim / std::max(geo.world, 1)));              // PLE key
   take(H, static_cast<size_t>(cfg.ple_embed_dim / std::max(geo.world, 1)));              // PLE value
   return elems * 2;
+}
+
+size_t QwenModel::dense_max_cols(const QwenTextConfig& cfg, const QwenLocalGeometry& geo) {
+  // The k of every dense site above (gemm_dense's callers): the widest wins.
+  const size_t H = static_cast<size_t>(cfg.hidden_size), W = static_cast<size_t>(cfg.hyper_width());
+  size_t k = std::max(H, W);                                                              // qkv/z/q/k/v/indexer, GR down
+  k = std::max(k, static_cast<size_t>(geo.local_heads) * cfg.head_dim);                    // o_proj
+  k = std::max(k, static_cast<size_t>(geo.local_value_heads) * cfg.gdn_value_head_dim);   // out_proj
+  k = std::max(k, static_cast<size_t>(cfg.hc_lowrank));                                   // GR up
+  k = std::max(k, static_cast<size_t>(cfg.ple_embed_dim / std::max(geo.world, 1)));       // PLE key / value
+  return (k + 127) / 128 * 128;
+}
+
+size_t QwenModel::fp8_act_scratch_bytes(const QwenTextConfig& cfg, const QwenLocalGeometry& geo, int max_tokens) {
+  const size_t kmax = dense_max_cols(cfg, geo);
+  return static_cast<size_t>(max_tokens) * (kmax + (kmax / 128) * sizeof(float));
 }
 
 // The packed int8 head under the default ("gemv") mode: the packed GEMV's

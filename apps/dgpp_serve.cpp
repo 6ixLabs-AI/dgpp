@@ -74,6 +74,7 @@
 #include "engine/memory_plan.hpp"
 #include "loaders/architecture.hpp"
 #include "models/glm/fabric_engine.hpp"
+#include "models/glm/moe_layer.hpp"
 #include "models/glm/forward.hpp"
 #include "models/glm/gen_engine.hpp"
 #include "models/qwen/config.hpp"
@@ -1218,6 +1219,9 @@ int main(int argc, char** argv) {
   std::string mtp_expert_format = "fp8";    // the Qwen MTP draft experts: fp8 | bf16_fused
   std::string bf16_weights = "checkpoint";  // the bf16 decode weights' resident form: checkpoint | bf12 | bf12+bf16
   std::string draft_vocab;                  // the Qwen draft head's vocabulary slice (engine.draft_vocab)
+  bool prefill_bf16_partials = false;       // the opt-in prefill levers (engine.prefill_*; 2026-09-30)
+  bool prefill_fold_scales = false;
+  bool prefill_fp8_gemm = false;
   std::string prefill = "bounded";  // the DeepSeek-V4.1 prefill: bounded | exact
   // The opt-in YaRN rope ramp (engine.rope_scaling): absent = the plain
   // table, the default and the behaviour every earlier build had.
@@ -1310,6 +1314,9 @@ int main(int argc, char** argv) {
     mtp_expert_format = e.mtp_expert_format;
     bf16_weights = e.bf16_weights;
     draft_vocab = e.draft_vocab;
+    prefill_bf16_partials = e.prefill_bf16_partials;
+    prefill_fold_scales = e.prefill_fold_scales;
+    prefill_fp8_gemm = e.prefill_fp8_gemm;
     prefill = e.prefill;
     rope_scaling = e.rope_scaling;
     embed_sharding = e.embed_sharding;
@@ -1390,6 +1397,9 @@ int main(int argc, char** argv) {
     else if (a == "--mtp-expert-format") mtp_expert_format = next();
     else if (a == "--bf16-weights") bf16_weights = next();
     else if (a == "--draft-vocab") draft_vocab = next();
+    else if (a == "--prefill-bf16-partials") prefill_bf16_partials = true;
+    else if (a == "--prefill-fold-scales") prefill_fold_scales = true;
+    else if (a == "--prefill-fp8-gemm") prefill_fp8_gemm = true;
     else if (a == "--prefill") prefill = next();
     else if (a == "--embed-sharding") embed_sharding = next();
     else if (a == "--memory-plan") memory_plan_only = true;
@@ -1548,6 +1558,9 @@ int main(int argc, char** argv) {
         ws.mtp_expert_format = mtp_expert_format;
         ws.bf16_weights = bf16_weights;
         ws.draft_vocab = draft_vocab;
+        ws.prefill_bf16_partials = prefill_bf16_partials;
+        ws.prefill_fold_scales = prefill_fold_scales;
+        ws.prefill_fp8_gemm = prefill_fp8_gemm;
         ws.prefill = prefill;
         ws.rope_scaling = rope_scaling;
         ws.embed_sharding = embed_sharding;
@@ -1605,6 +1618,9 @@ int main(int argc, char** argv) {
         mtp_expert_format = ws.mtp_expert_format;
         bf16_weights = ws.bf16_weights;
         draft_vocab = ws.draft_vocab;
+        prefill_bf16_partials = ws.prefill_bf16_partials;
+        prefill_fold_scales = ws.prefill_fold_scales;
+        prefill_fp8_gemm = ws.prefill_fp8_gemm;
         prefill = ws.prefill;
         rope_scaling = ws.rope_scaling;
         embed_sharding = ws.embed_sharding;
@@ -1716,6 +1732,17 @@ int main(int argc, char** argv) {
   // The DeepSeek-V4.1 prefill mode: every model built from here on takes it.
   dgpp::Dsv41Model::set_default_prefill_bounded(prefill == "bounded");
   dgpp::QwenLayerStream::set_dense_weights_fp8(dense_weights == "fp8");
+  // The opt-in prefill levers (2026-09-30): each default off, never
+  // bitwise the default chain; a deployment turns one on in its config.
+  if (prefill_fp8_gemm && dense_weights != "fp8") {
+    DGPP_LOG_ERROR("engine.prefill_fp8_gemm requires engine.dense_weights fp8");
+    return 2;
+  }
+  dgpp::GlmMoeLayer::set_prefill_options(prefill_bf16_partials, prefill_fold_scales);
+  dgpp::QwenLayerStream::set_prefill_fp8_gemm(prefill_fp8_gemm);
+  if (prefill_bf16_partials || prefill_fold_scales || prefill_fp8_gemm)
+    DGPP_LOG_INFO("prefill levers on (not bitwise the default chain): bf16_partials={} fold_scales={} fp8_gemm={}",
+                  prefill_bf16_partials ? 1 : 0, prefill_fold_scales ? 1 : 0, prefill_fp8_gemm ? 1 : 0);
   if (!draft_vocab.empty()) {
     std::string err;
     if (!dgpp::QwenLayerStream::set_draft_vocab(draft_vocab, &err)) {

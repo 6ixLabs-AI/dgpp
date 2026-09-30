@@ -257,6 +257,33 @@ DGPP_TEST(packq_gemm_grouped_maps_padding_and_graph) {
       DGPP_CUDA_OK(cudaStreamSynchronize(stream));
       require(std::memcmp(reg.p, out.p, static_cast<size_t>(total) * os * 4) == 0,
               "the register-decode kernel must be bitwise the decoded-tile one (segment-major)");
+      // The folded-scale form (variant 3, engine.prefill_fold_scales): NOT
+      // bitwise — each weight x scale rounded to bf16 and one accumulator —
+      // but within the packed model's tolerance of the exact chain: the
+      // relative RMS distance under 2^-7 (bf16's own rounding is 2^-9 a
+      // value; the sum of k of them over the exact chain's fp32 stays
+      // well inside), and every finite output finite.
+      Buffer<float> fold(static_cast<size_t>(total) * os);
+      std::fill(fold.p, fold.p + static_cast<size_t>(total) * os, -12345.f);
+      dgpp::launch_moe_grouped_mma_packq_f32(a.p, k, segs.p, ns, /*max_rows=*/1, views.p, 1, fold.p, os, n, k,
+                                             bits, stream, rows.p, sf, /*variant=*/3, tiles.p, tile_count.p,
+                                             tile_cap);
+      DGPP_CUDA_OK(cudaStreamSynchronize(stream));
+      double num = 0, den = 0;
+      bool any_diff = false;
+      for (int row = 0; row < total; ++row)
+        for (int col = 0; col < n; ++col) {
+          const double exact = out.p[static_cast<size_t>(row) * os + col];
+          const double got = fold.p[static_cast<size_t>(row) * os + col];
+          require(std::isfinite(got) == std::isfinite(exact), "the folded kernel's finiteness follows the exact chain");
+          if (!std::isfinite(exact)) continue;
+          num += (got - exact) * (got - exact);
+          den += exact * exact;
+          any_diff |= got != exact;
+        }
+      require(den > 0 && std::sqrt(num / den) < 1.0 / 128,
+              "the folded-scale kernel must stay within 2^-7 relative RMS of the exact chain");
+      (void)any_diff;  // it need not differ on every fixture; it must never be far
     }
     oracle_check(w, gathered.p, k, out.p, os, total);
     for (int row = 0; row < total; ++row) {

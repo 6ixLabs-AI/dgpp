@@ -1,0 +1,71 @@
+OK   rank 0 (192.168.88.11) platform: Linux aarch64; supported target is Linux/aarch64 GB10
+OK   rank 0 (192.168.88.11) Python: 3.12.3; Python 3.10+ is required
+OK   rank 0 (192.168.88.11) commands: python3, timeout, ldd, ssh, scp, curl, jq
+OK   rank 0 (192.168.88.11) node address: rank 0 address 192.168.88.11 belongs to this host
+OK   rank 0 (192.168.88.11) GPU: NVIDIA GB10, 12.1, [N/A]
+OK   rank 0 (192.168.88.11) logs/staging: /home/stephen/dgpp/log/deployments/e602036b385a2d0e: parent /home/stephen/dgpp/log/deployments/e602036b385a2d0e, 101.2 GiB free
+OK   rank 0 (192.168.88.11) resident cache: ~/.cache/dgpp/resident: parent /home/stephen/.cache/dgpp/resident, 101.2 GiB free
+OK   rank 0 (192.168.88.11) model cache: /home/stephen/.cache/huggingface/hub: parent /home/stephen/.cache/huggingface/hub, 101.2 GiB free
+OK   rank 0 (192.168.88.11) checkpoint: /home/stephen/.cache/huggingface/hub/models--HawkBearPig--GLM-5.3-Flash-NVFP4-FP8/snapshots/17b8d4d83e33e836e9549d7e1a8d25b5117203c1: 181.7 GiB; all indexed shards have consistent lengths (not a content hash check)
+OK   rank 0 (192.168.88.11) available memory: 115.9 GiB; startup enforces the exact model memory plan
+OK   rank 0 (192.168.88.11) HTTP port: 0.0.0.0:18080 is available
+OK   rank 0 (192.168.88.11) fabric port: 0.0.0.0:29970 is available
+OK   rank 0 (192.168.88.11) journal port: 0.0.0.0:29971 is available
+WARN rank 0 (192.168.88.11) RoCE selection: auto-selected active devices; set DGPP_ROCE_DEVICES explicitly on multi-fabric hosts
+OK   rank 0 (192.168.88.11) RoCE roceP2p1s0f0: port 1, routable v2 GIDs: [('3', '0000:0000:0000:0000:0000:ffff:c0a8:590b')]; verify these subnets connect corresponding lanes on every node
+OK   rank 0 (192.168.88.11) RoCE rocep1s0f0: port 1, routable v2 GIDs: [('3', '0000:0000:0000:0000:0000:ffff:c0a8:580b')]; verify these subnets connect corresponding lanes on every node
+OK   rank 0 (192.168.88.11) runtime libraries: all binary dependencies resolve
+OK   rank 0 (192.168.88.11) server version: dgpp-serve 0.1.0+gdd58d6d3b9ff (git dd58d6d3b9ff, cuda 13.0)
+OK   rank 1 (192.168.88.12) platform: Linux aarch64; supported target is Linux/aarch64 GB10
+OK   rank 1 (192.168.88.12) Python: 3.12.3; Python 3.10+ is required
+OK   rank 1 (192.168.88.12) commands: python3, timeout, ldd
+OK   rank 1 (192.168.88.12) node address: rank 1 address 192.168.88.12 belongs to this host
+OK   rank 1 (192.168.88.12) GPU: NVIDIA GB10, 12.1, [N/A]
+OK   rank 1 (192.168.88.12) logs/staging: /tmp/bus4/deployments/e602036b385a2d0e: parent /tmp/bus4/deployments/e602036b385a2d0e, 307.1 GiB free
+OK   rank 1 (192.168.88.12) resident cache: ~/.cache/dgpp/resident: parent /home/stephen/.cache/dgpp/resident, 307.1 GiB free
+OK   rank 1 (192.168.88.12) model cache: /home/stephen/.cache/huggingface/hub: parent /home/stephen/.cache/huggingface/hub, 307.1 GiB free
+OK   rank 1 (192.168.88.12) checkpoint: /home/stephen/.cache/huggingface/hub/models--HawkBearPig--GLM-5.3-Flash-NVFP4-FP8/snapshots/17b8d4d83e33e836e9549d7e1a8d25b5117203c1: 181.7 GiB; all indexed shards have consistent lengths (not a content hash check)
+OK   rank 1 (192.168.88.12) available memory: 116.9 GiB; startup enforces the exact model memory plan
+WARN rank 1 (192.168.88.12) RoCE selection: auto-selected active devices; set DGPP_ROCE_DEVICES explicitly on multi-fabric hosts
+OK   rank 1 (192.168.88.12) RoCE roceP2p1s0f0: port 1, routable v2 GIDs: [('3', '0000:0000:0000:0000:0000:ffff:c0a8:590c')]; verify these subnets connect corresponding lanes on every node
+OK   rank 1 (192.168.88.12) RoCE rocep1s0f0: port 1, routable v2 GIDs: [('3', '0000:0000:0000:0000:0000:ffff:c0a8:580c')]; verify these subnets connect corresponding lanes on every node
+OK   rank 1 (192.168.88.12) peer runtime libraries: libibverbs.so, libcudart.so.13, libcublasLt.so.13, libstdc++.so
+WARN rank 1 (192.168.88.12) peer binary: development binary will be staged; verify identical OS/compiler runtime compatibility
+OK   rank 2 (192.168.88.13) platform: Linux aarch64; supported target is Linux/aarch64 GB10
+OK   rank 2 (192.168.88.13) Python: 3.12.3; Python 3.10+ is required
+OK   rank 2 (192.168.88.13) commands: python3, timeout, ldd
+OK   rank 2 (192.168.88.13) node address: rank 2 address 192.168.88.13 belongs to this host
+OK   rank 2 (192.168.88.13) GPU: NVIDIA GB10, 12.1, [N/A]
+OK   rank 2 (192.168.88.13) logs/staging: /tmp/bus4/deployments/e602036b385a2d0e: parent /tmp/bus4/deployments/e602036b385a2d0e, 761.0 GiB free
+OK   rank 2 (192.168.88.13) resident cache: ~/.cache/dgpp/resident: parent /home/stephen/.cache/dgpp/resident, 761.0 GiB free
+OK   rank 2 (192.168.88.13) model cache: /home/stephen/.cache/huggingface/hub: parent /home/stephen/.cache/huggingface/hub, 761.0 GiB free
+OK   rank 2 (192.168.88.13) checkpoint: /home/stephen/.cache/huggingface/hub/models--HawkBearPig--GLM-5.3-Flash-NVFP4-FP8/snapshots/17b8d4d83e33e836e9549d7e1a8d25b5117203c1: 181.7 GiB; all indexed shards have consistent lengths (not a content hash check)
+OK   rank 2 (192.168.88.13) available memory: 117.3 GiB; startup enforces the exact model memory plan
+WARN rank 2 (192.168.88.13) RoCE selection: auto-selected active devices; set DGPP_ROCE_DEVICES explicitly on multi-fabric hosts
+OK   rank 2 (192.168.88.13) RoCE roceP2p1s0f0: port 1, routable v2 GIDs: [('3', '0000:0000:0000:0000:0000:ffff:c0a8:590d')]; verify these subnets connect corresponding lanes on every node
+OK   rank 2 (192.168.88.13) RoCE rocep1s0f0: port 1, routable v2 GIDs: [('3', '0000:0000:0000:0000:0000:ffff:c0a8:580d')]; verify these subnets connect corresponding lanes on every node
+OK   rank 2 (192.168.88.13) peer runtime libraries: libibverbs.so, libcudart.so.13, libcublasLt.so.13, libstdc++.so
+WARN rank 2 (192.168.88.13) peer binary: development binary will be staged; verify identical OS/compiler runtime compatibility
+OK   rank 3 (192.168.88.14) platform: Linux aarch64; supported target is Linux/aarch64 GB10
+OK   rank 3 (192.168.88.14) Python: 3.12.3; Python 3.10+ is required
+OK   rank 3 (192.168.88.14) commands: python3, timeout, ldd
+OK   rank 3 (192.168.88.14) node address: rank 3 address 192.168.88.14 belongs to this host
+OK   rank 3 (192.168.88.14) GPU: NVIDIA GB10, 12.1, [N/A]
+OK   rank 3 (192.168.88.14) logs/staging: /tmp/bus4/deployments/e602036b385a2d0e: parent /tmp/bus4/deployments/e602036b385a2d0e, 824.0 GiB free
+OK   rank 3 (192.168.88.14) resident cache: ~/.cache/dgpp/resident: parent /home/stephen/.cache/dgpp/resident, 824.0 GiB free
+OK   rank 3 (192.168.88.14) model cache: /home/stephen/.cache/huggingface/hub: parent /home/stephen/.cache/huggingface/hub, 824.0 GiB free
+OK   rank 3 (192.168.88.14) checkpoint: /home/stephen/.cache/huggingface/hub/models--HawkBearPig--GLM-5.3-Flash-NVFP4-FP8/snapshots/17b8d4d83e33e836e9549d7e1a8d25b5117203c1: 181.7 GiB; all indexed shards have consistent lengths (not a content hash check)
+OK   rank 3 (192.168.88.14) available memory: 117.3 GiB; startup enforces the exact model memory plan
+WARN rank 3 (192.168.88.14) RoCE selection: auto-selected active devices; set DGPP_ROCE_DEVICES explicitly on multi-fabric hosts
+OK   rank 3 (192.168.88.14) RoCE roceP2p1s0f0: port 1, routable v2 GIDs: [('3', '0000:0000:0000:0000:0000:ffff:c0a8:590e')]; verify these subnets connect corresponding lanes on every node
+OK   rank 3 (192.168.88.14) RoCE rocep1s0f0: port 1, routable v2 GIDs: [('3', '0000:0000:0000:0000:0000:ffff:c0a8:580e')]; verify these subnets connect corresponding lanes on every node
+OK   rank 3 (192.168.88.14) peer runtime libraries: libibverbs.so, libcudart.so.13, libcublasLt.so.13, libstdc++.so
+WARN rank 3 (192.168.88.14) peer binary: development binary will be staged; verify identical OS/compiler runtime compatibility
+Preflight: 0 failed check(s). No files were installed and no services were started or stopped.
+2026-09-30 15:30:26.493 === staging dgpp-serve and the config to the peers
+2026-09-30 15:30:30.957 === rank 0 on 192.168.88.11 (HTTP :18080, fabric :29970, journal :29971)
+2026-09-30 15:30:30.958 head pid 3735844
+2026-09-30 15:30:32.959 journal listening: ok (2s)
+2026-09-30 15:30:32.959 === peers 192.168.88.12 192.168.88.13 192.168.88.14
+2026-09-30 15:30:58.316 rank 0 serving: ok (24s)
+2026-09-30 15:30:58.316 READY — curl http://192.168.88.11:18080/v1/models  (stop: python3 /home/stephen/workspace/dgpp-autoround/scripts/dgpp-cluster down --config /home/stephen/dgpp/cluster_glm-5.3-flash_nvfp4-fp8_w4.as-running-2026-09-28.json --log-dir /home/stephen/dgpp/log/deployments/e602036b385a2d0e)

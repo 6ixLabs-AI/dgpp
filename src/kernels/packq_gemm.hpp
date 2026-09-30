@@ -19,7 +19,11 @@ constexpr int kPackqMmaFromRows = 128;
 // for int4 rows unless DGPP_PACKQ_GEMM=narrow), 0 = the narrow 32 x 64
 // kernel, 1 = the wide one, 2 (2026-09-30, DGPP_PACKQ_GEMM=wide3) = the
 // wide tile with its B fragments decoded in registers and three pipeline
-// stages. All give bitwise the same D.
+// stages. Those give bitwise the same D. 3 (2026-09-30,
+// engine.prefill_fold_scales; NOT bitwise) = the wide tile with each
+// group's scale folded into the decoded bf16 values — bf16(code x scale)
+// — and one fp32 accumulator across K (Marlin's form: no per-group
+// partial or fma); within the packed model's tolerance of the exact chain.
 void launch_packq_gemm_bf16(const uint16_t* act, size_t act_stride, const GlmPackedMatrix& w,
                             uint16_t* out, int m, int n, int k, cudaStream_t stream);
 void launch_packq_gemm_f32(const uint16_t* act, size_t act_stride, const GlmPackedMatrix& w,
@@ -65,7 +69,8 @@ void launch_moe_grouped_mma_packq_f32(const uint16_t* act, size_t act_stride,
                                       int scale_fmt = 0, int variant = -1,
                                       const MoeTile* tiles = nullptr,
                                       const int32_t* tile_count = nullptr, int tile_cap = 0);
-// The kernel the default `variant` selects: 1 = the wide tile, 0 = narrow.
+// The kernel the default `variant` selects: 1 = the wide tile, 0 = narrow
+// (never 3: the folded form is a config key's choice, not an env's).
 int packq_gemm_variant_default();
 
 }  // namespace dgpp

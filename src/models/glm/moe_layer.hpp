@@ -314,6 +314,20 @@ class GlmMoeLayer {
   // several layers ahead and never drains the stream. Capture-mode decode
   // reads its per-slot graph tables instead and never touches the ring.
   static constexpr int kViewRing = 4;
+
+ public:
+  // The opt-in prefill levers (2026-09-30, engine.prefill_bf16_partials /
+  // engine.prefill_fold_scales; both default off, NOT bitwise the default
+  // chain — the served transcripts can differ). Set before the first
+  // chain; process-wide. bf16_partials: the packed tensor-core chain's
+  // down projection written in bf16 and its per-expert partials summed
+  // from bf16 (half the bytes a chunk writes and reads back; the reference
+  // stack's form). fold_scales: the wide packed GEMM with each group's
+  // scale folded into the bf16 weight values and one fp32 accumulator
+  // (kernels/packq_gemm variant 3).
+  static void set_prefill_options(bool bf16_partials, bool fold_scales);
+  static bool prefill_bf16_partials();
+  static bool prefill_fold_scales();
   size_t view_table_entries_ = 0;         // (n_experts + 1) * 3
   MoeExpertView* h_view_ring_ = nullptr;  // [kViewRing][view_table_entries_]
   cudaEvent_t view_ring_event_[kViewRing] = {};
