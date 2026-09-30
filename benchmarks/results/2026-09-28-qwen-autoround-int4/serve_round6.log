@@ -1,0 +1,14 @@
+production down 05:37:09
+identical transcripts: 4 of 4
+  [JSON] 849 tokens in 12.99s = 65.4 tok/s (prompt: 50)
+  [LongCode] 2048 tokens in 33.16s = 61.8 tok/s (prompt: 39)
+  [JSON] 849 tokens in 13.00s = 65.3 tok/s (prompt: 50)
+  [LongCode] 2048 tokens in 33.15s = 61.8 tok/s (prompt: 39)
+decode 2047 tok / 563 passes in 32.7 s: 62.5 tok/s, 16.0 ms/tok, 58 ms/pass, 3.64 tok/pass, accept p1 95 % p2 
+== profile at ~10K context 05:39:48
+[ctx2k] content chunks 400, ttft 9593 ms, decode pace 22.07 ms/chunk (client), wall 18401 ms
+attn_partial_kernel<int)256>                                                                2.054    15.0    137.0   2
+index_score_kernel                                                                          0.403    15.0     26.8   0
+select_from_keys_kernel                                                                     0.342    15.0     22.8   0
+production restored 05:41:19
+ctx2k session done

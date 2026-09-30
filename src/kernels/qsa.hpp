@@ -132,6 +132,18 @@ void qsa_attn_partial(const uint16_t* q, int64_t q_row_stride, const uint16_t* k
                       int local_heads, int kv_heads, int dim, int block_tokens,
                       const int32_t* block_tables, int blocks_per_request, float scale,
                       float* m_ws, float* l_ws, float* c_ws, cudaStream_t stream);
+// The same with the tile gather pinned: 1 = the cp.async phases (the
+// default; DGPP_QSA_ASYNC=0 turns the default to the serial gather),
+// 0 = serial, -1 = the default; heads_per_block (a divisor of the heads per
+// kv head, 0 = the default rule) and heads_per_warp (1..3, 0 = 1). Every
+// form is bitwise every other; only the default geometry is served.
+void qsa_attn_partial_gather(const uint16_t* q, int64_t q_row_stride, const uint16_t* k_cache,
+                      const uint16_t* v_cache, const int32_t* req_ids, const int32_t* topk,
+                      int topk_stride, const int32_t* counts, int rows, int n_split,
+                      int local_heads, int kv_heads, int dim, int block_tokens,
+                      const int32_t* block_tables, int blocks_per_request, float scale,
+                      float* m_ws, float* l_ws, float* c_ws, cudaStream_t stream,
+                      int async_gather, int heads_per_block, int heads_per_warp);
 
 // Prefill variant with wider KV sharing and cooperative warp softmax at dim=256;
 // other dimensions use qsa_attn_partial. Identical split/tile arithmetic and

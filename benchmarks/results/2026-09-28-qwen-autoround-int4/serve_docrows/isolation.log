@@ -1,0 +1,72 @@
+== isolation-c1concurrency 1: 18:43:31.016 .. 18:43:37.535  wall 6.5 s
+   req 0: status 200 finish=length tokens 256 chunks 256 ttft 304 ms  client update pace 24.27 ms/update
+   aggregate wall: 256 tokens in 6.52 s = 39.27 tok/s (prefill included)
+   legacy output-span aggregate: 41.35884184743013 tok/s (initial TTFT excluded; later admissions included)
+   engine decode: 41.198 tok/s
+PROBE 1 {"text_sha256": "247926f38a2762f6e81e9ab7fbbaab3320a3fa7165eae149a83fa951a207267d", "identical_to_first_solo": true, "first_difference": null, "solo_excerpt": "", "batch_excerpt": ""}
+== isolation-c1concurrency 1: 18:43:37.538 .. 18:43:44.065  wall 6.5 s
+   req 0: status 200 finish=length tokens 256 chunks 256 ttft 304 ms  client update pace 24.30 ms/update
+   aggregate wall: 256 tokens in 6.53 s = 39.22 tok/s (prefill included)
+   legacy output-span aggregate: 41.30562127022043 tok/s (initial TTFT excluded; later admissions included)
+   engine decode: 41.108 tok/s
+PROBE 1 {"text_sha256": "247926f38a2762f6e81e9ab7fbbaab3320a3fa7165eae149a83fa951a207267d", "identical_to_first_solo": true, "first_difference": null, "solo_excerpt": "", "batch_excerpt": ""}
+== isolation-c2concurrency 2: 18:43:44.068 .. 18:43:53.826  wall 9.8 s
+   req 0: status 200 finish=length tokens 256 chunks 256 ttft 433 ms  client update pace 34.13 ms/update
+   req 1: status 200 finish=length tokens 256 chunks 256 ttft 433 ms  client update pace 36.47 ms/update
+   aggregate wall: 512 tokens in 9.76 s = 52.47 tok/s (prefill included)
+   legacy output-span aggregate: 55.05959091274438 tok/s (initial TTFT excluded; later admissions included)
+   engine decode: 54.955 tok/s
+PROBE 2 {"text_sha256": "0fbc6ff8fbf5af0a84d59d9281b7ea24d28de2683482ff339884b7a0c2dceb50", "identical_to_first_solo": false, "first_difference": 419, "solo_excerpt": "Full paragraphs. Let's craft.\n\nNeed think about content: KV cache in transformer inference: autoregressive generation, a", "batch_excerpt": "Let's craft coherent essay.\n\nNeed think about content: KV cache in transformer inference: autoregressive generation, att"}
+== isolation-c2concurrency 2: 18:43:53.829 .. 18:44:03.012  wall 9.2 s
+   req 0: status 200 finish=length tokens 256 chunks 256 ttft 309 ms  client update pace 34.69 ms/update
+   req 1: status 200 finish=length tokens 256 chunks 256 ttft 643 ms  client update pace 31.46 ms/update
+   aggregate wall: 512 tokens in 9.18 s = 55.76 tok/s (prefill included)
+   legacy output-span aggregate: 57.87139253975425 tok/s (initial TTFT excluded; later admissions included)
+   engine decode: 59.733 tok/s
+PROBE 2 {"text_sha256": "13d1c5f35be011433c0506364db9b40d9ed7f7d068236d3dafebaddb9924500a", "identical_to_first_solo": false, "first_difference": 419, "solo_excerpt": "Full paragraphs. Let's craft.\n\nNeed think about content: KV cache in transformer inference: autoregressive generation, a", "batch_excerpt": "Let's craft coherent essay.\n\nNeed think about content: KV cache in transformer inference: autoregressive generation, att"}
+== isolation-c3concurrency 3: 18:44:03.016 .. 18:44:14.884  wall 11.9 s
+   req 0: status 200 finish=length tokens 256 chunks 256 ttft 557 ms  client update pace 42.55 ms/update
+   req 1: status 200 finish=length tokens 256 chunks 256 ttft 557 ms  client update pace 44.35 ms/update
+   req 2: status 200 finish=length tokens 256 chunks 256 ttft 557 ms  client update pace 42.25 ms/update
+   aggregate wall: 768 tokens in 11.87 s = 64.71 tok/s (prefill included)
+   legacy output-span aggregate: 67.90152103439405 tok/s (initial TTFT excluded; later admissions included)
+   engine decode: 67.855 tok/s
+PROBE 3 {"text_sha256": "bebb501d619371b9380db7619bfca6005d1b3a1dfdcb5d35a61811477d98636a", "identical_to_first_solo": false, "first_difference": 385, "solo_excerpt": "No need citations. Need headings. Full paragraphs. Let's craft.\n\nNeed think about content: KV cache in transformer infer", "batch_excerpt": "Let's plan structure:\nTitle maybe.\nSections:\n1. Introduction: KV cache in transformer inference, autoregressive generati"}
+== isolation-c3concurrency 3: 18:44:14.889 .. 18:44:26.777  wall 11.9 s
+   req 0: status 200 finish=length tokens 256 chunks 256 ttft 536 ms  client update pace 43.41 ms/update
+   req 1: status 200 finish=length tokens 256 chunks 256 ttft 536 ms  client update pace 44.51 ms/update
+   req 2: status 200 finish=length tokens 256 chunks 256 ttft 536 ms  client update pace 43.00 ms/update
+   aggregate wall: 768 tokens in 11.89 s = 64.60 tok/s (prefill included)
+   legacy output-span aggregate: 67.66354288325321 tok/s (initial TTFT excluded; later admissions included)
+   engine decode: 67.758 tok/s
+PROBE 3 {"text_sha256": "bebb501d619371b9380db7619bfca6005d1b3a1dfdcb5d35a61811477d98636a", "identical_to_first_solo": false, "first_difference": 385, "solo_excerpt": "No need citations. Need headings. Full paragraphs. Let's craft.\n\nNeed think about content: KV cache in transformer infer", "batch_excerpt": "Let's plan structure:\nTitle maybe.\nSections:\n1. Introduction: KV cache in transformer inference, autoregressive generati"}
+== isolation-c4concurrency 4: 18:44:26.783 .. 18:44:40.308  wall 13.5 s
+   req 0: status 200 finish=length tokens 256 chunks 256 ttft 646 ms  client update pace 48.98 ms/update
+   req 1: status 200 finish=length tokens 256 chunks 256 ttft 645 ms  client update pace 50.40 ms/update
+   req 2: status 200 finish=length tokens 256 chunks 256 ttft 646 ms  client update pace 48.27 ms/update
+   req 3: status 200 finish=length tokens 256 chunks 256 ttft 645 ms  client update pace 44.83 ms/update
+   aggregate wall: 1024 tokens in 13.52 s = 75.71 tok/s (prefill included)
+   legacy output-span aggregate: 79.67361022748132 tok/s (initial TTFT excluded; later admissions included)
+   engine decode: 79.712 tok/s
+PROBE 4 {"text_sha256": "bebb501d619371b9380db7619bfca6005d1b3a1dfdcb5d35a61811477d98636a", "identical_to_first_solo": false, "first_difference": 385, "solo_excerpt": "No need citations. Need headings. Full paragraphs. Let's craft.\n\nNeed think about content: KV cache in transformer infer", "batch_excerpt": "Let's plan structure:\nTitle maybe.\nSections:\n1. Introduction: KV cache in transformer inference, autoregressive generati"}
+== isolation-c4concurrency 4: 18:44:40.315 .. 18:44:53.923  wall 13.6 s
+   req 0: status 200 finish=length tokens 256 chunks 256 ttft 644 ms  client update pace 49.25 ms/update
+   req 1: status 200 finish=length tokens 256 chunks 256 ttft 644 ms  client update pace 50.74 ms/update
+   req 2: status 200 finish=length tokens 256 chunks 256 ttft 644 ms  client update pace 49.65 ms/update
+   req 3: status 200 finish=length tokens 256 chunks 256 ttft 644 ms  client update pace 44.40 ms/update
+   aggregate wall: 1024 tokens in 13.61 s = 75.25 tok/s (prefill included)
+   legacy output-span aggregate: 79.14307289946134 tok/s (initial TTFT excluded; later admissions included)
+   engine decode: 79.250 tok/s
+PROBE 4 {"text_sha256": "bebb501d619371b9380db7619bfca6005d1b3a1dfdcb5d35a61811477d98636a", "identical_to_first_solo": false, "first_difference": 385, "solo_excerpt": "No need citations. Need headings. Full paragraphs. Let's craft.\n\nNeed think about content: KV cache in transformer infer", "batch_excerpt": "Let's plan structure:\nTitle maybe.\nSections:\n1. Introduction: KV cache in transformer inference, autoregressive generati"}
+== isolation-c1concurrency 1: 18:44:53.929 .. 18:45:00.450  wall 6.5 s
+   req 0: status 200 finish=length tokens 256 chunks 256 ttft 304 ms  client update pace 24.28 ms/update
+   aggregate wall: 256 tokens in 6.52 s = 39.25 tok/s (prefill included)
+   legacy output-span aggregate: 41.344134145041544 tok/s (initial TTFT excluded; later admissions included)
+   engine decode: 41.172 tok/s
+PROBE 1 {"text_sha256": "247926f38a2762f6e81e9ab7fbbaab3320a3fa7165eae149a83fa951a207267d", "identical_to_first_solo": true, "first_difference": null, "solo_excerpt": "", "batch_excerpt": ""}
+== isolation-c1concurrency 1: 18:45:00.493 .. 18:45:07.016  wall 6.5 s
+   req 0: status 200 finish=length tokens 256 chunks 256 ttft 304 ms  client update pace 24.28 ms/update
+   aggregate wall: 256 tokens in 6.52 s = 39.25 tok/s (prefill included)
+   legacy output-span aggregate: 41.340509192436144 tok/s (initial TTFT excluded; later admissions included)
+   engine decode: 41.169 tok/s
+PROBE 1 {"text_sha256": "247926f38a2762f6e81e9ab7fbbaab3320a3fa7165eae149a83fa951a207267d", "identical_to_first_solo": true, "first_difference": null, "solo_excerpt": "", "batch_excerpt": ""}

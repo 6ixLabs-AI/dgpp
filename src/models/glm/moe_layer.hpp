@@ -130,7 +130,12 @@ class GlmMoeLayer {
   // at the same routing. Works without a shared expert.
   void enqueue_decode_f32(const uint16_t* hidden, float* out, int tokens,
                           MoeTraceStaging* trace, cudaStream_t stream,
-                          int table_slot = -1);
+                          int table_slot = -1, bool accumulate = true);
+  // The routed chain's per-slot down outputs (slot layout tokens *
+  // (top_k + 1)) and the router weights of the most recent decode enqueue,
+  // for a consumer that folds the accumulation itself (accumulate = false).
+  const float* decode_slot_down() const { return d_slot_down_; }
+  const float* decode_weights() const { return d_weights_; }
 
   // Fills graph slot `table_slot`'s device expert-view table from the
   // CURRENT binding (an async H2D on `stream`; the caller syncs before
@@ -179,7 +184,7 @@ class GlmMoeLayer {
   // full chain with the shared expert) / out_f32 (the routed chain) is set.
   void enqueue_decode_impl(const uint16_t* hidden, uint16_t* out_bf16,
                            float* out_f32, int tokens, MoeTraceStaging* trace,
-                           cudaStream_t stream, int table_slot);
+                           cudaStream_t stream, int table_slot, bool accumulate = true);
   // The eager paths' expert-table upload: fills the ring's next pinned
   // entry with every routed expert's three views (and the shared expert's
   // three after them when with_shared) and copies it to d_dst on stream —
@@ -191,10 +196,19 @@ class GlmMoeLayer {
   // gate/up over the routed segments and the shared segment, swiglu, the
   // down projection — on the chosen kernel. accumulate_grouped consumes the
   // resulting buffer in its actual element format.
+  // `tiles` (with its device count and host capacity): the compact tile
+  // list of the routed segments for the wide packed kernel
+  // (launch_moe_tile_list; null = the segment-major grid over max_rows).
   void grouped_expert_chain(MoeExpertKernel kernel, const uint16_t* hidden,
                             const MoeSegment* segs, int n_segs, int max_rows,
                             const MoeSegment* shared_seg, int tokens,
-                            size_t rows_total, cudaStream_t stream);
+                            size_t rows_total, cudaStream_t stream,
+                            const MoeTile* tiles = nullptr,
+                            const int32_t* tile_count = nullptr, int tile_cap = 0);
+  // Whether the routed chain's tensor-core launches take the tile list: the
+  // wide packed int4 kernel (engine.expert_tile_list = false keeps the max_rows grid).
+  bool packq_tile_list() const;
+  int tile_list_for(MoeExpertKernel kernel, int n_segs, int routed_rows, cudaStream_t stream);
   // Longest routed segment for grid sizing (the grouped launchers document
   // max_rows as the longest segment's row count): reads the device segment
   // table back into the pinned staging and takes the max over the routed
@@ -275,6 +289,9 @@ class GlmMoeLayer {
   int32_t* d_slot_row_ = nullptr;        // [max_tokens * top_k]
   MoeSegment* d_segs_ = nullptr;         // [n_experts + 1]
   MoeExpertView* d_views_prefill_ = nullptr;  // [(n_experts + 1) * 3]
+  MoeTile* d_tiles_ = nullptr;           // [tiles_cap_] the compact tile list
+  int32_t* d_tile_count_ = nullptr;      // [1]
+  int tiles_cap_ = 0;
   // The eager paths' expert-view upload source (the prefill paths' table
   // of n_experts + 1 rows and eager decode's of n_experts): a RING of
   // pinned tables, each guarded by the event its last upload recorded.
@@ -297,6 +314,24 @@ class GlmMoeLayer {
   // several layers ahead and never drains the stream. Capture-mode decode
   // reads its per-slot graph tables instead and never touches the ring.
   static constexpr int kViewRing = 4;
+
+ public:
+  // The opt-in prefill levers (2026-09-30, engine.prefill_bf16_partials /
+  // engine.prefill_fold_scales; both default off, NOT bitwise the default
+  // chain — the served transcripts can differ). Set before the first
+  // chain; process-wide. bf16_partials: the packed tensor-core chain's
+  // down projection written in bf16 and its per-expert partials summed
+  // from bf16 (half the bytes a chunk writes and reads back; the reference
+  // stack's form). fold_scales: the wide packed GEMM with each group's
+  // scale folded into the bf16 weight values and one fp32 accumulator
+  // (kernels/packq_gemm variant 3).
+  // tile_list (engine.expert_tile_list, default on): the compact tile list
+  // for the wide kernels instead of the max_rows grid (bitwise). pair
+  // (engine.expert_gemm_pair, default off): gate and up as one launch
+  // (bitwise; measured level). No environment switch sets any of these.
+  static void set_prefill_options(bool bf16_partials, bool fold_scales, bool tile_list = true, bool pair = false);
+  static bool prefill_bf16_partials();
+  static bool prefill_fold_scales();
   size_t view_table_entries_ = 0;         // (n_experts + 1) * 3
   MoeExpertView* h_view_ring_ = nullptr;  // [kViewRing][view_table_entries_]
   cudaEvent_t view_ring_event_[kViewRing] = {};

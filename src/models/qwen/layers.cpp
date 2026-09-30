@@ -1,5 +1,11 @@
 #include "models/qwen/layers.hpp"
 
+#include <ctime>
+
+#include "kernels/glm_spec.hpp"
+
+#include <chrono>
+
 #include <algorithm>
 #include <atomic>
 #include <cmath>
@@ -19,6 +25,7 @@
 #include "kernels/rope_scaling.hpp"
 #include "kernels/qwen_gr.hpp"
 #include "kernels/fp8_dequant.hpp"
+#include "kernels/fp8_gemm.hpp"
 #include "kernels/scale_gemm.hpp"
 #include "kernels/qwen_norm.hpp"
 #include "kernels/qwen_ple.hpp"
@@ -65,6 +72,26 @@ void gemm_dense(const QwenGemmWorkspace& g, const uint16_t* act, int64_t act_str
     // Prefill-shaped (above the scale GEMM's GEMV lowering): through the
     // BF16 interface on the dequantized matrix when the bridge holds it.
     const size_t bf16_bytes = static_cast<size_t>(n) * static_cast<size_t>(k) * 2;
+    // OPT-IN, NOT BITWISE (engine.prefill_fp8_gemm, 2026-09-30): the
+    // product on the fp8 tensor cores from per-token e4m3 activations
+    // (kernels/fp8_gemm) when the shape fits its contract; otherwise the
+    // bridge below.
+    // Not below 1,024 columns: the quantizer's pass over the activation
+    // (3 bytes a value at line rate) costs 494 / n of the GEMM's time
+    // (the [320 x 10240] GR down: +60 % measured), while the fp8 GEMM
+    // itself runs at cuBLAS's rate and saves the dequant alone.
+    if (m > 128 && n >= 1024 && g.a8 && QwenLayerStream::prefill_fp8_gemm() && k % 128 == 0 && w8.scale_block_cols == 128 &&
+        static_cast<size_t>(m) * static_cast<size_t>(k) <= g.a8_bytes && act_stride % 4 == 0 &&
+        (reinterpret_cast<uintptr_t>(act) % 8) == 0) {
+      launch_fp8_quantize_rows(act, static_cast<size_t>(act_stride), m, k, g.a8, g.a8_scales, stream);
+      if (out_type == GemmOut::F32)
+        launch_fp8_gemm_f32(g.a8, g.a8_scales, w8.payload, w8.scales, w8.scale_block_rows, static_cast<float*>(out),
+                            m, n, k, stream, static_cast<size_t>(n));
+      else
+        launch_fp8_gemm_bf16(g.a8, g.a8_scales, w8.payload, w8.scales, w8.scale_block_rows,
+                             static_cast<uint16_t*>(out), m, n, k, stream, static_cast<size_t>(n));
+      return;
+    }
     if (m > 128 && g.dequant && bf16_bytes <= g.dequant_bytes) {
       launch_fp8_dequant_blocks(w8.payload, w8.scales, g.dequant, n, k, stream);
       gemm_bf16(g, act, act_stride, g.dequant, out, out_type, m, n, k, stream);
@@ -145,6 +172,16 @@ QwenGrSite::QwenGrSite(const QwenGrResident& w, const QwenGemmWorkspace& gemm, i
   // closes the "make the fused mix multi-row" idea. DGPP_QWEN_GR_FUSED=all
   // re-enables it for another look.
   fused_rows_max_ = fused_knob == "all" ? 8 : 1;
+  // DGPP_QWEN_GR_MIX_FUSED=off: the up GEMV and the mix as two launches
+  // (the A/B knob of the 2026-09-29 act_up_mix fusion).
+  const char* mix_knob = std::getenv("DGPP_QWEN_GR_MIX_FUSED");
+  mix_fused_ = !(mix_knob != nullptr && std::string(mix_knob) == "off");
+  // DGPP_QWEN_GR_NORM_FOLD=on: the batched rows' group norm staged into the
+  // down + inject GEMV (kernels/qwen_gr norm_down_inject, bitwise). Off by
+  // default: on the fabric 2026-09-29 the 41 blocks' redundant norms cost
+  // more than the launch they save (54.3–54.4 against 53.5–53.6 ms a step).
+  const char* nf_knob = std::getenv("DGPP_QWEN_GR_NORM_FOLD");
+  norm_fold_ = nf_knob != nullptr && std::string(nf_knob) == "on";
   // The inject dots' side stream: lowest priority, so the chain's kernels
   // keep first claim on the SMs (the dots are one block per row and have a
   // whole branch plus a collective to hide under). Capture-safe: the fork
@@ -175,7 +212,37 @@ QwenGrSite::~QwenGrSite() {
   cudaFree(gates_);
 }
 
-void QwenGrSite::mix(const uint16_t* r, uint16_t* x, int tokens, cudaStream_t stream) {
+void QwenGrSite::apply_pending(uint16_t* r, const PendingCombine& p, int tokens, int hidden,
+                               cudaStream_t stream) {
+  if (p.y == nullptr || tokens <= 0) return;
+  qwen_gr_combine_apply_bf16(r, p.gates, p.y, tokens, p.hc, hidden, stream);
+}
+
+QwenGrSite::PendingCombine QwenGrSite::defer_combine(uint16_t* r, const uint16_t* y, int tokens,
+                                                     cudaStream_t stream) {
+  (void)r;  // the apply is the next mix's (combine_norm) in every form now
+  if (tokens <= 0) return {};
+  if (!w_.inject) throw std::invalid_argument("QwenGrSite: combine on a site without inject weights");
+  if (gates_ready_) {  // the mix's down GEMV wrote them: the next mix applies
+    gates_ready_ = false;
+    return PendingCombine{y, gates_, hc_};
+  }
+  if (gate_forked_) {  // the side stream's dots: join, then the next mix applies
+    DGPP_CUDA_OK(cudaEventRecord(gate_join_, gate_side_));
+    DGPP_CUDA_OK(cudaStreamWaitEvent(stream, gate_join_, 0));
+    gate_forked_ = false;
+    return PendingCombine{y, gates_, hc_};
+  }
+  // The prefill rows (2026-09-29): the gates as their own dots kernel here,
+  // the apply inside the next mix's norm pass (combine_norm: bitwise apply +
+  // group norm, one pass over R instead of two — 12 % of a 32K prefill was
+  // these elementwise passes).
+  qwen_gr_combine_dots_bf16(rn_, w_.inject, gates_, tokens, hc_, hidden_, stream);
+  return PendingCombine{y, gates_, hc_};
+}
+
+void QwenGrSite::mix(uint16_t* r, uint16_t* x, int tokens, cudaStream_t stream,
+                     const PendingCombine* pending) {
   if (tokens <= 0) return;
   if (tokens > max_tokens_) throw std::invalid_argument("QwenGrSite: tokens exceed max_tokens");
   // Either form of the two projections (the checkpoint's BF16, or block FP8).
@@ -185,7 +252,12 @@ void QwenGrSite::mix(const uint16_t* r, uint16_t* x, int tokens, cudaStream_t st
   // The fused decode forms in the weights' form: BF16, or block FP8 (the
   // fp8 twins, 2026-09-10 — bitwise the unfused fp8 chain).
   const bool dense_fp8 = w_.down_fp8.payload != nullptr;
+  const bool pend = pending != nullptr && pending->y != nullptr;
+  if (pend && pending->hc != hc_) throw std::invalid_argument("QwenGrSite: a pending combine of another width");
   if (tokens <= fused_rows_max_ && fused_mix_) {
+    // The one-row fused kernel normalizes R itself: the pending combine
+    // lands first, as its own launch.
+    if (pend) qwen_gr_combine_apply_bf16(r, pending->gates, pending->y, tokens, hc_, hidden_, stream);
     // The scalar decode row: the norm and the activation folded into the
     // two GEMVs' staging (kernels/qwen_gr, bitwise the four-launch chain).
     // One row only: every down block recomputes the row's group norms in
@@ -203,28 +275,78 @@ void QwenGrSite::mix(const uint16_t* r, uint16_t* x, int tokens, cudaStream_t st
                              inject_fused() ? w_.inject : nullptr,
                              inject_fused() ? gates_ : nullptr);
     if (inject_fused()) gates_ready_ = true;
+    // The up GEMV with the mix in its epilogue (2026-09-29): one launch,
+    // no logits round trip, bitwise the act_up + mix_finish chain.
+    if (mix_fused_) {
+      if (dense_fp8)
+        qwen_gr_act_up_mix_fp8(t_, lowrank_, hc_, w_.up_fp8.payload, w_.up_fp8.scales, rn_, x, hidden_, tokens, stream);
+      else
+        qwen_gr_act_up_mix_bf16(t_, lowrank_, hc_, w_.up, rn_, x, hidden_, tokens, stream);
+      return;
+    }
     if (dense_fp8)
       qwen_gr_act_up_fp8(t_, lowrank_, hc_, w_.up_fp8.payload, w_.up_fp8.scales, logits_, hidden_, tokens, stream);
     else
       qwen_gr_act_up_bf16(t_, lowrank_, hc_, w_.up, logits_, hidden_, tokens, stream);
   } else {
-    qwen_group_rmsnorm_bf16(r, w_.hc_norm, rn_, tokens, hc_, hidden_, eps_, stream);
-    if (tokens <= 8 && inject_fused() && fused_mix_ && !gate_side_only_) {
-      // The batched decode rows (MTP, the row batches): the down GEMV with
-      // the inject rows appended — no side stream (kernels/qwen_gr).
+    const bool batched = tokens <= 8 && inject_fused() && fused_mix_ && !gate_side_only_;
+    const Bf12Matrix* pk = (batched && !dense_fp8) ? g_.gemm->bf12_lookup(w_.down) : nullptr;
+    if (norm_fold_ && batched && pk == nullptr) {
+      // The batched decode rows' group norm staged into the down + inject
+      // GEMV (2026-09-29; one block reduction for every (row, group):
+      // bitwise the norm + down_inject chain); the previous site's combine
+      // as its own launch first — every down block reads R.
+      if (pend) qwen_gr_combine_apply_bf16(r, pending->gates, pending->y, tokens, hc_, hidden_, stream);
       if (dense_fp8)
-        qwen_gr_down_inject_fp8(rn_, w_.down_fp8.payload, w_.down_fp8.scales, t_, lowrank_, w_.inject, gates_,
-                                hc_, hidden_, tokens, stream);
+        qwen_gr_norm_down_inject_fp8(r, static_cast<size_t>(W), w_.hc_norm, hc_, hidden_, eps_, rn_,
+                                     w_.down_fp8.payload, w_.down_fp8.scales, t_, lowrank_, w_.inject, gates_,
+                                     tokens, stream);
       else
-        qwen_gr_down_inject_bf16(rn_, w_.down, t_, lowrank_, w_.inject, gates_, hc_, hidden_,
-                                 tokens, stream);
+        qwen_gr_norm_down_inject_bf16(r, static_cast<size_t>(W), w_.hc_norm, hc_, hidden_, eps_, rn_, w_.down, t_,
+                                      lowrank_, w_.inject, gates_, tokens, stream);
       gates_ready_ = true;
     } else {
-      fork_gate_dots(stream, tokens);
-      gemm_dense(g_, rn_, W, w_.down, w_.down_fp8, t_, GemmOut::BF16, tokens, lowrank_, W, stream);
+      if (pend)  // the previous site's combine inside this norm's launch
+        qwen_gr_combine_norm_bf16(r, pending->gates, pending->y, w_.hc_norm, rn_, tokens, hc_, hidden_, eps_, stream);
+      else
+        qwen_group_rmsnorm_bf16(r, w_.hc_norm, rn_, tokens, hc_, hidden_, eps_, stream);
+      if (batched) {
+        // The batched decode rows (MTP, the row batches): the down GEMV with
+        // the inject rows appended — no side stream (kernels/qwen_gr).
+        if (dense_fp8)
+          qwen_gr_down_inject_fp8(rn_, w_.down_fp8.payload, w_.down_fp8.scales, t_, lowrank_, w_.inject, gates_,
+                                  hc_, hidden_, tokens, stream);
+        else if (pk != nullptr)  // the down's 12-bit companion (world 1; bitwise the bf16 chain)
+          qwen_gr_down_inject_bf12(rn_, *pk, t_, lowrank_, w_.inject, gates_, hc_, hidden_, tokens, stream);
+        else
+          qwen_gr_down_inject_bf16(rn_, w_.down, t_, lowrank_, w_.inject, gates_, hc_, hidden_,
+                                   tokens, stream);
+        gates_ready_ = true;
+      } else {
+        fork_gate_dots(stream, tokens);
+        gemm_dense(g_, rn_, W, w_.down, w_.down_fp8, t_, GemmOut::BF16, tokens, lowrank_, W, stream);
+      }
     }
-    qwen_gr_gate_act_bf16(t_, tokens, lowrank_, hc_, stream);
-    gemm_dense(g_, t_, lowrank_, w_.up, w_.up_fp8, logits_, GemmOut::BF16, tokens, W, lowrank_, stream);
+    if (tokens <= 8 && fused_mix_) {
+      // The batched decode rows' up GEMV with the gate activation folded
+      // into its staging and the mix into its epilogue (kernels/qwen_gr
+      // act_up_mix: bitwise gate_act + the GEMV + mix_finish) — two launches
+      // and the logits round trip fewer per site (2026-09-29).
+      if (mix_fused_) {
+        if (dense_fp8)
+          qwen_gr_act_up_mix_fp8(t_, lowrank_, hc_, w_.up_fp8.payload, w_.up_fp8.scales, rn_, x, hidden_, tokens, stream);
+        else
+          qwen_gr_act_up_mix_bf16(t_, lowrank_, hc_, w_.up, rn_, x, hidden_, tokens, stream);
+        return;
+      }
+      if (dense_fp8)
+        qwen_gr_act_up_fp8(t_, lowrank_, hc_, w_.up_fp8.payload, w_.up_fp8.scales, logits_, hidden_, tokens, stream);
+      else
+        qwen_gr_act_up_bf16(t_, lowrank_, hc_, w_.up, logits_, hidden_, tokens, stream);
+    } else {
+      qwen_gr_gate_act_bf16(t_, tokens, lowrank_, hc_, stream);
+      gemm_dense(g_, t_, lowrank_, w_.up, w_.up_fp8, logits_, GemmOut::BF16, tokens, W, lowrank_, stream);
+    }
   }
   qwen_gr_mix_finish_bf16(logits_, rn_, x, tokens, hc_, hidden_, stream);
 }
@@ -323,17 +445,23 @@ void QwenGdnLayer::in_projections(const uint16_t* x, int tokens, cudaStream_t st
     // The FP8 form: qkv and z as one multi-problem fp8 GEMV at decode rows
     //, the scale GEMM above them; a and b (BF16, [lv, H]) as
     // one dual GEMV.
+    const bool ab_gemv = tokens <= std::min(4, g_.gemv_rows) && bf16_gemv_accepts(w_.in_proj_a, tokens, H) &&
+                         bf16_gemv_accepts(w_.in_proj_b, tokens, H);
     if (tokens <= std::min(8, g_.gemv_rows)) {
-      Fp8GemvProblem p[2];
+      // a and b (BF16 [lv, H]) as bf16 problems of the same launch when the
+      // GEMV takes them (2026-09-29): bitwise the dual launch they replace.
+      Fp8GemvProblem p[4];
       p[0].payload = w_.in_proj_qkv_fp8.payload; p[0].scales = w_.in_proj_qkv_fp8.scales; p[0].out = qkv_; p[0].n = C;
       p[1].payload = w_.in_proj_z_fp8.payload; p[1].scales = w_.in_proj_z_fp8.scales; p[1].out = z_; p[1].n = LV;
-      launch_scale_gemv_multi_bf16(p, 2, x, static_cast<size_t>(H), tokens, H, stream);
+      p[2].bf16_weight = w_.in_proj_a; p[2].out = a_; p[2].n = lv_;
+      p[3].bf16_weight = w_.in_proj_b; p[3].out = b_; p[3].n = lv_;
+      launch_scale_gemv_multi_bf16(p, ab_gemv ? 4 : 2, x, static_cast<size_t>(H), tokens, H, stream);
+      if (ab_gemv) return;
     } else {
       gemm_dense(g_, x, H, nullptr, w_.in_proj_qkv_fp8, qkv_, GemmOut::BF16, tokens, C, H, stream);
       gemm_dense(g_, x, H, nullptr, w_.in_proj_z_fp8, z_, GemmOut::BF16, tokens, LV, H, stream);
     }
-    if (tokens <= std::min(4, g_.gemv_rows) && bf16_gemv_accepts(w_.in_proj_a, tokens, H) &&
-        bf16_gemv_accepts(w_.in_proj_b, tokens, H)) {
+    if (ab_gemv) {
       Bf16GemvProblem p[2];
       p[0].act = x; p[0].act_row_stride = static_cast<size_t>(H); p[0].weight = w_.in_proj_a; p[0].out = a_; p[0].n = lv_;
       p[1].act = x; p[1].act_row_stride = static_cast<size_t>(H); p[1].weight = w_.in_proj_b; p[1].out = b_; p[1].n = lv_;
@@ -385,7 +513,8 @@ void QwenGdnLayer::in_projections(const uint16_t* x, int tokens, cudaStream_t st
 
 void QwenGdnLayer::enqueue(const uint16_t* x, float* recurrent_state, uint16_t* conv_state,
                            uint16_t* out, int tokens, cudaStream_t stream,
-                           const KdaStateSnapshots& rec_snap, const KdaConvSnapshots& conv_snap) {
+                           const KdaStateSnapshots& rec_snap, const KdaConvSnapshots& conv_snap,
+                           const KdaReplay& replay) {
   if (tokens <= 0) return;
   if (tokens > max_tokens_) throw std::invalid_argument("QwenGdnLayer: tokens exceed max_tokens");
   if (!(w_.in_proj_qkv || w_.in_proj_qkv_fp8.payload) || !w_.conv || !(w_.in_proj_z || w_.in_proj_z_fp8.payload) ||
@@ -404,12 +533,12 @@ void QwenGdnLayer::enqueue(const uint16_t* x, float* recurrent_state, uint16_t* 
   // Walks of fewer than DGPP_GDN_CHUNKED_MIN rows (default 64) and
   // speculative snapshot rows keep the recurrence; DGPP_GDN_CHUNKED=0 keeps
   // it everywhere.
-  if (use_chunked_gdn(tokens, k_dim_, v_dim_) && rec_snap.states == nullptr)
+  if (use_chunked_gdn(tokens, k_dim_, v_dim_) && rec_snap.states == nullptr && replay.in == nullptr)
     gdn_chunked_fwd(qkvc_, a_, lv_, b_, lv_, w_.a_log, w_.dt_bias, recurrent_state, core_, tokens,
                     lv_, lv_ / lk_, k_dim_, v_dim_, scale_, chunked_ws_, chunked_ws_bytes_, stream);
   else
     gdn_recurrent_fwd(qkvc_, a_, lv_, b_, lv_, w_.a_log, w_.dt_bias, recurrent_state, core_, tokens,
-                      lv_, lv_ / lk_, k_dim_, v_dim_, scale_, stream, rec_snap);
+                      lv_, lv_ / lk_, k_dim_, v_dim_, scale_, stream, rec_snap, replay);
   gdn_gated_rmsnorm_bf16(core_, z_, w_.norm, normed_, static_cast<int64_t>(tokens) * lv_, v_dim_,
                          eps_, stream);
   gemm_dense(g_, normed_, LV, w_.out_proj, w_.out_proj_fp8, out, GemmOut::BF16, tokens, H, LV, stream);
@@ -419,7 +548,7 @@ void QwenGdnLayer::enqueue_rows(const uint16_t* x, float* rec_states, int64_t re
                                 uint16_t* conv_states, int64_t conv_stride, uint16_t* out,
                                 int rows, const KdaRequestRows& requests, cudaStream_t stream,
                                 const KdaStateSnapshots& rec_snap,
-                                const KdaConvSnapshots& conv_snap) {
+                                const KdaConvSnapshots& conv_snap, const KdaReplay& replay) {
   if (rows <= 0) return;
   if (rows > max_tokens_) throw std::invalid_argument("QwenGdnLayer: rows exceed max_tokens");
   if (!requests.request_ids || !requests.positions || !requests.spans || requests.num_requests <= 0)
@@ -436,10 +565,18 @@ void QwenGdnLayer::enqueue_rows(const uint16_t* x, float* rec_states, int64_t re
                                     qkvc_, rows, C, conv_width_, requests, stream, conv_snap);
   gdn_recurrent_fwd_batched(qkvc_, a_, lv_, b_, lv_, w_.a_log, w_.dt_bias, rec_states, rec_stride,
                             core_, rows, lv_, lv_ / lk_, k_dim_, v_dim_, scale_, requests, stream,
-                            rec_snap);
+                            rec_snap, replay);
   gdn_gated_rmsnorm_bf16(core_, z_, w_.norm, normed_, static_cast<int64_t>(rows) * lv_, v_dim_,
                          eps_, stream);
   gemm_dense(g_, normed_, LV, w_.out_proj, w_.out_proj_fp8, out, GemmOut::BF16, rows, H, LV, stream);
+}
+
+void QwenGdnLayer::materialize(float* recurrent_state, const KdaReplay& replay, cudaStream_t stream) {
+  if (!w_.a_log || !w_.dt_bias) throw std::invalid_argument("QwenGdnLayer: null weights");
+  if (replay.in == nullptr || !replay.materialize || (replay.materialize_rows < 0 && replay.count == nullptr))
+    throw std::invalid_argument("QwenGdnLayer: materialize needs the replay rows and a count");
+  gdn_recurrent_fwd(nullptr, nullptr, lv_, nullptr, lv_, w_.a_log, w_.dt_bias, recurrent_state, nullptr,
+                    /*tokens=*/0, lv_, lv_ / lk_, k_dim_, v_dim_, scale_, stream, KdaStateSnapshots{}, replay);
 }
 
 size_t QwenGdnLayer::scratch_bytes(const QwenTextConfig& cfg, int local_key_heads, int local_value_heads,
@@ -562,14 +699,23 @@ void QwenQsaLayer::enqueue(const uint16_t* x, int tokens, const QwenQsaRows& row
 
   // Projections.
   if (w_.q_proj_fp8.payload && T <= std::min(8, g_.gemv_rows)) {
-    // The FP8 form at decode rows: the four projections as one
-    // multi-problem fp8 GEMV.
+    // The FP8 form at decode rows: the projections as one multi-problem
+    // fp8 GEMV — the four of them, or q / k / v alone when the indexer's
+    // projection ships in BF16 (the AutoRound hybrid: as shipped, D4), which
+    // then takes the dense path. Every problem's rows are bitwise the
+    // single launch's, whatever the count.
     Fp8GemvProblem p[4];
     p[0].payload = w_.q_proj_fp8.payload; p[0].scales = w_.q_proj_fp8.scales; p[0].out = q_; p[0].n = QW;
     p[1].payload = w_.k_proj_fp8.payload; p[1].scales = w_.k_proj_fp8.scales; p[1].out = k_; p[1].n = KW;
     p[2].payload = w_.v_proj_fp8.payload; p[2].scales = w_.v_proj_fp8.scales; p[2].out = v_; p[2].n = KW;
-    p[3].payload = w_.index_qk_proj_fp8.payload; p[3].scales = w_.index_qk_proj_fp8.scales; p[3].out = idx_; p[3].n = IW;
-    launch_scale_gemv_multi_bf16(p, 4, x, static_cast<size_t>(H), T, H, stream);
+    int np = 3;
+    if (w_.index_qk_proj_fp8.payload) {
+      p[3].payload = w_.index_qk_proj_fp8.payload; p[3].scales = w_.index_qk_proj_fp8.scales; p[3].out = idx_; p[3].n = IW;
+      np = 4;
+    }
+    launch_scale_gemv_multi_bf16(p, np, x, static_cast<size_t>(H), T, H, stream);
+    if (np == 3)
+      gemm_dense(g_, x, H, w_.index_qk_proj, w_.index_qk_proj_fp8, idx_, GemmOut::BF16, T, IW, H, stream);
   } else {
     gemm_dense(g_, x, H, w_.q_proj, w_.q_proj_fp8, q_, GemmOut::BF16, T, QW, H, stream);
     gemm_dense(g_, x, H, w_.k_proj, w_.k_proj_fp8, k_, GemmOut::BF16, T, KW, H, stream);
@@ -694,6 +840,49 @@ QwenPleLayer::QwenPleLayer(const QwenPleResident& w, const QwenNgramTableResiden
     DGPP_CUDA_OK(cudaEventCreateWithFlags(&join_, cudaEventDisableTiming));
     stage_args_.push_back(std::make_unique<StageArgs>());
     stage_args_.push_back(std::make_unique<StageArgs>());
+    if (const char* v = std::getenv("DGPP_QWEN_PLE_HOST_NODE"); v && *v && std::string(v) != "0") host_node_ = true;
+    if (!host_node_) {
+      DGPP_CUDA_OK(cudaMalloc(reinterpret_cast<void**>(&d_hash_seq_), sizeof(uint64_t)));
+      DGPP_CUDA_OK(cudaMemset(d_hash_seq_, 0, sizeof(uint64_t)));
+      DGPP_CUDA_OK(cudaMalloc(reinterpret_cast<void**>(&d_wait_seq_), sizeof(uint64_t)));
+      DGPP_CUDA_OK(cudaMemset(d_wait_seq_, 0, sizeof(uint64_t)));
+      DGPP_CUDA_OK(cudaHostAlloc(reinterpret_cast<void**>(&h_hash_seq_), sizeof(uint64_t), cudaHostAllocMapped));
+      DGPP_CUDA_OK(cudaHostAlloc(reinterpret_cast<void**>(&h_hash_rows_), sizeof(int32_t), cudaHostAllocMapped));
+      DGPP_CUDA_OK(cudaHostAlloc(reinterpret_cast<void**>(&h_done_seq_), sizeof(uint64_t), cudaHostAllocMapped));
+      DGPP_CUDA_OK(cudaHostAlloc(reinterpret_cast<void**>(&h_late_), sizeof(uint32_t), cudaHostAllocMapped));
+      *h_hash_seq_ = 0;
+      *h_hash_rows_ = 0;
+      *h_done_seq_ = 0;
+      *h_late_ = 0;
+      // The prestage channel.
+      DGPP_CUDA_OK(cudaHostAlloc(reinterpret_cast<void**>(&h_pre_ids_), M * static_cast<size_t>(heads_) * 4,
+                                 cudaHostAllocMapped));
+      DGPP_CUDA_OK(cudaHostGetDevicePointer(reinterpret_cast<void**>(&pre_ids_), h_pre_ids_, 0));
+      DGPP_CUDA_OK(cudaHostAlloc(reinterpret_cast<void**>(&pre_staged_),
+                                 M * static_cast<size_t>(w_.hash_heads) * head_dim_, cudaHostAllocMapped));
+      DGPP_CUDA_OK(cudaMalloc(reinterpret_cast<void**>(&d_pre_seq_), sizeof(uint64_t)));
+      DGPP_CUDA_OK(cudaMemset(d_pre_seq_, 0, sizeof(uint64_t)));
+      DGPP_CUDA_OK(cudaMalloc(reinterpret_cast<void**>(&d_pre_wait_seq_), sizeof(uint64_t)));
+      DGPP_CUDA_OK(cudaMemset(d_pre_wait_seq_, 0, sizeof(uint64_t)));
+      DGPP_CUDA_OK(cudaHostAlloc(reinterpret_cast<void**>(&h_pre_seq_), sizeof(uint64_t), cudaHostAllocMapped));
+      DGPP_CUDA_OK(cudaHostAlloc(reinterpret_cast<void**>(&h_pre_rows_), sizeof(int32_t), cudaHostAllocMapped));
+      DGPP_CUDA_OK(cudaHostAlloc(reinterpret_cast<void**>(&h_pre_done_seq_), sizeof(uint64_t), cudaHostAllocMapped));
+      DGPP_CUDA_OK(cudaHostAlloc(reinterpret_cast<void**>(&h_pre_need_), sizeof(uint64_t), cudaHostAllocMapped));
+      *h_pre_seq_ = 0;
+      *h_pre_rows_ = 0;
+      *h_pre_done_seq_ = 0;
+      *h_pre_need_ = 0;
+      DGPP_CUDA_OK(cudaMalloc(reinterpret_cast<void**>(&d_pre_tokens_), M * sizeof(int64_t)));
+      DGPP_CUDA_OK(cudaMalloc(reinterpret_cast<void**>(&d_pre_pos_), M * sizeof(int64_t)));
+      DGPP_CUDA_OK(cudaMalloc(reinterpret_cast<void**>(&d_pre_req_), M * sizeof(int32_t)));
+      DGPP_CUDA_OK(cudaMemset(d_pre_req_, 0, M * sizeof(int32_t)));
+      DGPP_CUDA_OK(cudaMalloc(reinterpret_cast<void**>(&d_pre_spans_), 2 * sizeof(int32_t)));
+      DGPP_CUDA_OK(cudaMalloc(reinterpret_cast<void**>(&d_pre_ctx_), 4 * sizeof(int32_t)));
+      DGPP_CUDA_OK(cudaHostAlloc(reinterpret_cast<void**>(&h_pre_tokens_), M * sizeof(int64_t), cudaHostAllocDefault));
+      DGPP_CUDA_OK(cudaHostAlloc(reinterpret_cast<void**>(&h_pre_pos_), M * sizeof(int64_t), cudaHostAllocDefault));
+      DGPP_CUDA_OK(cudaHostAlloc(reinterpret_cast<void**>(&h_pre_ctx_), 8 * sizeof(int32_t), cudaHostAllocDefault));
+      gather_thread_ = std::thread([this] { gather_loop(); });
+    }
   } else {
     ids_ = dev_alloc<int32_t>(M * static_cast<size_t>(heads_));
   }
@@ -711,12 +900,38 @@ QwenPleLayer::~QwenPleLayer() {
   cudaFree(d_vocab_);
   cudaFree(d_offset_);
   if (h_ids_) {
+    if (gather_thread_.joinable()) {
+      gather_stop_.store(true, std::memory_order_release);
+      gather_thread_.join();
+    }
     if (side_) cudaStreamSynchronize(side_);
     cudaFreeHost(h_ids_);
     cudaFreeHost(staged_);
     if (fork_) cudaEventDestroy(fork_);
     if (join_) cudaEventDestroy(join_);
     if (side_) cudaStreamDestroy(side_);
+    if (d_hash_seq_) cudaFree(d_hash_seq_);
+    if (d_wait_seq_) cudaFree(d_wait_seq_);
+    if (h_hash_seq_) cudaFreeHost(h_hash_seq_);
+    if (h_hash_rows_) cudaFreeHost(h_hash_rows_);
+    if (h_done_seq_) cudaFreeHost(h_done_seq_);
+    if (h_late_) cudaFreeHost(h_late_);
+    if (h_pre_ids_) cudaFreeHost(h_pre_ids_);
+    if (pre_staged_) cudaFreeHost(pre_staged_);
+    if (d_pre_seq_) cudaFree(d_pre_seq_);
+    if (d_pre_wait_seq_) cudaFree(d_pre_wait_seq_);
+    if (h_pre_seq_) cudaFreeHost(h_pre_seq_);
+    if (h_pre_rows_) cudaFreeHost(h_pre_rows_);
+    if (h_pre_done_seq_) cudaFreeHost(h_pre_done_seq_);
+    if (h_pre_need_) cudaFreeHost(h_pre_need_);
+    if (d_pre_tokens_) cudaFree(d_pre_tokens_);
+    if (d_pre_pos_) cudaFree(d_pre_pos_);
+    if (d_pre_req_) cudaFree(d_pre_req_);
+    if (d_pre_spans_) cudaFree(d_pre_spans_);
+    if (d_pre_ctx_) cudaFree(d_pre_ctx_);
+    if (h_pre_tokens_) cudaFreeHost(h_pre_tokens_);
+    if (h_pre_pos_) cudaFreeHost(h_pre_pos_);
+    if (h_pre_ctx_) cudaFreeHost(h_pre_ctx_);
   } else {
     cudaFree(ids_);
   }
@@ -754,10 +969,37 @@ struct QwenPleLayer::StageArgs {
   std::string what;
 };
 
+// DGPP_QWEN_PLE_STAGE_TIMING=1: the host gather's duration, logged every
+// 200 callbacks (mean / max us) — the PLE layer's host node left the GPU
+// idle 772 us per depth-3 pass in the 2026-09-29 profile.
+namespace {
+bool ple_stage_timing() {
+  static const bool on = [] {
+    const char* v = std::getenv("DGPP_QWEN_PLE_STAGE_TIMING");
+    return v && *v && std::string(v) != "0";
+  }();
+  return on;
+}
+}  // namespace
+
 void QwenPleLayer::stage_callback(void* user) {
   StageArgs* a = static_cast<StageArgs*>(user);
+  const bool timing = ple_stage_timing();
+  const auto t0 = timing ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
   try {
     a->table->gather(a->ids, a->n, a->heads, a->head_begin, a->heads_local, a->dst);
+    if (timing) {
+      static std::atomic<long long> calls{0}, total_us{0}, max_us{0};
+      const long long us = std::chrono::duration_cast<std::chrono::microseconds>(
+                               std::chrono::steady_clock::now() - t0).count();
+      const long long n = calls.fetch_add(1) + 1;
+      total_us.fetch_add(us);
+      long long m = max_us.load();
+      while (us > m && !max_us.compare_exchange_weak(m, us)) {}
+      if (n % 200 == 0)
+        DGPP_LOG_INFO("qwen ple: n-gram host gather x{} — {} rows: mean {} us, max {} us", n, a->n * a->heads_local,
+                      total_us.load() / n, max_us.load());
+    }
   } catch (const std::exception& e) {
     a->what = e.what();
     a->error.store(1, std::memory_order_release);
@@ -769,6 +1011,68 @@ void QwenPleLayer::check_staged() const {
   for (const auto& a : stage_args_)
     if (a->error.load(std::memory_order_acquire))
       throw std::runtime_error("QwenPleLayer: an n-gram staging failed on the host: " + a->what);
+  if (gather_error_.load(std::memory_order_acquire))
+    throw std::runtime_error("QwenPleLayer: the n-gram gather thread failed: " + gather_what_);
+  if (h_late_ && *static_cast<volatile uint32_t*>(h_late_) != 0u)
+    throw std::runtime_error("QwenPleLayer: the gather kernel waited past its timeout for the host's rows");
+}
+
+// The gather thread: polls the pinned sequence the hash kernel's publish
+// raises (5 us sleeps: the answer must land within the two layers the GPU
+// runs before the gather kernel), gathers the published rows' n-gram
+// vectors into the staging, answers with the same sequence.
+void QwenPleLayer::gather_loop() {
+  uint64_t seen = 0, seen_pre = 0;
+  auto fail = [this](const std::exception& e) {
+    gather_what_ = e.what();
+    gather_error_.store(1, std::memory_order_release);
+    DGPP_LOG_ERROR("QwenPleLayer: the n-gram gather failed: {}", e.what());
+  };
+  auto serve_main = [&]() -> bool {
+    const uint64_t v = __atomic_load_n(h_hash_seq_, __ATOMIC_ACQUIRE);
+    if (v == seen) return false;
+    seen = v;
+    const int rows = __atomic_load_n(h_hash_rows_, __ATOMIC_ACQUIRE);
+    try {
+      if (table_.mmap) table_.mmap->gather(h_ids_, rows, heads_, w_.hash_head_begin, w_.hash_heads, staged_);
+    } catch (const std::exception& e) {
+      fail(e);
+    }
+    __atomic_store_n(h_done_seq_, v, __ATOMIC_RELEASE);
+    return true;
+  };
+  while (!gather_stop_.load(std::memory_order_acquire)) {
+    const bool served = serve_main();
+    const uint64_t vp = h_pre_seq_ ? __atomic_load_n(h_pre_seq_, __ATOMIC_ACQUIRE) : seen_pre;
+    if (vp != seen_pre) {
+      // The prestage: gathered in pieces, the main channel served between
+      // them (a decode step's rows between two chunks must not wait out a
+      // whole chunk's gather).
+      seen_pre = vp;
+      const int rows = __atomic_load_n(h_pre_rows_, __ATOMIC_ACQUIRE);
+      constexpr int kPiece = 512;
+      const size_t row_ids = static_cast<size_t>(heads_);
+      const size_t row_bytes = static_cast<size_t>(w_.hash_heads) * head_dim_;
+      try {
+        for (int r0 = 0; r0 < rows; r0 += kPiece) {
+          if (gather_stop_.load(std::memory_order_acquire)) break;
+          serve_main();
+          const int n = std::min(kPiece, rows - r0);
+          if (table_.mmap)
+            table_.mmap->gather(h_pre_ids_ + r0 * row_ids, n, heads_, w_.hash_head_begin, w_.hash_heads,
+                                pre_staged_ + r0 * row_bytes);
+        }
+      } catch (const std::exception& e) {
+        fail(e);
+      }
+      __atomic_store_n(h_pre_done_seq_, vp, __ATOMIC_RELEASE);
+      continue;
+    }
+    if (!served) {
+      timespec ts{0, 5000};
+      nanosleep(&ts, nullptr);
+    }
+  }
 }
 
 size_t QwenPleLayer::staging_bytes(const QwenTextConfig& cfg, int hash_heads, int max_tokens) {
@@ -780,14 +1084,42 @@ size_t QwenPleLayer::staging_bytes(const QwenTextConfig& cfg, int hash_heads, in
 
 void QwenPleLayer::stage(const int64_t* tokens, int rows, const int32_t* req_ids, const int64_t* pos,
                          const int32_t* req_spans, int num_requests, const int32_t* ctx,
-                         cudaStream_t stream) {
+                         cudaStream_t stream, const int64_t* host_ids, int64_t pos0, int req) {
   if (!staged()) throw std::logic_error("QwenPleLayer: stage() without the mmap'ed table");
   if (rows <= 0) return;
   if (rows > max_tokens_) throw std::invalid_argument("QwenPleLayer: rows exceed max_tokens");
   if (staged_rows_ != 0) throw std::logic_error("QwenPleLayer: stage() twice without embed()");
   check_staged();
+  if (pre_pending_) {
+    // The chunk a prestage gathered: its rows are on the prestage channel.
+    pre_pending_ = false;
+    // The key: the same request, rows and first position, the same host ids
+    // pointer AND the same first and last token (a prompt vector's address
+    // can be reused by a later request).
+    if (host_ids != nullptr && host_ids == pre_host_ids_ && rows == pre_rows_ && pos0 == pre_pos0_ &&
+        req == pre_req_ && host_ids[0] == h_pre_tokens_[0] && host_ids[rows - 1] == h_pre_tokens_[rows - 1]) {
+      use_pre_ = true;
+      staged_rows_ = rows;
+      // DGPP_QWEN_PLE_PRESTAGE_CHECK=1: run the main staging too and compare
+      // the two gathers at embed() (a bitwise self-check of the mechanism).
+      static const bool check = [] {
+        const char* e = std::getenv("DGPP_QWEN_PLE_PRESTAGE_CHECK");
+        return e != nullptr && e[0] != '\0' && e[0] != '0';
+      }();
+      if (!check) return;
+      pre_check_ = true;
+      staged_rows_ = 0;  // fall through to the main path's hash and publish
+    }
+  }
   qwen_ple_hash_ids_rows(tokens, rows, req_ids, pos, req_spans, num_requests, ctx, eos_, d_mult_,
                          d_vocab_, d_offset_, heads_, heads_per_ngram_, ids_, stream);
+  if (!host_node_) {
+    // The thread's turn: the walk's rows and a sequence to pinned memory
+    // (the ids are already there), no host node, no side stream.
+    qwen_ple_publish_stage(d_hash_seq_, h_hash_seq_, h_hash_rows_, rows, stream);
+    staged_rows_ = rows;
+    return;
+  }
   cudaStreamCaptureStatus cs = cudaStreamCaptureStatusNone;
   DGPP_CUDA_OK(cudaStreamIsCapturing(stream, &cs));
   StageArgs* a = nullptr;
@@ -812,6 +1144,42 @@ void QwenPleLayer::stage(const int64_t* tokens, int rows, const int32_t* req_ids
   staged_rows_ = rows;
 }
 
+void QwenPleLayer::prestage(const int64_t* host_ids, int rows, int64_t pos0, int req, int32_t ctx_t1,
+                            int32_t ctx_t2, cudaStream_t stream) {
+  if (!staged() || host_node_ || host_ids == nullptr || rows <= 0 || rows > max_tokens_) return;
+  if (!QwenLayerStream::ngram_prestage()) return;  // engine.ngram_prestage (default on)
+  check_staged();
+  // The previous prestage, if still unclaimed, is dropped: its gather ran
+  // or runs to completion (the thread answers every publish) and nothing
+  // waits on it. Its pinned inputs may still be read by that copy, so the
+  // walk's own sync (the caller runs eagerly) has passed before this call
+  // reuses them.
+  pre_pending_ = false;
+  std::memcpy(h_pre_tokens_, host_ids, static_cast<size_t>(rows) * sizeof(int64_t));
+  for (int i = 0; i < rows; ++i) h_pre_pos_[i] = pos0 + i;
+  h_pre_ctx_[0] = ctx_t1;
+  h_pre_ctx_[1] = ctx_t2;
+  h_pre_ctx_[2] = 0;
+  h_pre_ctx_[3] = 0;
+  h_pre_ctx_[4] = 0;
+  h_pre_ctx_[5] = rows;  // the one span: start 0, len rows
+  DGPP_CUDA_OK(cudaMemcpyAsync(d_pre_tokens_, h_pre_tokens_, static_cast<size_t>(rows) * sizeof(int64_t),
+                               cudaMemcpyHostToDevice, stream));
+  DGPP_CUDA_OK(cudaMemcpyAsync(d_pre_pos_, h_pre_pos_, static_cast<size_t>(rows) * sizeof(int64_t),
+                               cudaMemcpyHostToDevice, stream));
+  DGPP_CUDA_OK(cudaMemcpyAsync(d_pre_ctx_, h_pre_ctx_, 4 * sizeof(int32_t), cudaMemcpyHostToDevice, stream));
+  DGPP_CUDA_OK(cudaMemcpyAsync(d_pre_spans_, h_pre_ctx_ + 4, 2 * sizeof(int32_t), cudaMemcpyHostToDevice, stream));
+  qwen_ple_hash_ids_rows(d_pre_tokens_, rows, d_pre_req_, d_pre_pos_, d_pre_spans_, 1, d_pre_ctx_, eos_, d_mult_,
+                         d_vocab_, d_offset_, heads_, heads_per_ngram_, pre_ids_, stream);
+  qwen_ple_publish_stage(d_pre_seq_, h_pre_seq_, h_pre_rows_, rows, stream);
+  ++pre_publishes_;
+  pre_host_ids_ = host_ids;
+  pre_rows_ = rows;
+  pre_pos0_ = pos0;
+  pre_req_ = req;
+  pre_pending_ = true;
+}
+
 void QwenPleLayer::embed(const int64_t* tokens, int rows, const int32_t* req_ids, const int64_t* pos,
                          const int32_t* req_spans, int num_requests, const int32_t* ctx,
                          cudaStream_t stream) {
@@ -819,7 +1187,43 @@ void QwenPleLayer::embed(const int64_t* tokens, int rows, const int32_t* req_ids
   if (rows > max_tokens_) throw std::invalid_argument("QwenPleLayer: rows exceed max_tokens");
   if (staged()) {
     if (staged_rows_ != rows) throw std::logic_error("QwenPleLayer: embed() without a matching stage()");
-    DGPP_CUDA_OK(cudaStreamWaitEvent(stream, join_, 0));
+    if (host_node_) {
+      DGPP_CUDA_OK(cudaStreamWaitEvent(stream, join_, 0));
+    } else if (use_pre_) {
+      // The prestage channel's answer: the wait word set to the publish
+      // count less one (a dropped prestage leaves no wait behind), then
+      // the same wait kernel; the rows from the prestage staging.
+      use_pre_ = false;
+      *h_pre_need_ = pre_publishes_ - 1;
+      DGPP_CUDA_OK(cudaMemcpyAsync(d_pre_wait_seq_, h_pre_need_, sizeof(uint64_t), cudaMemcpyHostToDevice, stream));
+      glm_stage_wait(h_pre_done_seq_, d_pre_wait_seq_, h_late_, /*timeout_ns=*/int64_t{120} * 1000000000, stream);
+      if (pre_check_) {
+        // The self-check: the main channel's gather as well, then the two
+        // stagings compared on the host (the stream synced here).
+        pre_check_ = false;
+        glm_stage_wait(h_done_seq_, d_wait_seq_, h_late_, /*timeout_ns=*/int64_t{120} * 1000000000, stream);
+        DGPP_CUDA_OK(cudaStreamSynchronize(stream));
+        const size_t row_bytes = static_cast<size_t>(w_.hash_heads) * head_dim_;
+        size_t bad_rows = 0, first_bad = static_cast<size_t>(-1);
+        for (size_t t = 0; t < static_cast<size_t>(rows); ++t)
+          if (std::memcmp(staged_ + t * row_bytes, pre_staged_ + t * row_bytes, row_bytes) != 0) {
+            ++bad_rows;
+            if (first_bad == static_cast<size_t>(-1)) first_bad = t;
+          }
+        size_t bad_ids = 0;
+        for (size_t i = 0; i < static_cast<size_t>(rows) * heads_; ++i)
+          if (h_ids_[i] != h_pre_ids_[i]) ++bad_ids;
+        DGPP_LOG_INFO("QwenPleLayer: prestage self-check: rows {} — staging rows differing {} (first {}), hash ids differing {}",
+                      rows, bad_rows, first_bad == static_cast<size_t>(-1) ? -1 : static_cast<long long>(first_bad), bad_ids);
+      }
+      qwen_ple_gather_staged_bf16(pre_staged_, table_.scale, rows, w_.hash_heads, head_dim_, e_, stream);
+      staged_rows_ = 0;
+      return;
+    } else {
+      // The device waits for the thread's answer (a 2 us poll; a walk's
+      // rows arrive within a few hundred microseconds of the publish).
+      glm_stage_wait(h_done_seq_, d_wait_seq_, h_late_, /*timeout_ns=*/int64_t{120} * 1000000000, stream);
+    }
     qwen_ple_gather_staged_bf16(staged_, table_.scale, rows, w_.hash_heads, head_dim_, e_, stream);
     staged_rows_ = 0;
     return;

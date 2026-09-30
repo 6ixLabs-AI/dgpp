@@ -136,6 +136,12 @@ class SessionModel : public PrefillReporting {
     const int64_t* span_pos0 = nullptr;
     const int32_t* span_lens = nullptr;
     int num_spans = 0;
+    // The scalar prefill's following chunk (host ids, rows, first
+    // position; next_T 0 when this is the last), for a family that can
+    // stage the next chunk's inputs while this one runs.
+    const int64_t* next_ids = nullptr;
+    int next_T = 0;
+    int64_t next_pos0 = 0;
   };
   // The staged inputs of a walk (begin_run).
   struct RowInputs {
@@ -192,6 +198,7 @@ class SessionModel : public PrefillReporting {
   Outputs session_step(int req, int64_t token_id) { return session_verify(req, std::vector<int64_t>{token_id}); }
   Outputs session_verify(int req, const std::vector<int64_t>& token_ids);
   void session_rollback(int req, int accepted);
+  void head_dump_flush() {}  // a family may shadow this (QwenModel's head dump)
   void session_close(int req);
   int64_t session_position(int req) const {
     check_req(req, "session_position");
@@ -812,6 +819,16 @@ void SessionModel<D>::prefill_chunk(PrefillCursor& cursor, int64_t budget) {
   for (auto* at = snap; at != nullptr; at = at->next)
     run.last_chunk |= !at->taken && at->position == c1;
   cursor.span_start = run.last_chunk;
+  if (c1 < end) {
+    // The chunk after this one on the same grid and cuts.
+    int64_t c2 = cursor.cut_index < cursor.cuts.size() ? cursor.cuts[cursor.cut_index] : end;
+    if (budget > 0) c2 = std::min(c2, (c1 / budget + 1) * budget);
+    if (c2 > c1 && c2 - c1 <= max_tokens_) {
+      run.next_ids = ids + (c1 - start);
+      run.next_T = static_cast<int>(c2 - c1);
+      run.next_pos0 = c1;
+    }
+  }
   Outputs chunk = derived().run_rows(run);
   out.logits = std::move(chunk.logits);
   out.final_hidden_bits = std::move(chunk.final_hidden_bits);
@@ -1104,7 +1121,7 @@ void SessionModel<D>::decode_host_prep(int req, const std::vector<int64_t>& ids,
   if (upload) {
     glm_upload_i32(h_req_ids_, d_req_ids_, T, stream_);
     if (device_positions)
-      glm_spec_positions(d_session_pos_ + req, T, d_step_pos_, stream_);
+      glm_spec_positions(d_session_pos_ + req, T, max_context_, d_step_pos_, stream_);
     else
       glm_upload_i64(h_step_pos_, d_step_pos_, T, stream_);
     glm_upload_i32(h_req_spans_, d_req_spans_, 2, stream_);
@@ -1136,8 +1153,18 @@ void SessionModel<D>::session_rollback(int req, int accepted) {
     throw std::invalid_argument("session_rollback: accepted rows must be in [1, " + std::to_string(T) + "]");
   const int64_t pos = session_pos_[static_cast<size_t>(req)];
   if (pos < T) throw std::invalid_argument("session_rollback: no verify to retract");
-  if (accepted == T) return;  // every row landed in place already
   const GlmSpecSegments segs = derived().spec_segments(req, 0);
+  if (segs.replay_dst != nullptr) {
+    // A checkpoint-and-replay family (kernels/glm_spec.hpp): this pass's
+    // saved rows become the next pass's replay source and the accepted
+    // count its pending rows — every step, retraction or not (the callers
+    // run this path on every eager verify).
+    session_detail::d2d(segs.replay_dst, segs.replay_src, segs.replay_bytes, stream_);
+    const int32_t acc = accepted;
+    DGPP_CUDA_OK(cudaMemcpyAsync(segs.replay_pending, &acc, sizeof(acc), cudaMemcpyHostToDevice, stream_));
+    DGPP_CUDA_OK(cudaStreamSynchronize(stream_));  // a pageable source: staged before this returns anyway
+  }
+  if (accepted == T) return;  // every row landed in place already
   for (int i = 0; i < segs.count; ++i) {
     const GlmSpecSegment& s = segs.seg[i];
     session_detail::d2d(s.dst,
@@ -1365,6 +1392,7 @@ void SessionModel<D>::session_graph_settle(int req, int accepted, int rows) {
   // the draft in the graph the block's counter moved by the same rows.
   session_pos_[static_cast<size_t>(req)] += accepted;
   if (graph_has_draft_) mtp_pos_[static_cast<size_t>(req)] += accepted;
+  derived().head_dump_flush();
 }
 
 template <class D>
@@ -1482,7 +1510,8 @@ void SessionModel<D>::session_graph_capture_batch(int rows_per_request, int requ
     glm_upload_i32(h_req_ids_, d_req_ids_, rows, stream_);
     glm_upload_i32(h_req_spans_, d_req_spans_, 2 * requests, stream_);
   }
-  glm_spec_positions_batched(d_session_pos_, d_req_ids_, rows, rows_per_request, d_step_pos_, stream_);
+  glm_spec_positions_batched(d_session_pos_, d_req_ids_, rows, rows_per_request, max_context_,
+                             d_step_pos_, stream_);
   const std::vector<int64_t> shape(static_cast<size_t>(rows), 0);
   RowRun run;
   run.req = 0;
@@ -1538,6 +1567,9 @@ void SessionModel<D>::session_graph_capture_commit_batch(const PickVerdict* devi
       for (int i = 0; i < segments.count; ++i)
         segments.seg[i].request_stride_bytes = reinterpret_cast<uintptr_t>(next.seg[i].dst) -
                                                reinterpret_cast<uintptr_t>(segments.seg[i].dst);
+      if (segments.replay_dst != nullptr)
+        segments.replay_request_stride_bytes = reinterpret_cast<uintptr_t>(next.replay_dst) -
+                                               reinterpret_cast<uintptr_t>(segments.replay_dst);
 #ifndef NDEBUG
       // Mapped commits require each destination to be affine in the physical request ID.
       for (int q = 0; q < max_requests_; ++q) {

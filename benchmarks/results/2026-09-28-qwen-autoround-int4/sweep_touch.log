@@ -1,0 +1,28 @@
+production down 04:37:32
+== baseline: DGPP_SWEEP=1 cfg=deploy/cluster_qwen-3.8-flash-next_autoround-int4_w1.json 04:37:32
+INFO  l2 prefetch: on, window budget 12 MiB, boundary rate light, layer rate light
+[short] content chunks 720, ttft 281 ms, decode pace 25.38 ms/chunk (client), wall 18606 ms
+10.0 s | decode 28.2 tok/s, 26.3 ms/tok, 57.5 ms/step (129 steps / 282 tok, 74 % of wall) | mtp 2.19 tok/step/
+10.0 s | decode 41.8 tok/s, 23.9 ms/tok, 58.2 ms/step (172 steps / 419 tok, 100 % of wall) | mtp 2.44 tok/step
+[ctx2k] content chunks 512, ttft 9532 ms, decode pace 22.11 ms/chunk (client), wall 20856 ms
+11.6 s | decode 7.4 tok/s, 24.6 ms/tok, 58.2 ms/step (36 steps / 85 tok, 18 % of wall) | mtp 2.36 tok/step/req
+10.0 s | decode 45.9 tok/s, 21.5 ms/tok, 62.1 ms/step (160 steps / 461 tok, 99 % of wall) | mtp 2.88 tok/step/
+== touch64: DGPP_L2_PREFETCH_FORM=touch DGPP_L2_PREFETCH_TOUCH_KB=64 cfg=deploy/cluster_qwen-3.8-flash-next_autoround-int4_w1.json 04:38:42
+INFO  l2 prefetch: on, window budget 12 MiB, boundary rate light, layer rate light
+[short] content chunks 471, ttft 304 ms, decode pace 27.01 ms/chunk (client), wall 13077 ms
+10.0 s | decode 30.0 tok/s, 27.0 ms/tok, 61.0 ms/step (133 steps / 301 tok, 81 % of wall) | mtp 2.26 tok/step/
+== touch2m: DGPP_L2_PREFETCH_FORM=touch DGPP_L2_PREFETCH_TOUCH_KB=2048 cfg=deploy/cluster_qwen-3.8-flash-next_autoround-int4_w1.json 04:39:27
+INFO  l2 prefetch: on, window budget 12 MiB, boundary rate light, layer rate light
+[short] content chunks 690, ttft 304 ms, decode pace 26.04 ms/chunk (client), wall 18322 ms
+10.0 s | decode 32.0 tok/s, 24.6 ms/tok, 58.3 ms/step (135 steps / 320 tok, 79 % of wall) | mtp 2.37 tok/step/
+10.1 s | decode 37.6 tok/s, 26.6 ms/tok, 58.8 ms/step (171 steps / 378 tok, 100 % of wall) | mtp 2.21 tok/step
+== touch64_mb32: DGPP_L2_PREFETCH_FORM=touch DGPP_L2_PREFETCH_TOUCH_KB=64 DGPP_L2_PREFETCH_MB=32 cfg=deploy/cluster_qwen-3.8-flash-next_autoround-int4_w1.json 04:40:16
+INFO  l2 prefetch: on, window budget 32 MiB, boundary rate light, layer rate light
+[short] content chunks 547, ttft 304 ms, decode pace 28.76 ms/chunk (client), wall 16084 ms
+10.1 s | decode 27.9 tok/s, 29.2 ms/tok, 60.8 ms/step (135 steps / 281 tok, 82 % of wall) | mtp 2.08 tok/step/
+== off: DGPP_L2_PREFETCH=off cfg=deploy/cluster_qwen-3.8-flash-next_autoround-int4_w1.json 04:41:03
+INFO  l2 prefetch: off (DGPP_L2_PREFETCH=off)
+[short] content chunks 626, ttft 304 ms, decode pace 26.84 ms/chunk (client), wall 17153 ms
+10.0 s | decode 36.5 tok/s, 25.1 ms/tok, 59.1 ms/step (155 steps / 365 tok, 92 % of wall) | mtp 2.35 tok/step/
+production restored 04:42:26
+sweep done

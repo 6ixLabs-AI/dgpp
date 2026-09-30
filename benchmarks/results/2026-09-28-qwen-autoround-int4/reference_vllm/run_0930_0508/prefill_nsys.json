@@ -1,0 +1,32 @@
+{
+  "model": "qwen",
+  "seed": 7,
+  "tag": "nsys-1790745614",
+  "data_sha256": "3730d312f6e3440559ace48831e51066acaca737f6eabec99bccb9e4b3c39d14",
+  "samples": [
+    {
+      "requested_tokens": 32768,
+      "repeat": 0,
+      "prompt_tokens": 32486,
+      "cached_tokens": 0,
+      "ttft_s": 17.0547999170376,
+      "wall_s": 17.054830622044392,
+      "tok_per_s_ttft": 1904.8010037072768,
+      "ms_per_token_ttft": 0.5249892235743889,
+      "steps": 5.0,
+      "ctx_tokens_scheduled": 32486.0
+    },
+    {
+      "requested_tokens": 8192,
+      "repeat": 0,
+      "prompt_tokens": 8099,
+      "cached_tokens": 0,
+      "ttft_s": 3.969657913898118,
+      "wall_s": 3.969688041950576,
+      "tok_per_s_ttft": 2040.226179602201,
+      "ms_per_token_ttft": 0.4901417352633804,
+      "steps": 2.0,
+      "ctx_tokens_scheduled": 8099.0
+    }
+  ]
+}

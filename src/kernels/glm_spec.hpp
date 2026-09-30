@@ -37,6 +37,19 @@ constexpr int kSpecMaxSegments = 32;  // KDA rec + KDA conv + DSA layers
 struct GlmSpecSegments {
   int count = 0;
   GlmSpecSegment seg[kSpecMaxSegments];
+  // A checkpoint-and-replay family (kernels/kda.hpp KdaReplay, 2026-09-29):
+  // no snapshot rows; the pass saved its rows' INPUTS and the next pass
+  // replays the accepted ones. The commit copies the saved rows
+  // (`replay_src`, this pass's) over the buffer the next pass replays from
+  // (`replay_dst`) and records the accepted count in replay_pending[req] —
+  // on every step with an active verdict, retraction or not. Mapped
+  // commits offset both buffers by req * replay_request_stride_bytes and
+  // index the pending count by the physical request. Null replay_dst: none.
+  void* replay_dst = nullptr;
+  const void* replay_src = nullptr;
+  size_t replay_bytes = 0;
+  size_t replay_request_stride_bytes = 0;
+  int32_t* replay_pending = nullptr;
 };
 
 // The step's commit, behind the verdict: when verdict->accepted < rows,
@@ -110,18 +123,22 @@ void glm_upload_i64(const int64_t* pinned_src, int64_t* dst, int count,
 
 // The decode rows' metadata from the device position: step_pos[r] =
 // *session_pos + r for r < rows (the replacement for the host's staged
-// h_step_pos_ upload in a device-driven graph).
-void glm_spec_positions(const int64_t* session_pos, int rows,
+// h_step_pos_ upload in a device-driven graph). A row at or past
+// `max_context` emits -1, the padding sentinel: a request's lifetime
+// reservation is capped at the ceiling, so the fixed-width verify's tail
+// past it lands in no K/V block, index stripe or state row.
+void glm_spec_positions(const int64_t* session_pos, int rows, int64_t max_context,
                         int64_t* step_pos, cudaStream_t stream);
 
 // Fixed slot-major row batch: request_ids[r] selects its device position;
 // the offset within that request's `rows_per_request` group is added when
 // the slot is open. A closed slot has position <= 0 and emits -1 for every
-// row, which is the shared KDA/DSA padding sentinel.
+// row, which is the shared KDA/DSA padding sentinel; so does every row at
+// or past `max_context` (see glm_spec_positions).
 void glm_spec_positions_batched(const int64_t* session_pos,
                                 const int32_t* request_ids, int rows,
-                                int rows_per_request, int64_t* step_pos,
-                                cudaStream_t stream);
+                                int rows_per_request, int64_t max_context,
+                                int64_t* step_pos, cudaStream_t stream);
 
 // The in-graph draft's rows off the verify's verdict (phase C). The draft
 // block runs a FIXED `rows` rows per step; the accepted rows are real
@@ -151,6 +168,9 @@ void glm_spec_draft_rows_batched(const PickVerdict* verdicts, int requests, int 
 // back (GlmDiagnosticModel::session_draft_rollback).
 void glm_device_copy(void* dst, const void* src, size_t bytes,
                      cudaStream_t stream);
+// Two bytes stored by a one-thread kernel (a kernel node where a memset
+// node is not allowed: the kernels-only decode graph).
+void glm_device_store_u8x2(uint8_t* dst, uint8_t a, uint8_t b, cudaStream_t stream);
 
 // The chained draft row (depth >= 2, 2026-09-06): the single draft block's
 // recursion. After the block's rows off the verdict (glm_spec_draft_rows)

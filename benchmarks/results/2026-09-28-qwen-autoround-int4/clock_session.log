@@ -1,0 +1,21 @@
+production down 04:10:49
+== decode 1024 tokens, greedy 04:11:18
+1024 tokens in 21.17 s = 48.4 tok/s
+== clocks during decode (every 2 s)
+1790655078.879 2528 MHz, 2528 MHz, 56.84 W, 58
+1790655081.075 2541 MHz, 2541 MHz, 59.43 W, 60
+1790655083.288 2522 MHz, 2522 MHz, 59.75 W, 63
+1790655085.518 2515 MHz, 2515 MHz, 59.82 W, 64
+1790655087.732 2522 MHz, 2522 MHz, 60.12 W, 65
+1790655089.942 2522 MHz, 2522 MHz, 60.79 W, 65
+1790655092.157 2522 MHz, 2522 MHz, 60.52 W, 66
+1790655094.364 2522 MHz, 2522 MHz, 61.23 W, 67
+1790655096.582 2522 MHz, 2522 MHz, 61.22 W, 67
+1790655098.786 2515 MHz, 2515 MHz, 60.63 W, 68
+10.0 s | decode 36.1 tok/s, 22.7 ms/tok, 57.1 ms/step (144 steps / 362 tok, 82 % of wall) | mtp 2.51 tok/step/
+10.0 s | decode 50.4 tok/s, 19.8 ms/tok, 57.4 ms/step (174 steps / 504 tok, 100 % of wall) | mtp 2.90 tok/step
+qwen ple: n-gram host gather x200 — 64 rows: mean 463 us, max 2948 us
+qwen ple: gather phases x200 — advise 249 us, copy 191 us (means)
+decode 1023 tok / 362 passes in 20.6 s: 49.7 tok/s, 20.1 ms/tok, 57 ms/pass, 2.83 tok/pass, accept p1 76 % p2 60 % p3 46
+production restored 04:12:16
+clock session done

@@ -40,6 +40,37 @@ struct KdaConvSnapshots {
   int64_t stride_elems = 0;  // >= channels * state_width (bf16 elems)
 };
 
+// The checkpoint-and-replay form of the speculative recurrent state
+// (2026-09-29, the Qwen depth-3 profile: three snapshot stores per layer per
+// pass plus the commit's copy of one back were 500 MB of a 12 GB pass). The
+// live state buffer holds the CHECKPOINT — the state before the last pass's
+// rows — and the pass's own rows are kept as their inputs (the post-conv
+// q|k|v row, a_raw, beta_raw: ~21 KB a row against 3.15 MB a state). A
+// pass first replays the rows the verdict accepted from the previous pass
+// (count[req] of them, from `in`), stores that state as the new checkpoint,
+// then runs its own rows from registers and saves their inputs to `save`
+// for the next pass; nothing else is written. The replayed chain is the
+// same per-token code on the same inputs, so the state after the replay is
+// bitwise the snapshot it replaces. `in` and `save` are distinct buffers
+// (one block's replay may still be reading a slice another block has
+// already saved); the caller alternates them by a parity the commit flips.
+// A consumer that needs the state as it stands (a prefill continuation,
+// the prefix cache's snapshot) runs the materialize form: replay
+// `materialize_rows` rows (or count[req] when negative), store, no own rows.
+// Scalar-gate (GDN) recurrences only: a KDA gate row is heads * K wide.
+struct KdaReplay {
+  const uint16_t* in = nullptr;     // saved rows [rows_cap][in_stride] (request stride request_stride)
+  uint16_t* save = nullptr;         // this pass's rows, same layout
+  const int32_t* count = nullptr;   // per request: rows to replay (device)
+  int64_t in_stride = 0;            // elements per saved row: the qkv row + heads (a) + heads (beta)
+  int64_t request_stride = 0;       // elements between requests' saved blocks
+  int rows_cap = 0;                 // saved rows per request (>= the pass's rows)
+  bool checkpoint = false;          // replay + checkpoint store + save; no final store
+  bool materialize = false;         // the materialize form: replay, store, no own rows
+  int materialize_rows = -1;        // materialize: replay this many rows (-1: count[req])
+  float* dst = nullptr;             // materialize destination (nullptr: the live state, in place)
+};
+
 // A decode batch's device-side row map. Span i is (start, length) in the row
 // batch, every non-padding row in that span carries the same request id, and
 // a negative position marks a fixed-shape padding row. Eager callers may pass
@@ -140,7 +171,7 @@ void gdn_recurrent_fwd(const void* qkv, const void* a_raw, int64_t a_row_stride,
                        const float* a_log, const float* dt_bias, float* state,
                        void* out, int tokens, int heads, int kv_ratio,
                        int k_dim, int v_dim, float scale, cudaStream_t stream,
-                       const KdaStateSnapshots& snap = {});
+                       const KdaStateSnapshots& snap = {}, const KdaReplay& replay = {});
 
 void gdn_recurrent_fwd_batched(
     const void* qkv, const void* a_raw, int64_t a_row_stride,
@@ -148,6 +179,6 @@ void gdn_recurrent_fwd_batched(
     const float* dt_bias, float* states, int64_t request_state_stride,
     void* out, int rows, int heads, int kv_ratio, int k_dim, int v_dim,
     float scale, const KdaRequestRows& requests, cudaStream_t stream,
-    const KdaStateSnapshots& snap = {});
+    const KdaStateSnapshots& snap = {}, const KdaReplay& replay = {});
 
 }  // namespace dgpp

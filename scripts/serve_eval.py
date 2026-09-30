@@ -87,7 +87,9 @@ def chat(messages, max_tokens=None, response_format=None):
     body = {
         "model": MODEL, "messages": messages, "temperature": 0,
         "max_tokens": max_tokens or args.max_tokens,
-        "reasoning_effort": args.reasoning_effort,
+        # The service refuses an effort beside the explicit thinking switch
+        # (the template ignores it when thinking is off): send one or the other.
+        **({"reasoning_effort": args.reasoning_effort} if not args.no_think else {}),
         **({"chat_template_kwargs": {"enable_thinking": False}} if args.no_think else {}),
     }
     if response_format is not None:

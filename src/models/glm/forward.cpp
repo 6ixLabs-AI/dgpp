@@ -1044,6 +1044,15 @@ GlmDiagnosticModel::Outputs GlmDiagnosticModel::run_stack(
   gemm_.matmul(normed_, globals_.lm_head, logits_, T, lm_vocab_count_, H,
                DType::BF16, GemmOut::F32, H, gemm_ws_, gemm_ws_bytes_,
                stream_);
+  // The last row again in the few-row GEMV form: the form a session prefill
+  // computes its mirrored rows in (decode.cpp), so the re-forward's last row
+  // stays bitwise the prefill's whatever the chunk's row count (cuBLASLt's
+  // per-row-count algorithm and tile placement are not). The other rows
+  // keep the GEMM: the references compare them within tolerance.
+  if (T > 1)
+    gemm_.matmul(normed_ + static_cast<size_t>(T - 1) * H, globals_.lm_head,
+                 logits_ + static_cast<size_t>(T - 1) * lm_vocab_count_, 1, lm_vocab_count_, H,
+                 DType::BF16, GemmOut::F32, H, gemm_ws_, gemm_ws_bytes_, stream_);
   DGPP_CUDA_OK(cudaStreamSynchronize(stream_));
 
     const size_t TH = static_cast<size_t>(T) * H;

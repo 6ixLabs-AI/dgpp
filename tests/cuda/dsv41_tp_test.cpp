@@ -489,7 +489,10 @@ DGPP_TEST(dsv41_tp_group_prefill_is_bitwise_the_prefill_alone_at_world_2) {
   dsv41fx::write_fixture(cfg, dir);
   (void)dsv41fx::fixture_sidecar(cfg, dir);
   const int W = 4 * cfg.hidden_size;
-  uint16_t port = 29968;
+  // Four loopback worlds from here (2026-09-30): the block 29968–29971 it
+  // used before is the deployment defaults' (fabric 29970, journal 29971),
+  // so the fourth world could not bind beside a live deployment on the node.
+  uint16_t port = 29980;
   for (const auto lens : {std::array<int, 3>{5, 4, 3}, std::array<int, 3>{23, 17, 11}}) {
     std::vector<std::vector<int64_t>> prompts;
     for (int i = 0; i < 3; ++i) {

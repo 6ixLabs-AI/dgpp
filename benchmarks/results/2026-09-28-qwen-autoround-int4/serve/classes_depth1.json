@@ -1,0 +1,96 @@
+{
+ "model": "qwen",
+ "max_tokens": 300,
+ "classes": {
+  "chat": {
+   "id": "chatcmpl-72d4526c7bf66744",
+   "wall_s": 8.244,
+   "completion_tokens": 300,
+   "finish": "length",
+   "head": "We need answer user: \"Explain, in a few paragraphs, why a CUDA graph replay can be faster than launching the same kernels eagerly, and what it costs.\" Need produce final with few paragraphs. Need expl",
+   "server": {
+    "prefill_tok": 80,
+    "prefill_ms": 261,
+    "decode_tok": 299,
+    "passes": 191,
+    "tok_per_s": 38.9,
+    "ms_per_tok": 25.7,
+    "ms_per_pass": 40,
+    "tok_per_pass": 1.57,
+    "accept_p1": 57
+   }
+  },
+  "code": {
+   "id": "chatcmpl-72d4526c7bf66745",
+   "wall_s": 7.411,
+   "completion_tokens": 300,
+   "finish": "length",
+   "head": "We need answer user: \"Write a Python module that parses an OpenAI-style SSE stream of chat completion chunks into a single message object, with type hints, docstrings, and a small set of unit tests us",
+   "server": {
+    "prefill_tok": 91,
+    "prefill_ms": 264,
+    "decode_tok": 299,
+    "passes": 170,
+    "tok_per_s": 43.6,
+    "ms_per_tok": 22.9,
+    "ms_per_pass": 40,
+    "tok_per_pass": 1.76,
+    "accept_p1": 76
+   }
+  },
+  "prose": {
+   "id": "chatcmpl-72d4526c7bf66746",
+   "wall_s": 6.957,
+   "completion_tokens": 300,
+   "finish": "length",
+   "head": "We need to respond to user: \"Write a long, detailed history of the Roman Republic from its founding to the rise of Augustus, one era per paragraph.\" Need produce final answer. Need likely one era per ",
+   "server": {
+    "prefill_tok": 77,
+    "prefill_ms": 257,
+    "decode_tok": 299,
+    "passes": 162,
+    "tok_per_s": 46.5,
+    "ms_per_tok": 21.5,
+    "ms_per_pass": 40,
+    "tok_per_pass": 1.85,
+    "accept_p1": 85
+   }
+  },
+  "json": {
+   "id": "chatcmpl-72d4526c7bf66747",
+   "wall_s": 7.035,
+   "completion_tokens": 300,
+   "finish": "length",
+   "head": "We need to answer user: \"Return a JSON array of 25 objects, each with the fields country, capital, population_millions and currency, for 25 different countries. Output only the JSON.\"\n\nNeed produce fi",
+   "server": {
+    "prefill_tok": 88,
+    "prefill_ms": 273,
+    "decode_tok": 299,
+    "passes": 162,
+    "tok_per_s": 46.2,
+    "ms_per_tok": 21.6,
+    "ms_per_pass": 40,
+    "tok_per_pass": 1.85,
+    "accept_p1": 85
+   }
+  },
+  "math": {
+   "id": "chatcmpl-72d4526c7bf66748",
+   "wall_s": 7.032,
+   "completion_tokens": 300,
+   "finish": "length",
+   "head": "We need answer user: \"A train leaves city A at 60 km/h and another leaves city B, 450 km away, at 90 km/h toward it 30 minutes later. Work out step by step when and where they meet, then generalize th",
+   "server": {
+    "prefill_tok": 113,
+    "prefill_ms": 300,
+    "decode_tok": 299,
+    "passes": 161,
+    "tok_per_s": 46.5,
+    "ms_per_tok": 21.5,
+    "ms_per_pass": 40,
+    "tok_per_pass": 1.86,
+    "accept_p1": 86
+   }
+  }
+ }
+}

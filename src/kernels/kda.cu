@@ -1,5 +1,6 @@
 #include "kernels/kda.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <stdexcept>
@@ -292,7 +293,7 @@ __global__ __launch_bounds__(kRecurrentBlock) void kda_recurrent_kernel(
     float* __restrict__ snapshots, int64_t snapshot_stride,
     const int32_t* __restrict__ request_ids,
     const int64_t* __restrict__ positions,
-    const int32_t* __restrict__ request_spans) {
+    const int32_t* __restrict__ request_spans, KdaReplay replay) {
   constexpr int kCols = K / kRecurrentLanes;  // columns owned per lane
   static_assert(K % kRecurrentLanes == 0, "K must split across the lanes");
 
@@ -354,37 +355,30 @@ __global__ __launch_bounds__(kRecurrentBlock) void kda_recurrent_kernel(
   const int64_t qkv_stride = static_cast<int64_t>(2) * heads_k * K +
                              static_cast<int64_t>(heads) * v_dim;
 
-  for (int t = t0; t < t1; ++t) {
-    if constexpr (kBatched) {
-      if (positions[t] < 0) {
-        if (row_valid && lane == 0)
-          out[(static_cast<int64_t>(t) * heads + h) * v_dim + v] = 0;
-        continue;
-      }
-    }
-    const uint16_t* qrow =
-        qkv + static_cast<int64_t>(t) * qkv_stride + static_cast<int64_t>(hk) * K;
-    const uint16_t* krow = qrow + static_cast<int64_t>(heads_k) * K;
-    const uint16_t* vrow =
-        qkv + static_cast<int64_t>(t) * qkv_stride +
-        static_cast<int64_t>(2) * heads_k * K + static_cast<int64_t>(h) * v_dim;
-
+  // One token of the recurrence on the register-resident slice: the same
+  // sequence of operations whether the token is one of this call's rows
+  // or a replayed row of the previous pass (KdaReplay), which is what
+  // makes the replayed state bitwise the snapshot it stands in for.
+  //   q_h, k_h: this key head's q and k rows (lane offset applied inside)
+  //   grow:     the per-dimension gate row slice (KDA), unused for the scalar gate
+  //   g_bits:   the scalar gate's a_raw[t, h] (GDN), unused for KDA
+  //   vin:      v[t, h, v] (0 for an invalid row)
+  //   beta_bits: beta_raw[t, h]
+  // Returns the post-update read o[v] (every lane holds the full sum).
+  const auto token = [&](const uint16_t* __restrict__ q_h, const uint16_t* __restrict__ k_h,
+                         const uint16_t* __restrict__ grow, uint16_t g_bits, float vin,
+                         uint16_t beta_bits) -> float {
     float q[kCols], k[kCols], gv[kCols], u = 0.0f;
-    load_bf16_slice<kCols, kVec>(qrow + c0, q);
-    load_bf16_slice<kCols, kVec>(krow + c0, k);
+    load_bf16_slice<kCols, kVec>(q_h + c0, q);
+    load_bf16_slice<kCols, kVec>(k_h + c0, k);
     float decay_h = 1.0f;
     if constexpr (kScalarGate) {
       // GDN: g = -exp(A_log) * softplus(a_raw + dt_bias), the decay exp(g);
       // torch's softplus (threshold 20) in fp32.
-      const float x =
-          bf16_bits_to_float(g_raw[static_cast<int64_t>(t) * g_stride + h]) +
-          bias_h;
+      const float x = bf16_bits_to_float(g_bits) + bias_h;
       const float sp = x > 20.0f ? x : log1pf(expf(x));
       decay_h = expf(-(a * sp));
     } else {
-      const uint16_t* grow =
-          g_raw + static_cast<int64_t>(t) * g_stride +
-          static_cast<int64_t>(h) * K + c0;
       load_bf16_slice<kCols, kVec>(grow, gv);
     }
     float qs = 0.0f, ks = 0.0f;
@@ -424,12 +418,8 @@ __global__ __launch_bounds__(kRecurrentBlock) void kda_recurrent_kernel(
     for (int mask = 1; mask < kRecurrentLanes; mask <<= 1)
       u += __shfl_xor_sync(0xffffffff, u, mask);
 
-    const float beta =
-        1.0f / (1.0f + expf(-bf16_bits_to_float(
-                            beta_raw[static_cast<int64_t>(t) * beta_stride +
-                                     h])));
+    const float beta = 1.0f / (1.0f + expf(-bf16_bits_to_float(beta_bits)));
     // u <- beta * (v - <S k>); the delta error.
-    const float vin = row_valid ? bf16_bits_to_float(vrow[v]) : 0.0f;
     u = (vin - u) * beta;
 
     float o = 0.0f;
@@ -441,21 +431,103 @@ __global__ __launch_bounds__(kRecurrentBlock) void kda_recurrent_kernel(
 #pragma unroll
     for (int mask = 1; mask < kRecurrentLanes; mask <<= 1)
       o += __shfl_xor_sync(0xffffffff, o, mask);
+    return o;
+  };
+
+  // The checkpoint-and-replay form (KdaReplay): the previous pass's
+  // accepted rows first, from their saved inputs, then the checkpoint
+  // store (the materialize form stops there).
+  bool checkpoint = false;
+  if constexpr (kScalarGate) {
+    if (replay.in != nullptr) {
+      int nrep = replay.materialize_rows >= 0
+                     ? replay.materialize_rows
+                     : (replay.count != nullptr ? replay.count[req] : 0);
+      if (nrep > replay.rows_cap) nrep = replay.rows_cap;
+      const uint16_t* rin = replay.in + static_cast<int64_t>(req) * replay.request_stride;
+      for (int r = 0; r < nrep; ++r) {
+        const uint16_t* row = rin + static_cast<int64_t>(r) * replay.in_stride;
+        const uint16_t* q_h = row + static_cast<int64_t>(hk) * K;
+        const uint16_t* k_h = q_h + static_cast<int64_t>(heads_k) * K;
+        const uint16_t* v_h = row + static_cast<int64_t>(2) * heads_k * K + static_cast<int64_t>(h) * v_dim;
+        const float vin = row_valid ? bf16_bits_to_float(v_h[v]) : 0.0f;
+        (void)token(q_h, k_h, nullptr, row[qkv_stride + h], vin, row[qkv_stride + heads + h]);
+      }
+      if (replay.materialize) {
+        // Nothing pending and in place: the live buffer already is the state.
+        if (nrep == 0 && replay.dst == nullptr) return;
+        if (row_valid) store_f32_slice<kCols, kVec>(replay.dst != nullptr ? replay.dst + state_elem : st, s);
+        return;
+      }
+      checkpoint = replay.checkpoint;
+      if (checkpoint && row_valid) store_f32_slice<kCols, kVec>(st, s);  // the state before this pass's rows
+    }
+  }
+  uint16_t* save_base = (checkpoint && replay.save != nullptr)
+                            ? replay.save + static_cast<int64_t>(req) * replay.request_stride
+                            : nullptr;
+  int saved = 0;
+
+  for (int t = t0; t < t1; ++t) {
+    if constexpr (kBatched) {
+      if (positions[t] < 0) {
+        if (row_valid && lane == 0)
+          out[(static_cast<int64_t>(t) * heads + h) * v_dim + v] = 0;
+        continue;
+      }
+    }
+    const uint16_t* qrow =
+        qkv + static_cast<int64_t>(t) * qkv_stride + static_cast<int64_t>(hk) * K;
+    const uint16_t* krow = qrow + static_cast<int64_t>(heads_k) * K;
+    const uint16_t* vrow =
+        qkv + static_cast<int64_t>(t) * qkv_stride +
+        static_cast<int64_t>(2) * heads_k * K + static_cast<int64_t>(h) * v_dim;
+    const uint16_t* grow =
+        kScalarGate ? nullptr
+                    : g_raw + static_cast<int64_t>(t) * g_stride + static_cast<int64_t>(h) * K + c0;
+    const uint16_t g_bits = kScalarGate ? g_raw[static_cast<int64_t>(t) * g_stride + h] : uint16_t{0};
+    const uint16_t beta_bits = beta_raw[static_cast<int64_t>(t) * beta_stride + h];
+    const float vin = row_valid ? bf16_bits_to_float(vrow[v]) : 0.0f;
+    const float o = token(qrow, krow, grow, g_bits, vin, beta_bits);
 
     if (row_valid && lane == 0)
       out[(static_cast<int64_t>(t) * heads + h) * v_dim + v] =
           float_to_bf16_bits(o);
+    if (save_base != nullptr && saved < replay.rows_cap) {
+      // This row's inputs for the next pass's replay, each block its own
+      // slices: the v element of every valid row-thread, the key head's
+      // q and k slices from one block per key head (the row-thread 0 lanes,
+      // kCols raw bf16 each), a_raw and beta_raw from one thread per head.
+      uint16_t* srow = save_base + static_cast<int64_t>(saved) * replay.in_stride;
+      if (row_valid && lane == 0)
+        srow[static_cast<int64_t>(2) * heads_k * K + static_cast<int64_t>(h) * v_dim + v] = vrow[v];
+      if (blockIdx.x == 0 && (h % kv_ratio) == 0 && threadIdx.x < kRecurrentLanes) {
+        uint16_t* sq = srow + static_cast<int64_t>(hk) * K + c0;
+        uint16_t* sk = sq + static_cast<int64_t>(heads_k) * K;
+#pragma unroll
+        for (int i = 0; i < kCols; ++i) {
+          sq[i] = qrow[c0 + i];
+          sk[i] = krow[c0 + i];
+        }
+      }
+      if (blockIdx.x == 0 && threadIdx.x == 0) {
+        srow[qkv_stride + h] = g_bits;
+        srow[qkv_stride + heads + h] = beta_bits;
+      }
+    }
+    ++saved;
     // Speculative rows: S after row t is the state to restore if rows > t
     // are rejected (the last row's S lands in place below). One extra
     // state-sized store per speculative row; nothing on the T=1 path.
-    if (snapshots && t + 1 < t1 && row_valid)
+    // (The checkpoint form keeps no snapshots: the next pass replays.)
+    if (snapshots && !checkpoint && t + 1 < t1 && row_valid)
       store_f32_slice<kCols, kVec>(
           snapshots + static_cast<int64_t>(t) * snapshot_stride +
               state_elem,
           s);
   }
 
-  if (row_valid) store_f32_slice<kCols, kVec>(st, s);
+  if (row_valid && !checkpoint) store_f32_slice<kCols, kVec>(st, s);
 }
 
 template <int CW, bool kBatched>
@@ -632,11 +704,33 @@ void recurrent_launch(const char* who, const void* qkv, const void* g_raw,
                       int heads, int kv_ratio, int k_dim, int v_dim,
                       float lower_bound, float scale,
                       const KdaRequestRows& requests, cudaStream_t stream,
-                      const KdaStateSnapshots& snap) {
+                      const KdaStateSnapshots& snap, const KdaReplay& replay) {
   const bool batched = requests.num_requests > 0;
   const std::string w = who;
-  if (rows <= 0 || heads <= 0 || v_dim <= 0)
+  const bool materialize = replay.in != nullptr && replay.materialize;
+  if ((rows <= 0 && !materialize) || rows < 0 || heads <= 0 || v_dim <= 0)
     throw std::invalid_argument(w + ": empty problem");
+  if (replay.in != nullptr) {
+    if (!kScalarGate) throw std::invalid_argument(w + ": the replay form is the scalar-gate recurrence's");
+    const int64_t in_row = static_cast<int64_t>(2) * (heads / std::max(kv_ratio, 1)) * k_dim +
+                           static_cast<int64_t>(heads) * v_dim + 2 * static_cast<int64_t>(heads);
+    if (replay.in_stride < in_row || (replay.in_stride * 2) % 8 != 0)
+      throw std::invalid_argument(w + ": replay row stride");
+    if (replay.rows_cap <= 0 || (replay.checkpoint && rows > replay.rows_cap))
+      throw std::invalid_argument(w + ": replay rows_cap");
+    if (replay.checkpoint && replay.save == nullptr)
+      throw std::invalid_argument(w + ": the checkpoint form needs a save buffer");
+    if (replay.checkpoint && replay.save == replay.in)
+      throw std::invalid_argument(w + ": the replay's in and save buffers must differ");
+    if (replay.checkpoint && snap.states != nullptr)
+      throw std::invalid_argument(w + ": the checkpoint form takes no snapshots");
+    if (replay.materialize_rows > replay.rows_cap)
+      throw std::invalid_argument(w + ": materialize rows past the saved rows");
+    if (materialize && replay.materialize_rows < 0 && replay.count == nullptr)
+      throw std::invalid_argument(w + ": materialize needs a count or a row number");
+    if (materialize && replay.checkpoint)
+      throw std::invalid_argument(w + ": the materialize form runs no rows of its own");
+  }
   if (k_dim % kRecurrentLanes != 0)
     throw std::invalid_argument(w + ": k_dim must be a multiple of 16");
   if (kv_ratio <= 0 || heads % kv_ratio != 0)
@@ -699,7 +793,7 @@ void recurrent_launch(const char* who, const void* qkv, const void* g_raw,
             qkv16, g16, g_row_stride, b16, beta_row_stride, a_log, dt_bias,
             states, state_stride, o16, rows, heads, kv_ratio, v_dim,
             lower_bound, scale, snap.states, snap.stride_elems,
-            requests.request_ids, requests.positions, requests.spans);
+            requests.request_ids, requests.positions, requests.spans, replay);
     DGPP_CUDA_OK(cudaGetLastError());
   };
   const auto dispatch_k = [&](auto kdim_tag) {
@@ -732,7 +826,7 @@ void kda_recurrent_fwd(const void* qkv, const void* g_raw, const void* beta_raw,
                           static_cast<int64_t>(heads) * k_dim, beta_raw,
                           beta_row_stride, a_log, dt_bias, state, 0, out,
                           tokens, heads, 1, k_dim, v_dim, lower_bound, scale,
-                          KdaRequestRows{}, stream, snap);
+                          KdaRequestRows{}, stream, snap, KdaReplay{});
 }
 
 void kda_recurrent_fwd_batched(
@@ -748,7 +842,7 @@ void kda_recurrent_fwd_batched(
                           static_cast<int64_t>(heads) * k_dim, beta_raw,
                           beta_row_stride, a_log, dt_bias, states,
                           request_state_stride, out, rows, heads, 1, k_dim,
-                          v_dim, lower_bound, scale, requests, stream, snap);
+                          v_dim, lower_bound, scale, requests, stream, snap, KdaReplay{});
 }
 
 void gdn_recurrent_fwd(const void* qkv, const void* a_raw, int64_t a_row_stride,
@@ -756,11 +850,11 @@ void gdn_recurrent_fwd(const void* qkv, const void* a_raw, int64_t a_row_stride,
                        const float* a_log, const float* dt_bias, float* state,
                        void* out, int tokens, int heads, int kv_ratio,
                        int k_dim, int v_dim, float scale, cudaStream_t stream,
-                       const KdaStateSnapshots& snap) {
+                       const KdaStateSnapshots& snap, const KdaReplay& replay) {
   recurrent_launch<true>("gdn recurrent", qkv, a_raw, a_row_stride, beta_raw,
                          beta_row_stride, a_log, dt_bias, state, 0, out,
                          tokens, heads, kv_ratio, k_dim, v_dim, 0.0f, scale,
-                         KdaRequestRows{}, stream, snap);
+                         KdaRequestRows{}, stream, snap, replay);
 }
 
 void gdn_recurrent_fwd_batched(
@@ -769,13 +863,13 @@ void gdn_recurrent_fwd_batched(
     const float* dt_bias, float* states, int64_t request_state_stride,
     void* out, int rows, int heads, int kv_ratio, int k_dim, int v_dim,
     float scale, const KdaRequestRows& requests, cudaStream_t stream,
-    const KdaStateSnapshots& snap) {
+    const KdaStateSnapshots& snap, const KdaReplay& replay) {
   if (requests.num_requests <= 0)
     throw std::invalid_argument("gdn batched recurrent: incomplete request map");
   recurrent_launch<true>("gdn batched recurrent", qkv, a_raw, a_row_stride,
                          beta_raw, beta_row_stride, a_log, dt_bias, states,
                          request_state_stride, out, rows, heads, kv_ratio,
-                         k_dim, v_dim, 0.0f, scale, requests, stream, snap);
+                         k_dim, v_dim, 0.0f, scale, requests, stream, snap, replay);
 }
 
 }  // namespace dgpp

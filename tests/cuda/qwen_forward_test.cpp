@@ -43,6 +43,7 @@
 #include "loaders/minijson.hpp"
 #include "models/qwen/config.hpp"
 #include "models/qwen/forward.hpp"
+#include "models/qwen/loader.hpp"
 #include "qwen_fixture.hpp"
 
 namespace fs = std::filesystem;
@@ -158,6 +159,14 @@ Stats compare_bf16(const uint16_t* got, const uint16_t* want, size_t n, int soft
   return s;
 }
 
+// The fixture's config; a hybrid fixture (its dense stack shipped as block
+// fp8) puts the loader in the fp8 dense mode it needs.
+QwenTextConfig load_test_config(const std::string& dir) {
+  QwenTextConfig cfg = QwenTextConfig::from_json_file((fs::path(dir) / "config.json").string());
+  if (cfg.dense_fp8_shipped) dgpp::QwenLayerStream::set_dense_weights_fp8(true);
+  return cfg;
+}
+
 int run_plan_check() {  // The memory plan's context line under the rope knob (engine.rope_scaling,
   // 2026-09-18): the plan must be computed at the YaRN-scaled ceiling, so a
   // 512K pool is validated against the pool it really allocates — and a pool
@@ -182,12 +191,41 @@ int run_plan_check() {  // The memory plan's context line under the rope knob (e
   require(on == want_on, "the YaRN plan takes original x factor");
   require(cfg.context_limit() == want_off && yarn.context_limit() == want_on,
           "the config's ceiling is what the plan reads");
-  // The pool is sized by the cache capacity, not by the positional ceiling,
-  // so the knob lifts what a request may reach without moving a byte: the
-  // plan validates the same pool either way (a pool past the ceiling is
-  // concurrency headroom, which the launcher names out loud).
-  require(plan_of(yarn).total_bytes() == plan_of(cfg).total_bytes(),
-          "the knob allocates nothing");
+  // Shared K/V capacity is unchanged by the request ceiling. Only the
+  // per-row scoring workspace grows when more pools can become visible.
+  const auto bytes_named = [](const QwenModel::MemoryPlan& plan, const char* name) {
+    for (const auto& item : plan.items)
+      if (item.name == name) return item.device + item.pinned;
+    throw std::runtime_error(std::string("missing memory plan item: ") + name);
+  };
+  const auto plain_plan = plan_of(cfg), yarn_plan = plan_of(yarn);
+  require(bytes_named(plain_plan, "kv cache pool (K/V bf16, compressed index keys, rings)") ==
+          bytes_named(yarn_plan, "kv cache pool (K/V bf16, compressed index keys, rings)"),
+          "request ceiling leaves shared K/V capacity unchanged");
+  const size_t extra_keys = size_t{64} * static_cast<size_t>((want_on - want_off) /
+                                                        cfg.indexer_compress_ratio) * 8;
+  require(yarn_plan.total_bytes() - plain_plan.total_bytes() == extra_keys,
+          "scoring workspace follows the per-request ceiling, not the shared pool");
+  QwenTextConfig unaligned = cfg;
+  unaligned.max_position_embeddings = native + 1;
+  require(plan_of(unaligned).total_bytes() - plain_plan.total_bytes() == size_t{64 * 8},
+          "partial final compressed pool has workspace");
+  const auto small_pool_plan = [&](const QwenTextConfig& c) {
+    return QwenModel::plan_memory(c, 64, 512, 0, 2, dgpp::QwenResidency::Resident, 4,
+                                 false, 8);
+  };
+  require(small_pool_plan(cfg).total_bytes() == small_pool_plan(yarn).total_bytes(),
+          "a smaller shared pool bounds workspace even with a larger positional ceiling");
+  QwenTextConfig site = cfg, shared = cfg;
+  site.max_position_embeddings = 262144;
+  shared.max_position_embeddings = 850048;
+  const auto site_plan = [&](const QwenTextConfig& c) {
+    return QwenModel::plan_memory(c, 4096, 850048, 0, 1, dgpp::QwenResidency::Resident,
+                                 4, false, 8);
+  };
+  require(site_plan(shared).total_bytes() - site_plan(site).total_bytes() ==
+              size_t{4096} * (212512 - 65536) * 8,  // rows x pools saved x bytes per key
+          "4K rows and an 850048-token shared pool save 4.485 GiB at a 256K request ceiling");
   // A pool of exactly the scaled ceiling is accepted by the same arithmetic.
   require(QwenModel::plan_memory(yarn, 64, native * 64 * 2, 0, 2, dgpp::QwenResidency::Resident, 4,
                                  false, 8)
@@ -244,7 +282,7 @@ int run_cross_limit(const std::string& dir) {
   // extended 16 is refused by the session's boundary, and a KV pool
   // smaller than the configured context is accepted (the context clamps
   // to the pool, the plan's context line follows it).
-  QwenTextConfig cfg = QwenTextConfig::from_json_file((fs::path(dir) / "config.json").string());
+  QwenTextConfig cfg = load_test_config(dir);
   cfg.max_position_embeddings = 8;  // the synthetic native limit (the fixture's 4096)
   cfg.rope_scaling = dgpp::RopeScaling{2.0, 8, 32.0, 1.0, 1.0, 4.0};  // factor 2 over 8
   cfg.rope_scaling->validate("qwen_forward_test: cross-limit");
@@ -359,7 +397,7 @@ int run_cross_limit(const std::string& dir) {
 }
 
 int run_smoke(const std::string& dir, const std::optional<dgpp::RopeScaling>& rope_scaling) {
-  QwenTextConfig cfg = QwenTextConfig::from_json_file((fs::path(dir) / "config.json").string());
+  QwenTextConfig cfg = load_test_config(dir);
   if (rope_scaling.has_value()) cfg.rope_scaling = *rope_scaling;
   const int T = 72;
   const std::vector<int64_t> tokens = smoke_tokens(cfg, T);
@@ -453,7 +491,7 @@ int run_qsa_prefill(const std::string& dir, const std::string& logits_path) {
 
 int run_dump_parity(const std::string& dir, const std::string& dump_path) {
   const Dump dump = Dump::load(dump_path);
-  const QwenTextConfig cfg = QwenTextConfig::from_json_file((fs::path(dir) / "config.json").string());
+  const QwenTextConfig cfg = load_test_config(dir);
   require(cfg.hidden_size == dump.hidden && cfg.vocab_size == dump.vocab &&
               cfg.num_hidden_layers == dump.num_layers && cfg.hc_count == dump.hc,
           "dump config disagrees with the checkpoint config");
@@ -581,7 +619,7 @@ int run_dump_parity(const std::string& dir, const std::string& dump_path) {
 int main(int argc, char** argv) {
   std::string fixture, smoke, checkpoint, dump, cross_limit, qsa_prefill, logits_path;
   std::string rope_scaling_arg;
-  bool plan_check = false, w4a4_plan_check = false;
+  bool plan_check = false, w4a4_plan_check = false, gptq = false;
   for (int i = 1; i < argc; ++i) {
     const std::string a = argv[i];
     if (a == "--write-fixture" && i + 1 < argc) fixture = argv[++i];
@@ -591,6 +629,7 @@ int main(int argc, char** argv) {
     else if (a == "--qsa-prefill" && i + 1 < argc) qsa_prefill = argv[++i];
     else if (a == "--logits" && i + 1 < argc) logits_path = argv[++i];
     else if (a == "--plan-check") plan_check = true;
+    else if (a == "--gptq") gptq = true;
     else if (a == "--w4a4-plan-check")
       w4a4_plan_check = true;
     else if (a == "--checkpoint-dir" && i + 1 < argc) checkpoint = argv[++i];
@@ -618,7 +657,8 @@ int main(int argc, char** argv) {
       rope_scaling = rs;
     }
     if (!fixture.empty()) {
-      qwenfx::write_fixture(qwenfx::tiny_config(), fixture);
+      // --gptq: the AutoRound hybrid's twin (tests/cuda/qwen_fixture.hpp).
+      qwenfx::write_fixture_for(gptq ? qwenfx::tiny_gptq_config() : qwenfx::tiny_config(), fixture);
       std::printf("[ OK ] wrote the fixture to %s\n", fixture.c_str());
       return 0;
     }

@@ -1,0 +1,8 @@
+ctx    131 tok: completion   13 in    5 steps,   52.6 ms/step (engine), 2.60 tok/step, prefill (ttft) 0.38 s, decode wall 0.28 s
+ctx    188 tok: completion   35 in   14 steps,   52.6 ms/step (engine), 2.50 tok/step, prefill (ttft) 0.40 s, decode wall 0.76 s
+ctx   3195 tok: completion   44 in   18 steps,   55.7 ms/step (engine), 2.44 tok/step, prefill (ttft) 2.12 s, decode wall 1.01 s
+ctx   3162 tok: completion   57 in   19 steps,   56.0 ms/step (engine), 3.00 tok/step, prefill (ttft) 2.05 s, decode wall 1.09 s
+ctx  11685 tok: completion   48 in   16 steps,   56.9 ms/step (engine), 3.00 tok/step, prefill (ttft) 7.29 s, decode wall 0.91 s
+ctx  11909 tok: completion   39 in   15 steps,   55.6 ms/step (engine), 2.60 tok/step, prefill (ttft) 7.39 s, decode wall 0.84 s
+ctx  47738 tok: completion   36 in   14 steps,   55.8 ms/step (engine), 2.57 tok/step, prefill (ttft) 30.18 s, decode wall 0.77 s
+ctx  46799 tok: completion   38 in   17 steps,   56.0 ms/step (engine), 2.24 tok/step, prefill (ttft) 29.91 s, decode wall 0.97 s

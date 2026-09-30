@@ -60,6 +60,7 @@
 #include "kernels/gemm.hpp"
 #include "kernels/mma_gemv.hpp"
 #include "kernels/glm_spec.hpp"
+#include "kernels/kda.hpp"
 #include "kernels/pick.hpp"
 #include "models/qwen/config.hpp"
 #include "models/qwen/kv_pool.hpp"
@@ -78,6 +79,19 @@ class QwenModel : public SessionModel<QwenModel> {
   using Outputs = Base::Outputs;
   using SessionSnapshotMeta = Base::SessionSnapshotMeta;
   using SnapshotRequest = Base::SnapshotRequest;
+  // DGPP_QWEN_HEAD_DUMP=<file>: append every decode-shaped head input row
+  // (the draft's and the verify's hyper-state mixes) after each settled pass
+  // — the head bit-plane study's data (2026-09-29). A debug hook: the flush
+  // syncs the stream. Slots are written by memcpy nodes recorded in the
+  // graph, so a replay refreshes them without host work.
+  void head_dump_flush();
+  // The argmax-only head (kernels/packq_head.hpp): per-slot device flags
+  // the engine writes with the sampling specs — a slot whose verify rows
+  // (resp. draft rows) want only the argmax. Null: every head read is full.
+  void set_head_greedy_flags(const uint8_t* verify, const uint8_t* draft) {
+    head_greedy_verify_ = verify;
+    head_greedy_draft_ = draft;
+  }
   struct PrefillCursor : Base::PrefillCursor {
     const std::vector<ImageInput>* images = nullptr;
   };
@@ -250,10 +264,45 @@ class QwenModel : public SessionModel<QwenModel> {
   void build_layer_objects(const QwenLayerResident& r);
   void lm_head_logits(const uint16_t* hidden, int rows, cudaStream_t stream, bool last_row_only = false);
   static size_t dense_bridge_bytes(const QwenTextConfig& cfg, const QwenLocalGeometry& geo);
+  // The opt-in fp8 prefill GEMM's activation scratch (engine.prefill_fp8_gemm):
+  // the widest dense k of this rank's slice, and the scratch's bytes for
+  // max_tokens rows (e4m3 rows plus their 1 x 128 fp32 scales).
+  static size_t dense_max_cols(const QwenTextConfig& cfg, const QwenLocalGeometry& geo);
+  static size_t fp8_act_scratch_bytes(const QwenTextConfig& cfg, const QwenLocalGeometry& geo, int max_tokens);
   size_t dense_bridge_bytes_ = 0;
   static QwenMoeWeights moe_view(const QwenMoeResident& m);
   float* gdn_rec(int req, int ordinal) const;
   uint16_t* gdn_conv(int req, int ordinal) const;
+  // The GDN recurrent state's checkpoint-and-replay form under MTP
+  // (kernels/kda.hpp KdaReplay, 2026-09-29): the live buffer holds the
+  // state BEFORE the last pass's rows; the pass's rows are kept as their
+  // inputs and the next pass replays the accepted ones (gdn_pending_).
+  // Nothing but a decode walk may read the live buffer without
+  // materialize_gdn() first (a prefill continuation, the prefix cache).
+  KdaReplay gdn_replay_view(int req, int ordinal, bool batched) const;
+  size_t gdn_replay_block_elems() const;  // one request's saved rows, every GDN layer
+  // The state as it stands after the pending rows (rows < 0) or after the
+  // first `rows` saved rows: in place (dst null; the pending count resets)
+  // or into dst [num_gdn][rec] (the live buffer untouched).
+  void materialize_gdn(int req, float* dst = nullptr, int rows = -1);
+  void head_dump_record(const uint16_t* hidden, int rows, cudaStream_t stream);
+  static constexpr int kHeadDumpSlots = 8;
+  uint16_t* head_dump_ring_ = nullptr;   // device [kHeadDumpSlots][max_decode_rows][H]
+  uint8_t* head_dump_meta_ = nullptr;    // device [kHeadDumpSlots][2]: rows, site (0 verify, 1 draft)
+  int head_dump_next_ = 0;
+  int head_dump_site_ = 0;
+  const uint8_t* head_greedy_verify_ = nullptr;
+  const uint8_t* head_greedy_draft_ = nullptr;
+  int head_req_ = 0;                 // the request of a single-request head call
+  float* head_ab_ = nullptr;         // [4][V] the argmax pass's upper bounds
+  int32_t* head_lo_ = nullptr;       // [4] the best lower bounds (ordered ints)
+  int32_t* head_cand_ = nullptr;     // [V] the candidate rows, compacted
+  int32_t* head_cand_count_ = nullptr;
+  std::string head_dump_path_;
+  std::vector<uint16_t> head_dump_host_;
+  std::vector<uint8_t> head_dump_meta_host_;
+  size_t head_dump_rows_written_ = 0;
+  static bool env_is_off_replay();
   uint16_t* ple_conv(int req) const;
   int32_t* ctx(int req) const { return d_ctx_ + static_cast<size_t>(req) * 4; }
   void push_context(int req, int32_t prev1, int32_t prev2);
@@ -290,7 +339,14 @@ class QwenModel : public SessionModel<QwenModel> {
   QwenKvPool pool_;                     // the QSA layers' paged caches
 
   // The spec snapshot rows (every family, row-major by decode row).
-  float* spec_rec_ = nullptr;      // [rows][num_gdn][rec]  (rows = max_decode_rows_)
+  float* spec_rec_ = nullptr;      // [rows][num_gdn][rec]  (rows = max_decode_rows_; null under the replay form)
+  bool gdn_replay_ = false;             // the checkpoint-and-replay form (MTP stacks with GDN layers)
+  uint16_t* gdn_replay_in_ = nullptr;   // [R][num_gdn][rows_cap][row]: the rows the next pass replays
+  uint16_t* gdn_replay_save_ = nullptr; // [R][num_gdn][rows_cap][row]: this pass's rows (the commit copies them over `in`)
+  int32_t* gdn_pending_ = nullptr;      // [R]: rows to replay (the commit writes the accepted count)
+  int64_t gdn_replay_row_elems_ = 0;    // the post-conv q|k|v row + a_raw + beta_raw
+  int gdn_replay_rows_cap_ = 0;
+  int gdn_replay_rows_used_ = 1;        // rows per request of the last decode walk (the commit's copy)
   uint16_t* spec_conv_ = nullptr;  // [rows][num_gdn][conv]
   uint16_t* spec_ple_ = nullptr;   // [rows][ple]
   int32_t* spec_ctx_ = nullptr;    // [max(max_tokens, rows)][4]

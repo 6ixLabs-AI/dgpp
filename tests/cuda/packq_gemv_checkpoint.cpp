@@ -82,8 +82,10 @@ std::vector<uint16_t> run(const Slice& s, const std::vector<uint16_t>& act, int 
   std::memcpy(scales, s.scales.data(), s.scales.size() * 2);
   std::memcpy(d_act, act.data(), act.size() * 2);
   const dgpp::GlmPackedMatrix w{packed, scales, s.n, s.k, s.bits};
-  (mma ? dgpp::launch_packq_gemm_bf16 : dgpp::launch_packq_gemv_bf16)(d_act, s.k, w, out, m, s.n,
-                                                                      s.k, nullptr);
+  if (mma)
+    dgpp::launch_packq_gemm_bf16(d_act, s.k, w, out, m, s.n, s.k, nullptr);
+  else
+    dgpp::launch_packq_gemv_bf16(d_act, s.k, w, out, m, s.n, s.k, nullptr);
   DGPP_CUDA_OK(cudaDeviceSynchronize());
   std::vector<uint16_t> got(static_cast<size_t>(m) * s.n);
   std::memcpy(got.data(), out, got.size() * 2);

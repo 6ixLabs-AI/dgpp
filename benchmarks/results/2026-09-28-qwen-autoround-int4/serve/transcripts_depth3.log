@@ -1,0 +1,5 @@
+chat   256 tokens    8.32 s    32.5 ms/token (wall, prefill included) length | We need answer user: "Explain, in a few paragraphs, why a CU
+code   256 tokens    6.16 s    24.1 ms/token (wall, prefill included) length | We need answer user: "Write a Python function that parses an
+math   256 tokens    4.76 s    18.6 ms/token (wall, prefill included) length | We need answer math problem step by step. Need solve. Let's 
+json   256 tokens    5.27 s    20.6 ms/token (wall, prefill included) length | We need to respond to user: "Return a JSON array of 8 object
+identical transcripts: 4 of 4

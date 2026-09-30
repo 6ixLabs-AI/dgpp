@@ -260,12 +260,18 @@ class SchedulerEngine {
     int body_snap_slot = -1;
     int64_t body_snap_position = 0;
     bool body_snap_taken = false;
+    // The head cut (2026-09-28): the aligned image of the prompt's first
+    // structural boundary past its start, taken on the same walk.
+    int head_snap_slot = -1;
+    int64_t head_snap_position = 0;
+    bool head_snap_taken = false;
   };
   struct PrefillProgress {
     int64_t computed_tokens = 0;
     int32_t first_token = -1;  // -1: more chunks remain
     bool snap_taken = false;
     bool body_snap_taken = false;
+    bool head_snap_taken = false;
   };
   virtual void begin_prefill(int, const std::vector<int64_t>&, int64_t, int64_t,
                              const PrefixPrefill&) {
@@ -383,9 +389,20 @@ struct AdmissionPolicy {
   int window_tokens = 256;  // grow: the initial headroom and the growth step
   int prefill_budget_tokens = 0;  // 0: monolithic; otherwise total prefill tokens per tick
   int prefill_idle_budget_tokens = 0;  // 0: use the same budget; otherwise larger chunks without active decode
+  // The prefix cache's entry policy (2026-09-28), rank-identical like the
+  // rest of the record. No snapshot below prefix_min_tokens: a 45-token
+  // probe's entries must not push a 180K conversation out of the arena
+  // (the single-Spark replay of 2026-09-28: three probes per turn emptied
+  // a 13-slot arena every turn). With prefix_head_snapshots a cold prefill
+  // also keeps the cut at its first structural boundary past the start —
+  // a long system prompt's end — where the next conversation under that
+  // prompt, or the turn after a client compacted its history, attaches.
+  int prefix_min_tokens = 0;
+  bool prefix_head_snapshots = false;
   bool operator==(const AdmissionPolicy& o) const {
     return mode == o.mode && window_tokens == o.window_tokens && prefill_budget_tokens == o.prefill_budget_tokens &&
-           prefill_idle_budget_tokens == o.prefill_idle_budget_tokens;
+           prefill_idle_budget_tokens == o.prefill_idle_budget_tokens &&
+           prefix_min_tokens == o.prefix_min_tokens && prefix_head_snapshots == o.prefix_head_snapshots;
   }
   bool operator!=(const AdmissionPolicy& o) const { return !(*this == o); }
   static const char* name(Mode m) {
@@ -451,6 +468,7 @@ class Scheduler {
     int64_t prefix_misses = 0;
     int64_t prefix_tokens_saved = 0;
     int64_t prefix_snapshots = 0;
+    int64_t prefix_head_snapshots = 0;
     int64_t prefix_close_entries = 0;
     int64_t prefix_rolling = 0;
     int64_t prefix_hops = 0;
@@ -595,6 +613,8 @@ class Scheduler {
     int64_t prefill_snap_position = 0;
     int prefill_body_slot = -1;
     int64_t prefill_body_position = 0;
+    int prefill_head_slot = -1;
+    int64_t prefill_head_position = 0;
     int64_t prefill_computed = 0;
     int64_t attached_tokens = 0;
     int decode_passes = 0;
@@ -607,13 +627,22 @@ class Scheduler {
     int64_t attach_position = 0;
     int64_t snap_position = 0;
     int64_t body_snap_position = 0;
+    int64_t head_snap_position = 0;
   };
   bool cache_on(const Request& r) const {
     return cache_.enabled() && !r.spec.no_cache && !r.cache_off &&
            (r.spec.images.empty() || engine_->supports_image_prefix_cache());
   }
   PrefixPlan plan_prefix(const Request& r) const;
-  void finish_prefill_snapshot(Request& r, int slot, int64_t position, bool taken);
+  // The structural boundaries the engine's cold prefill cuts at (2026-09-28):
+  // only where this deployment can take a snapshot — the cache on and the
+  // boundary's aligned image at or past the entry floor — so a cache hit
+  // and a miss are the same walk. A cut a snapshot never stands on served
+  // nothing and made a prompt's cold walk differ from its rows in a group
+  // walk (the DSA sites are not split-invariant).
+  std::vector<int64_t> cut_boundaries(const Request& r) const;
+  void finish_prefill_snapshot(Request& r, int slot, int64_t position, bool taken,
+                               bool head = false);
   // The pool block a snapshot's private partial-block copy takes: one when
   // the position is not block-aligned, none otherwise (or without a pool).
   int64_t snapshot_blocks(int64_t position) const;

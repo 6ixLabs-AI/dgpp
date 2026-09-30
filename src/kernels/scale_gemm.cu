@@ -1,11 +1,13 @@
 #include "kernels/scale_gemm.hpp"
 
 #include <algorithm>
+#include <cstdlib>
 #include <stdexcept>
 #include <type_traits>
 
 #include "common/cuda_check.hpp"
 #include "common/dtypes.hpp"
+#include "kernels/bf16_gemv.cuh"
 #include "kernels/fp8_gemv.cuh"
 #include "kernels/glm_moe_launch.hpp"
 #include "kernels/mma_gemv.hpp"
@@ -130,18 +132,50 @@ __global__ void scale_gemm_kernel(const uint16_t* __restrict__ act,
 // rs / cs: the scale grid as log2 block sizes (7 = 128 x 128; 5 = the
 // DeepSeek-V4.1 release's 32 x 32, 2026-09-13; the GEMV core reads any
 // grid whose column block covers a 16-element chunk, i.e. cs >= 4).
+// A block streams a CONTIGUOUS span of rows, kWarps at a time, over one
+// staging of the activations (2026-09-29): the model's 65 GB of weights per
+// pass are 32K 2 MB pages, and a grid whose blocks interleave across the SMs
+// has every SM walk every page of a matrix — an 8 GiB cold ring in the
+// isolated bench reproduces the step's kernel times to the microsecond
+// (the multi GEMV 167 → 191 us, the out projection 68 → 78). Spans were
+// meant to keep each SM's pages to its own few and stage the rows once
+// per span instead of once per eight rows; measured on the 8 GiB ring
+// (DGPP_GEMV_BLOCKS 96 / 192 / 384 / 768 against 0): within ±4 % of the
+// one-group grid on every shape — the misses are served by a shared
+// walker, whichever SM issues them. The form stays for experiments
+// (gemv_span_blocks(): the target grid; 0, the default, is one row group
+// per block). Every row's chain is block_rows' — bitwise either way.
+int gemv_span_blocks() {
+  static const int blocks = [] {
+    const char* v = std::getenv("DGPP_GEMV_BLOCKS");
+    if (v == nullptr) return 0;
+    const long b = std::strtol(v, nullptr, 10);
+    return (b >= 0 && b <= 4096) ? static_cast<int>(b) : 0;
+  }();
+  return blocks;
+}
+// The span (rows per block, a multiple of kWarps) that puts `groups`
+// row groups on about gemv_span_blocks() blocks.
+inline int gemv_span_rows(int groups) {
+  const int G = gemv_span_blocks();
+  if (G <= 0 || groups <= G) return fp8_gemv::kWarps;
+  return ((groups + G - 1) / G) * fp8_gemv::kWarps;
+}
+
 template <int kRows, typename OutT>
 __global__ void scale_gemv_kernel(const uint16_t* __restrict__ act,
                                   size_t act_stride,
                                   const uint8_t* __restrict__ w,
                                   const float* __restrict__ scales,
                                   OutT* __restrict__ out, int n, int k,
-                                  size_t out_stride, int rs, int cs) {
+                                  size_t out_stride, int rs, int cs, int span) {
   extern __shared__ __align__(16) uint16_t sx[];
   fp8_gemv::stage_activations<kRows>(act, act_stride, k, sx);
   __syncthreads();
-  fp8_gemv::block_rows<kRows>(w, scales, sx, blockIdx.x * fp8_gemv::kWarps, n,
-                              k, out, out_stride, rs, cs);
+  const int b0 = static_cast<int>(blockIdx.x) * span;
+  const int b1 = min(n, b0 + span);
+  for (int n0 = b0; n0 < b1; n0 += fp8_gemv::kWarps)
+    fp8_gemv::block_rows<kRows>(w, scales, sx, n0, n, k, out, out_stride, rs, cs);
 }
 
 template <int kRows, typename OutT>
@@ -149,10 +183,12 @@ void launch_scale_gemv(const uint16_t* act, size_t act_stride,
                        const uint8_t* w, const float* scales, OutT* out, int n,
                        int k, size_t out_stride, cudaStream_t stream, int rs = 7,
                        int cs = 7) {
-  const dim3 grid((n + fp8_gemv::kWarps - 1) / fp8_gemv::kWarps);
+  const int groups = (n + fp8_gemv::kWarps - 1) / fp8_gemv::kWarps;
+  const int span = gemv_span_rows(groups);
+  const dim3 grid((n + span - 1) / span);
   scale_gemv_kernel<kRows, OutT>
       <<<grid, fp8_gemv::kThreads, fp8_gemv::smem_bytes(kRows, k), stream>>>(
-          act, act_stride, w, scales, out, n, k, out_stride, rs, cs);
+          act, act_stride, w, scales, out, n, k, out_stride, rs, cs, span);
   DGPP_CUDA_OK(cudaGetLastError());
 }
 
@@ -366,6 +402,7 @@ struct Fp8GemvMulti {
   Fp8GemvProblem p[kFp8GemvMaxProblems];
   int block_end[kFp8GemvMaxProblems];  // exclusive prefix of blocks per problem
   int n;
+  int span;  // rows per block (a multiple of kWarps), the same for every problem
 };
 
 template <int kRows>
@@ -384,9 +421,28 @@ __global__ void scale_gemv_multi_kernel(Fp8GemvMulti mp, const uint16_t* __restr
   const int block0 = which == 0 ? 0 : which == 1 ? mp.block_end[0] : which == 2 ? mp.block_end[1] : mp.block_end[2];
   const int rs = which == 0 ? mp.p[0].rs : which == 1 ? mp.p[1].rs : which == 2 ? mp.p[2].rs : mp.p[3].rs;
   const int cs = which == 0 ? mp.p[0].cs : which == 1 ? mp.p[1].cs : which == 2 ? mp.p[2].cs : mp.p[3].cs;
+  const uint16_t* w16 = which == 0 ? mp.p[0].bf16_weight : which == 1 ? mp.p[1].bf16_weight
+                        : which == 2 ? mp.p[2].bf16_weight : mp.p[3].bf16_weight;
   fp8_gemv::stage_activations<kRows>(act, act_stride, k, sx);
   __syncthreads();
-  fp8_gemv::block_rows<kRows>(w, scales, sx, (bid - block0) * fp8_gemv::kWarps, n, k, out, out_stride, rs, cs);
+  const int b0 = (bid - block0) * mp.span;
+  const int b1 = min(n, b0 + mp.span);
+  if (w16 != nullptr) {
+    // A bf16 problem: bf16_gemv_kernel's row chain and store, row by row.
+    const int warp = threadIdx.x / 32, lane = threadIdx.x % 32;
+    for (int n0 = b0; n0 < b1; n0 += fp8_gemv::kWarps) {
+      const int row = n0 + warp;
+      if (row >= n) continue;
+      float acc[kRows];
+      bf16_gemv::row_dots<kRows>(w16 + static_cast<size_t>(row) * k, sx, k, lane, acc);
+      if (lane != 0) continue;
+#pragma unroll
+      for (int r = 0; r < kRows; ++r) out[static_cast<size_t>(r) * out_stride + row] = float_to_bf16_bits(acc[r]);
+    }
+    return;
+  }
+  for (int n0 = b0; n0 < b1; n0 += fp8_gemv::kWarps)
+    fp8_gemv::block_rows<kRows>(w, scales, sx, n0, n, k, out, out_stride, rs, cs);
 }
 
 template <int kRows>
@@ -412,18 +468,25 @@ void launch_scale_gemv_multi_bf16(const Fp8GemvProblem* problems, int n_problems
     throw std::invalid_argument("scale_gemv_multi: k a multiple of 16 that fits the staging");
   Fp8GemvMulti base{};
   base.n = n_problems;
+  int groups = 0;
+  for (int i = 0; i < n_problems; ++i) groups += (problems[i].n + fp8_gemv::kWarps - 1) / fp8_gemv::kWarps;
+  base.span = gemv_span_rows(groups);
   int blocks = 0;
   for (int i = 0; i < n_problems; ++i) {
     Fp8GemvProblem p = problems[i];
-    if (!p.payload || !p.scales || !p.out || p.n <= 0 || !gemv::aligned16(p.payload))
-      throw std::invalid_argument("scale_gemv_multi: empty, null or unaligned problem");
+    const bool bf16 = p.bf16_weight != nullptr;
+    if (bf16 ? (p.payload != nullptr || !gemv::aligned16(p.bf16_weight))
+             : (!p.payload || !p.scales || !gemv::aligned16(p.payload)))
+      throw std::invalid_argument("scale_gemv_multi: a problem is an fp8 payload with scales or a bf16 matrix, 16-byte aligned");
+    if (!p.out || p.n <= 0)
+      throw std::invalid_argument("scale_gemv_multi: empty or null problem");
     if (p.out_stride == 0) p.out_stride = static_cast<size_t>(p.n);
     if (p.out_stride < static_cast<size_t>(p.n))
       throw std::invalid_argument("scale_gemv_multi: output row stride narrower than n");
-    if (p.rs < 5 || p.rs > 7 || p.cs < 4 || p.cs > 7)
+    if (!bf16 && (p.rs < 5 || p.rs > 7 || p.cs < 4 || p.cs > 7))
       throw std::invalid_argument("scale_gemv_multi: a problem's scale grid must be 32..128 rows, 16..128 cols");
     base.p[i] = p;
-    blocks += (p.n + fp8_gemv::kWarps - 1) / fp8_gemv::kWarps;
+    blocks += (p.n + base.span - 1) / base.span;
     base.block_end[i] = blocks;
   }
   for (int i = n_problems; i < kFp8GemvMaxProblems; ++i) base.block_end[i] = blocks;

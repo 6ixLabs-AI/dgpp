@@ -96,7 +96,8 @@ std::vector<double> dequant_fp4_weights(const GlmFp4MatrixHost& mat) {
 // order only).
 std::vector<double> dequant_packq_weights(const GlmPackedMatrixHost& mat) {
   const int per = 32 / mat.bits;
-  const int64_t wc = mat.cols / per, sc = mat.cols / 64;
+  const int g = packed_scale_group(mat.scale_fmt);
+  const int64_t wc = mat.cols / per, sc = mat.cols / g;
   const uint32_t mask = (1u << mat.bits) - 1u;
   const int offset = 1 << (mat.bits - 1);
   std::vector<double> w(static_cast<size_t>(mat.rows) * mat.cols);
@@ -104,7 +105,7 @@ std::vector<double> dequant_packq_weights(const GlmPackedMatrixHost& mat) {
     for (int64_t c = 0; c < mat.cols; ++c) {
       const uint32_t word = mat.packed[static_cast<size_t>(r) * wc + c / per];
       const int code = static_cast<int>((word >> (mat.bits * (c % per))) & mask) - offset;
-      const float s = bf16_bits_to_float(mat.scales[static_cast<size_t>(r) * sc + c / 64]);
+      const float s = packed_scale_to_float(mat.scales[static_cast<size_t>(r) * sc + c / g], mat.scale_fmt);
       w[static_cast<size_t>(r) * mat.cols + c] = static_cast<double>(code) * static_cast<double>(s);
     }
   return w;
@@ -188,10 +189,16 @@ GlmPackedMatrixHost glm_moe_host_view_packq(const GlmMoeHostWeights& w,
   const int64_t elems = I * H;
   const int64_t words_r = elems * w.packq_bits_routed / 32;
   const int64_t words_s = elems * w.packq_bits_shared / 32;
-  const int64_t scales_per = elems / 64;
+  // The routed matrices carry the weights' scale format; the shared triple
+  // is always bf16 per 64 (the slot kernels' shared width and format).
+  m.scale_fmt = shared ? kPackedScaleBf16G64 : w.packq_scale_fmt;
+  const int64_t scales_r = elems / packed_scale_group(w.packq_scale_fmt);
+  const int64_t scales_s = elems / kPackedGroup;
+  const int64_t scales_per = shared ? scales_s : scales_r;
   const size_t p_off = shared ? static_cast<size_t>(E) * 3 * words_r + static_cast<size_t>(index - E * 3) * words_s
                               : static_cast<size_t>(index) * words_r;
-  const size_t s_off = static_cast<size_t>(index) * scales_per;
+  const size_t s_off = shared ? static_cast<size_t>(E) * 3 * scales_r + static_cast<size_t>(index - E * 3) * scales_s
+                              : static_cast<size_t>(index) * scales_r;
   const int64_t words = shared ? words_s : words_r;
   if (p_off + words > w.packq_words.size() || s_off + scales_per > w.packq_scales.size())
     throw std::invalid_argument("glm_moe_host_view_packq: index out of range");

@@ -18,6 +18,9 @@
 
 #include <cuda_runtime.h>
 
+#include <fstream>
+#include "kernels/packq_head.hpp"
+#include "loaders/packq_quant.hpp"
 #include "common/cuda_check.hpp"
 #include "common/dtypes.hpp"
 #include "common/test.hpp"
@@ -67,6 +70,55 @@ Fixture write_nvfp4_fixture() {
                         qwenfx::tiny_nvfp4_quant_json());
   fx.table = dgpp::qwen_expected_text_tensors(fx.cfg);
   return fx;
+}
+
+Fixture write_gptq_fixture() {
+  Fixture fx;
+  fx.cfg = qwenfx::tiny_gptq_config();
+  fx.dir = (fs::current_path() / "qwen_loader_gptq_fixture").string();
+  qwenfx::write_fixture(fx.cfg, fx.dir, qwenfx::tiny_gptq_text_json(),
+                        qwenfx::tiny_gptq_quant_json());
+  fx.table = dgpp::qwen_expected_text_tensors(fx.cfg);
+  return fx;
+}
+
+// The packed-core words of the fixture's GPTQ triple `base` ([N, K] at
+// `bits`): qweight I32 [K*bits/32, N] transposed to [N, K*bits/32].
+std::vector<uint8_t> gptq_words_transposed(const Fixture& fx, const std::string& base, int64_t N,
+                                           int64_t K, int bits) {
+  const std::vector<uint8_t> src = fx.bytes(base + ".qweight");
+  const int64_t wr = K * bits / 32;
+  std::vector<uint32_t> want(static_cast<size_t>(N) * wr);
+  for (int64_t i = 0; i < wr; ++i)
+    for (int64_t n = 0; n < N; ++n)
+      std::memcpy(&want[static_cast<size_t>(n) * wr + i], src.data() + (static_cast<size_t>(i) * N + n) * 4, 4);
+  std::vector<uint8_t> out(want.size() * 4);
+  std::memcpy(out.data(), want.data(), out.size());
+  return out;
+}
+std::vector<uint8_t> gptq_scales_transposed(const Fixture& fx, const std::string& base, int64_t N,
+                                            int64_t K, int group) {
+  const std::vector<uint8_t> src = fx.bytes(base + ".scales");
+  const int64_t gr = K / group;
+  std::vector<uint8_t> out(static_cast<size_t>(N) * gr * 2);
+  for (int64_t g = 0; g < gr; ++g)
+    for (int64_t n = 0; n < N; ++n)
+      std::memcpy(out.data() + (static_cast<size_t>(n) * gr + g) * 2, src.data() + (static_cast<size_t>(g) * N + n) * 2, 2);
+  return out;
+}
+// GPTQ's own dequant of element (n, k): (code - 2^(bits-1)) x f16(scale).
+float gptq_dequant(const Fixture& fx, const std::string& base, int64_t N, int64_t K, int bits, int group,
+                   int64_t n, int64_t k) {
+  (void)K;  // the word index needs only N (the GPTQ row stride)
+  const std::vector<uint8_t> qw = fx.bytes(base + ".qweight");
+  const std::vector<uint8_t> sc = fx.bytes(base + ".scales");
+  const int per = 32 / bits;
+  uint32_t word;
+  std::memcpy(&word, qw.data() + (static_cast<size_t>(k / per) * N + n) * 4, 4);
+  const int code = static_cast<int>((word >> (bits * (k % per))) & ((1u << bits) - 1u)) - (1 << (bits - 1));
+  uint16_t h;
+  std::memcpy(&h, sc.data() + (static_cast<size_t>(k / group) * N + n) * 2, 2);
+  return static_cast<float>(code) * dgpp::fp16_bits_to_float(h);
 }
 
 std::vector<uint8_t> device_bytes(const void* dev, size_t n) {
@@ -434,6 +486,174 @@ DGPP_TEST(qwen_loader_mmap_ngram_table_reads_the_shards_rows) {
         }
     }
   }
+}
+
+DGPP_TEST(qwen_loader_repacks_the_autoround_hybrid_exactly) {
+  // The hybrid (docs/qwen38_autoround_int4_plan.md D2): every expert
+  // matrix's words are the fixture's GPTQ words transposed, its scales the
+  // fixture's f16 scales transposed, the dequant is GPTQ's own; the dense
+  // classes' shipped fp8 codes and F32 scales land as is; the head is the
+  // int8 triple transposed; the zeros never become resident.
+  const Fixture fx = write_gptq_fixture();
+  require(fx.cfg.experts_gptq_int4 && fx.cfg.lm_head_gptq_int8 && fx.cfg.dense_fp8_shipped,
+          "the fixture selects the hybrid");
+  const bool saved = QwenLayerStream::dense_weights_fp8();
+  QwenLayerStream::set_dense_weights_fp8(true);
+  const auto& cfg = fx.cfg;
+  const int64_t H = cfg.hidden_size, I = cfg.moe_intermediate_size, E = cfg.num_experts;
+  {
+    QwenLayerStream s(cfg, fx.dir, 0, 1, dgpp::QwenResidency::Streaming, dgpp::QwenHeadSharding::Full);
+    for (const int layer : {0, 1, 2, cfg.mtp_layer()}) {
+      const auto& r = s.load_layer(layer);
+      const std::string tag = "hybrid layer " + std::to_string(layer) + ": ";
+      require(r.moe.packq() && r.moe.experts_packed.size() == static_cast<size_t>(E) * 3 &&
+                  r.moe.experts.empty() && r.moe.experts_fp4.empty(),
+              tag + "every expert packed, no other form");
+      const std::string p = dgpp::qwen_layer_prefix(cfg, layer);
+      const std::string mp = p + "mlp.";
+      for (int e = 0; e < E; ++e)
+        for (int which = 0; which < 3; ++which) {
+          const char* names[3] = {"gate_proj", "up_proj", "down_proj"};
+          const std::string base = mp + "experts." + std::to_string(e) + "." + names[which];
+          const int64_t N = which == 2 ? H : I, K = which == 2 ? I : H;
+          const dgpp::GlmPackedMatrix& m = r.moe.experts_packed[static_cast<size_t>(e) * 3 + which];
+          require(m.rows == N && m.cols == K && m.bits == 4 && m.scale_fmt == dgpp::kPackedScaleF16G128,
+                  tag + "packed geometry " + base);
+          expect_device_equals(m.packed, gptq_words_transposed(fx, base, N, K, 4), tag + "words " + base);
+          expect_device_equals(m.scales, gptq_scales_transposed(fx, base, N, K, cfg.gptq_group), tag + "scales " + base);
+          if (e == 0 || e == E - 1) {
+            const std::vector<uint8_t> w = device_bytes(m.packed, m.packed_bytes());
+            const std::vector<uint8_t> sc = device_bytes(m.scales, m.scale_bytes());
+            for (const auto& [n, k] : {std::pair<int64_t, int64_t>{0, 0}, {N - 1, K - 1}, {N / 2, 129 % K}, {3, K - 5}}) {
+              const float got = dgpp::packq_decode(reinterpret_cast<const uint32_t*>(w.data()),
+                                                   reinterpret_cast<const uint16_t*>(sc.data()), K, 4, n, k,
+                                                   dgpp::kPackedScaleF16G128);
+              require(got == gptq_dequant(fx, base, N, K, 4, cfg.gptq_group, n, k), tag + "dequant == GPTQ's " + base);
+            }
+          }
+        }
+      // The dense classes as shipped: codes and F32 scales byte for byte.
+      if (r.kind == dgpp::QwenLayerKind::Gdn) {
+        const std::string gp = p + "linear_attn.";
+        require(r.gdn.in_proj_qkv == nullptr && r.gdn.in_proj_qkv_fp8.payload != nullptr, tag + "qkv fp8 as shipped");
+        expect_device_equals(r.gdn.in_proj_qkv_fp8.payload, fx.bytes(gp + "in_proj_qkv.weight"), tag + "qkv codes");
+        expect_device_equals(r.gdn.in_proj_qkv_fp8.scales, fx.bytes(gp + "in_proj_qkv.weight_scale_inv"), tag + "qkv scales");
+        expect_device_equals(r.gdn.in_proj_z_fp8.payload, fx.bytes(gp + "in_proj_z.weight"), tag + "z codes");
+        expect_device_equals(r.gdn.out_proj_fp8.payload, fx.bytes(gp + "out_proj.weight"), tag + "out codes");
+        expect_device_equals(r.gdn.out_proj_fp8.scales, fx.bytes(gp + "out_proj.weight_scale_inv"), tag + "out scales");
+      } else if (layer == cfg.mtp_layer()) {
+        // The hybrid's draft layer ships its projections and shared expert in BF16.
+        const std::string ap = p + "self_attn.";
+        require(r.qsa.q_proj != nullptr && r.qsa.q_proj_fp8.payload == nullptr, tag + "draft q BF16 as shipped");
+        expect_device_equals(r.qsa.q_proj, fx.bytes(ap + "q_proj.weight"), tag + "draft q bf16");
+        require(r.moe.shared[0] != nullptr && r.moe.shared_fp8[0].payload == nullptr, tag + "draft shared BF16 as shipped");
+        expect_device_equals(r.moe.shared[0], fx.bytes(mp + "shared_expert.gate_proj.weight"), tag + "draft shared gate bf16");
+      } else {
+        const std::string ap = p + "self_attn.";
+        require(r.qsa.q_proj == nullptr && r.qsa.q_proj_fp8.payload != nullptr, tag + "q fp8 as shipped");
+        expect_device_equals(r.qsa.q_proj_fp8.payload, fx.bytes(ap + "q_proj.weight"), tag + "q codes");
+        expect_device_equals(r.qsa.q_proj_fp8.scales, fx.bytes(ap + "q_proj.weight_scale_inv"), tag + "q scales");
+        expect_device_equals(r.qsa.o_proj_fp8.payload, fx.bytes(ap + "o_proj.weight"), tag + "o codes");
+        require(r.qsa.index_qk_proj != nullptr && r.qsa.index_qk_proj_fp8.payload == nullptr,
+                tag + "the indexer stays BF16 as shipped");
+        expect_device_equals(r.qsa.index_qk_proj, fx.bytes(ap + "indexer.index_qk_proj.weight"), tag + "indexer bf16");
+      }
+      require(r.attn_gr.down != nullptr && r.attn_gr.down_fp8.payload == nullptr && r.mlp_gr.up != nullptr,
+              tag + "the GR sites stay BF16 as shipped");
+      if (r.has_ple)
+        require(r.ple.key_proj != nullptr && r.ple.key_proj_fp8.payload == nullptr && r.ple.value_proj != nullptr,
+                tag + "the PLE projections stay BF16 as shipped");
+      if (layer != cfg.mtp_layer()) {
+        expect_device_equals(r.moe.shared_fp8[0].payload, fx.bytes(mp + "shared_expert.gate_proj.weight"), tag + "shared gate codes");
+        expect_device_equals(r.moe.shared_fp8[0].scales, fx.bytes(mp + "shared_expert.gate_proj.weight_scale_inv"), tag + "shared gate scales");
+        expect_device_equals(r.moe.shared_fp8[2].payload, fx.bytes(mp + "shared_expert.down_proj.weight"), tag + "shared down codes");
+      }
+      require(r.bytes == QwenLayerStream::layer_bytes(cfg, r.layer, 0, 1), tag + "layer bytes formula");
+    }
+    const auto& g = s.load_globals();
+    require(g.lm_head == nullptr && g.lm_head_fp8.payload == nullptr && g.lm_head_packed.packed != nullptr,
+            "the head is packed and nothing else");
+    require(g.lm_head_packed.rows == cfg.vocab_size && g.lm_head_packed.cols == H && g.lm_head_packed.bits == 8 &&
+                g.lm_head_packed.scale_fmt == dgpp::kPackedScaleF16G128,
+            "packed head geometry");
+    // The resident head words: the checkpoint's rows, or (the default since
+    // the bit-plane head, 2026-09-29) those rows permuted into per-row
+    // planes — the host permutation of the same bytes.
+    const std::vector<uint8_t> head_rows = gptq_words_transposed(fx, "lm_head", cfg.vocab_size, H, 8);
+    {
+      std::vector<uint8_t> want = head_rows;
+      if (g.lm_head_packed.layout == dgpp::kPackedLayoutPlanes8)
+        dgpp::packq_planes_permute_int8(want.data(), cfg.vocab_size, H);
+      expect_device_equals(g.lm_head_packed.packed, want, "head words");
+    }
+    expect_device_equals(g.lm_head_packed.scales, gptq_scales_transposed(fx, "lm_head", cfg.vocab_size, H, cfg.gptq_group), "head scales");
+    {
+      const std::vector<uint8_t>& w = head_rows;  // the row layout the decode reads (== the resident bytes, above)
+      const std::vector<uint8_t> sc = device_bytes(g.lm_head_packed.scales, g.lm_head_packed.scale_bytes());
+      for (const auto& [n, k] : {std::pair<int64_t, int64_t>{0, 0}, {cfg.vocab_size - 1, H - 1}, {17, 131}}) {
+        const float got = dgpp::packq_decode(reinterpret_cast<const uint32_t*>(w.data()),
+                                             reinterpret_cast<const uint16_t*>(sc.data()), H, 8, n, k,
+                                             dgpp::kPackedScaleF16G128);
+        require(got == gptq_dequant(fx, "lm_head", cfg.vocab_size, H, 8, cfg.gptq_group, n, k), "head dequant == GPTQ's");
+      }
+    }
+  }
+  // World 4: the down projection's K slice (64) is not a whole group — refused by name.
+  {
+    bool refused = false;
+    try {
+      QwenLayerStream s2(cfg, fx.dir, 0, 4, dgpp::QwenResidency::Streaming, dgpp::QwenHeadSharding::VocabSharded);
+      (void)s2.load_layer(0);
+    } catch (const std::runtime_error& e) {
+      refused = std::string(e.what()).find("whole groups") != std::string::npos;
+    }
+    require(refused, "world 4 refused on the group grid");
+  }
+  // Without engine.dense_weights = fp8 the shipped fp8 stack is refused by name.
+  QwenLayerStream::set_dense_weights_fp8(false);
+  {
+    bool refused = false;
+    try {
+      QwenLayerStream s3(cfg, fx.dir, 0, 1, dgpp::QwenResidency::Streaming, dgpp::QwenHeadSharding::Full);
+      (void)s3.load_layer(0);
+    } catch (const std::runtime_error& e) {
+      refused = std::string(e.what()).find("dense_weights") != std::string::npos;
+    }
+    require(refused, "the shipped fp8 stack needs dense_weights fp8");
+  }
+  QwenLayerStream::set_dense_weights_fp8(true);
+  // A zero word off the symmetric constant is refused before anything is served.
+  {
+    const std::string name = dgpp::qwen_layer_prefix(cfg, 0) + "mlp.experts.1.up_proj.qzeros";
+    uint64_t at = 0;
+    std::string shard;
+    for (const auto& entry : fs::directory_iterator(fx.dir))
+      if (entry.path().extension() == ".safetensors") {
+        auto f = dgpp::SafetensorsFile::open(entry.path().string());
+        f->for_each([&](const dgpp::TensorInfo& t) {
+          if (t.name == name) {
+            at = t.data_begin + 4;
+            shard = entry.path().string();
+          }
+        });
+      }
+    require(!shard.empty(), "the zeros tensor is in the fixture");
+    {
+      std::fstream f(shard, std::ios::in | std::ios::out | std::ios::binary);
+      const uint32_t bad = 0x77777767u;
+      f.seekp(static_cast<std::streamoff>(at));
+      f.write(reinterpret_cast<const char*>(&bad), 4);
+    }
+    bool refused = false;
+    try {
+      QwenLayerStream s4(cfg, fx.dir, 0, 1, dgpp::QwenResidency::Streaming, dgpp::QwenHeadSharding::Full);
+      (void)s4.load_layer(0);
+    } catch (const std::runtime_error& e) {
+      refused = std::string(e.what()).find("symmetric") != std::string::npos;
+    }
+    require(refused, "a non-symmetric zero word is refused");
+  }
+  QwenLayerStream::set_dense_weights_fp8(saved);
 }
 
 DGPP_TEST(qwen_loader_nvfp4_metadata_is_replicated_at_world_two) {

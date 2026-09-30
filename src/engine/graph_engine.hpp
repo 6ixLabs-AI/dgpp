@@ -339,6 +339,13 @@ class GraphEngineAdapter final : public sched::SchedulerEngine {
         DGPP_CUDA_OK(cudaMallocHost(reinterpret_cast<void**>(&h_specs_),
                                     sizeof(SampleSpec) * slots_));
         for (int i = 0; i < slots_; ++i) h_specs_[i] = SampleSpec{};
+        // The argmax-only head flags (kernels/packq_head.hpp): a slot whose
+        // verify (resp. draft) rows need only the argmax, written with the
+        // specs; a family without a plane head ignores the setter.
+        DGPP_CUDA_OK(cudaMalloc(reinterpret_cast<void**>(&d_head_greedy_), static_cast<size_t>(slots_) * 2));
+        DGPP_CUDA_OK(cudaMemset(d_head_greedy_, 0, static_cast<size_t>(slots_) * 2));
+        if constexpr (requires { model_->set_head_greedy_flags(d_head_greedy_, d_head_greedy_ + slots_); })
+          model_->set_head_greedy_flags(d_head_greedy_, d_head_greedy_ + slots_);
         DGPP_CUDA_OK(cudaMalloc(reinterpret_cast<void**>(&d_counts_),
                                 sizeof(int32_t) * slots_ * vocab_));
         DGPP_CUDA_OK(cudaMemset(d_counts_, 0, sizeof(int32_t) * slots_ * vocab_));
@@ -574,6 +581,7 @@ class GraphEngineAdapter final : public sched::SchedulerEngine {
     if (h_conf_seq_) cudaFreeHost(h_conf_seq_);
     if (d_conf_seq_) cudaFree(d_conf_seq_);
     if (d_draft_specs_) cudaFree(d_draft_specs_);
+    if (d_head_greedy_) cudaFree(d_head_greedy_);
     if (d_draft_conf_) cudaFree(d_draft_conf_);
   }
   GraphEngineAdapter(const GraphEngineAdapter&) = delete;
@@ -1039,12 +1047,20 @@ class GraphEngineAdapter final : public sched::SchedulerEngine {
           task->body_snap.next = snap;
           snap = &task->body_snap;
         }
+        if (plan.head_snap_slot >= 0) {
+          task->head_snap = arena_.request(plan.head_snap_slot, plan.head_snap_position);
+          task->head_snap.next = snap;
+          snap = &task->head_snap;
+        }
         if (plan.attach_slot >= 0) {
           if (arena_.position(plan.attach_slot) != plan.attach_position)
             throw std::logic_error("graph engine: attached prefix differs from the plan");
           arena_.attach(req, plan.attach_slot);
         }
         auto cursor = std::make_shared<typename Model::PrefillCursor>([&] {
+          // The lifetime reservation: the prompt, every token the request may
+          // generate and the verify's depth - 1 trailing rows, capped at the
+          // ceiling — past it the position kernels stage padding rows.
           const auto reserved = std::min<int64_t>(reserve_tokens + std::max(0, depth_ - 1), model_->max_context());
           if constexpr (requires { model_->session_prefill_begin(req, task->prompt, reserved,
               chunk_tokens, task->boundaries, snap, plan.attach_position, &task->images); }) {
@@ -1067,8 +1083,13 @@ class GraphEngineAdapter final : public sched::SchedulerEngine {
             arena_.commit(task->plan.body_snap_slot, task->body_snap);
             task->plan.body_snap_taken = true;
           }
+          if (task->head_snap.taken && !task->plan.head_snap_taken) {
+            arena_.commit(task->plan.head_snap_slot, task->head_snap);
+            task->plan.head_snap_taken = true;
+          }
           sched::SchedulerEngine::PrefillProgress progress;
           progress.body_snap_taken = task->plan.body_snap_taken;
+          progress.head_snap_taken = task->plan.head_snap_taken;
           progress.computed_tokens = cursor->next - start;
           progress.snap_taken = task->plan.snap_taken;
           if (done) progress.first_token = open_slot_finish(req, task->prompt, cursor->output);
@@ -1097,6 +1118,8 @@ class GraphEngineAdapter final : public sched::SchedulerEngine {
       if (task->snap.taken && !task->plan.snap_taken) arena_.commit(task->plan.snap_slot, task->snap);
       if (task->body_snap.taken && !task->plan.body_snap_taken)
         arena_.commit(task->plan.body_snap_slot, task->body_snap);
+      if (task->head_snap.taken && !task->plan.head_snap_taken)
+        arena_.commit(task->plan.head_snap_slot, task->head_snap);
       task.reset();
       close_failed_slot(req);
       reseed_live_feeds();
@@ -1171,7 +1194,7 @@ class GraphEngineAdapter final : public sched::SchedulerEngine {
     if (plan == nullptr || plan->boundaries == nullptr)
       throw std::invalid_argument("graph engine: prefill_cached without a plan");
     return open_slot(req, prompt, [&] {
-      typename Model::SnapshotRequest snap, body_snap;
+      typename Model::SnapshotRequest snap, body_snap, head_snap;
       typename Model::SnapshotRequest* snap_ptr = nullptr;
       if (plan->snap_slot >= 0) {
         snap = arena_.request(plan->snap_slot, plan->snap_position);
@@ -1182,6 +1205,11 @@ class GraphEngineAdapter final : public sched::SchedulerEngine {
         body_snap.next = snap_ptr;
         snap_ptr = &body_snap;
       }
+      if (plan->head_snap_slot >= 0) {
+        head_snap = arena_.request(plan->head_snap_slot, plan->head_snap_position);
+        head_snap.next = snap_ptr;
+        snap_ptr = &head_snap;
+      }
       const auto commit = [&] {
         if (plan->snap_slot >= 0) {
           arena_.commit(plan->snap_slot, snap);
@@ -1190,6 +1218,10 @@ class GraphEngineAdapter final : public sched::SchedulerEngine {
         if (plan->body_snap_slot >= 0) {
           arena_.commit(plan->body_snap_slot, body_snap);
           plan->body_snap_taken = body_snap.taken;
+        }
+        if (plan->head_snap_slot >= 0) {
+          arena_.commit(plan->head_snap_slot, head_snap);
+          plan->head_snap_taken = head_snap.taken;
         }
       };
       typename Model::Outputs out;
@@ -1505,7 +1537,7 @@ class GraphEngineAdapter final : public sched::SchedulerEngine {
     std::vector<int64_t> prompt, boundaries;
     std::vector<ImageInput> images;
     sched::SchedulerEngine::PrefixPrefill plan;
-    typename Model::SnapshotRequest snap, body_snap;
+    typename Model::SnapshotRequest snap, body_snap, head_snap;
     std::function<sched::SchedulerEngine::PrefillProgress(int64_t)> advance;
   };
   std::vector<std::unique_ptr<PendingPrefill>> prefills_;
@@ -2938,6 +2970,15 @@ class GraphEngineAdapter final : public sched::SchedulerEngine {
     DGPP_CUDA_OK(cudaMemcpyAsync(d_specs_ + req, h_specs_ + req,
                                  sizeof(SampleSpec), cudaMemcpyHostToDevice,
                                  model_->stream()));
+    if (d_head_greedy_ != nullptr) {
+      // Plain greedy: no temperature, logprobs, penalties, bias or grammar
+      // (full_path_slot's complement); the draft additionally when the
+      // scheduled verify depth does not read the draft's probabilities.
+      const uint8_t g = full_path_slot(req) ? 0 : 1;
+      const uint8_t gd = (g != 0 && !draft_full_path_) ? 1 : 0;
+      DGPP_CUDA_OK(cudaMemcpyAsync(d_head_greedy_ + req, &g, 1, cudaMemcpyHostToDevice, model_->stream()));
+      DGPP_CUDA_OK(cudaMemcpyAsync(d_head_greedy_ + slots_ + req, &gd, 1, cudaMemcpyHostToDevice, model_->stream()));
+    }
     if (d_draft_specs_ != nullptr) {
       // The draft picks' spec: the slot's, reporting logprobs when the
       // scheduled verify depth reads the draft head's probabilities (the
@@ -3161,6 +3202,7 @@ class GraphEngineAdapter final : public sched::SchedulerEngine {
   // — the picks read a spec table whose rows report logprobs.
   bool draft_full_path_ = false;
   SampleSpec* d_draft_specs_ = nullptr;  // device [slots]: the draft picks' specs
+  uint8_t* d_head_greedy_ = nullptr;     // device [2][slots]: the verify's and the draft's argmax-only flags
   float* d_draft_conf_ = nullptr;        // device [slots][conf_rows_]: the gathered logits
   std::vector<bool> live_;
   std::vector<bool> reserved_;

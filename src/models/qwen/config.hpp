@@ -121,6 +121,21 @@ struct QwenTextConfig {
   // form is identical to the standard FP8 path). Set from
   // engine.mtp_expert_format = "bf16_fused" before model construction.
   bool mtp_experts_bf16_fused = false;
+  // The AutoRound hybrid (2026-09-28, docs/qwen38_autoround_int4_plan.md
+  // D7): `quant_method: gptq`, bits 4, group 128, symmetric, no act-order.
+  // Every layer's routed experts (the draft layer's too) come as GPTQ
+  // triples — qweight I32 [K/8, N], scales F16 [K/128, N], qzeros I32
+  // [K/128, N/8] holding the symmetric constant — the lm_head as the int8
+  // triple the `dynamic` map lifts it to, and the dense classes (GDN
+  // qkv/z/out, QSA q/k/v/o, the shared expert) as block FP8 e4m3 with F32
+  // `weight_scale_inv`: the hybrid's side layers, a fact of the supported
+  // checkpoint (the binding refuses any other form by name). The loader
+  // transposes the codes into the packed core's row layout and keeps the
+  // scales untouched; the zeros are verified and dropped.
+  bool experts_gptq_int4 = false;
+  bool lm_head_gptq_int8 = false;
+  bool dense_fp8_shipped = false;
+  int gptq_group = 128;
 
   // --- vision (docs/vision.md) --------------------------------------------
   // The multimodal release's tower, parsed from the root config's

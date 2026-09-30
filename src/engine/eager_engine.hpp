@@ -164,7 +164,7 @@ class EagerEngineAdapter : public sched::SchedulerEngine {
     if (plan == nullptr || plan->boundaries == nullptr)
       throw std::invalid_argument("generation engine: prefill_cached without a plan");
     return open_slot(req, prompt, [&] {
-      typename Model::SnapshotRequest snap, body_snap;
+      typename Model::SnapshotRequest snap, body_snap, head_snap;
       typename Model::SnapshotRequest* snap_ptr = nullptr;
       if (plan->snap_slot >= 0) {
         snap = arena_.request(plan->snap_slot, plan->snap_position);
@@ -175,6 +175,11 @@ class EagerEngineAdapter : public sched::SchedulerEngine {
         body_snap.next = snap_ptr;
         snap_ptr = &body_snap;
       }
+      if (plan->head_snap_slot >= 0) {
+        head_snap = arena_.request(plan->head_snap_slot, plan->head_snap_position);
+        head_snap.next = snap_ptr;
+        snap_ptr = &head_snap;
+      }
       const auto commit = [&] {
         if (plan->snap_slot >= 0) {
           arena_.commit(plan->snap_slot, snap);
@@ -183,6 +188,10 @@ class EagerEngineAdapter : public sched::SchedulerEngine {
         if (plan->body_snap_slot >= 0) {
           arena_.commit(plan->body_snap_slot, body_snap);
           plan->body_snap_taken = body_snap.taken;
+        }
+        if (plan->head_snap_slot >= 0) {
+          arena_.commit(plan->head_snap_slot, head_snap);
+          plan->head_snap_taken = head_snap.taken;
         }
       };
       typename Model::Outputs out;

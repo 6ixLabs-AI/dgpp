@@ -436,13 +436,13 @@ DGPP_TEST(spec_positions_rows64_fills_upper_half_and_rejects_overflow) {
   auto* out = device_alloc<int64_t>(64);
   DGPP_CUDA_OK(cudaMemcpy(pos, &start, sizeof(start), cudaMemcpyHostToDevice));
   DGPP_CUDA_OK(cudaMemset(out, 0xff, 64 * sizeof(int64_t)));
-  dgpp::glm_spec_positions(pos, 64, out, nullptr);
+  dgpp::glm_spec_positions(pos, 64, INT64_MAX, out, nullptr);
   std::vector<int64_t> got(64);
   DGPP_CUDA_OK(cudaMemcpy(got.data(), out, 64 * sizeof(int64_t), cudaMemcpyDeviceToHost));
   for (int r = 0; r < 64; ++r) require(got[r] == start + r, "64-row position coverage");
   bool rejected = false;
   try {
-    dgpp::glm_spec_positions(pos, 65, out, nullptr);
+    dgpp::glm_spec_positions(pos, 65, INT64_MAX, out, nullptr);
   } catch (const std::invalid_argument&) {
     rejected = true;
   }
@@ -458,11 +458,57 @@ DGPP_TEST(spec_positions_rows64_fills_upper_half_and_rejects_overflow) {
   DGPP_CUDA_OK(cudaMemcpy(dp, positions.data(), 16 * sizeof(int64_t), cudaMemcpyHostToDevice));
   DGPP_CUDA_OK(cudaMemcpy(di, ids.data(), 64 * sizeof(int32_t), cudaMemcpyHostToDevice));
   DGPP_CUDA_OK(cudaMemset(out, 0, 64 * sizeof(int64_t)));
-  dgpp::glm_spec_positions_batched(dp, di, 64, 4, out, nullptr);
+  dgpp::glm_spec_positions_batched(dp, di, 64, 4, INT64_MAX, out, nullptr);
   DGPP_CUDA_OK(cudaMemcpy(got.data(), out, 64 * sizeof(int64_t), cudaMemcpyDeviceToHost));
   for (int r = 0; r < 64; ++r)
     require(got[r] == (positions[r / 4] ? positions[r / 4] + r % 4 : -1),
             "batched position coverage, including padding above row 32");
+  cudaFree(dp);
+  cudaFree(di);
+  cudaFree(out);
+  cudaFree(pos);
+}
+
+DGPP_TEST(spec_positions_stage_padding_at_and_past_the_context_ceiling) {
+  // One request's rows past the ceiling, then a batch where one slot's
+  // group straddles it: both kernels emit the -1 padding sentinel from the
+  // ceiling on, so the fixed-width verify's tail past a request's capped
+  // lifetime reservation touches no block, stripe or state row.
+  const int64_t start = 1234;
+  auto* pos = device_alloc<int64_t>(1);
+  auto* out = device_alloc<int64_t>(64);
+  DGPP_CUDA_OK(cudaMemcpy(pos, &start, sizeof(start), cudaMemcpyHostToDevice));
+  DGPP_CUDA_OK(cudaMemset(out, 0, 64 * sizeof(int64_t)));
+  dgpp::glm_spec_positions(pos, 8, /*max_context=*/start + 4, out, nullptr);
+  std::vector<int64_t> got(64);
+  DGPP_CUDA_OK(cudaMemcpy(got.data(), out, 8 * sizeof(int64_t), cudaMemcpyDeviceToHost));
+  for (int r = 0; r < 8; ++r)
+    require(got[r] == (r < 4 ? start + r : -1), "rows from the ceiling on are padding");
+  bool rejected = false;
+  try {
+    dgpp::glm_spec_positions(pos, 8, 0, out, nullptr);
+  } catch (const std::invalid_argument&) {
+    rejected = true;
+  }
+  require(rejected, "a ceiling below one row is a shape error");
+  const int64_t positions[3] = {100, 0, 300};
+  const int32_t ids[12] = {0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2};
+  auto* dp = device_alloc<int64_t>(3);
+  auto* di = device_alloc<int32_t>(12);
+  DGPP_CUDA_OK(cudaMemcpy(dp, positions, sizeof(positions), cudaMemcpyHostToDevice));
+  DGPP_CUDA_OK(cudaMemcpy(di, ids, sizeof(ids), cudaMemcpyHostToDevice));
+  dgpp::glm_spec_positions_batched(dp, di, 12, 4, /*max_context=*/302, out, nullptr);
+  DGPP_CUDA_OK(cudaMemcpy(got.data(), out, 12 * sizeof(int64_t), cudaMemcpyDeviceToHost));
+  const int64_t want[12] = {100, 101, 102, 103, -1, -1, -1, -1, 300, 301, -1, -1};
+  require(std::equal(std::begin(want), std::end(want), got.begin()),
+          "the batch pads a closed slot and every row from the ceiling on");
+  rejected = false;
+  try {
+    dgpp::glm_spec_positions_batched(dp, di, 12, 4, 0, out, nullptr);
+  } catch (const std::invalid_argument&) {
+    rejected = true;
+  }
+  require(rejected, "the batch rejects a ceiling below one row");
   cudaFree(dp);
   cudaFree(di);
   cudaFree(out);
@@ -509,7 +555,7 @@ DGPP_TEST(spec_commit_copies_snapshot_row_when_rejected_and_advances_position) {
     const int64_t pos0 = 1000;
     DGPP_CUDA_OK(cudaMemcpy(d_pos, &pos0, 8, cudaMemcpyHostToDevice));
     dgpp::glm_spec_commit(d_verdict, rows, segs, d_pos, nullptr);
-    dgpp::glm_spec_positions(d_pos, rows, d_step_pos, nullptr);
+    dgpp::glm_spec_positions(d_pos, rows, INT64_MAX, d_step_pos, nullptr);
     DGPP_CUDA_OK(cudaDeviceSynchronize());
     std::vector<uint8_t> got_a(kBytesA), got_b(kBytesB);
     int64_t pos = 0;
@@ -590,7 +636,7 @@ DGPP_TEST(spec_batch_positions_draft_rows_and_token_feeds_are_slot_local) {
                           cudaMemcpyHostToDevice));
   DGPP_CUDA_OK(cudaMemcpy(d_verify, verify, sizeof(verify),
                           cudaMemcpyHostToDevice));
-  dgpp::glm_spec_positions_batched(d_session, d_req, rows, per, d_pos,
+  dgpp::glm_spec_positions_batched(d_session, d_req, rows, per, INT64_MAX, d_pos,
                                    nullptr);
   DGPP_CUDA_OK(cudaDeviceSynchronize());
   int64_t pos[rows];

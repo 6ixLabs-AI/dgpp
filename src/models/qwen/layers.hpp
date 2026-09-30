@@ -16,6 +16,9 @@
 #include <cstdint>
 #include <memory>
 #include <vector>
+#include <thread>
+#include <string>
+#include <atomic>
 
 #include <cuda_runtime.h>
 
@@ -39,6 +42,12 @@ struct QwenGemmWorkspace {
   // against 2.0 s for a 2K prompt, measured).
   uint16_t* dequant = nullptr;
   size_t dequant_bytes = 0;
+  // The opt-in fp8 prefill GEMM's activation scratch (engine.prefill_fp8_gemm,
+  // 2026-09-30, kernels/fp8_gemm): e4m3 rows and their 1 x 128 scales for
+  // max_tokens rows of the widest dense k. Null: the dequant bridge above.
+  uint8_t* a8 = nullptr;
+  float* a8_scales = nullptr;
+  size_t a8_bytes = 0;  // a8's capacity (rows x k)
   // The dense sites' lowering (kernels/gemm.hpp dense_gemv_rows): the GEMV
   // chunks and the fused multi-problem launches to gemv_rows; fp8 rows from
   // mma_from_rows take the streaming tensor-core GEMM (0: never).
@@ -65,10 +74,27 @@ class QwenGrSite {
   QwenGrSite(const QwenGrSite&) = delete;
   QwenGrSite& operator=(const QwenGrSite&) = delete;
   void rebind(const QwenGrResident& w) { w_ = w; }
+  // A combine left for the next site's mix to apply while its group norm
+  // reads R (kernels/qwen_gr combine_norm, 2026-09-29): the branch output
+  // y [T, H] and the site's gates [T, hc]. Null y: nothing pending.
+  struct PendingCombine {
+    const uint16_t* y = nullptr;
+    const float* gates = nullptr;
+    int hc = 0;
+  };
   // x[T, H] from R[T, hc*H]; Rn stays in this object for combine().
-  void mix(const uint16_t* r, uint16_t* x, int tokens, cudaStream_t stream);
+  // `pending`: the previous site's combine applied first — inside the norm
+  // launch on the batched decode rows, as its own launch otherwise.
+  void mix(uint16_t* r, uint16_t* x, int tokens, cudaStream_t stream,
+           const PendingCombine* pending = nullptr);
   // R += s(Rn) (x) y, y [T, H]; requires the site's inject weights.
   void combine(uint16_t* r, const uint16_t* y, int tokens, cudaStream_t stream);
+  // combine() deferred: when this site's gates were computed by its mix
+  // (the fused inject path) the apply is handed back for the next mix;
+  // otherwise the combine runs here and nothing is pending.
+  PendingCombine defer_combine(uint16_t* r, const uint16_t* y, int tokens, cudaStream_t stream);
+  // Applies a pending combine as its own launch (a reader of R that is not a mix).
+  static void apply_pending(uint16_t* r, const PendingCombine& p, int tokens, int hidden, cudaStream_t stream);
   const uint16_t* rn() const { return rn_; }
   // The bytes the constructor allocates for a shape (the memory plan).
   static size_t scratch_bytes(int hc, int hidden, int lowrank, int max_tokens);
@@ -104,6 +130,8 @@ class QwenGrSite {
   uint16_t* logits_ = nullptr;  // [M, hc*H]
   float* gates_ = nullptr;      // [M, hc] the combine's inject gates
   bool fused_mix_ = false;      // the decode rows' norm/act-staged GEMVs
+  bool norm_fold_ = false;      // DGPP_QWEN_GR_NORM_FOLD=on: the batched rows' group norm staged into the down GEMV (measured +0.8 ms a pass, off)
+  bool mix_fused_ = true;       // act_up with the mix in its epilogue (DGPP_QWEN_GR_MIX_FUSED=off: two launches)
 };
 
 // ---- Gated DeltaNet -----------------------------------------------------------------
@@ -120,9 +148,11 @@ class QwenGdnLayer {
   // (the engine's verify) hand post-row snapshots of both states through
   // the KDA sinks (rec_snap.states / conv_snap.states, row strides in
   // elements): row r's state lands in snapshot row r.
+  // `replay`: the recurrent state's checkpoint-and-replay form
+  // (kernels/kda.hpp KdaReplay) in place of rec_snap.
   void enqueue(const uint16_t* x, float* recurrent_state, uint16_t* conv_state, uint16_t* out,
                int tokens, cudaStream_t stream, const KdaStateSnapshots& rec_snap = {},
-               const KdaConvSnapshots& conv_snap = {});
+               const KdaConvSnapshots& conv_snap = {}, const KdaReplay& replay = {});
   // The request-indexed row form (the fixed decode batch): rec_states /
   // conv_states are slot 0's states, request strides in elements; the
   // row map selects each span's slot, padding rows (pos < 0) write zero
@@ -131,7 +161,12 @@ class QwenGdnLayer {
                     uint16_t* conv_states, int64_t conv_stride, uint16_t* out, int rows,
                     const KdaRequestRows& requests, cudaStream_t stream,
                     const KdaStateSnapshots& rec_snap = {},
-                    const KdaConvSnapshots& conv_snap = {});
+                    const KdaConvSnapshots& conv_snap = {}, const KdaReplay& replay = {});
+  // The replay form's materialize: the recurrent state as it stands after
+  // `replay`'s rows (in place, or into replay.dst), no rows of its own.
+  void materialize(float* recurrent_state, const KdaReplay& replay, cudaStream_t stream);
+  // One saved row of the replay form: the post-conv q|k|v row, a_raw, beta_raw.
+  int64_t replay_row_elems() const { return conv_channels_ + 2 * static_cast<int64_t>(lv_); }
   int64_t conv_channels() const { return conv_channels_; }
   int64_t recurrent_elems() const { return static_cast<int64_t>(lv_) * v_dim_ * k_dim_; }
   int64_t conv_state_elems() const { return conv_channels_ * (conv_width_ - 1); }
@@ -265,8 +300,23 @@ class QwenPleLayer {
   // node) — every path stages from the device's own tokens and context,
   // so nothing mirrors them on the host.
   bool staged() const { return table_.mmap != nullptr; }
+  // `host_ids` / `pos0` (a scalar prefill chunk's host ids and first
+  // position) let stage() recognize the chunk a prestage() already
+  // gathered and skip its own hash and gather.
   void stage(const int64_t* tokens, int rows, const int32_t* req_ids, const int64_t* pos,
-             const int32_t* req_spans, int num_requests, const int32_t* ctx, cudaStream_t stream);
+             const int32_t* req_spans, int num_requests, const int32_t* ctx, cudaStream_t stream,
+             const int64_t* host_ids = nullptr, int64_t pos0 = -1, int req = -1);
+  // The chunk-ahead staging (2026-09-30; the thread form only): the NEXT
+  // chunk's rows hashed from its host ids (uploaded here), their n-gram
+  // context the current chunk's last two tokens, and published on a second
+  // channel the gather thread serves while this chunk's layers run — the
+  // 32K prefill profile had 56 ms of stage_wait a 4,096-token chunk, the
+  // gather of 65K table rows from NVMe outrunning the two layers before
+  // the PLE layer. The next stage() with matching (host_ids, rows, pos0)
+  // takes the prestaged rows; anything else drops them. Decode steps
+  // between the chunks keep the main channel (their captured graphs).
+  void prestage(const int64_t* host_ids, int rows, int64_t pos0, int req, int32_t ctx_t1, int32_t ctx_t2,
+                cudaStream_t stream);
   // A staging that failed on the host (an id outside the table) surfaces
   // here — the next stage() throws it too.
   void check_staged() const;
@@ -313,11 +363,57 @@ class QwenPleLayer {
   static void stage_callback(void* user);
   int32_t* h_ids_ = nullptr;      // mmap: the pinned ids (ids_ their device alias)
   uint8_t* staged_ = nullptr;     // mmap: pinned [M, hash_heads, head_dim]
-  cudaStream_t side_ = nullptr;   // mmap: the host node's branch
+  cudaStream_t side_ = nullptr;   // mmap: the host node's branch (DGPP_QWEN_PLE_HOST_NODE=1)
   cudaEvent_t fork_ = nullptr, join_ = nullptr;
   std::vector<std::unique_ptr<StageArgs>> stage_args_;  // one per capture, two eager
   size_t eager_slot_ = 0;
   int staged_rows_ = 0;           // the rows the pending stage covers
+  // The gather thread (2026-09-29, the default over the host node): the
+  // hash kernel's publish (qwen_ple_publish_stage) raises a pinned
+  // sequence the thread polls; it gathers the rows into staged_ and
+  // answers on another pinned word that a device spin-wait
+  // (glm_stage_wait) checks before the gather kernel. The host node it
+  // replaces started ~1.5 ms after its dependency and left the GPU idle
+  // at the layer's turn; the thread starts within microseconds.
+  bool host_node_ = false;
+  uint64_t* d_hash_seq_ = nullptr;   // device: the publish count
+  uint64_t* h_hash_seq_ = nullptr;   // pinned: what the publish raised
+  int32_t* h_hash_rows_ = nullptr;   // pinned: the walk's rows, published with it
+  uint64_t* d_wait_seq_ = nullptr;   // device: the wait count
+  uint64_t* h_done_seq_ = nullptr;   // pinned: the thread's answer
+  uint32_t* h_late_ = nullptr;       // pinned: a wait that timed out
+  // The prestage channel (see prestage()): its pinned ids and staging, its
+  // publish / done words, the device inputs its hash kernel reads.
+  int32_t* h_pre_ids_ = nullptr;
+  int32_t* pre_ids_ = nullptr;
+  uint8_t* pre_staged_ = nullptr;
+  uint64_t* d_pre_seq_ = nullptr;
+  uint64_t* h_pre_seq_ = nullptr;
+  int32_t* h_pre_rows_ = nullptr;
+  uint64_t* d_pre_wait_seq_ = nullptr;
+  uint64_t* h_pre_done_seq_ = nullptr;
+  uint64_t* h_pre_need_ = nullptr;     // pinned: the wait word's resync value
+  int64_t* d_pre_tokens_ = nullptr;
+  int64_t* d_pre_pos_ = nullptr;
+  int32_t* d_pre_req_ = nullptr;
+  int32_t* d_pre_spans_ = nullptr;
+  int32_t* d_pre_ctx_ = nullptr;
+  int64_t* h_pre_tokens_ = nullptr;
+  int64_t* h_pre_pos_ = nullptr;
+  int32_t* h_pre_ctx_ = nullptr;
+  const int64_t* pre_host_ids_ = nullptr;  // the prestaged chunk's identity
+  int pre_rows_ = 0;
+  int64_t pre_pos0_ = -1;
+  int pre_req_ = -1;
+  uint64_t pre_publishes_ = 0;
+  bool pre_pending_ = false;   // a prestage published, not yet claimed
+  bool use_pre_ = false;       // the pending stage reads the prestage channel
+  bool pre_check_ = false;     // the self-check: both channels gathered, compared at embed()
+  std::thread gather_thread_;
+  std::atomic<bool> gather_stop_{false};
+  std::atomic<int> gather_error_{0};
+  std::string gather_what_;
+  void gather_loop();
   int64_t* d_mult_ = nullptr;     // [ngram_size]
   int64_t* d_vocab_ = nullptr;    // [heads]
   int64_t* d_offset_ = nullptr;   // [heads]

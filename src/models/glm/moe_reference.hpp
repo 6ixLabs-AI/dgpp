@@ -47,6 +47,7 @@ struct GlmMoeHostWeights {
   bool shared_packq = false;
   int packq_bits_routed = 4;
   int packq_bits_shared = 8;
+  int packq_scale_fmt = 0;  // every packed matrix's scale format (kPackedScale*)
   std::vector<uint32_t> packq_words;
   std::vector<uint16_t> packq_scales;
   int packq_matrices(int n_experts) const { return (n_experts + (shared_packq ? 1 : 0)) * 3; }
@@ -72,10 +73,11 @@ struct GlmFp4MatrixHost {
 
 struct GlmPackedMatrixHost {
   const uint32_t* packed = nullptr;  // [rows, cols*bits/32]
-  const uint16_t* scales = nullptr;  // bf16 [rows, cols/64]
+  const uint16_t* scales = nullptr;  // bf16 [rows, cols/64] or f16 [rows, cols/128] (scale_fmt)
   int64_t rows = 0;
   int64_t cols = 0;
   int bits = 0;
+  int scale_fmt = 0;                 // kPackedScale* (quant_matrix.hpp)
 };
 
 struct GlmMoeRouterRef {

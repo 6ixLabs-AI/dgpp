@@ -1,0 +1,14 @@
+Qwen bench_qwen35 protocol against 127.0.0.1:18080 model=qwen nothink=0  Tue Sep 29 04:00:30 AM UTC 2026
+── Run 1/2 ──
+  [Q&A] 62 tokens in 1.40s = 44.2 tok/s (prompt: 65)
+  [Code] 512 tokens in 10.48s = 48.9 tok/s (prompt: 72)
+  [JSON] 828 tokens in 13.22s = 62.6 tok/s (prompt: 90)
+  [Math] 64 tokens in 1.25s = 51.4 tok/s (prompt: 71)
+  [LongCode] 2048 tokens in 44.32s = 46.2 tok/s (prompt: 79)
+── Run 2/2 ──
+  [Q&A] 62 tokens in 1.40s = 44.4 tok/s (prompt: 65)
+  [Code] 512 tokens in 10.35s = 49.5 tok/s (prompt: 72)
+  [JSON] 828 tokens in 13.03s = 63.6 tok/s (prompt: 90)
+  [Math] 64 tokens in 1.25s = 51.3 tok/s (prompt: 71)
+  [LongCode] 2048 tokens in 43.87s = 46.7 tok/s (prompt: 79)
+=== Done ===

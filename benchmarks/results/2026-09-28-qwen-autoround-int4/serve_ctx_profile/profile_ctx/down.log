@@ -1,0 +1,5 @@
+2026-09-29 16:13:10.669 === SIGINT rank 0 (718509) — the stop record releases the peers
+2026-09-29 16:13:15.672 === op-stream identity (every rank)
+2026-09-29 16:13:15.672 67ae66e4fc9173a427b9f2d3caa32315  /home/stephen/workspace/dgpp-autoround/benchmarks/results/2026-09-28-qwen-autoround-int4/serve_ctx_profile/profile_ctx/world/serve_rank0.ops
+2026-09-29 16:13:15.672 op streams: identical across 1 ranks
+2026-09-29 16:13:15.672 === logs in /home/stephen/workspace/dgpp-autoround/benchmarks/results/2026-09-28-qwen-autoround-int4/serve_ctx_profile/profile_ctx/world

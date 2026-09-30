@@ -1,6 +1,9 @@
 #include "models/qwen/forward.hpp"
 #include "models/qwen/image_stage_plan.hpp"
 
+#include "kernels/packq_gemm.hpp"
+#include "kernels/packq_gemv.hpp"
+#include "kernels/packq_head.hpp"
 #include "kernels/scale_gemm.hpp"
 
 #include <algorithm>
@@ -14,6 +17,7 @@
 #include "common/cuda_check.hpp"
 #include "common/log.hpp"
 #include "kernels/glm_norm.hpp"
+#include "kernels/glm_spec.hpp"
 #include "kernels/qwen_mtp.hpp"
 #include "kernels/qwen_norm.hpp"
 #include "kernels/qwen_ple.hpp"
@@ -101,6 +105,13 @@ QwenModel::QwenModel(const QwenTextConfig& cfg, const std::string& checkpoint_di
     dense_bridge_bytes_ = dense_bridge_bytes(cfg_, loader_.geometry());
     gw_.dequant = dev_alloc<uint16_t>(dense_bridge_bytes_ / 2);
     gw_.dequant_bytes = dense_bridge_bytes_;
+    if (QwenLayerStream::prefill_fp8_gemm()) {
+      // The opt-in fp8 GEMM's activations (engine.prefill_fp8_gemm).
+      const size_t kmax = dense_max_cols(cfg_, loader_.geometry());
+      gw_.a8_bytes = static_cast<size_t>(max_tokens_) * kmax;
+      gw_.a8 = dev_alloc<uint8_t>(gw_.a8_bytes);
+      gw_.a8_scales = dev_alloc<float>(static_cast<size_t>(max_tokens_) * (kmax / 128));
+    }
   }
   // The dense sites' lowering (kernels/gemm.hpp dense_gemv_rows): the GEMV
   // chunks (and the fused multi-problem launches) to the bound, cuBLASLt's
@@ -130,8 +141,24 @@ QwenModel::QwenModel(const QwenTextConfig& cfg, const std::string& checkpoint_di
     gdn_conv_elems_ = C * (cfg_.gdn_conv_width - 1);
     gdn_rec_ = dev_alloc<float>(R * num_gdn_ * static_cast<size_t>(gdn_rec_elems_));
     gdn_conv_ = dev_alloc<uint16_t>(R * num_gdn_ * static_cast<size_t>(gdn_conv_elems_));
-    spec_rec_ = dev_alloc<float>(rows * num_gdn_ * static_cast<size_t>(gdn_rec_elems_));
     spec_conv_ = dev_alloc<uint16_t>(rows * num_gdn_ * static_cast<size_t>(gdn_conv_elems_));
+    // MTP stacks keep no recurrent snapshot rows: the checkpoint-and-replay
+    // form saves each pass's rows as their inputs (kernels/kda.hpp
+    // KdaReplay) — two copies (the replay source and this pass's save,
+    // the commit copies one over the other) of every slot's rows.
+    gdn_replay_ = mtp_ && !env_is_off_replay();
+    if (gdn_replay_) {
+      // A saved row padded to 16 bytes: the commit's copy (used rows x
+      // layers x row) stays 16-byte-sized at every geometry.
+      gdn_replay_row_elems_ = ((C + 2 * lv) + 7) / 8 * 8;
+      gdn_replay_rows_cap_ = max_decode_rows_;
+      const size_t per_req = gdn_replay_block_elems();
+      gdn_replay_in_ = dev_alloc<uint16_t>(R * per_req);
+      gdn_replay_save_ = dev_alloc<uint16_t>(R * per_req);
+      gdn_pending_ = dev_alloc<int32_t>(R);
+    } else {
+      spec_rec_ = dev_alloc<float>(rows * num_gdn_ * static_cast<size_t>(gdn_rec_elems_));
+    }
   }
   if (has_ple_) {
     ple_conv_elems_ = static_cast<int64_t>(W) * (cfg_.ple_conv_kernel_size - 1) * cfg_.ngram_size;
@@ -202,6 +229,23 @@ QwenModel::QwenModel(const QwenTextConfig& cfg, const std::string& checkpoint_di
   // captured graph), so its weights are this rank's own copy and its digest
   // belongs to the boot identity like any other global.
   if (cfg_.vision) vision_ = std::make_unique<QwenVisionEncoder>(*cfg_.vision, checkpoint_dir, stream_);
+  if (globals_.lm_head_packed.layout == kPackedLayoutPlanes8 || globals_.draft_head_packed.packed != nullptr) {
+    head_ab_ = dev_alloc<float>(static_cast<size_t>(kPackqHeadChunkRows) * static_cast<size_t>(lm_vocab_count_));
+    head_lo_ = dev_alloc<int32_t>(kPackqHeadChunkRows);
+    head_cand_ = dev_alloc<int32_t>(static_cast<size_t>(lm_vocab_count_));
+    head_cand_count_ = dev_alloc<int32_t>(1);
+  }
+  if (const char* e = std::getenv("DGPP_QWEN_HEAD_DUMP"); e != nullptr && e[0] != '\0') {
+    head_dump_path_ = e;
+    const size_t slot = static_cast<size_t>(max_decode_rows_) * static_cast<size_t>(cfg_.hidden_size);
+    head_dump_ring_ = dev_alloc<uint16_t>(static_cast<size_t>(kHeadDumpSlots) * slot);
+    head_dump_meta_ = dev_alloc<uint8_t>(static_cast<size_t>(kHeadDumpSlots) * 2);
+    DGPP_CUDA_OK(cudaMemset(head_dump_meta_, 0, static_cast<size_t>(kHeadDumpSlots) * 2));
+    head_dump_host_.resize(static_cast<size_t>(kHeadDumpSlots) * slot);
+    head_dump_meta_host_.resize(static_cast<size_t>(kHeadDumpSlots) * 2);
+    DGPP_LOG_INFO("rank {} head dump: {} ({} slots x {} rows x {})", loader_.rank(), head_dump_path_, kHeadDumpSlots,
+                  max_decode_rows_, cfg_.hidden_size);
+  }
 }
 
 QwenModel::MemoryPlan QwenModel::plan_memory(const QwenTextConfig& cfg, int max_tokens,
@@ -255,6 +299,9 @@ QwenModel::MemoryPlan QwenModel::plan_memory(const QwenTextConfig& cfg, int max_
   if (QwenLayerStream::dense_weights_fp8())
     plan.add("dense fp8 prefill bridge (the largest dense matrix in BF16)",
              dense_bridge_bytes(cfg, QwenLocalGeometry::from_config(cfg, tp_rank, tp_world, head)));
+  if (QwenLayerStream::dense_weights_fp8() && QwenLayerStream::prefill_fp8_gemm())
+    plan.add("dense fp8 prefill activations (e4m3 rows + 1x128 scales; engine.prefill_fp8_gemm)",
+             fp8_act_scratch_bytes(cfg, QwenLocalGeometry::from_config(cfg, tp_rank, tp_world, head), max_tokens));
   if (has_ple && QwenLayerStream::ngram_table_mmap()) {
     // The table stays on the NVMe behind the page cache (nothing
     // reserved); the walk's ids and staged rows are pinned.
@@ -272,7 +319,15 @@ QwenModel::MemoryPlan QwenModel::plan_memory(const QwenTextConfig& cfg, int max_
   const size_t ring_elems = static_cast<size_t>(cfg.indexer_compress_ratio) * cfg.indexer_head_dim;
   const size_t family_bytes = static_cast<size_t>(num_gdn) * (rec_elems * 4 + conv_elems * 2) + ple_elems * 2 + 16;
   plan.add("request slot state (GDN recurrent/conv, PLE conv, context)", R * family_bytes);
-  plan.add("spec snapshot rows", rows * family_bytes + static_cast<size_t>(num_qsa) * rows * ring_elems * 2);
+  // MTP stacks replay the recurrent state (no recurrent snapshot rows;
+  // kernels/kda.hpp KdaReplay): two copies of every slot's saved rows.
+  const bool replay = mtp && num_gdn > 0;
+  const size_t spec_family = replay ? family_bytes - static_cast<size_t>(num_gdn) * rec_elems * 4 : family_bytes;
+  plan.add("spec snapshot rows", rows * spec_family + static_cast<size_t>(num_qsa) * rows * ring_elems * 2);
+  if (replay)
+    plan.add("GDN replay rows (checkpoint-and-replay: the post-conv q|k|v, a, beta of every decode row, two copies)",
+             2 * R * static_cast<size_t>(num_gdn) * rows *
+                 ((conv_ch + 2 * static_cast<size_t>(geo.local_value_heads) + 7) / 8 * 8) * 2);
   if (pool_layers > 0) {
     QwenKvPoolShape shape;
     shape.layers = pool_layers;
@@ -291,7 +346,10 @@ QwenModel::MemoryPlan QwenModel::plan_memory(const QwenTextConfig& cfg, int max_
            token_rows * 8 + M * 12 + 8 + M * W * 2 + 3 * M * H * 2 + M * V * 4 + rows * 64,
            rows * V * 4 + rows * H * 2 + token_rows * 8 + rows * 32 + R * 40);
   // The layer objects (built once, rebound per layer).
-  const int64_t max_pools = cache_tokens / cfg.indexer_compress_ratio;
+  // Scoring is per request. A shared pool larger than the positional limit
+  // does not make more compressed keys visible to any one row.
+  const int64_t max_pools =
+      (plan.context_tokens + cfg.indexer_compress_ratio - 1) / cfg.indexer_compress_ratio;
   size_t layers = 0;
   layers += 3 * QwenGrSite::scratch_bytes(cfg.hc_count, cfg.hidden_size, cfg.hc_lowrank, max_tokens);
   if (num_gdn > 0) layers += QwenGdnLayer::scratch_bytes(cfg, geo.local_key_heads, geo.local_value_heads, max_tokens);
@@ -308,6 +366,14 @@ QwenModel::MemoryPlan QwenModel::plan_memory(const QwenTextConfig& cfg, int max_
   if (cfg.experts_nvfp4)
     plan.add("moe W4A4 activation workspace",
              GlmMoeLayer::w4a4_scratch_bytes(moe_cfg, max_tokens, true));
+  if (cfg.lm_head_gptq_int8)
+    plan.add("head argmax bounds and candidate list (four rows x vocab fp32, vocab int32)",
+             4 * static_cast<size_t>(geo.lm_vocab_count) * 4 + static_cast<size_t>(geo.lm_vocab_count) * 4 + 64);
+  if (cfg.lm_head_gptq_int8 && QwenLayerStream::draft_vocab_count() > 0) {
+    const size_t n = static_cast<size_t>(QwenLayerStream::draft_vocab_count());
+    plan.add("draft vocabulary slice (int8 head rows, scales, ids)",
+             n * static_cast<size_t>(cfg.hidden_size) + n * static_cast<size_t>(cfg.hidden_size / cfg.gptq_group) * 2 + n * 4);
+  }
   if (mtp) {
     plan.add("draft block (hyper-state window, ring snapshot, fusion scratch, mixer)",
              R * rows * W * 2 + R * ring_elems * 2 + 4 * M * W * 2 + 3 * M * H * 2 + R * 24 +
@@ -329,9 +395,18 @@ QwenModel::~QwenModel() {
   cudaFree(d_ctx_);
   cudaFreeHost(h_ctx_);
   cudaFree(spec_rec_);
+  cudaFree(gdn_replay_in_);
+  cudaFree(gdn_replay_save_);
+  cudaFree(gdn_pending_);
   cudaFree(spec_conv_);
   cudaFree(spec_ple_);
   cudaFree(spec_ctx_);
+  cudaFree(head_dump_ring_);
+  cudaFree(head_ab_);
+  cudaFree(head_lo_);
+  cudaFree(head_cand_);
+  cudaFree(head_cand_count_);
+  cudaFree(head_dump_meta_);
   cudaFree(spec_ring_);
   cudaFree(r_);
   cudaFree(x_);
@@ -340,6 +415,8 @@ QwenModel::~QwenModel() {
   cudaFreeHost(h_route_weights_);
   cudaFree(gemm_ws_);
   if (gw_.dequant) cudaFree(gw_.dequant);
+  if (gw_.a8) cudaFree(gw_.a8);
+  if (gw_.a8_scales) cudaFree(gw_.a8_scales);
   cudaFree(mtp_ring_snapshot_);
   cudaFree(mtp_chain_ring_);
   cudaFree(mtp_hin_);
@@ -362,6 +439,7 @@ QwenMoeWeights QwenModel::moe_view(const QwenMoeResident& m) {
   w.shared_inter = m.local_shared_inter;
   w.experts = m.experts.empty() ? nullptr : m.experts.data();
   w.experts_fp4 = m.experts_fp4.empty() ? nullptr : m.experts_fp4.data();
+  w.experts_packed = m.experts_packed.empty() ? nullptr : m.experts_packed.data();
   w.act_scale_w13 = m.act_scale_w13;
   w.act_scale_w2 = m.act_scale_w2;
   w.act_scales_dev = m.act_scales;
@@ -388,17 +466,97 @@ size_t QwenModel::dense_bridge_bytes(const QwenTextConfig& cfg, const QwenLocalG
   return elems * 2;
 }
 
+size_t QwenModel::dense_max_cols(const QwenTextConfig& cfg, const QwenLocalGeometry& geo) {
+  // The k of every dense site above (gemm_dense's callers): the widest wins.
+  const size_t H = static_cast<size_t>(cfg.hidden_size), W = static_cast<size_t>(cfg.hyper_width());
+  size_t k = std::max(H, W);                                                              // qkv/z/q/k/v/indexer, GR down
+  k = std::max(k, static_cast<size_t>(geo.local_heads) * cfg.head_dim);                    // o_proj
+  k = std::max(k, static_cast<size_t>(geo.local_value_heads) * cfg.gdn_value_head_dim);   // out_proj
+  k = std::max(k, static_cast<size_t>(cfg.hc_lowrank));                                   // GR up
+  k = std::max(k, static_cast<size_t>(cfg.ple_embed_dim / std::max(geo.world, 1)));       // PLE key / value
+  return (k + 127) / 128 * 128;
+}
+
+size_t QwenModel::fp8_act_scratch_bytes(const QwenTextConfig& cfg, const QwenLocalGeometry& geo, int max_tokens) {
+  const size_t kmax = dense_max_cols(cfg, geo);
+  return static_cast<size_t>(max_tokens) * (kmax + (kmax / 128) * sizeof(float));
+}
+
+// The packed int8 head under the default ("gemv") mode: the packed GEMV's
+// four-row chunks up to this many rows (every decode shape), the tile above
+// (prefill) — the scale GEMM's own 128-row rule.
+constexpr int kPackedHeadTileFromRows = 128;
+
 // The lm_head product into logits_ (f32): the checkpoint's BF16 through the
-// GEMM interface, or the block-FP8 form (engine.dense_weights) through the scale
-// GEMM.
+// GEMM interface, the block-FP8 form (engine.dense_weights) through the scale
+// GEMM, or the hybrid's packed int8 form through the packed core.
 void QwenModel::lm_head_logits(const uint16_t* hidden, int rows, cudaStream_t stream, bool last_row_only) {
   const int H = cfg_.hidden_size;
+  if (head_dump_ring_ != nullptr && rows >= 1 && rows <= max_decode_rows_) head_dump_record(hidden, rows, stream);
   // Opt in to weight-tile reuse only within the configured decode envelope;
   // this bounds the optimization to verification shapes covered by its gates.
   // Short prefill chunks/tails in that envelope also use MMA, so their logits
   // depend on decode capacity as well as the head setting. Bitwise eager/graph
   // gates must construct both models with the same capacity and head setting.
   // Streaming MMA preserves weight values but reassociates FP32 sums.
+  if (globals_.lm_head_packed.packed) {
+    // The AutoRound hybrid's int8 g128 head (docs/qwen38_autoround_int4_plan.md
+    // D5): the packed GEMV up to four rows (one chunk, the matrix read
+    // once), the packed tile GEMM above (the matrix read once per 32-row
+    // tile). last_row_only computes row rows-1 alone at its own offset — the
+    // packed core's row chain is the same whatever the row count, so this
+    // is the full product's row bit for bit.
+    // Every row's chain is independent of the row count in both kernels
+    // (packq_gemv_test, packq_gemm_test), so the last row alone through the
+    // kernel the full product would take is that product's last row bit
+    // for bit — the kernel FAMILY follows the full row count, never the one
+    // row computed.
+    // The kernel family by row count follows the fp8 head's two modes so the
+    // batched replays and the scalar verify agree where the gates demand
+    // it: "gemv" (the default) runs the packed GEMV's four-row chunks up to
+    // kPackedHeadTileFromRows and the tile above (prefill); "mma"
+    // (engine.fp8_head, the decode-throughput mode) takes the tile from
+    // dense_gemv_rows() + 1 rows inside the decode envelope, reading the
+    // head once per 32-row tile instead of once per four rows.
+    const size_t V = static_cast<size_t>(lm_vocab_count_);
+    const bool envelope = fp8_head_mma_ && rows <= max_decode_rows_;
+    const bool tile = envelope ? rows > dense_gemv_rows() : rows > kPackedHeadTileFromRows;
+    const uint16_t* act = last_row_only ? hidden + static_cast<size_t>(rows - 1) * H : hidden;
+    float* out = last_row_only ? logits_ + static_cast<size_t>(rows - 1) * V : logits_;
+    const int m = last_row_only ? 1 : rows;
+    if (tile) {
+      launch_packq_gemm_f32(act, static_cast<size_t>(H), globals_.lm_head_packed, out, m,
+                            lm_vocab_count_, H, stream);
+    } else if (globals_.lm_head_packed.layout == kPackedLayoutPlanes8 ||
+               (head_dump_site_ == 1 && globals_.draft_head_packed.packed != nullptr)) {
+      // The plane layout (kernels/packq_head.hpp): a decode call whose
+      // rows all belong to greedy slots reads the argmax form; a prefill's
+      // last row, an eager oracle (no flags) and sampled slots read the
+      // full form, bitwise the row layout's chain. The draft's call takes
+      // the vocabulary slice when one is configured (engine.draft_vocab):
+      // its rows scattered to their ids, every other id -inf.
+      PackqHeadMode mode;
+      if (!last_row_only && rows <= max_decode_rows_) {
+        mode.greedy = head_dump_site_ == 1 ? head_greedy_draft_ : head_greedy_verify_;
+        mode.request_map = graph_batch_map_source_ ? d_batch_map_ : nullptr;
+        mode.rows_per_request = graph_rows_per_request_ > 0 ? graph_rows_per_request_ : rows;
+        mode.req0 = head_req_;
+      }
+      PackqHeadScratch scratch{head_ab_, head_lo_, head_cand_, head_cand_count_};
+      const bool slice = head_dump_site_ == 1 && globals_.draft_head_packed.packed != nullptr;
+      if (slice)
+        launch_packq_head_f32(act, static_cast<size_t>(H), globals_.draft_head_packed, out, m,
+                              globals_.draft_vocab_count, H, mode, scratch, stream, globals_.draft_vocab_ids,
+                              lm_vocab_count_);
+      else
+        launch_packq_head_f32(act, static_cast<size_t>(H), globals_.lm_head_packed, out, m, lm_vocab_count_, H, mode,
+                              scratch, stream);
+    } else {
+      launch_packq_gemv_f32(act, static_cast<size_t>(H), globals_.lm_head_packed, out, m,
+                            lm_vocab_count_, H, stream);
+    }
+    return;
+  }
   if (globals_.lm_head_fp8.payload)
     launch_scale_gemm_f32(hidden, static_cast<size_t>(H), globals_.lm_head_fp8.payload,
                           globals_.lm_head_fp8.scales, logits_, rows, lm_vocab_count_, H, stream,
@@ -410,12 +568,99 @@ void QwenModel::lm_head_logits(const uint16_t* hidden, int rows, cudaStream_t st
                  static_cast<size_t>(H), gemm_ws_, gemm_ws_bytes_, stream);
 }
 
+// The head dump (DGPP_QWEN_HEAD_DUMP): a memcpy node per head call into a
+// slot of the ring plus a two-byte memset of the slot's (rows, site); both
+// record into a capture and replay with the graph. The flush copies the
+// ring, appends every slot with rows > 0 and clears the metas.
+void QwenModel::head_dump_record(const uint16_t* hidden, int rows, cudaStream_t stream) {
+  const size_t H = static_cast<size_t>(cfg_.hidden_size);
+  const size_t slot_elems = static_cast<size_t>(max_decode_rows_) * H;
+  const int slot = head_dump_next_++ % kHeadDumpSlots;
+  // Kernel nodes only: the captured decode graph refuses copy-engine nodes.
+  glm_device_copy(head_dump_ring_ + static_cast<size_t>(slot) * slot_elems, hidden,
+                  static_cast<size_t>(rows) * H * 2, stream);
+  glm_device_store_u8x2(head_dump_meta_ + static_cast<size_t>(slot) * 2, static_cast<uint8_t>(rows),
+                        static_cast<uint8_t>(head_dump_site_), stream);
+}
+
+void QwenModel::head_dump_flush() {
+  if (head_dump_ring_ == nullptr) return;
+  const size_t H = static_cast<size_t>(cfg_.hidden_size);
+  const size_t slot_elems = static_cast<size_t>(max_decode_rows_) * H;
+  DGPP_CUDA_OK(cudaStreamSynchronize(stream_));
+  DGPP_CUDA_OK(cudaMemcpy(head_dump_meta_host_.data(), head_dump_meta_, head_dump_meta_host_.size(), cudaMemcpyDeviceToHost));
+  bool any = false;
+  for (int s = 0; s < kHeadDumpSlots; ++s) any = any || head_dump_meta_host_[static_cast<size_t>(s) * 2] != 0;
+  if (!any) return;
+  DGPP_CUDA_OK(cudaMemcpy(head_dump_host_.data(), head_dump_ring_, head_dump_host_.size() * 2, cudaMemcpyDeviceToHost));
+  DGPP_CUDA_OK(cudaMemset(head_dump_meta_, 0, head_dump_meta_host_.size()));
+  FILE* f = std::fopen(head_dump_path_.c_str(), "ab");
+  if (f == nullptr) throw std::runtime_error("head dump: cannot open " + head_dump_path_);
+  for (int s = 0; s < kHeadDumpSlots; ++s) {
+    const int rows = head_dump_meta_host_[static_cast<size_t>(s) * 2];
+    const int site = head_dump_meta_host_[static_cast<size_t>(s) * 2 + 1];
+    if (rows == 0) continue;
+    // Record: int32 rows, int32 H, int32 site, then rows x H bf16.
+    const int32_t hdr[3] = {rows, static_cast<int32_t>(H), site};
+    std::fwrite(hdr, sizeof(hdr), 1, f);
+    std::fwrite(head_dump_host_.data() + static_cast<size_t>(s) * slot_elems, 2, static_cast<size_t>(rows) * H, f);
+    head_dump_rows_written_ += static_cast<size_t>(rows);
+  }
+  std::fclose(f);
+}
+
 float* QwenModel::gdn_rec(int req, int ordinal) const {
   return gdn_rec_ + (static_cast<size_t>(req) * num_gdn_ + ordinal) * static_cast<size_t>(gdn_rec_elems_);
 }
 
 uint16_t* QwenModel::gdn_conv(int req, int ordinal) const {
   return gdn_conv_ + (static_cast<size_t>(req) * num_gdn_ + ordinal) * static_cast<size_t>(gdn_conv_elems_);
+}
+
+size_t QwenModel::gdn_replay_block_elems() const {
+  return static_cast<size_t>(num_gdn_) * static_cast<size_t>(gdn_replay_rows_cap_) *
+         static_cast<size_t>(gdn_replay_row_elems_);
+}
+
+// The saved rows' layout: [R][rows_cap][num_gdn][row] — row-major by decode
+// row, so the rows a pass used (its first `rows` per request) are one
+// contiguous span the commit copies (the whole block would be rows_cap
+// rows: 12 MB a request at the 16-row cap against 3 MB used at depth 3).
+KdaReplay QwenModel::gdn_replay_view(int req, int ordinal, bool batched) const {
+  KdaReplay rep;
+  const size_t per_req = gdn_replay_block_elems();
+  const size_t layer_off = static_cast<size_t>(ordinal) * static_cast<size_t>(gdn_replay_row_elems_);
+  // A batched walk indexes the request inside the kernel (request_ids); a
+  // single-request walk hands it the request's block.
+  const size_t req_off = batched ? 0 : static_cast<size_t>(req) * per_req;
+  rep.in = gdn_replay_in_ + req_off + layer_off;
+  rep.save = gdn_replay_save_ + req_off + layer_off;
+  rep.count = gdn_pending_ + (batched ? 0 : req);
+  rep.in_stride = static_cast<int64_t>(num_gdn_) * gdn_replay_row_elems_;
+  rep.request_stride = static_cast<int64_t>(per_req);
+  rep.rows_cap = gdn_replay_rows_cap_;
+  rep.checkpoint = true;
+  return rep;
+}
+
+void QwenModel::materialize_gdn(int req, float* dst, int rows) {
+  if (!gdn_replay_ || num_gdn_ <= 0) return;
+  if (rows > gdn_replay_rows_cap_) throw std::invalid_argument("materialize_gdn: rows past the saved rows");
+  int ordinal = 0;
+  for (int layer = 0; layer < cfg_.num_hidden_layers; ++layer) {
+    const QwenLayerResident& r = loader_.load_layer(layer);
+    if (r.kind != QwenLayerKind::Gdn) continue;
+    build_layer_objects(r);
+    KdaReplay rep = gdn_replay_view(req, ordinal, /*batched=*/false);
+    rep.checkpoint = false;
+    rep.save = nullptr;
+    rep.materialize = true;
+    rep.materialize_rows = rows;
+    rep.dst = dst ? dst + static_cast<size_t>(ordinal) * gdn_rec_elems_ : nullptr;
+    gdn_->materialize(gdn_rec(req, ordinal), rep, stream_);
+    ++ordinal;
+  }
+  if (dst == nullptr) DGPP_CUDA_OK(cudaMemsetAsync(gdn_pending_ + req, 0, sizeof(int32_t), stream_));
 }
 
 uint16_t* QwenModel::ple_conv(int req) const {
@@ -454,7 +699,9 @@ void QwenModel::build_layer_objects(const QwenLayerResident& r) {
     }
   } else {
     if (!qsa_) {
-      qsa_ = std::make_unique<QwenQsaLayer>(r.qsa, gw_, cfg_, max_tokens_, pool_.pool_slots());
+      const int64_t max_pools =
+          (max_context_ + cfg_.indexer_compress_ratio - 1) / cfg_.indexer_compress_ratio;
+      qsa_ = std::make_unique<QwenQsaLayer>(r.qsa, gw_, cfg_, max_tokens_, max_pools);
     } else {
       qsa_->rebind(r.qsa);
     }
@@ -488,6 +735,7 @@ void QwenModel::reset_slot_state(int req) {
   if (num_gdn_ > 0) {
     DGPP_CUDA_OK(cudaMemsetAsync(gdn_rec(req, 0), 0, static_cast<size_t>(num_gdn_) * gdn_rec_elems_ * 4, stream_));
     DGPP_CUDA_OK(cudaMemsetAsync(gdn_conv(req, 0), 0, static_cast<size_t>(num_gdn_) * gdn_conv_elems_ * 2, stream_));
+    if (gdn_replay_) DGPP_CUDA_OK(cudaMemsetAsync(gdn_pending_ + req, 0, sizeof(int32_t), stream_));
   }
   if (has_ple_)
     DGPP_CUDA_OK(cudaMemsetAsync(ple_conv(req), 0, static_cast<size_t>(ple_conv_elems_) * 2, stream_));
@@ -518,8 +766,31 @@ bool prefetch_debug() {
 }
 }  // namespace
 
+// DGPP_QWEN_GDN_REPLAY=off: the snapshot-row form of the speculative
+// recurrent state (the A/B reference for the replay form).
+bool QwenModel::env_is_off_replay() {
+  const char* v = std::getenv("DGPP_QWEN_GDN_REPLAY");
+  return v && *v && (std::string(v) == "off" || std::string(v) == "0");
+}
+
+// DGPP_QWEN_PREFETCH_MAX_MB (2026-09-29, the world-1 prefetch study): a
+// tensor above the cap is not prefetched at all — the byte prefetch's
+// value at world 1 is the L2 hits of the small, latency-bound matrices,
+// while the streaming ones read at line rate anyway and their prefetch is
+// traffic the consumers compete with. 0 (default): no cap.
+static size_t prefetch_max_bytes() {
+  static const size_t cap = [] {
+    const char* v = std::getenv("DGPP_QWEN_PREFETCH_MAX_MB");
+    if (v == nullptr || v[0] == '\0') return static_cast<size_t>(0);
+    const long mb = std::strtol(v, nullptr, 10);
+    return mb > 0 ? static_cast<size_t>(mb) << 20 : static_cast<size_t>(0);
+  }();
+  return cap;
+}
+
 void QwenModel::prefetch_add(const char* what, const void* p, size_t bytes) {
   if (prefetch_debug()) std::fprintf(stderr, "prefetch add %-18s %p %zu\n", what, p, bytes);
+  if (prefetch_max_bytes() != 0 && bytes > prefetch_max_bytes()) return;
   prefetch_.add(p, bytes);
 }
 
@@ -528,6 +799,7 @@ void QwenModel::prefetch_bf16(const char* what, const uint16_t* w, size_t bytes)
   size_t view_bytes = 0;
   gemm_.resident_view(w, bytes, walk_rows_, &view, &view_bytes);
   if (prefetch_debug()) std::fprintf(stderr, "prefetch add %-18s %p %zu\n", what, view, view_bytes);
+  if (prefetch_max_bytes() != 0 && view_bytes > prefetch_max_bytes()) return;
   prefetch_.add_view(w, view, view_bytes);  // a companion is its own allocation
 }
 
@@ -609,8 +881,14 @@ void QwenModel::prefetch_head(const QwenGrResident& mixer) {
   prefetch_.open_window(stream_, prefetch_window_bytes_, prefetch_.boundary_rate());
   prefetch_gr(mixer, /*inject=*/false);
   // Far larger than the window: add() clamps, the GEMV's leading rows hit.
-  if (globals_.lm_head) prefetch_bf16("globals_.lm_head", globals_.lm_head, static_cast<size_t>(lm_vocab_count_) * H * 2);
-  else prefetch_fp8("globals_.lm_head_fp8", globals_.lm_head_fp8);
+  if (&mixer == &globals_.mtp_mixer && globals_.draft_head_packed.packed) {
+    prefetch_add("globals_.draft_head_packed", globals_.draft_head_packed.packed, globals_.draft_head_packed.packed_bytes());
+    prefetch_add("globals_.draft_head_packed.scales", globals_.draft_head_packed.scales, globals_.draft_head_packed.scale_bytes());
+  } else if (globals_.lm_head) prefetch_bf16("globals_.lm_head", globals_.lm_head, static_cast<size_t>(lm_vocab_count_) * H * 2);
+  else if (globals_.lm_head_packed.packed) {
+    prefetch_add("globals_.lm_head_packed", globals_.lm_head_packed.packed, globals_.lm_head_packed.packed_bytes());
+    prefetch_add("globals_.lm_head_packed.scales", globals_.lm_head_packed.scales, globals_.lm_head_packed.scale_bytes());
+  } else prefetch_fp8("globals_.lm_head_fp8", globals_.lm_head_fp8);
 }
 
 // The PLE layer's two folds (its K-sliced key and value partials).
@@ -648,11 +926,23 @@ QwenModel::Outputs QwenModel::run_rows(const RowRun& run) {
   const int64_t* d_pos = in.pos;
   const int32_t* d_req = in.req_ids;
   const int32_t* d_spans = in.spans;
+  // A prefill walk reads the recurrent state as it stands: under the
+  // replay form the live buffer is the checkpoint, so the pending rows
+  // are materialized first (a no-op kernel when none are pending).
+  if (gdn_replay_ && !run.decode) {
+    if (run.num_spans > 0) {
+      for (int sp = 0; sp < run.num_spans; ++sp) materialize_gdn(run.span_reqs[sp]);
+    } else {
+      materialize_gdn(req);
+    }
+  }
   // The mmap'ed n-gram table: the walk's hash ids and the
   // host's gather forked off here, joined at the PLE layer's turn.
   if (has_ple_ && table_.mmap) {
     if (!ple_) build_layer_objects(loader_.load_layer(cfg_.ple_layer()));
-    ple_->stage(tokens, T, d_req, d_pos, d_spans, num_requests, d_ctx_, stream_);
+    const bool scalar_prefill = !run.decode && run.num_spans == 0 && run.batch_requests == 0;
+    ple_->stage(tokens, T, d_req, d_pos, d_spans, num_requests, d_ctx_, stream_,
+                scalar_prefill ? run.ids : nullptr, scalar_prefill ? run.pos0 : -1, scalar_prefill ? run.req : -1);
   }
   glm_embed_bcast_streams(globals_.embed, tokens, r_, T, H, stream_);
   // Image rows replace the embedding at their prompt positions; the tower
@@ -694,11 +984,26 @@ QwenModel::Outputs QwenModel::run_rows(const RowRun& run) {
   Outputs out;
   const bool traces = !run.decode && route_traces_;
   int gdn_ordinal = 0, qsa_ordinal = 0;
+  // A site's combine rides the next site's norm launch on the decode rows
+  // (QwenGrSite::defer_combine / mix); any other reader of R applies it first.
+  QwenGrSite::PendingCombine pend;
   for (int layer = 0; layer < cfg_.num_hidden_layers; ++layer) {
     const QwenLayerResident& r = loader_.load_layer(layer);
     build_layer_objects(r);
     if (r.has_ple) {
+      QwenGrSite::apply_pending(r_, pend, T, H, stream_);  // finish() reads and writes R
+      pend = {};
       ple_->embed(tokens, T, d_req, d_pos, d_spans, num_requests, d_ctx_, stream_);
+      // The next chunk of this prompt gathered while the rest of this one
+      // runs (its n-gram context: this chunk's last two tokens). Issued
+      // here, after the gather kernel consumed the staging, so the one
+      // prestage buffer is never rewritten under a chunk still reading it
+      // (the wait and the conversion precede the new publish in stream
+      // order).
+      if (table_.mmap && !run.decode && run.num_spans == 0 && run.batch_requests == 0 && run.next_T > 0 &&
+          run.next_ids != nullptr && T >= 2)
+        ple_->prestage(run.next_ids, run.next_T, run.next_pos0, run.req, static_cast<int32_t>(run.ids[T - 1]),
+                       static_cast<int32_t>(run.ids[T - 2]), stream_);
       // The context AFTER every row into the spec rows, the last real
       // row's in place (the hash above read the incoming context).
       qwen_ple_context_rows(tokens, T, d_req, d_pos, d_spans, num_requests, d_ctx_, spec_ctx_, stream_);
@@ -716,21 +1021,31 @@ QwenModel::Outputs QwenModel::run_rows(const RowRun& run) {
       ple_->finish(r_, value, ple_conv_state_, ple_conv_elems_, d_req, d_pos, d_spans, num_requests, T,
                    stream_, snapshots ? spec_ple_ : nullptr);
     }
-    attn_gr_->mix(r_, x_, T, stream_);
+    attn_gr_->mix(r_, x_, T, stream_, &pend);
+    pend = {};
     uint16_t* attn_out = stage(y_, H);
     if (r.kind == QwenLayerKind::Gdn) {
       KdaStateSnapshots rec_snap;
       KdaConvSnapshots conv_snap;
+      KdaReplay replay;
       if (snapshots) {
-        rec_snap.states = spec_rec_ + static_cast<size_t>(gdn_ordinal) * gdn_rec_elems_;
-        rec_snap.stride_elems = static_cast<int64_t>(num_gdn_) * gdn_rec_elems_;
+        if (!gdn_replay_) {
+          rec_snap.states = spec_rec_ + static_cast<size_t>(gdn_ordinal) * gdn_rec_elems_;
+          rec_snap.stride_elems = static_cast<int64_t>(num_gdn_) * gdn_rec_elems_;
+        }
         conv_snap.states = spec_conv_ + static_cast<size_t>(gdn_ordinal) * gdn_conv_elems_;
         conv_snap.stride_elems = static_cast<int64_t>(num_gdn_) * gdn_conv_elems_;
+      }
+      // Every decode walk of a replay stack takes the checkpoint form
+      // (a one-row walk included: the live buffer is the checkpoint).
+      if (run.decode && gdn_replay_) {
+        replay = gdn_replay_view(req, gdn_ordinal, batched);
+        gdn_replay_rows_used_ = batched ? T / std::max(num_requests, 1) : T;  // the commit copies these rows
       }
       if (batched) {
         gdn_->enqueue_rows(x_, gdn_rec(0, gdn_ordinal), static_cast<int64_t>(num_gdn_) * gdn_rec_elems_,
                            gdn_conv(0, gdn_ordinal), static_cast<int64_t>(num_gdn_) * gdn_conv_elems_,
-                           attn_out, T, rows, stream_, rec_snap, conv_snap);
+                           attn_out, T, rows, stream_, rec_snap, conv_snap, replay);
       } else if (run.num_spans > 0) {
         // A group prefill (2026-09-14): each span's rows scan its own
         // request's recurrent and conv state (the pointers step by rows).
@@ -743,7 +1058,7 @@ QwenModel::Outputs QwenModel::run_rows(const RowRun& run) {
         }
       } else {
         gdn_->enqueue(x_, gdn_rec(req, gdn_ordinal), gdn_conv(req, gdn_ordinal), attn_out, T, stream_,
-                      rec_snap, conv_snap);
+                      rec_snap, conv_snap, replay);
       }
       ++gdn_ordinal;
     } else {
@@ -779,8 +1094,9 @@ QwenModel::Outputs QwenModel::run_rows(const RowRun& run) {
     }
     if (run.decode) prefetch_ffn_side(r);
     fold(attn_out, H);  // block boundary 1: the attention output projection's partial
-    attn_gr_->combine(r_, attn_out, T, stream_);
-    mlp_gr_->mix(r_, x_, T, stream_);
+    pend = attn_gr_->defer_combine(r_, attn_out, T, stream_);
+    mlp_gr_->mix(r_, x_, T, stream_, &pend);
+    pend = {};
     uint16_t* ffn_out = stage(y_, H);
     if (run.decode) {
       moe_->enqueue_decode(x_, ffn_out, T, stream_, run.capture ? layer : -1);
@@ -808,8 +1124,10 @@ QwenModel::Outputs QwenModel::run_rows(const RowRun& run) {
     }
     if (run.decode) prefetch_attention_side(layer + 1);
     fold(ffn_out, H);  // block boundary 2: the experts' sliced down projections
-    mlp_gr_->combine(r_, ffn_out, T, stream_);
+    pend = mlp_gr_->defer_combine(r_, ffn_out, T, stream_);
     if (run.capture_layers) {
+      QwenGrSite::apply_pending(r_, pend, T, H, stream_);
+      pend = {};
       DGPP_CUDA_OK(cudaStreamSynchronize(stream_));
       std::vector<uint16_t> snap(static_cast<size_t>(T) * W);
       DGPP_CUDA_OK(cudaMemcpy(snap.data(), r_, snap.size() * 2, cudaMemcpyDeviceToHost));
@@ -824,14 +1142,17 @@ QwenModel::Outputs QwenModel::run_rows(const RowRun& run) {
   // chunks, BF16 heads (cuBLAS is m-dependent), decode, all-row runs and
   // group prefills keep the full head. DGPP_PREFILL_HEAD_ALL_ROWS=1 keeps
   // it everywhere.
-  mixer_->mix(r_, h_, T, stream_);
+  mixer_->mix(r_, h_, T, stream_, &pend);  // the last layer's combine rides the mixer's norm
+  pend = {};
   static const bool head_all_rows = [] {
     const char* e = std::getenv("DGPP_PREFILL_HEAD_ALL_ROWS");
     return e != nullptr && e[0] == '1';
   }();
   const bool mma_envelope = fp8_head_mma_ && T <= max_decode_rows_;
   const bool last_row_only = !run.decode && !run.all_rows && run.num_spans == 0 && T > 1 &&
-                             globals_.lm_head_fp8.payload != nullptr && !mma_envelope && !head_all_rows;
+                             (globals_.lm_head_fp8.payload != nullptr || globals_.lm_head_packed.packed != nullptr) &&
+                             !mma_envelope && !head_all_rows;
+  head_req_ = req;
   lm_head_logits(h_, T, stream_, last_row_only);
   // The draft block's input: the last rows' hyper states into the slots'
   // windows by position (the last window rows of a prefill chunk, every
@@ -907,7 +1228,18 @@ GlmSpecSegments QwenModel::spec_segments(int req, int snapshot_row0) const {
   if (num_gdn_ > 0) {
     const size_t rec_bytes = static_cast<size_t>(num_gdn_) * gdn_rec_elems_ * 4;
     const size_t conv_bytes = static_cast<size_t>(num_gdn_) * gdn_conv_elems_ * 2;
-    add(gdn_rec(req, 0), spec_rec_ + row0 * num_gdn_ * gdn_rec_elems_, rec_bytes, rec_bytes);
+    if (gdn_replay_) {
+      // The recurrent family replays: the commit copies this pass's saved
+      // rows over the replay source and records the accepted count.
+      const size_t per_req = gdn_replay_block_elems();
+      const size_t used_rows = static_cast<size_t>(std::clamp(gdn_replay_rows_used_, 1, gdn_replay_rows_cap_));
+      segs.replay_dst = gdn_replay_in_ + static_cast<size_t>(req) * per_req;
+      segs.replay_src = gdn_replay_save_ + static_cast<size_t>(req) * per_req;
+      segs.replay_bytes = used_rows * static_cast<size_t>(num_gdn_) * static_cast<size_t>(gdn_replay_row_elems_) * 2;
+      segs.replay_pending = gdn_pending_ + req;
+    } else {
+      add(gdn_rec(req, 0), spec_rec_ + row0 * num_gdn_ * gdn_rec_elems_, rec_bytes, rec_bytes);
+    }
     add(gdn_conv(req, 0), spec_conv_ + row0 * num_gdn_ * gdn_conv_elems_, conv_bytes, conv_bytes);
   }
   if (has_ple_) {
@@ -950,7 +1282,19 @@ void QwenModel::write_state_snapshot(int req, uint8_t* d, int spec_row) {
   if (num_gdn_ > 0) {
     const size_t rec_bytes = static_cast<size_t>(num_gdn_) * gdn_rec_elems_ * 4;
     const size_t conv_bytes = static_cast<size_t>(num_gdn_) * gdn_conv_elems_ * 2;
-    d2d(d, live ? gdn_rec(req, 0) : spec_rec_ + row * num_gdn_ * gdn_rec_elems_, rec_bytes, stream_);
+    if (gdn_replay_) {
+      // The replay form: the live state materialized in place (the pending
+      // rows applied, then copied), or the state after spec row `row`
+      // replayed straight into the snapshot.
+      if (live) {
+        materialize_gdn(req);
+        d2d(d, gdn_rec(req, 0), rec_bytes, stream_);
+      } else {
+        materialize_gdn(req, reinterpret_cast<float*>(d), spec_row + 1);
+      }
+    } else {
+      d2d(d, live ? gdn_rec(req, 0) : spec_rec_ + row * num_gdn_ * gdn_rec_elems_, rec_bytes, stream_);
+    }
     d += rec_bytes;
     d2d(d, live ? gdn_conv(req, 0) : spec_conv_ + row * num_gdn_ * gdn_conv_elems_, conv_bytes, stream_);
     d += conv_bytes;
@@ -996,6 +1340,7 @@ void QwenModel::read_state_snapshot(int req, const uint8_t* d) {
     d += rec_bytes;
     d2d(gdn_conv(req, 0), d, conv_bytes, stream_);
     d += conv_bytes;
+    if (gdn_replay_) DGPP_CUDA_OK(cudaMemsetAsync(gdn_pending_ + req, 0, sizeof(int32_t), stream_));
   }
   if (has_ple_) {
     const size_t bytes = static_cast<size_t>(ple_conv_elems_) * 2;
@@ -1051,14 +1396,44 @@ void QwenModel::graph_prepare() {
 // one of those matrices is already block-FP8 (the head included): nothing
 // is packed. This family keeps both forms resident under either value of
 // the key (its loader grants nothing aside: every recipe has the room).
+// DGPP_QWEN_GR_BF12=on packs the hyper-connection downs' 12-bit companions
+// at world 1. Off by default: measured 2026-09-29 (round 13) at +2 ms a
+// pass on the hybrid — 56.2–56.4 against 54.2 ms/step — the packed decode
+// on 41 blocks of 320 rows loses more in ops than its 25 % of bytes saves,
+// as the 2026-09-26 bench found for the fabric worlds. The knob stays for
+// another look with a different site structure.
+static bool gr_down_bf12() {
+  static const bool on = [] {
+    const char* e = std::getenv("DGPP_QWEN_GR_BF12");
+    return e != nullptr && (std::string(e) == "on" || std::string(e) == "1");
+  }();
+  return on;
+}
+
 void QwenModel::pack_layer_companions(int layer, const QwenLayerResident& r) {
-  if (QwenLayerStream::dense_weights_fp8()) return;
+  // Under fp8 dense weights only the draft layer can still carry bf16
+  // projections (the hybrid ships the backbone's as block-FP8 and leaves
+  // the MTP layer's as the original bf16, 2026-09-29): pack those; a
+  // projection that has an fp8 twin is served from it and is skipped.
   const auto t0 = std::chrono::steady_clock::now();
   const int64_t H = cfg_.hidden_size;
   const auto release = [&](const void* w) { return loader_.release_packed(layer, w); };
   const auto pack = [&](const uint16_t* w, int64_t n, int64_t k) {
     if (w != nullptr) bf12_.pack_and_release(w, n, k, gemm_, stream_, release);
   };
+  // The hyper-connection down matrices [lowrank, W] at world 1 (2026-09-29):
+  // the site streams them from DRAM there (at worlds 2 and 4 the boundary
+  // window lands them in L2 and the packed decode only adds ops — the
+  // 2026-09-26 bench); the up matrix's 320-element rows stay bf16.
+  if (tp_world() == 1 && gr_down_bf12()) {
+    const int64_t W = static_cast<int64_t>(cfg_.hyper_width());
+    if (!r.attn_gr.down_fp8.payload) pack(r.attn_gr.down, cfg_.hc_lowrank, W);
+    if (!r.mlp_gr.down_fp8.payload) pack(r.mlp_gr.down, cfg_.hc_lowrank, W);
+  }
+  if (QwenLayerStream::dense_weights_fp8() && layer != cfg_.mtp_layer()) {
+    bf12_s_ += std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    return;
+  }
   if (r.kind == QwenLayerKind::Gdn) {
     const int64_t lk = r.gdn.local_key_heads, lv = r.gdn.local_value_heads;
     const int64_t LV = lv * cfg_.gdn_value_head_dim;
@@ -1069,18 +1444,19 @@ void QwenModel::pack_layer_companions(int layer, const QwenLayerResident& r) {
     pack(r.gdn.out_proj, H, LV);
   } else {
     const int64_t D = cfg_.head_dim, lh = r.qsa.local_heads, lkv = r.qsa.local_kv_heads;
-    pack(r.qsa.q_proj, lh * 2 * D, H);
-    pack(r.qsa.k_proj, lkv * D, H);
-    pack(r.qsa.v_proj, lkv * D, H);
-    pack(r.qsa.index_qk_proj, static_cast<int64_t>(cfg_.indexer_n_heads + 1) * cfg_.indexer_head_dim, H);
-    pack(r.qsa.o_proj, H, lh * D);
+    if (!r.qsa.q_proj_fp8.payload) pack(r.qsa.q_proj, lh * 2 * D, H);
+    if (!r.qsa.k_proj_fp8.payload) pack(r.qsa.k_proj, lkv * D, H);
+    if (!r.qsa.v_proj_fp8.payload) pack(r.qsa.v_proj, lkv * D, H);
+    if (!r.qsa.index_qk_proj_fp8.payload)
+      pack(r.qsa.index_qk_proj, static_cast<int64_t>(cfg_.indexer_n_heads + 1) * cfg_.indexer_head_dim, H);
+    if (!r.qsa.o_proj_fp8.payload) pack(r.qsa.o_proj, H, lh * D);
   }
   bf12_s_ += std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
 }
 
 void QwenModel::finish_companions() {
   bf12_built_ = true;
-  if (QwenLayerStream::dense_weights_fp8()) {
+  if (QwenLayerStream::dense_weights_fp8() && !(mtp_ && cfg_.dense_fp8_shipped) && tp_world() != 1) {
     DGPP_LOG_INFO("rank {} bf12: nothing to pack — engine.dense_weights = fp8 already holds the dense "
                   "projections and the head as block-FP8",
                   loader_.rank());
@@ -1089,6 +1465,13 @@ void QwenModel::finish_companions() {
   const auto t0 = std::chrono::steady_clock::now();
   const int64_t H = cfg_.hidden_size;
   const auto release = [&](const void* w) { return loader_.release_packed(-1, w); };
+  if (tp_world() == 1 && gr_down_bf12()) {  // the mixers' down matrices (world 1, as the layers')
+    const int64_t W = static_cast<int64_t>(cfg_.hyper_width());
+    if (!globals_.mixer.down_fp8.payload && globals_.mixer.down)
+      bf12_.pack_and_release(globals_.mixer.down, cfg_.hc_lowrank, W, gemm_, stream_, release);
+    if (mtp_ && !globals_.mtp_mixer.down_fp8.payload && globals_.mtp_mixer.down)
+      bf12_.pack_and_release(globals_.mtp_mixer.down, cfg_.hc_lowrank, W, gemm_, stream_, release);
+  }
   if (mtp_) {
     if (globals_.mtp_fc_embedding) bf12_.pack_and_release(globals_.mtp_fc_embedding, H, H, gemm_, stream_, release);
     if (globals_.mtp_fc_hidden) bf12_.pack_and_release(globals_.mtp_fc_hidden, H, H, gemm_, stream_, release);
@@ -1102,17 +1485,25 @@ void QwenModel::finish_companions() {
 // The companions' planned bytes: pack_layer_companions' matrices by formula
 // (nothing under dense_weights = "fp8").
 size_t QwenModel::bf12_plan_bytes(const QwenTextConfig& cfg, const QwenLocalGeometry& geo, bool mtp) {
-  if (QwenLayerStream::dense_weights_fp8()) return 0;
   const int64_t H = cfg.hidden_size;
-  size_t bytes = Bf12Companions::planned_bytes(geo.lm_vocab_count, H);
-  const int64_t lk = geo.local_key_heads, lv = geo.local_value_heads, LV = lv * cfg.gdn_value_head_dim;
-  const size_t gdn = Bf12Companions::planned_bytes(2 * lk * cfg.gdn_key_head_dim + LV, H) +
-                     Bf12Companions::planned_bytes(LV, H) + 2 * Bf12Companions::planned_bytes(lv, H) +
-                     Bf12Companions::planned_bytes(H, LV);
+  // The hyper-connection downs at world 1 (two per layer, the mixers).
+  const size_t gr_down = geo.world == 1 && gr_down_bf12()
+                             ? (2 * cfg.layers.size() + (mtp ? 2 : 1)) *
+                                   Bf12Companions::planned_bytes(cfg.hc_lowrank, static_cast<int64_t>(cfg.hyper_width()))
+                             : 0;
   const int64_t D = cfg.head_dim, lh = geo.local_heads, lkv = geo.local_kv_heads;
   const size_t qsa = Bf12Companions::planned_bytes(lh * 2 * D, H) + 2 * Bf12Companions::planned_bytes(lkv * D, H) +
                      Bf12Companions::planned_bytes(static_cast<int64_t>(cfg.indexer_n_heads + 1) * cfg.indexer_head_dim, H) +
                      Bf12Companions::planned_bytes(H, lh * D);
+  if (QwenLayerStream::dense_weights_fp8()) {
+    // The hybrid: the draft layer's bf16 projections and fc matrices, the GR downs.
+    return gr_down + (mtp && cfg.dense_fp8_shipped ? qsa + 2 * Bf12Companions::planned_bytes(H, H) : 0);
+  }
+  size_t bytes = gr_down + Bf12Companions::planned_bytes(geo.lm_vocab_count, H);
+  const int64_t lk = geo.local_key_heads, lv = geo.local_value_heads, LV = lv * cfg.gdn_value_head_dim;
+  const size_t gdn = Bf12Companions::planned_bytes(2 * lk * cfg.gdn_key_head_dim + LV, H) +
+                     Bf12Companions::planned_bytes(LV, H) + 2 * Bf12Companions::planned_bytes(lv, H) +
+                     Bf12Companions::planned_bytes(H, LV);
   for (QwenLayerKind k : cfg.layers) bytes += k == QwenLayerKind::Gdn ? gdn : qsa;
   if (mtp) bytes += qsa + 2 * Bf12Companions::planned_bytes(H, H);
   return bytes;
@@ -1215,9 +1606,12 @@ void QwenModel::mtp_run_rows(int req, const int64_t* tokens, int64_t first_pos, 
   }
 
   // ---- head: the draft distribution over the last head_rows rows --------
-  const uint16_t* head_in = mtp_r_ + static_cast<size_t>(T - head_rows) * W;
+  uint16_t* head_in = mtp_r_ + static_cast<size_t>(T - head_rows) * W;
   mtp_mixer_->mix(head_in, h_, head_rows, stream_);
+  head_dump_site_ = 1;
+  head_req_ = req;
   lm_head_logits(h_, head_rows, stream_);
+  head_dump_site_ = 0;
   if (decode_row) prefetch_.join(stream_);  // every forked prefetch back on the main stream
   if (decode_row && (!capture || decode_tail_mirrors_) && head_rows <= max_decode_rows_)
     DGPP_CUDA_OK(cudaMemcpyAsync(h_tail_logits_, logits_,

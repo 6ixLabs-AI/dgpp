@@ -95,6 +95,68 @@ def load_bf16(entries, name):
     return shape, values
 
 
+def fp16_from_bits(h: int) -> float:
+    """IEEE binary16 bits -> float, exact (subnormals included)."""
+    sign = -1.0 if h & 0x8000 else 1.0
+    exp = (h >> 10) & 0x1F
+    man = h & 0x3FF
+    if exp == 0:
+        return sign * man * 2.0 ** -24
+    if exp == 31:
+        return sign * float("inf") if man == 0 else float("nan")
+    return sign * (1.0 + man / 1024.0) * 2.0 ** (exp - 15)
+
+
+def load_words(entries, name, fmt):
+    path, offset, nbytes, dtype_str, shape = entries[name]
+    size = {"I": 4, "H": 2}[fmt]
+    with open(path, "rb") as f:
+        f.seek(offset)
+        buf = f.read(nbytes)
+    return shape, struct.unpack("<%d%s" % (nbytes // size, fmt), buf)
+
+
+def dequant_gptq(entries, base, bits):
+    """The AutoRound hybrid's GPTQ triple (qweight I32 [K*bits/32, N] with codes
+    packed along K low first, scales F16 [K/g, N]) -> EXACT (code - 2^(bits-1))
+    x f16(scale) weights as [N, K] (the packed core's exact policy: no
+    per-weight rounding; docs/qwen38_autoround_int4_plan.md D1)."""
+    (wr, N), words = load_words(entries, base + ".qweight", "I")
+    (groups, _), scales = load_words(entries, base + ".scales", "H")
+    per = 32 // bits
+    K = wr * per
+    g = K // groups
+    mask = (1 << bits) - 1
+    off = 1 << (bits - 1)
+    sc = [fp16_from_bits(h) for h in scales]
+    out = [0.0] * (N * K)
+    for i in range(wr):
+        row = i * N
+        for n in range(N):
+            w = words[row + n]
+            base_k = i * per
+            for j in range(per):
+                k = base_k + j
+                out[n * K + k] = (((w >> (bits * j)) & mask) - off) * sc[(k // g) * N + n]
+    return N, K, out
+
+
+def load_head(entries):
+    """The lm_head as shipped: BF16, or the hybrid's int8 g128 GPTQ triple."""
+    if "lm_head.qweight" in entries:
+        return dequant_gptq(entries, "lm_head", 8)[2]
+    return load_bf16(entries, "lm_head.weight")[1]
+
+
+def load_dense(entries, name):
+    """A dense projection as shipped: BF16, or (the hybrid) block FP8 with
+    F32 scales through the engine's fp8 weight policy."""
+    if entries[name][3] == "F8_E4M3":
+        rows, cols, values = dequant_blocks(entries, name)
+        return (rows, cols), values
+    return load_bf16(entries, name)
+
+
 def dequant_blocks(entries, name, block=128):
     """E4M3 payload x BF16 block scales (weight_scale_inv) -> bf16-rounded
     weights, one rounding of decode x scale (the engine's policy)."""
@@ -164,9 +226,9 @@ def layer_weights(cfg, entries, layer, prefix=None):
     lw["mlp_gr"] = gr_site(entries, p + "mlp_hyper_connection.", True)
     if lw["kind"] == "linear_attention":
         q = p + "linear_attn."
-        (c, _), qkv = load_bf16(entries, q + "in_proj_qkv.weight")
+        (c, _), qkv = load_dense(entries, q + "in_proj_qkv.weight")
         (c2, _, cw), conv = load_bf16(entries, q + "conv1d.weight")
-        (zw, _), z = load_bf16(entries, q + "in_proj_z.weight")
+        (zw, _), z = load_dense(entries, q + "in_proj_z.weight")
         (vh, _), a = load_bf16(entries, q + "in_proj_a.weight")
         _, b = load_bf16(entries, q + "in_proj_b.weight")
         lw["gdn"] = {
@@ -174,14 +236,14 @@ def layer_weights(cfg, entries, layer, prefix=None):
             "a": as_rows(a, vh, H), "b": as_rows(b, vh, H),
             "a_log": load_bf16(entries, q + "A_log")[1], "dt_bias": load_bf16(entries, q + "dt_bias")[1],
             "norm": load_bf16(entries, q + "norm.weight")[1],
-            "out": as_rows(load_bf16(entries, q + "out_proj.weight")[1], H, zw),
+            "out": as_rows(load_dense(entries, q + "out_proj.weight")[1], H, zw),
         }
     else:
         q = p + "self_attn."
-        (qw, _), qp = load_bf16(entries, q + "q_proj.weight")
-        (kw, _), kp = load_bf16(entries, q + "k_proj.weight")
-        _, vp = load_bf16(entries, q + "v_proj.weight")
-        (_, ow), op = load_bf16(entries, q + "o_proj.weight")
+        (qw, _), qp = load_dense(entries, q + "q_proj.weight")
+        (kw, _), kp = load_dense(entries, q + "k_proj.weight")
+        _, vp = load_dense(entries, q + "v_proj.weight")
+        (_, ow), op = load_dense(entries, q + "o_proj.weight")
         (iw, _), ip = load_bf16(entries, q + "indexer.index_qk_proj.weight")
         lw["qsa"] = {
             "q": as_rows(qp, qw, H), "k": as_rows(kp, kw, H), "v": as_rows(vp, kw, H),
@@ -195,17 +257,22 @@ def layer_weights(cfg, entries, layer, prefix=None):
     experts = []
     for e in range(E):
         ep = m + "experts.%d." % e
-        _, _, g = dequant_blocks(entries, ep + "gate_proj.weight")
-        _, _, u = dequant_blocks(entries, ep + "up_proj.weight")
-        _, _, d = dequant_blocks(entries, ep + "down_proj.weight")
+        if (ep + "gate_proj.qweight") in entries:
+            _, _, g = dequant_gptq(entries, ep + "gate_proj", 4)
+            _, _, u = dequant_gptq(entries, ep + "up_proj", 4)
+            _, _, d = dequant_gptq(entries, ep + "down_proj", 4)
+        else:
+            _, _, g = dequant_blocks(entries, ep + "gate_proj.weight")
+            _, _, u = dequant_blocks(entries, ep + "up_proj.weight")
+            _, _, d = dequant_blocks(entries, ep + "down_proj.weight")
         I = cfg["inter"]
         experts.append((as_rows(g, I, H), as_rows(u, I, H), as_rows(d, H, I)))
     S = cfg["shared_inter"]
     lw["moe"] = {
         "gate": as_rows(gate, E, H), "experts": experts,
-        "s_gate": as_rows(load_bf16(entries, m + "shared_expert.gate_proj.weight")[1], S, H),
-        "s_up": as_rows(load_bf16(entries, m + "shared_expert.up_proj.weight")[1], S, H),
-        "s_down": as_rows(load_bf16(entries, m + "shared_expert.down_proj.weight")[1], H, S),
+        "s_gate": as_rows(load_dense(entries, m + "shared_expert.gate_proj.weight")[1], S, H),
+        "s_up": as_rows(load_dense(entries, m + "shared_expert.up_proj.weight")[1], S, H),
+        "s_down": as_rows(load_dense(entries, m + "shared_expert.down_proj.weight")[1], H, S),
         "sg": load_bf16(entries, m + "shared_expert_gate.weight")[1],
     }
     if prefix is None and layer in cfg["ple_layers"]:
@@ -547,7 +614,7 @@ def reference_forward(cfg, entries, tokens, progress=False):
         routes.append(route)
     mixer = gr_site(entries, "model.language_model.hyper_connection_mixer.", False)
     h_rows = [gr_mix(R[t], mixer, hc, H, cfg["eps"])[0] for t in range(T)]
-    _, lm = load_bf16(entries, "lm_head.weight")
+    lm = load_head(entries)
     lm_rows = as_rows(lm, cfg["vocab"], H)
     logits = [[f32(dot(h, r)) for r in lm_rows] for h in h_rows]
     return layer_states, h_rows, logits, routes
@@ -592,7 +659,7 @@ def mtp_forward(cfg, entries, tokens, R_last, progress=False):
         gr_combine(R[t], mixed[t][1], y[t], w["mlp_gr"], hc, H)
     mixer = gr_site(entries, "mtp.hyper_connection_mixer.", False)
     h_rows = [gr_mix(R[t], mixer, hc, H, eps)[0] for t in range(T)]
-    _, lm = load_bf16(entries, "lm_head.weight")
+    lm = load_head(entries)
     lm_rows = as_rows(lm, cfg["vocab"], H)
     logits = [[f32(dot(h, r)) for r in lm_rows] for h in h_rows]
     return h_rows, logits

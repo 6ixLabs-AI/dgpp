@@ -1,0 +1,79 @@
+{
+  "schema_version": 1,
+  "model": "qwen",
+  "tag": "base2-1790748931",
+  "seed": 7,
+  "thinking": false,
+  "interval_s": 0,
+  "data_sha256": "3730d312f6e3440559ace48831e51066acaca737f6eabec99bccb9e4b3c39d14",
+  "calibration": {
+    "prompt_sha256": "8daf32e54ced3582bc5ad21480cdbdde90386789327def54269e9fb27adf55d6",
+    "usage": {
+      "prompt_tokens": 557,
+      "completion_tokens": 1,
+      "total_tokens": 558,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      },
+      "completion_tokens_details": {
+        "reasoning_tokens": 0
+      }
+    },
+    "finish": "length",
+    "text": "The",
+    "wall_ms": 536.4101469749585,
+    "ttft_ms": 536.3634430104867
+  },
+  "samples": [
+    {
+      "prompt_sha256": "ff6795901b7be0dc5fb237bbc49feebe69d9f4b8916f94fd885e8775a86e6870",
+      "usage": {
+        "prompt_tokens": 32486,
+        "completion_tokens": 1,
+        "total_tokens": 32487,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0
+        }
+      },
+      "finish": "length",
+      "text": "The",
+      "wall_ms": 18706.92492404487,
+      "ttft_ms": 18706.87534008175,
+      "prompt_tokens": 32486,
+      "cached_tokens": 0,
+      "computed_tokens": 32486,
+      "prefill_ms": 18640.1,
+      "prefill_ms_per_token": 0.5737887089823308,
+      "requested_tokens": 32768,
+      "repeat": 0
+    },
+    {
+      "prompt_sha256": "5ca73aa9c243a1c62b490286d90df0d393fea3d534fdc0273e09df8ba6fb34bd",
+      "usage": {
+        "prompt_tokens": 32498,
+        "completion_tokens": 1,
+        "total_tokens": 32499,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0
+        }
+      },
+      "finish": "length",
+      "text": "The",
+      "wall_ms": 18453.948733047582,
+      "ttft_ms": 18453.902555978857,
+      "prompt_tokens": 32498,
+      "cached_tokens": 0,
+      "computed_tokens": 32498,
+      "prefill_ms": 18410.1,
+      "prefill_ms_per_token": 0.5664994768908855,
+      "requested_tokens": 32768,
+      "repeat": 1
+    }
+  ]
+}

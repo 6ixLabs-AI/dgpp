@@ -1,0 +1,37 @@
+{
+ "model": "qwen",
+ "results": {
+  "chat": {
+   "reasoning": "We need answer user: \"Explain, in a few paragraphs, why a CUDA graph replay can be faster than launching the same kernels eagerly, and what it costs.\" Need produce final with few paragraphs. Need explain CUDA graphs: capture sequence of kernel launches/memcpy etc into graph, instantiate, replay. Faster due to reduced CPU launch overhead, driver overhead, fewer API calls, precomputed dependency graph, optimized scheduling, less synchronization? Costs: capture overhead, memory for graph, instantiation cost, rigidity (fixed parameters/addresses unless update), debugging harder, potential memory usage, graph update overhead, not always beneficial for small kernels or dynamic control flow. Need maybe mention eager launch: each cudaLaunchKernel incurs CPU/driver work, validation, command buffer, maybe synchronization. Graph replay submits whole DAG once, GPU can start earlier, overlap, lower latency. Costs: capture/instantiate one-time, graph memory, constraints: no dynamic shapes/pointers unless graph update, stream capture restrictions, may serialize? Also if kernels depend on CPU results, need updates. Need few paragraphs. Ensure accurate: CUDA graph replay can be faster because graph is precompiled into low-level command stream; replay is one API call cudaGraphLaunch; reduces CPU overhead and driver validation; GPU",
+   "content": "",
+   "finish": "length",
+   "completion_tokens": 256,
+   "prompt_tokens": 80,
+   "wall_s": 8.788289981079288
+  },
+  "code": {
+   "reasoning": "We need answer user: \"Write a Python function that parses an ISO-8601 timestamp without external libraries, with docstring and three doctests.\"\n\nNeed produce final answer likely code. Need think through requirements. Need write Python function parses ISO-8601 timestamp without external libraries. Could use datetime? \"without external libraries\" likely standard library okay? But maybe they want no external libraries, can use datetime? But parsing ISO-8601 timestamp maybe implement manually. Need docstring and three doctests. Need likely return datetime.datetime? If no external libraries, can use datetime standard library? It says without external libraries, not without standard library. But to be safe, implement parsing manually and return datetime.datetime from standard library? datetime is standard library. But if they want no external libraries, standard library is okay. Could also return tuple? Better return datetime.datetime. Need handle ISO-8601 timestamp: date, time, timezone offset, Z, fractional seconds. Need doctests. Need ensure doctests pass. Need maybe use datetime.timezone? Standard library. Could avoid external. Need parse without external libraries. Could use datetime.datetime and timezone. Need robust.\n\nNeed consider Python versions. datetime.datetime.fromisoformat",
+   "content": "",
+   "finish": "length",
+   "completion_tokens": 256,
+   "prompt_tokens": 79,
+   "wall_s": 6.6456682020798326
+  },
+  "math": {
+   "reasoning": "We need answer math problem step by step. Need solve. Let's analyze carefully.\n\nProblem: A train leaves city A at 60 km/h and another leaves city B, 450 km away, at 90 km/h toward it 30 minutes later. Work out step by step when and where they meet.\n\nInterpretation: Train from A leaves at time t=0, speed 60. Train from B leaves 30 min later (0.5 h), speed 90 toward A. Distance between cities 450 km. Need when and where meet.\n\nLet t be time after first train leaves. First train distance from A = 60t. Second train leaves at t=0.5, travels for t-0.5 hours, distance from B = 90(t-0.5). They meet when sum distances = 450: 60t + 90(t-0.5)=450. 60t+90t-45=450 =>150t=495 => t=3.3 h = 3 h 18 min after first train leaves. If first train leaves",
+   "content": "",
+   "finish": "length",
+   "completion_tokens": 256,
+   "prompt_tokens": 101,
+   "wall_s": 4.800515695009381
+  },
+  "json": {
+   "reasoning": "We need to respond to user: \"Return a JSON array of 8 objects, each with the fields country, capital and population_millions. Output only the JSON.\"\n\nNeed produce final only JSON. Need ensure valid JSON array of 8 objects. Fields country, capital, population_millions. Could choose countries and capitals, population millions numeric. Need only JSON no markdown. Ensure 8. Maybe use approximate populations. Need no extra text.\n\nPotential:\n[\n {\"country\":\"China\",\"capital\":\"Beijing\",\"population_millions\":1411},\n {\"country\":\"India\",\"capital\":\"New Delhi\",\"population_millions\":1428},\n {\"country\":\"United States\",\"capital\":\"Washington, D.C.\",\"population_millions\":340},\n {\"country\":\"Indonesia\",\"capital\":\"Jakarta\",\"population_millions\":277},\n {\"country\":\"Pakistan\",\"capital\":\"Islamabad\",\"population_millions\":240},\n {\"country\":\"Nigeria\",\"capital\":\"Abuja\",\"population_millions\":223},\n {\"country\":\"Brazil\",\"capital\":\"Bras\u00edlia\",\"population_millions\":216},\n {\"country\":\"Bangladesh\",\"capital\":\"Dhaka\",\"population_millions\":173}\n",
+   "content": "",
+   "finish": "length",
+   "completion_tokens": 256,
+   "prompt_tokens": 78,
+   "wall_s": 4.976534535060637
+  }
+ }
+}
