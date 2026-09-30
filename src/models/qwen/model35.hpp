@@ -126,6 +126,10 @@ class Qwen35Model : public SessionModel<Qwen35Model> {
   ~Qwen35Model();
 
   static constexpr int decode_rows_cap() { return 32; }
+  // Group prefills (one walk, a span per request): spans share the
+  // max_tokens activation rows; the scheduler only groups snapshot-free
+  // members (admissible_group), so no snapshot plumbing is needed.
+  int64_t prefill_group_span_limit() const { return max_tokens(); }
   static constexpr int prefill_chunk_tokens() { return 4096; }
   static constexpr int kv_block_tokens_static() { return 64; }
   // Prefix-snapshot arena size: all GDN recurrent + conv state of one slot.
@@ -173,7 +177,21 @@ class Qwen35Model : public SessionModel<Qwen35Model> {
  private:
   void build_layer_objects(const Qwen35LayerResident& r);
   void dense_mlp(const uint16_t* x, uint16_t* out, int tokens, const Qwen35DenseMlpResident& m,
-                 cudaStream_t stream);
+                 cudaStream_t stream, int layer, bool resume = false);
+  // The lm head over `rows` activation rows into F32 logits: the blockwise
+  // FP8 head when DGPP_FP8_HEAD is on (Resident), else the BF16 matmul.
+  void head_gemv(const uint16_t* act, float* out, int rows, cudaStream_t stream);
+  // Per-tensor FP8 boot requant of one layer's MLP into PT slot `layer`
+  // (num_hidden_layers addresses the MTP draft layer).
+  void requant_mlp_pt(int slot, const Qwen35DenseMlpResident& m, cudaStream_t stream);
+  // Per-tensor FP8 boot requant of one layer's attention projections: GDN
+  // slots are GDN ordinals, Full slots full ordinals (num_full_ addresses
+  // the MTP draft layer).
+  void requant_gdn_pt(int slot, const QwenGdnResident& w, cudaStream_t stream);
+  void requant_full_pt(int slot, const QwenFullAttnResident& w, cudaStream_t stream);
+  // The bound layer's per-tensor attention view (disabled when PT is off).
+  QwenPtAttnView pt_gdn_view(int layer) const;
+  QwenPtAttnView pt_full_view(int layer) const;
   float* gdn_rec(int slot, int ord) const {
     return gdn_rec_base_ + (static_cast<size_t>(slot) * num_gdn_ + ord) * rec_elems_;
   }
@@ -192,6 +210,43 @@ class Qwen35Model : public SessionModel<Qwen35Model> {
   Qwen35KvPool pool_;
   void* gemm_ws_ = nullptr;
   size_t gemm_ws_bytes_ = 0;
+  size_t dense_bridge_bytes_ = 0;
+  // Per-tensor FP8 prefill recipe (DGPP_FP8_PT_DENSE, Resident only):
+  // gate/up/down requantized once at boot to E4M3 with one F32 scale each;
+  // prefill calls quantize the activation once and run cuBLASLt FP8.
+  uint8_t* pt_gate_ = nullptr;  // [slots][I, H] E4M3
+  uint8_t* pt_up_ = nullptr;    // [slots][I, H] E4M3
+  uint8_t* pt_down_ = nullptr;  // [slots][H, I] E4M3
+  float* pt_scales_ = nullptr;  // [slots][gate, up, down] F32 (device)
+  uint8_t* pt_act_ = nullptr;   // [M, I] E4M3 activation scratch
+  float* pt_act_scales_ = nullptr;  // [H-use, I-use] F32 (device)
+  int pt_slots_ = 0;
+  bool pt_enabled_ = false;
+  // The attention half of the recipe (DGPP_FP8_PT_ATTN, default on).
+  bool pt_attn_enabled_ = false;
+  // Per-tensor attention projections (DGPP_FP8_PT_DENSE, same recipe):
+  // GDN in_proj_qkv [C, H] + in_proj_z [LV, H] + out_proj [H, LV] per GDN
+  // ordinal; Full q [QW, H] + k/v [KW, H] + o [H, FH] per full ordinal
+  // (the MTP draft layer takes the last full slot).
+  uint8_t* pt_gdn_qkv_ = nullptr;
+  uint8_t* pt_gdn_z_ = nullptr;
+  uint8_t* pt_gdn_o_ = nullptr;
+  float* pt_gdn_scales_ = nullptr;  // [gdn_slots][qkv, z, out] F32 (device)
+  uint8_t* pt_full_q_ = nullptr;
+  uint8_t* pt_full_k_ = nullptr;
+  uint8_t* pt_full_v_ = nullptr;
+  uint8_t* pt_full_o_ = nullptr;
+  float* pt_full_scales_ = nullptr;  // [full_slots][q, k, v, o] F32 (device)
+  int pt_gdn_slots_ = 0, pt_full_slots_ = 0;
+  int64_t pt_gdn_C_ = 0, pt_gdn_LV_ = 0;        // GDN projection widths
+  int64_t pt_full_QW_ = 0, pt_full_KW_ = 0, pt_full_FH_ = 0;  // Full widths
+  // Blockwise-FP8 lm head (DGPP_FP8_HEAD, Resident only): boot-quantized
+  // E4M3 + 128x128 scales; decode rows read half the bytes.
+  uint8_t* head_fp8_ = nullptr;  // [V, H] E4M3
+  float* head_scales_ = nullptr;  // [ceil(V/128), H/128] F32 (device)
+  bool head_fp8_enabled_ = false;
+  std::vector<int> pt_gdn_ord_;   // per main-layer index, else -1
+  std::vector<int> pt_full_ord_;  // per main-layer index, else -1
   // Activation scratch at max_tokens rows.
   uint16_t *resid_ = nullptr, *x_ = nullptr, *attn_out_ = nullptr, *mlp_out_ = nullptr;
   uint16_t *gate_tmp_ = nullptr, *up_tmp_ = nullptr;  // dense MLP [M, I]

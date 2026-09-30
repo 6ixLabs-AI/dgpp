@@ -2,7 +2,7 @@
   "model": "Qwen/Qwen3.8-27B-FP8",
   "world_size": 1,
   "engine": {
-    "max_concurrency": 4,
+    "max_concurrency": 8,
     "kv_capacity": 262144,
     "kv_dtype": "bf16",
     "default_max_tokens": 32768,

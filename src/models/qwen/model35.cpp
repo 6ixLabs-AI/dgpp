@@ -12,15 +12,19 @@
 #include <cmath>
 #include <cstring>
 #include <stdexcept>
+#include <vector>
 
 #include "common/cuda_check.hpp"
 #include "common/dtypes.hpp"
 #include "kernels/add_rmsnorm.hpp"
+#include "kernels/fp8_blockwise_dense.hpp"
+#include "kernels/fp8_dequant.hpp"
 #include "kernels/gemm.hpp"
 #include "kernels/kernels.hpp"
 #include "kernels/qwen_mtp.hpp"
 #include "kernels/qwen_norm.hpp"
 #include "kernels/scale_gemm.hpp"
+#include "loaders/fp8_quant.hpp"
 #include "models/qwen/config.hpp"
 
 namespace dgpp {
@@ -124,6 +128,25 @@ void Qwen35KvPool::copy_block_contents(int32_t src, int32_t dst, cudaStream_t st
 
 // ---- Qwen35Model ---------------------------------------------------------------
 
+// The dequant bridge holds the largest dense FP8 matrix in BF16 so
+// prefill-shaped (m>128) products dequantize once and run cuBLASLt BF16
+// instead of the slow hand-rolled tile kernel (mirrors
+// QwenModel::dense_bridge_bytes; world 1 takes full rows).
+static size_t qwen35_dense_bridge_bytes(const Qwen35TextConfig& cfg) {
+  const size_t H = static_cast<size_t>(cfg.hidden_size), I = static_cast<size_t>(cfg.intermediate_size);
+  const size_t q = 2 * static_cast<size_t>(cfg.num_attention_heads) * cfg.head_dim;
+  const size_t kv = static_cast<size_t>(cfg.num_key_value_heads) * cfg.head_dim;
+  const size_t o = static_cast<size_t>(cfg.num_attention_heads) * cfg.head_dim;
+  size_t elems = 0;
+  const auto take = [&](size_t n, size_t k) { elems = std::max(elems, n * k); };
+  take(q, H);    // q_proj
+  take(kv, H);   // k / v
+  take(H, o);    // o_proj
+  take(I, H);    // gate / up
+  take(H, I);    // down
+  return elems * 2;
+}
+
 Qwen35Model::Qwen35Model(const Qwen35TextConfig& cfg, const std::string& checkpoint_dir, int max_tokens,
                          int64_t max_cache_tokens, LoaderResidency residency, BoundaryReducer* boundary,
                          int rank, int world, int max_requests, int decode_rows, bool mtp)
@@ -146,6 +169,18 @@ Qwen35Model::Qwen35Model(const Qwen35TextConfig& cfg, const std::string& checkpo
       ++num_gdn_;
     else
       ++num_full_;
+  }
+  // Per-layer kind ordinals (the attention PT slots); -1 for the other kind.
+  pt_gdn_ord_.assign(cfg_.num_hidden_layers, -1);
+  pt_full_ord_.assign(cfg_.num_hidden_layers, -1);
+  {
+    int g = 0, f = 0;
+    for (int l = 0; l < cfg_.num_hidden_layers; ++l) {
+      if (cfg_.layers[l] == Qwen35LayerKind::Gdn)
+        pt_gdn_ord_[l] = g++;
+      else
+        pt_full_ord_[l] = f++;
+    }
   }
   const int64_t lv = cfg_.gdn_value_heads, V = cfg_.gdn_value_head_dim, K = cfg_.gdn_key_head_dim;
   const int64_t C = 2 * static_cast<int64_t>(cfg_.gdn_key_heads) * K + lv * V;
@@ -193,6 +228,24 @@ Qwen35Model::Qwen35Model(const Qwen35TextConfig& cfg, const std::string& checkpo
                                                                           DType::BF16));
   DGPP_CUDA_OK(cudaMalloc(&gemm_ws_, gemm_ws_bytes_));
   gw_ = QwenGemmWorkspace{&gemm_, gemm_ws_, gemm_ws_bytes_};
+  // The dense sites' lowering (kernels/gemm.hpp dense_gemv_rows): the GEMV
+  // chunks (and the fused multi-problem launches) to the bound, cuBLASLt's
+  // algorithm (bf16) or the streaming tensor-core GEMM (fp8) above it.
+  // Without this, multi-row decode batches shatter into per-row GEMV
+  // launches that re-read the weights per row (mirrors QwenModel).
+  gemm_.set_decode_rows(std::min(max_decode_rows_, dense_gemv_rows()));
+  gw_.gemv_rows = dense_gemv_rows();
+  // NOTE: dense_gemv_rows() defaults to 16, but the FP8 GEMV row loop
+  // re-reads weights per ≤4-row chunk (and per single row when smem can't
+  // stage more, e.g. down-proj k=17408). Route m>=5 through the
+  // weights-once streaming MMA instead; ≤4-row decodes stay on GEMV.
+  gw_.mma_from_rows = 5;
+  // Dense FP8 prefill bridge (mirrors QwenModel): m>128 products dequantize
+  // the matrix into scratch and run Lt BF16. Weights here are always FP8,
+  // so the bridge is unconditional.
+  dense_bridge_bytes_ = qwen35_dense_bridge_bytes(cfg_);
+  DGPP_CUDA_OK(cudaMalloc(reinterpret_cast<void**>(&gw_.dequant), dense_bridge_bytes_));
+  gw_.dequant_bytes = dense_bridge_bytes_;
   // Activation scratch at max_tokens rows.
   const size_t M = static_cast<size_t>(max_tokens_);
   const size_t I = static_cast<size_t>(cfg_.intermediate_size);
@@ -202,6 +255,95 @@ Qwen35Model::Qwen35Model(const Qwen35TextConfig& cfg, const std::string& checkpo
   DGPP_CUDA_OK(cudaMalloc(&mlp_out_, M * H * 2));
   DGPP_CUDA_OK(cudaMalloc(&gate_tmp_, M * I * 2));
   DGPP_CUDA_OK(cudaMalloc(&up_tmp_, M * I * 2));
+  // Per-tensor FP8 prefill recipe (DGPP_FP8_PT_DENSE): Resident stacks
+  // requantize every layer's MLP once at boot (dequant to the bridge, then
+  // absmax + x/448 quantize). Streaming stacks keep the bridge: their
+  // layers are not all resident, so there is nothing eager to build from.
+  pt_enabled_ = fp8_per_tensor_enabled() && loader_.residency() == LoaderResidency::Resident;
+  pt_attn_enabled_ = pt_enabled_ && fp8_pt_attn_enabled();
+  if (pt_enabled_) {
+    const size_t IH = I * H;
+    pt_slots_ = cfg_.num_hidden_layers + (mtp_ ? 1 : 0);
+    DGPP_CUDA_OK(cudaMalloc(&pt_gate_, static_cast<size_t>(pt_slots_) * IH));
+    DGPP_CUDA_OK(cudaMalloc(&pt_up_, static_cast<size_t>(pt_slots_) * IH));
+    DGPP_CUDA_OK(cudaMalloc(&pt_down_, static_cast<size_t>(pt_slots_) * IH));
+    DGPP_CUDA_OK(cudaMalloc(&pt_scales_, static_cast<size_t>(pt_slots_) * 3 * 4));
+    DGPP_CUDA_OK(cudaMalloc(&pt_act_, M * I));
+    DGPP_CUDA_OK(cudaMalloc(&pt_act_scales_, 2 * 4));
+    for (int l = 0; l < cfg_.num_hidden_layers; ++l) {
+      const Qwen35LayerResident& r = loader_.load_layer(l);
+      requant_mlp_pt(l, r.mlp, stream_);
+    }
+    if (mtp_) {
+      const Qwen35LayerResident& r = loader_.load_layer(cfg_.mtp_layer());
+      requant_mlp_pt(pt_slots_ - 1, r.mlp, stream_);
+    }
+    // The same recipe for the attention projections: GDN in_proj_qkv [C,
+    // H] + in_proj_z [LV, H] + out_proj [H, LV] per GDN ordinal; Full q
+    // [QW, H] + k/v [KW, H] + o [H, FH] per full ordinal (the MTP draft
+    // layer takes the last full slot). The bridge is idle at boot, so it
+    // stages each dequant like the MLP requant above. DGPP_FP8_PT_ATTN=0
+    // skips this half (MLP-only ablation): the views stay disabled.
+    if (pt_attn_enabled_)
+    {
+      const int64_t lk = cfg_.gdn_key_heads, lv = cfg_.gdn_value_heads;
+      const int64_t K = cfg_.gdn_key_head_dim, V = cfg_.gdn_value_head_dim;
+      pt_gdn_C_ = 2 * lk * K + lv * V;
+      pt_gdn_LV_ = lv * V;
+      const int64_t lh = cfg_.num_attention_heads, lkv = cfg_.num_key_value_heads;
+      const int64_t D = cfg_.head_dim;
+      pt_full_QW_ = lh * 2 * D;
+      pt_full_KW_ = lkv * D;
+      pt_full_FH_ = lh * D;
+      const size_t Hh = static_cast<size_t>(cfg_.hidden_size);
+      const size_t C = static_cast<size_t>(pt_gdn_C_), LV = static_cast<size_t>(pt_gdn_LV_);
+      const size_t QW = static_cast<size_t>(pt_full_QW_), KW = static_cast<size_t>(pt_full_KW_),
+                     FH = static_cast<size_t>(pt_full_FH_);
+      pt_gdn_slots_ = num_gdn_;
+      pt_full_slots_ = num_full_ + (mtp_ ? 1 : 0);
+      DGPP_CUDA_OK(cudaMalloc(&pt_gdn_qkv_, static_cast<size_t>(pt_gdn_slots_) * C * Hh));
+      DGPP_CUDA_OK(cudaMalloc(&pt_gdn_z_, static_cast<size_t>(pt_gdn_slots_) * LV * Hh));
+      DGPP_CUDA_OK(cudaMalloc(&pt_gdn_o_, static_cast<size_t>(pt_gdn_slots_) * Hh * LV));
+      DGPP_CUDA_OK(cudaMalloc(&pt_gdn_scales_, static_cast<size_t>(pt_gdn_slots_) * 3 * 4));
+      DGPP_CUDA_OK(cudaMalloc(&pt_full_q_, static_cast<size_t>(pt_full_slots_) * QW * Hh));
+      DGPP_CUDA_OK(cudaMalloc(&pt_full_k_, static_cast<size_t>(pt_full_slots_) * KW * Hh));
+      DGPP_CUDA_OK(cudaMalloc(&pt_full_v_, static_cast<size_t>(pt_full_slots_) * KW * Hh));
+      DGPP_CUDA_OK(cudaMalloc(&pt_full_o_, static_cast<size_t>(pt_full_slots_) * Hh * FH));
+      DGPP_CUDA_OK(cudaMalloc(&pt_full_scales_, static_cast<size_t>(pt_full_slots_) * 4 * 4));
+      for (int l = 0; l < cfg_.num_hidden_layers; ++l) {
+        const Qwen35LayerResident& r = loader_.load_layer(l);
+        if (r.kind == Qwen35LayerKind::Gdn)
+          requant_gdn_pt(pt_gdn_ord_[l], r.gdn, stream_);
+        else
+          requant_full_pt(pt_full_ord_[l], r.full, stream_);
+      }
+      if (mtp_) {
+        const Qwen35LayerResident& r = loader_.load_layer(cfg_.mtp_layer());
+        requant_full_pt(num_full_, r.full, stream_);
+      }
+    }
+    DGPP_CUDA_OK(cudaStreamSynchronize(stream_));
+  }
+  // Blockwise-FP8 lm head (DGPP_FP8_HEAD, Resident only): the 248k-row BF16
+  // head is the only multi-GB BF16 weight left on the decode path. Host
+  // requant (fp8_quant::encode_block128, the loader's own encoder) once;
+  // decode rows read half the bytes through the F32 scale-GEMM path.
+  head_fp8_enabled_ = fp8_head_enabled() && loader_.residency() == LoaderResidency::Resident;
+  if (head_fp8_enabled_) {
+    const int64_t V = lm_vocab_count_, Hh = cfg_.hidden_size;
+    const int64_t sr = (V + 127) / 128, sc = (Hh + 127) / 128;
+    DGPP_CUDA_OK(cudaMalloc(&head_fp8_, static_cast<size_t>(V) * static_cast<size_t>(Hh)));
+    DGPP_CUDA_OK(cudaMalloc(&head_scales_, static_cast<size_t>(sr) * static_cast<size_t>(sc) * 4));
+    std::vector<uint16_t> host(static_cast<size_t>(V) * static_cast<size_t>(Hh));
+    DGPP_CUDA_OK(cudaMemcpy(host.data(), globals_.lm_head, host.size() * 2, cudaMemcpyDeviceToHost));
+    std::vector<uint8_t> payload(host.size());
+    std::vector<float> scales(static_cast<size_t>(sr) * static_cast<size_t>(sc));
+    fp8_quant::encode_block128(host.data(), static_cast<size_t>(Hh), V, Hh, payload.data(),
+                               scales.data());
+    DGPP_CUDA_OK(cudaMemcpy(head_fp8_, payload.data(), payload.size(), cudaMemcpyHostToDevice));
+    DGPP_CUDA_OK(
+        cudaMemcpy(head_scales_, scales.data(), scales.size() * 4, cudaMemcpyHostToDevice));
+  }
   if (mtp_) {
     DGPP_CUDA_OK(cudaMalloc(&mtp_e_, M * H * 2));
     DGPP_CUDA_OK(cudaMalloc(&mtp_en_, M * H * 2));
@@ -239,6 +381,24 @@ Qwen35Model::~Qwen35Model() {
   cudaFree(spec_rec_);
   cudaFree(spec_conv_);
   cudaFree(gemm_ws_);
+  if (gw_.dequant) cudaFree(gw_.dequant);
+  cudaFree(pt_gate_);
+  cudaFree(pt_up_);
+  cudaFree(pt_down_);
+  cudaFree(pt_scales_);
+  cudaFree(pt_gdn_qkv_);
+  cudaFree(pt_gdn_z_);
+  cudaFree(pt_gdn_o_);
+  cudaFree(pt_gdn_scales_);
+  cudaFree(pt_full_q_);
+  cudaFree(pt_full_k_);
+  cudaFree(pt_full_v_);
+  cudaFree(pt_full_o_);
+  cudaFree(pt_full_scales_);
+  cudaFree(head_fp8_);
+  cudaFree(head_scales_);
+  cudaFree(pt_act_);
+  cudaFree(pt_act_scales_);
 }
 
 void Qwen35Model::build_layer_objects(const Qwen35LayerResident& r) {
@@ -247,24 +407,234 @@ void Qwen35Model::build_layer_objects(const Qwen35LayerResident& r) {
       gdn_ = std::make_unique<QwenGdnLayer>(r.gdn, gw_, qcfg_, max_tokens_, true);
     else
       gdn_->rebind(r.gdn);
+    gdn_->set_pt_attn(pt_gdn_view(r.layer));
   } else {
     if (!full_)
       full_ = std::make_unique<QwenFullAttnLayer>(r.full, gw_, qcfg_, max_tokens_);
     else
       full_->rebind(r.full);
+    full_->set_pt_attn(pt_full_view(r.layer));
   }
 }
 
+// One GDN slot's boot requant: dequant each blockwise matrix to the bridge,
+// then absmax + x/448 quantize into the slot.
+void Qwen35Model::requant_gdn_pt(int slot, const QwenGdnResident& w, cudaStream_t stream) {
+  const size_t H = static_cast<size_t>(cfg_.hidden_size);
+  const size_t C = static_cast<size_t>(pt_gdn_C_), LV = static_cast<size_t>(pt_gdn_LV_);
+  struct Task {
+    const GlmQuantMatrix* src;
+    uint8_t* dst;
+    int n, k;
+  };
+  const Task tasks[3] = {
+      {&w.in_proj_qkv_fp8, pt_gdn_qkv_ + static_cast<size_t>(slot) * C * H, static_cast<int>(C),
+       static_cast<int>(H)},
+      {&w.in_proj_z_fp8, pt_gdn_z_ + static_cast<size_t>(slot) * LV * H, static_cast<int>(LV),
+       static_cast<int>(H)},
+      {&w.out_proj_fp8, pt_gdn_o_ + static_cast<size_t>(slot) * H * LV, static_cast<int>(H),
+       static_cast<int>(LV)},
+  };
+  for (int t = 0; t < 3; ++t) {
+    const int n = tasks[t].n, k = tasks[t].k;
+    launch_fp8_dequant_blocks(tasks[t].src->payload, tasks[t].src->scales, gw_.dequant, n, k,
+                              stream);
+    float* mx = pt_gdn_scales_ + static_cast<size_t>(slot) * 3 + t;
+    launch_fp8_row_maxabs(gw_.dequant, static_cast<size_t>(n) * k, mx, stream);
+    launch_fp8_quant_bf16(gw_.dequant, tasks[t].dst, static_cast<size_t>(n) * k, mx, stream);
+  }
+}
+
+// One Full slot's boot requant: q/k/v off the hidden rows, o over them.
+void Qwen35Model::requant_full_pt(int slot, const QwenFullAttnResident& w, cudaStream_t stream) {
+  const size_t H = static_cast<size_t>(cfg_.hidden_size);
+  const size_t QW = static_cast<size_t>(pt_full_QW_), KW = static_cast<size_t>(pt_full_KW_),
+               FH = static_cast<size_t>(pt_full_FH_);
+  struct Task {
+    const GlmQuantMatrix* src;
+    uint8_t* dst;
+    int n, k;
+  };
+  const Task tasks[4] = {
+      {&w.q_proj_fp8, pt_full_q_ + static_cast<size_t>(slot) * QW * H, static_cast<int>(QW),
+       static_cast<int>(H)},
+      {&w.k_proj_fp8, pt_full_k_ + static_cast<size_t>(slot) * KW * H, static_cast<int>(KW),
+       static_cast<int>(H)},
+      {&w.v_proj_fp8, pt_full_v_ + static_cast<size_t>(slot) * KW * H, static_cast<int>(KW),
+       static_cast<int>(H)},
+      {&w.o_proj_fp8, pt_full_o_ + static_cast<size_t>(slot) * H * FH, static_cast<int>(H),
+       static_cast<int>(FH)},
+  };
+  for (int t = 0; t < 4; ++t) {
+    const int n = tasks[t].n, k = tasks[t].k;
+    launch_fp8_dequant_blocks(tasks[t].src->payload, tasks[t].src->scales, gw_.dequant, n, k,
+                              stream);
+    float* mx = pt_full_scales_ + static_cast<size_t>(slot) * 4 + t;
+    launch_fp8_row_maxabs(gw_.dequant, static_cast<size_t>(n) * k, mx, stream);
+    launch_fp8_quant_bf16(gw_.dequant, tasks[t].dst, static_cast<size_t>(n) * k, mx, stream);
+  }
+}
+
+// The bound layer's attention view: GDN ordinals index the GDN slots, full
+// ordinals the full slots (the MTP draft layer takes the last full slot).
+// Anything unmapped (or PT off) yields a disabled view: the bridge path.
+QwenPtAttnView Qwen35Model::pt_gdn_view(int layer) const {
+  QwenPtAttnView v;
+  if (!pt_attn_enabled_) return v;
+  const int slot =
+      (layer >= 0 && layer < static_cast<int>(pt_gdn_ord_.size())) ? pt_gdn_ord_[layer] : -1;
+  if (slot < 0 || slot >= pt_gdn_slots_) return v;
+  const size_t H = static_cast<size_t>(cfg_.hidden_size);
+  const size_t C = static_cast<size_t>(pt_gdn_C_), LV = static_cast<size_t>(pt_gdn_LV_);
+  v.enabled = true;
+  v.H = static_cast<int>(H);
+  v.x_count = 2;
+  v.xw[0] = pt_gdn_qkv_ + static_cast<size_t>(slot) * C * H;
+  v.xrows[0] = static_cast<int>(C);
+  v.xw[1] = pt_gdn_z_ + static_cast<size_t>(slot) * LV * H;
+  v.xrows[1] = static_cast<int>(LV);
+  v.xscales = pt_gdn_scales_ + static_cast<size_t>(slot) * 3;
+  v.ow = pt_gdn_o_ + static_cast<size_t>(slot) * H * LV;
+  v.oscale = pt_gdn_scales_ + static_cast<size_t>(slot) * 3 + 2;
+  v.ocols = static_cast<int>(LV);
+  v.act = pt_act_;
+  v.act_scale = pt_act_scales_;
+  return v;
+}
+
+QwenPtAttnView Qwen35Model::pt_full_view(int layer) const {
+  QwenPtAttnView v;
+  if (!pt_attn_enabled_) return v;
+  int slot = -1;
+  if (mtp_ && layer == cfg_.mtp_layer())
+    slot = num_full_;
+  else if (layer >= 0 && layer < static_cast<int>(pt_full_ord_.size()))
+    slot = pt_full_ord_[layer];
+  if (slot < 0 || slot >= pt_full_slots_) return v;
+  const size_t H = static_cast<size_t>(cfg_.hidden_size);
+  const size_t QW = static_cast<size_t>(pt_full_QW_), KW = static_cast<size_t>(pt_full_KW_),
+               FH = static_cast<size_t>(pt_full_FH_);
+  v.enabled = true;
+  v.H = static_cast<int>(H);
+  v.x_count = 3;
+  v.xw[0] = pt_full_q_ + static_cast<size_t>(slot) * QW * H;
+  v.xrows[0] = static_cast<int>(QW);
+  v.xw[1] = pt_full_k_ + static_cast<size_t>(slot) * KW * H;
+  v.xrows[1] = static_cast<int>(KW);
+  v.xw[2] = pt_full_v_ + static_cast<size_t>(slot) * KW * H;
+  v.xrows[2] = static_cast<int>(KW);
+  v.xscales = pt_full_scales_ + static_cast<size_t>(slot) * 4;
+  v.ow = pt_full_o_ + static_cast<size_t>(slot) * H * FH;
+  v.oscale = pt_full_scales_ + static_cast<size_t>(slot) * 4 + 3;
+  v.ocols = static_cast<int>(FH);
+  v.act = pt_act_;
+  v.act_scale = pt_act_scales_;
+  return v;
+}
+
+// One PT slot's boot requant: dequant the blockwise matrix to the bridge,
+// then absmax + x/448 quantize into the slot (the bridge is idle at boot).
+void Qwen35Model::requant_mlp_pt(int slot, const Qwen35DenseMlpResident& m, cudaStream_t stream) {
+  const size_t H = static_cast<size_t>(cfg_.hidden_size);
+  const size_t I = static_cast<size_t>(cfg_.intermediate_size);
+  const size_t IH = I * H;
+  uint8_t* const dst[3] = {pt_gate_ + static_cast<size_t>(slot) * IH,
+                           pt_up_ + static_cast<size_t>(slot) * IH,
+                           pt_down_ + static_cast<size_t>(slot) * IH};
+  const GlmQuantMatrix* const src[3] = {&m.gate_fp8, &m.up_fp8, &m.down_fp8};
+  const int dims[3][2] = {{static_cast<int>(I), static_cast<int>(H)},
+                          {static_cast<int>(I), static_cast<int>(H)},
+                          {static_cast<int>(H), static_cast<int>(I)}};
+  for (int t = 0; t < 3; ++t) {
+    const int n = dims[t][0], k = dims[t][1];
+    launch_fp8_dequant_blocks(src[t]->payload, src[t]->scales, gw_.dequant, n, k, stream);
+    float* mx = pt_scales_ + static_cast<size_t>(slot) * 3 + t;
+    launch_fp8_row_maxabs(gw_.dequant, static_cast<size_t>(n) * k, mx, stream);
+    launch_fp8_quant_bf16(gw_.dequant, dst[t], static_cast<size_t>(n) * k, mx, stream);
+  }
+}
+
+// The lm head over `rows` activation rows into F32 logits: the boot
+// blockwise-FP8 head (half the bytes) when enabled, else the BF16 matmul.
+// Boot-fixed addresses, so the branch replays under CUDA graphs.
+void Qwen35Model::head_gemv(const uint16_t* act, float* out, int rows, cudaStream_t stream) {
+  const int H = cfg_.hidden_size;
+  const int64_t V = lm_vocab_count_;
+  // Uniform FP8 dispatch (m<=4 GEMV rows, wider the weights-once streaming
+  // MMA): ~5ms at small row counts, half the BF16 bytes. Past 128 rows the
+  // blockwise dense kernel falls behind BF16 Lt (58ms vs 26ms at m=500,
+  // measured), so wide heads (group walks, diagnostics) keep BF16.
+  if (head_fp8_enabled_ && rows <= 128) {
+    launch_scale_gemm_f32(act, static_cast<size_t>(H), head_fp8_, head_scales_, out, rows,
+                          static_cast<int>(V), H, stream, static_cast<size_t>(V),
+                          /*mma_from_rows=*/5);
+    return;
+  }
+  gemm_.matmul(act, globals_.lm_head, out, rows, static_cast<int>(V), H, DType::BF16, GemmOut::F32,
+               static_cast<size_t>(H), gemm_ws_, gemm_ws_bytes_, stream);
+}
+
 void Qwen35Model::dense_mlp(const uint16_t* x, uint16_t* out, int tokens,
-                            const Qwen35DenseMlpResident& m, cudaStream_t stream) {
+                            const Qwen35DenseMlpResident& m, cudaStream_t stream, int layer,
+                            bool resume) {
   const int64_t H = cfg_.hidden_size, I = cfg_.intermediate_size;
+  // Per-tensor FP8 recipe: one shared activation quantize over the H rows
+  // feeds both gate and up; the swiglu output is quantized once for down.
+  // All addresses are boot-fixed (slots, scratch, scale cells), so the
+  // branch replays under CUDA graphs like the bridge below it. resume marks
+  // a prefill continuation chunk (pos0 > 0): it takes this path at any row
+  // count, like the attention projections' resume.
+  if (pt_enabled_ && (tokens > 128 || resume) && layer >= 0 && layer < pt_slots_) {
+    const size_t IH = static_cast<size_t>(I) * static_cast<size_t>(H);
+    float* const asc = pt_act_scales_;
+    launch_fp8_row_maxabs(x, static_cast<size_t>(tokens) * H, asc, stream);
+    launch_fp8_quant_bf16(x, pt_act_, static_cast<size_t>(tokens) * H, asc, stream);
+    float* const ws = pt_scales_ + static_cast<size_t>(layer) * 3;
+    gemm_.matmul_fp8_scaled(pt_act_, pt_gate_ + static_cast<size_t>(layer) * IH, asc, ws, gate_tmp_,
+                            tokens, static_cast<int>(I), static_cast<int>(H), gw_.ws,
+                            gw_.ws_bytes, stream);
+    gemm_.matmul_fp8_scaled(pt_act_, pt_up_ + static_cast<size_t>(layer) * IH, asc, ws + 1, up_tmp_,
+                            tokens, static_cast<int>(I), static_cast<int>(H), gw_.ws,
+                            gw_.ws_bytes, stream);
+    qwen35_swiglu_bf16(gate_tmp_, up_tmp_, gate_tmp_, static_cast<int64_t>(tokens) * I, stream);
+    launch_fp8_row_maxabs(gate_tmp_, static_cast<size_t>(tokens) * I, asc + 1, stream);
+    launch_fp8_quant_bf16(gate_tmp_, pt_act_, static_cast<size_t>(tokens) * I, asc + 1, stream);
+    gemm_.matmul_fp8_scaled(pt_act_, pt_down_ + static_cast<size_t>(layer) * IH, asc + 1, ws + 2,
+                            out, tokens, static_cast<int>(H), static_cast<int>(I), gw_.ws,
+                            gw_.ws_bytes, stream);
+    return;
+  }
+  // Prefill-shaped products run the dequant bridge + cuBLASLt BF16 (the same
+  // lowering gemm_dense uses for the attention projections): nsys showed the
+  // streaming tile kernel owning ~70% of a 2K prefill at ~24 TFLOP/s, while
+  // the bridge scratch (178MB) sat unused by this direct caller.
+  if (tokens > 128 && gw_.dequant) {
+    const size_t up_bytes = static_cast<size_t>(I) * static_cast<size_t>(H) * 2;
+    const size_t down_bytes = static_cast<size_t>(H) * static_cast<size_t>(I) * 2;
+    if (up_bytes <= gw_.dequant_bytes && down_bytes <= gw_.dequant_bytes) {
+      launch_fp8_dequant_blocks(m.gate_fp8.payload, m.gate_fp8.scales, gw_.dequant, I, H, stream);
+      gw_.gemm->matmul(x, gw_.dequant, gate_tmp_, tokens, static_cast<int>(I), static_cast<int>(H),
+                       DType::BF16, GemmOut::BF16, static_cast<size_t>(H), gw_.ws, gw_.ws_bytes,
+                       stream);
+      launch_fp8_dequant_blocks(m.up_fp8.payload, m.up_fp8.scales, gw_.dequant, I, H, stream);
+      gw_.gemm->matmul(x, gw_.dequant, up_tmp_, tokens, static_cast<int>(I), static_cast<int>(H),
+                       DType::BF16, GemmOut::BF16, static_cast<size_t>(H), gw_.ws, gw_.ws_bytes,
+                       stream);
+      qwen35_swiglu_bf16(gate_tmp_, up_tmp_, gate_tmp_, static_cast<int64_t>(tokens) * I, stream);
+      launch_fp8_dequant_blocks(m.down_fp8.payload, m.down_fp8.scales, gw_.dequant, H, I, stream);
+      gw_.gemm->matmul(gate_tmp_, gw_.dequant, out, tokens, static_cast<int>(H), static_cast<int>(I),
+                       DType::BF16, GemmOut::BF16, static_cast<size_t>(I), gw_.ws, gw_.ws_bytes,
+                       stream);
+      return;
+    }
+  }
   launch_scale_gemm_bf16(x, static_cast<size_t>(H), m.gate_fp8.payload, m.gate_fp8.scales, gate_tmp_,
-                         tokens, static_cast<int>(I), static_cast<int>(H), stream);
+                         tokens, static_cast<int>(I), static_cast<int>(H), stream, 0, gw_.mma_from_rows);
   launch_scale_gemm_bf16(x, static_cast<size_t>(H), m.up_fp8.payload, m.up_fp8.scales, up_tmp_, tokens,
-                         static_cast<int>(I), static_cast<int>(H), stream);
+                         static_cast<int>(I), static_cast<int>(H), stream, 0, gw_.mma_from_rows);
   qwen35_swiglu_bf16(gate_tmp_, up_tmp_, gate_tmp_, static_cast<int64_t>(tokens) * I, stream);
   launch_scale_gemm_bf16(gate_tmp_, static_cast<size_t>(I), m.down_fp8.payload, m.down_fp8.scales, out,
-                         tokens, static_cast<int>(H), static_cast<int>(I), stream);
+                         tokens, static_cast<int>(H), static_cast<int>(I), stream, 0, gw_.mma_from_rows);
 }
 
 size_t Qwen35Model::session_snapshot_bytes(const Qwen35TextConfig& cfg, int world, bool mtp) {
@@ -336,6 +706,44 @@ MemoryPlan Qwen35Model::plan_memory(const Qwen35TextConfig& cfg, int max_tokens,
                                     QwenGdnLayer::scratch_bytes(qc, lk, lv, max_tokens)));
   // Activations: resid/x/attn/mlp [M,H] + gate/up tmps [M,I].
   plan.add("activations", 4 * M * H * 2 + 2 * M * I * 2);
+  // Dense FP8 prefill bridge: the largest dense matrix dequantized to BF16.
+  plan.add("dense fp8 prefill bridge (largest dense matrix in BF16)",
+           qwen35_dense_bridge_bytes(cfg));
+  // Per-tensor FP8 recipe (DGPP_FP8_PT_DENSE=0 disables, Resident only):
+  // boot-time E4M3 gate/up/down per layer plus one scale each, activation
+  // scratch. Streaming stacks keep the bridge (nothing eager to build).
+  if (fp8_per_tensor_enabled() && residency == LoaderResidency::Resident) {
+    const size_t slots = static_cast<size_t>(cfg.num_hidden_layers) + (mtp ? 1 : 0);
+    const size_t IH = static_cast<size_t>(cfg.intermediate_size) * cfg.hidden_size;
+    plan.add("per-tensor fp8 mlp (gate/up/down E4M3 + scales)", 3 * slots * IH + slots * 3 * 4);
+    plan.add("per-tensor fp8 activation scratch", M * I + 8);
+  }
+  if (fp8_per_tensor_enabled() && fp8_pt_attn_enabled() &&
+      residency == LoaderResidency::Resident) {    // Attention projections, the same recipe: GDN qkv/z/out per GDN layer,
+    // Full q/k/v/o per full layer plus the MTP draft's. The activation
+    // scratch above is shared (the sites run sequentially).
+    int num_gdn = 0, num_full = 0;
+    for (Qwen35LayerKind k : cfg.layers) (k == Qwen35LayerKind::Gdn ? num_gdn : num_full)++;
+    const size_t Hp = static_cast<size_t>(cfg.hidden_size);
+    const size_t C = 2 * static_cast<size_t>(cfg.gdn_key_heads) * cfg.gdn_key_head_dim +
+                     static_cast<size_t>(cfg.gdn_value_heads) * cfg.gdn_value_head_dim;
+    const size_t LV = static_cast<size_t>(cfg.gdn_value_heads) * cfg.gdn_value_head_dim;
+    plan.add("per-tensor fp8 gdn attention (qkv/z/out E4M3 + scales)",
+             static_cast<size_t>(num_gdn) * (C * Hp + LV * Hp + Hp * LV) +
+                 static_cast<size_t>(num_gdn) * 3 * 4);
+    const size_t QW = 2 * static_cast<size_t>(cfg.num_attention_heads) * cfg.head_dim;
+    const size_t KW = static_cast<size_t>(cfg.num_key_value_heads) * cfg.head_dim;
+    const size_t FH = static_cast<size_t>(cfg.num_attention_heads) * cfg.head_dim;
+    const size_t full_slots = static_cast<size_t>(num_full) + (mtp ? 1 : 0);
+    plan.add("per-tensor fp8 full attention (q/k/v/o E4M3 + scales)",
+             full_slots * (QW * Hp + 2 * KW * Hp + Hp * FH) + full_slots * 4 * 4);
+  }
+  // Blockwise-FP8 lm head (DGPP_FP8_HEAD, Resident only): half the bytes
+  // per decode row.
+  if (fp8_head_enabled() && residency == LoaderResidency::Resident) {
+    const size_t Vv = static_cast<size_t>(cfg.vocab_size), Hh = static_cast<size_t>(cfg.hidden_size);
+    plan.add("blockwise fp8 lm head (E4M3 + scales)", Vv * Hh + ((Vv + 127) / 128) * ((Hh + 127) / 128) * 4);
+  }
   if (mtp) {
     // Draft scratch: e/en/hn/hin/r/h [M,H] + cat [M,2H].
     plan.add("mtp scratch", 8 * M * H * 2);
@@ -469,7 +877,7 @@ void Qwen35Model::mtp_run_rows(int req, const int64_t* tokens, int64_t first_pos
   }
   add_inplace_bf16(mtp_r_, attn_out_, static_cast<size_t>(T) * H, stream_);
   qwen_rmsnorm_bf16(mtp_r_, r.post_norm, x_, T, H, eps, stream_);
-  dense_mlp(x_, mlp_out_, T, r.mlp, stream_);
+  dense_mlp(x_, mlp_out_, T, r.mlp, stream_, cfg_.num_hidden_layers, first_pos > 0 && !decode_row);
   add_inplace_bf16(mtp_r_, mlp_out_, static_cast<size_t>(T) * H, stream_);
   if (head_rows == 0) return;  // prefill rows fill the cache; no head
 
@@ -479,8 +887,7 @@ void Qwen35Model::mtp_run_rows(int req, const int64_t* tokens, int64_t first_pos
   qwen_rmsnorm_bf16(mtp_r_, globals_.mtp_norm, mtp_h_, T, H, eps, stream_);
   const uint16_t* head_in = mtp_h_ + static_cast<size_t>(T - head_rows) * H;
   const int64_t V = lm_vocab_count_;
-  gemm_.matmul(head_in, globals_.lm_head, logits_, head_rows, static_cast<int>(V), H, DType::BF16,
-               GemmOut::F32, static_cast<size_t>(H), gemm_ws_, gemm_ws_bytes_, stream_);
+  head_gemv(head_in, logits_, head_rows, stream_);
   if (decode_row && (!capture || decode_tail_mirrors_) && head_rows <= max_decode_rows_)
     DGPP_CUDA_OK(cudaMemcpyAsync(h_tail_logits_, logits_,
                                  static_cast<size_t>(head_rows) * V * sizeof(float),
@@ -574,12 +981,14 @@ Qwen35Model::Outputs Qwen35Model::run_rows(const RowRun& run) {
         for (int sp = 0; sp < run.num_spans; ++sp) {
           const int len = run.span_lens[sp], sreq = run.span_reqs[sp];
           gdn_->enqueue(x_ + static_cast<size_t>(row0) * H, gdn_rec(sreq, gdn_ord),
-                        gdn_conv(sreq, gdn_ord), attn_out_ + static_cast<size_t>(row0) * H, len, stream_);
+                        gdn_conv(sreq, gdn_ord), attn_out_ + static_cast<size_t>(row0) * H, len, stream_,
+                        KdaStateSnapshots{}, KdaConvSnapshots{}, KdaReplay{},
+                        run.span_pos0[sp] > 0 && !run.decode);
           row0 += len;
         }
       } else {
         gdn_->enqueue(x_, gdn_rec(req, gdn_ord), gdn_conv(req, gdn_ord), attn_out_, T, stream_, rec_snap,
-                      conv_snap);
+                      conv_snap, KdaReplay{}, run.pos0 > 0 && !run.decode);
       }
       ++gdn_ord;
     } else {
@@ -612,17 +1021,27 @@ Qwen35Model::Outputs Qwen35Model::run_rows(const RowRun& run) {
     }
     add_inplace_bf16(resid_, attn_out_, static_cast<size_t>(T) * H, stream_);
     qwen_rmsnorm_bf16(resid_, r.post_norm, x_, T, H, eps, stream_);
-    dense_mlp(x_, mlp_out_, T, r.mlp, stream_);
+    // A resume chunk's short tail takes the per-tensor MLP like the
+    // attention resume above; group spans start at pos0 (resume false).
+    // Decode/verify walks (run.decode) keep their exact GEMV dispatch.
+    bool mlp_resume = false;
+    if (!run.decode) {
+      if (run.num_spans > 0) {
+        for (int sp = 0; sp < run.num_spans; ++sp)
+          mlp_resume = mlp_resume || run.span_pos0[sp] > 0;
+      } else {
+        mlp_resume = run.pos0 > 0;
+      }
+    }
+    dense_mlp(x_, mlp_out_, T, r.mlp, stream_, layer, mlp_resume);
     add_inplace_bf16(resid_, mlp_out_, static_cast<size_t>(T) * H, stream_);
   }
   // Final norm + lm head.
   qwen_rmsnorm_bf16(resid_, globals_.final_norm, h_, T, H, eps, stream_);
   const int first = (run.decode || run.all_rows || run.num_spans > 0) ? 0 : T - 1;
   const int rows = T - first;
-  const int64_t V = lm_vocab_count_;
-  gemm_.matmul(h_ + static_cast<size_t>(first) * H, globals_.lm_head, logits_ + static_cast<size_t>(first) * V,
-               rows, static_cast<int>(V), H, DType::BF16, GemmOut::F32, static_cast<size_t>(H), gemm_ws_,
-               gemm_ws_bytes_, stream_);
+  head_gemv(h_ + static_cast<size_t>(first) * H, logits_ + static_cast<size_t>(first) * lm_vocab_count_,
+            rows, stream_);
   // The draft block's input: the last rows' final hidden into the slots'
   // windows by position (the last window rows of a prefill chunk, every
   // decode row — distinct slots within one launch).
