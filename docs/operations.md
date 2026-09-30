@@ -678,6 +678,31 @@ before it through the ring. `exact` runs all forty layers over every row
 G5 record). The mode is part of the world's settings (the head pushes it,
 the config digest carries it); decode is the same in both.
 
+**The opt-in prefill levers** (`engine.prefill_bf16_partials`,
+`engine.prefill_fold_scales`, `engine.prefill_fp8_gemm`; `--prefill-bf16-partials`,
+`--prefill-fold-scales`, `--prefill-fp8-gemm`; each default off) trade the
+prefill's exact arithmetic for speed within the quantized model's tolerance
+— none is bitwise the default chain, so a deployment that turns one on can
+serve transcripts that differ from the default's; the benchmarks list a
+template's default-chain and levers-on numbers as separate rows. They apply to the Qwen3.8 AutoRound hybrid's packed
+expert chain (the first two) and to any Qwen dense stack served under
+`engine.dense_weights: "fp8"` (the third; refused without it). `prefill_bf16_partials`
+writes the expert chain's down projection in bf16 and sums the per-expert
+partials from bf16 (half the bytes a 4,096-token chunk writes and reads
+back). `prefill_fold_scales` runs the wide packed expert GEMM with each
+group's scale folded into the bf16 weight values and one fp32 accumulator
+across K (Marlin's form). `prefill_fp8_gemm` runs the prefill-shaped dense
+projections on the fp8 tensor cores from per-token 1 x 128 e4m3 activations
+and the checkpoint's 128 x 128 weight scales (the reference stack's
+blockwise GEMM) instead of dequantizing each matrix to bf16 for cuBLASLt;
+its activation scratch is in the memory plan. Every rank runs the same
+setting (the config digest carries them). Measured on the AutoRound hybrid
+(docs/qwen38_autoround_int4_plan.md §6.15): the bf16 partials −3 to −7 %
+cold prefill, the fp8 GEMM 0 to −3 %, the fold no gain (+3 % at 32K); the
+first two together −3 to −6 % with HumanEval / GSM8K / extraction inside the
+default chain's band, which is why the AutoRound template turns those two
+on and no template turns on the fold.
+
 Nothing else on the node needs setting. In particular a locked GPU clock
 (`nvidia-smi -lgc`) is **not** required: the governor sits at 2400-2560 MHz
 throughout decode on its own and the measured step distribution is the same

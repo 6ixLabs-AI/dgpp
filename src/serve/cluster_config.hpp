@@ -95,6 +95,28 @@ struct ClusterConfig {
     // default): the draft scores the whole vocabulary. Never counted toward
     // a headline number; tools/build_draft_vocab.py builds a set.
     std::string draft_vocab;
+    // The opt-in prefill speed levers (2026-09-30, the Qwen3.8 hybrid;
+    // docs/qwen38_autoround_int4_plan.md §6.15). Each changes the
+    // prefill's arithmetic within the quantized model's tolerance — the
+    // served transcripts can differ from the default chain's — so each is
+    // off unless the deployment's config turns it on (the AutoRound
+    // template turns on the first and the third, measured within the
+    // default chain's eval band; the benchmarks list both rows).
+    //   prefill_bf16_partials: the packed expert chain's down projection
+    //     written in bf16 and its per-expert partials summed from bf16
+    //     (half the bytes a chunk writes and reads back; the reference
+    //     stack's form). Default: fp32 partials in the ordered chain.
+    //   prefill_fold_scales: the wide packed expert GEMM with each
+    //     group's scale folded into the bf16 weight values and one fp32
+    //     accumulator across K (Marlin's form; no per-group fma).
+    //   prefill_fp8_gemm: the block-FP8 dense stack's prefill GEMMs on
+    //     the fp8 tensor cores (per-token 1 x 128 e4m3 activations, the
+    //     checkpoint's 128 x 128 weight scales, fp32 promotion per group —
+    //     the reference stack's cutlass blockwise GEMM) instead of the
+    //     dequantized bf16 GEMM. Requires engine.dense_weights = fp8.
+    bool prefill_bf16_partials = false;
+    bool prefill_fold_scales = false;
+    bool prefill_fp8_gemm = false;
     // The DeepSeek-V4.1 prefill mode (docs/deepseek_v41_flash_plan.md
     // §1.8): "bounded" (the default: the encoder over every prompt row,
     // the decoder over the last window rows — the model's own serving

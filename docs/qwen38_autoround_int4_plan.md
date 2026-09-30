@@ -975,6 +975,94 @@ scoreboard 15 % of the warp cycles; two barriers a k-step, a 32 x 32
 warp tile), so the next form is a larger warp tile with the same chain —
 and the two accuracy trades.
 
+### 6.15 The accuracy trades as deployment keys (2026-09-30, round 20)
+
+The decision (2026-09-30): the levers that beat the bitwise chain by
+changing the prefill's arithmetic exist in dgpp, off by default, on only
+through a deployment's cluster config — `engine.prefill_bf16_partials`,
+`engine.prefill_fold_scales`, `engine.prefill_fp8_gemm` (docs/operations.md,
+the README key table); none is bitwise the default chain, so a deployment
+that turns one on serves transcripts that can differ from the default's,
+and the benchmarks list a template's default-chain and levers-on numbers
+as separate rows (the AutoRound template turns on the two that pay, below).
+
+- `prefill_bf16_partials`: the packed chain's down projection written in
+  bf16 and the per-expert partials summed from bf16 (the reference's
+  moe_sum; half the 419 MB a 4,096-token chunk writes and reads back).
+  The former env knob (`DGPP_MOE_PACKQ_DOWN_BF16`) is gone; the key sets
+  `GlmMoeLayer::set_prefill_options`.
+- `prefill_fold_scales`: the wide packed expert GEMM's variant 3 — each
+  group's scale folded into the decoded bf16 weight values
+  (`fold_scale`: bf16(code x scale)) and one fp32 accumulator across K,
+  no per-group partial or fma (Marlin's form). Gate
+  (`packq_gemm_test`): within 2^-7 relative RMS of the exact chain, the
+  finiteness pattern the same.
+- `prefill_fp8_gemm` (requires `dense_weights = fp8`): a new kernel pair
+  (`kernels/fp8_gemm`): the per-token 1 x 128 e4m3 quantizer (amax / 448
+  scales, the codes bitwise the host encoder's) and a 128 x 128 x 64
+  mma.sync m16n8k32 e4m3 GEMM — eight warps, a four-stage cp.async
+  pipeline (80 KB), ldmatrix on the 8-bit tiles, an fp32 partial per
+  128-wide k group promoted by the row's and the column's scale (the
+  reference's cutlass blockwise recipe), tiles walked in groups of eight
+  m-tiles so a wave shares its activation tiles from L2. Gates
+  (`fp8_gemm_test`): 1e-7 relative RMS against the exact sum of its own
+  quantized inputs, the bf16 output the f32 sum rounded once, 2.5–2.8 %
+  relative RMS from the dequantized bf16 chain it replaces (the e4m3
+  activation's own error). The dense hook takes it for m > 128 rows and
+  n >= 1,024 columns (the quantizer's pass over the activation costs
+  494 / n of the GEMM's time: the [320 x 10240] GR down would lose 60 %).
+
+The fp8 kernel against the chain it replaces (`fp8_gemm_bench`, 4,096
+rows, ms per launch pair; the GEMM alone in parentheses):
+
+| shape | dequant + cuBLASLt bf16 | quant + fp8 GEMM | delta |
+|---|---|---|---|
+| q/k/v-like [2560 x 2560] | 0.69 (0.59, 91 TF) | 0.75 (0.62, 86 TF) | +9 % |
+| in_proj-like [5120 x 2560] | 1.34 (1.15, 94 TF) | 1.31 (1.17, 92 TF) | −2 % |
+| out_proj-like [2560 x 5120] | 1.41 (1.21, 89 TF) | 1.36 (1.10, 98 TF) | −4 % |
+| GR down [320 x 10240] | 0.55 (0.50, 54 TF) | 0.87 (0.36, 74 TF) | +57 % (the hook skips it) |
+| PLE key [10240 x 2560] | 2.64 (2.24, 96 TF) | 2.57 (2.45, 88 TF) | −3 % |
+
+Floor → measured → gap: the fp8 GEMM runs at cuBLASLt's bf16 rate (86–98
+TF), ~35 % of the fp8 tensor peak — issue-bound like the packed kernel
+(the 64 x 32 warp tile's 6 ldmatrix per 16 mma, the per-group promotion's
+64 fma a thread, one block per SM at 240 registers), so the lever saves
+the dequant launches and little else; the reference's cutlass blockwise
+GEMMs run the same products in 580 ms per 8K chunk against our 936. The
+form that closes it is a 64 x 64 warp tile with fragment double-buffering
+and the promotion interleaved with the mma issue — a kernel round of its
+own. cuBLASLt 13.0 declares the block-scale modes
+(`CUBLASLT_MATMUL_MATRIX_SCALE_VEC128_32F`, `BLK128x128_32F`) but its
+heuristic returns no kernel for them on this GPU under any pairing
+(probed 2026-09-30) — the library is not a shortcut here.
+
+On the fabric (record sessions R20–R20c, one binary, the levers by
+config; cold prefill 2K / 8K / 32K, the 17K-prompt greedy sha per leg):
+
+| configuration | 2K | 8K | 32K | vs the base legs | greedy transcript |
+|---|---|---|---|---|---|
+| base (three legs) | 1.289–1.294 | 4.363–4.373 | 17.606–17.671 | | 927ffd8a |
+| bf16 partials | 1.204 | 4.198 | 17.118 | −6.6 / −3.8 / −2.8 % | unchanged |
+| fold scales | 1.276 | 4.450 | 18.235 | −1.0 / +2.0 / +3.6 % | unchanged |
+| fp8 GEMM | 1.249 | 4.352 | 17.579 | −3.1 / −0.3 / −0.2 % | unchanged |
+| all three | 1.208 | 4.327 | 17.827 | −6.3 / −0.8 / +1.3 % | unchanged |
+| bf16 partials + fp8 GEMM (two legs) | 1.209–1.210 | 4.226–4.236 | 17.096–17.116 | −6.3 / −3.2 / −3.1 % | diverges (43 tokens, 857f15c6) |
+
+The bf16 partials are the lever: −3 to −7 %, the 419 MB a chunk writes and
+reads back halved. The fp8 GEMM adds little because its kernel runs at
+the bf16 rate (above). The fold loses at 32K and cancels the other two
+when combined: on an issue-bound kernel the per-code multiply it adds to
+the decode phase costs more than the per-group fma it removes. Each
+single lever kept the long prompt's greedy transcript (an argmax that
+survived, not a bitwise property); the pair did not. Evals on the pair
+(the baseline's settings): HumanEval 159/164, GSM8K 291/300, extraction
+100/100 against the default chain's 159 / 292 / 100 and the templates'
+band (153–161, 291–296) — within noise. The AutoRound example template
+therefore turns on `prefill_bf16_partials` and `prefill_fp8_gemm`; the
+fold stays off everywhere. The benchmarks document lists the default and
+the levers-on rows (decode cells re-measured under the pair: the levers
+touch prefill-shaped launches only).
+
 ## 7. Defect list
 
 Each item is a measured or suspected distance from a floor, with its fix.

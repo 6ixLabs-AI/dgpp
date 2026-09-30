@@ -1122,6 +1122,11 @@ bool QwenLayerStream::set_draft_vocab(const std::string& npy_path, std::string* 
 int QwenLayerStream::draft_vocab_count() { return static_cast<int>(g_draft_vocab_ids.size()); }
 const std::vector<int32_t>& QwenLayerStream::draft_vocab_ids() { return g_draft_vocab_ids; }
 bool QwenLayerStream::dense_weights_fp8() { return g_dense_weights_fp8; }
+namespace {
+bool g_prefill_fp8_gemm = false;
+}
+void QwenLayerStream::set_prefill_fp8_gemm(bool on) { g_prefill_fp8_gemm = on; }
+bool QwenLayerStream::prefill_fp8_gemm() { return g_prefill_fp8_gemm; }
 // Bit 8: the NVFP4 experts' activation scales live in the layer image (a
 // resident image written without them is rebuilt, not misread).
 uint64_t QwenLoaderFamily::loader_format() {

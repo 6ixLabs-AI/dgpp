@@ -291,6 +291,12 @@ __device__ __forceinline__ void ldsm_x4(uint32_t (&r)[4], const void* p) {
 }
 // Two int4 codes (one byte, the low nibble first) to the bf16 pair
 // (code - 8) exactly: 0x4300 | nibble is 128 + nibble, less 136.
+// The bf16 pair times a scale, each rounded to bf16 (the folded form).
+__device__ __forceinline__ uint32_t fold_scale(uint32_t pair, float s) {
+  const float lo = __uint_as_float(pair << 16) * s;
+  const float hi = __uint_as_float(pair & 0xFFFF0000u) * s;
+  return static_cast<uint32_t>(float_to_bf16_bits(lo)) | (static_cast<uint32_t>(float_to_bf16_bits(hi)) << 16);
+}
 __device__ __forceinline__ uint32_t decode_byte(uint32_t byte) {
   const uint32_t pair = ((byte & 0xF0u) << 12) | (byte & 0x0Fu) | 0x43004300u;
   __nv_bfloat162 v = *reinterpret_cast<const __nv_bfloat162*>(&pair);
@@ -331,7 +337,11 @@ __device__ __forceinline__ void prefetch_l2(const void* p) {
   asm volatile("prefetch.global.L2 [%0];" ::"l"(p));
 }
 
-template <typename OutT, int SF, int M16, int kStages, bool kRegB>
+// kFold (2026-09-30, engine.prefill_fold_scales; NOT bitwise): each group's
+// scale folded into the decoded bf16 weight values — bf16(code x scale) —
+// and one fp32 accumulator across K (the Marlin form: no per-group partial,
+// no per-group fma). Decoded-tile path only.
+template <typename OutT, int SF, int M16, int kStages, bool kRegB, bool kFold>
 __device__ __forceinline__ void wide_tile(const WideCtx<OutT>& c) {
   constexpr int kMI = M16 == 4 ? 2 : 1;   // m16 tiles per warp
   constexpr int kNJ = M16 == 1 ? 2 : 4;   // n8 tiles per warp
@@ -431,6 +441,7 @@ __device__ __forceinline__ void wide_tile(const WideCtx<OutT>& c) {
       const uint4 codes = *reinterpret_cast<const uint4*>(bs + row * kWideCodeStride + half * 16);
       const uint32_t w[4] = {codes.x, codes.y, codes.z, codes.w};
       uint16_t* dst = c.bd + row * kWideDStride + half * 32;
+      [[maybe_unused]] const float fs = kFold ? c.scale[slot * kWideN + row] : 1.f;
 #pragma unroll
       for (int q = 0; q < 4; ++q) {
         uint4 o;
@@ -438,13 +449,21 @@ __device__ __forceinline__ void wide_tile(const WideCtx<OutT>& c) {
         o.y = decode_byte((w[q] >> 8) & 0xFFu);
         o.z = decode_byte((w[q] >> 16) & 0xFFu);
         o.w = decode_byte(w[q] >> 24);
+        if constexpr (kFold) {
+          o.x = fold_scale(o.x, fs);
+          o.y = fold_scale(o.y, fs);
+          o.z = fold_scale(o.z, fs);
+          o.w = fold_scale(o.w, fs);
+        }
         *reinterpret_cast<uint4*>(dst + q * 8) = o;
       }
       __syncthreads();
     }
     const uint16_t* as = c.a + static_cast<size_t>(slot) * kWideM * kWideAStride;
     const uint8_t* bs_codes = c.bc + static_cast<size_t>(slot) * kWideN * kWideCodeStride;
-    float partial[kMI][kNJ][4] = {};
+    float partial_storage[kMI][kNJ][4] = {};
+    // kFold: the MMAs accumulate straight into acc (the scale is in the values).
+    auto& partial = kFold ? acc : partial_storage;
 #pragma unroll
     for (int kk = 0; kk < kWideK; kk += 16) {
       uint32_t af[kMI][4];
@@ -490,15 +509,17 @@ __device__ __forceinline__ void wide_tile(const WideCtx<OutT>& c) {
                 "+f"(partial[i][j][3])
               : "r"(af[i][0]), "r"(af[i][1]), "r"(af[i][2]), "r"(af[i][3]), "r"(bf[j][0]), "r"(bf[j][1]));
     }
+    if constexpr (!kFold) {
 #pragma unroll
-    for (int i = 0; i < kMI; ++i)
+      for (int i = 0; i < kMI; ++i)
 #pragma unroll
-      for (int j = 0; j < kNJ; ++j) {
-        const int col = col_base + j * 8 + cc;
+        for (int j = 0; j < kNJ; ++j) {
+          const int col = col_base + j * 8 + cc;
 #pragma unroll
-        for (int v = 0; v < 4; ++v)
-          acc[i][j][v] = __fmaf_rn(c.scale[slot * kWideN + col + (v % 2)], partial[i][j][v], acc[i][j][v]);
-      }
+          for (int v = 0; v < 4; ++v)
+            acc[i][j][v] = __fmaf_rn(c.scale[slot * kWideN + col + (v % 2)], partial[i][j][v], acc[i][j][v]);
+        }
+    }
   }
 #pragma unroll
   for (int i = 0; i < kMI; ++i)
@@ -518,7 +539,7 @@ __device__ __forceinline__ void wide_tile(const WideCtx<OutT>& c) {
       }
 }
 
-template <typename OutT, bool Grouped, int SF, int kStages, bool kRegB>
+template <typename OutT, bool Grouped, int SF, int kStages, bool kRegB, bool kFold>
 __global__ __launch_bounds__(kWideThreads, kWideMinBlocks) void packq_gemm_wide_kernel(
     const uint16_t* __restrict__ act, size_t act_stride, const uint8_t* __restrict__ weights,
     const uint16_t* __restrict__ scales, const MoeSegment* __restrict__ segs,
@@ -585,13 +606,13 @@ __global__ __launch_bounds__(kWideThreads, kWideMinBlocks) void packq_gemm_wide_
   c.row_bytes = k / 2;
   c.vector_act = vector_act;
   const int rows_here = m - c.m0 < kWideM ? m - c.m0 : kWideM;
-  if (rows_here <= 16) wide_tile<OutT, SF, 1, kStages, kRegB>(c);
-  else if (rows_here <= 32) wide_tile<OutT, SF, 2, kStages, kRegB>(c);
-  else wide_tile<OutT, SF, 4, kStages, kRegB>(c);
+  if (rows_here <= 16) wide_tile<OutT, SF, 1, kStages, kRegB, kFold>(c);
+  else if (rows_here <= 32) wide_tile<OutT, SF, 2, kStages, kRegB, kFold>(c);
+  else wide_tile<OutT, SF, 4, kStages, kRegB, kFold>(c);
 }
 
 
-template <typename OutT, bool Grouped, int SF, int kStages, bool kRegB>
+template <typename OutT, bool Grouped, int SF, int kStages, bool kRegB, bool kFold>
 void launch_wide(const uint16_t* act, size_t act_stride, const uint8_t* weights, const uint16_t* scales,
                  const MoeSegment* segs, int n_segs, const MoeExpertView* views, int which,
                  const int32_t* act_rows, OutT* out, size_t out_stride, int m, int n, int k,
@@ -600,7 +621,7 @@ void launch_wide(const uint16_t* act, size_t act_stride, const uint8_t* weights,
   constexpr size_t kSmem = wide_smem_bytes(kStages, kRegB);
   static bool opted = false;
   if (!opted) {
-    DGPP_CUDA_OK(cudaFuncSetAttribute(packq_gemm_wide_kernel<OutT, Grouped, SF, kStages, kRegB>,
+    DGPP_CUDA_OK(cudaFuncSetAttribute(packq_gemm_wide_kernel<OutT, Grouped, SF, kStages, kRegB, kFold>,
                                       cudaFuncAttributeMaxDynamicSharedMemorySize, static_cast<int>(kSmem)));
     opted = true;
   }
@@ -608,7 +629,7 @@ void launch_wide(const uint16_t* act, size_t act_stride, const uint8_t* weights,
   const bool listed = Grouped && tiles != nullptr;
   const dim3 grid(n_tiles * (listed ? tile_cap : (m + kWideM - 1) / kWideM), listed ? 1 : n_segs);
   const bool vector_act = reinterpret_cast<uintptr_t>(act) % 16 == 0 && act_stride % 8 == 0;
-  packq_gemm_wide_kernel<OutT, Grouped, SF, kStages, kRegB><<<grid, kWideThreads, kSmem, stream>>>(
+  packq_gemm_wide_kernel<OutT, Grouped, SF, kStages, kRegB, kFold><<<grid, kWideThreads, kSmem, stream>>>(
       act, act_stride, weights, scales, segs, views, which, act_rows, out, out_stride, m, n, k, n_tiles,
       vector_act, listed ? tiles : nullptr, listed ? tile_count : nullptr, packq_gemm_prefetch_ahead(),
       Grouped ? out2 : nullptr, which2);
@@ -637,17 +658,21 @@ void launch(const uint16_t* act, size_t act_stride, const uint8_t* weights, cons
             OutT* out2 = nullptr, int which2 = -1) {
   check_shape(act, act_stride, out, out_stride, n, k, bits, scale_fmt);
   if (variant < 0) variant = packq_gemm_variant_default();
-  if ((variant == 1 || variant == 2) && bits == 4 && !planes) {
-#define DGPP_WIDE(SF_, ST_, RB_)                                                                             \
-  launch_wide<OutT, Grouped, SF_, ST_, RB_>(act, act_stride, weights, scales, segs, n_segs, views, which,   \
-                                             act_rows, out, out_stride, m, n, k, stream, tiles, tile_count, \
-                                             tile_cap, out2, which2)
+  // variant 3 (engine.prefill_fold_scales; NOT bitwise): the decoded-tile
+  // kernel with the group scales folded into the bf16 values.
+  if ((variant == 1 || variant == 2 || variant == 3) && bits == 4 && !planes) {
+#define DGPP_WIDE(SF_, ST_, RB_, FD_)                                                                          \
+  launch_wide<OutT, Grouped, SF_, ST_, RB_, FD_>(act, act_stride, weights, scales, segs, n_segs, views, which, \
+                                                  act_rows, out, out_stride, m, n, k, stream, tiles,          \
+                                                  tile_count, tile_cap, out2, which2)
     if (scale_fmt == packq_gemv::kScaleF16G128) {
-      if (variant == 2) DGPP_WIDE(packq_gemv::kScaleF16G128, kWideStagesReg, true);
-      else DGPP_WIDE(packq_gemv::kScaleF16G128, kWideStages, false);
+      if (variant == 2) DGPP_WIDE(packq_gemv::kScaleF16G128, kWideStagesReg, true, false);
+      else if (variant == 3) DGPP_WIDE(packq_gemv::kScaleF16G128, kWideStages, false, true);
+      else DGPP_WIDE(packq_gemv::kScaleF16G128, kWideStages, false, false);
     } else {
-      if (variant == 2) DGPP_WIDE(packq_gemv::kScaleBf16G64, kWideStagesReg, true);
-      else DGPP_WIDE(packq_gemv::kScaleBf16G64, kWideStages, false);
+      if (variant == 2) DGPP_WIDE(packq_gemv::kScaleBf16G64, kWideStagesReg, true, false);
+      else if (variant == 3) DGPP_WIDE(packq_gemv::kScaleBf16G64, kWideStages, false, true);
+      else DGPP_WIDE(packq_gemv::kScaleBf16G64, kWideStages, false, false);
     }
 #undef DGPP_WIDE
     return;

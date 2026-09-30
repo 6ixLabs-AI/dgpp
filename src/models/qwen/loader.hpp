@@ -308,6 +308,14 @@ class QwenLayerStream : public ResidentLayerStream<QwenLoaderFamily> {
   // stream is built; the memory plan and the resident image key follow it.
   static void set_dense_weights_fp8(bool on);
   static bool dense_weights_fp8();
+  // The opt-in fp8 prefill GEMM (2026-09-30, engine.prefill_fp8_gemm; NOT
+  // bitwise): a prefill-shaped dense product under dense_weights = fp8
+  // runs on the fp8 tensor cores (kernels/fp8_gemm: per-token 1 x 128
+  // e4m3 activations, the 128 x 128 weight scales, fp32 promotion per
+  // group) instead of dequantizing the matrix for the bf16 GEMM. Set
+  // before the model is built (the activation scratch follows it).
+  static void set_prefill_fp8_gemm(bool on);
+  static bool prefill_fp8_gemm();
   // The draft vocabulary slice (engine.draft_vocab, 2026-09-29): a .npy of
   // token ids read once here (sorted, unique); the hybrid's loader gathers
   // those rows of the int8 head into the draft's own plane-layout matrix.

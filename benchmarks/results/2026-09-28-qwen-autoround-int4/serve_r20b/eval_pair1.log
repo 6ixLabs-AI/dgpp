@@ -1,0 +1,33 @@
+  humaneval: 20/164 done, 20 pass, 34s
+  humaneval: 40/164 done, 39 pass, 65s
+  humaneval: 60/164 done, 59 pass, 96s
+  humaneval: 80/164 done, 79 pass, 140s
+  humaneval: 100/164 done, 99 pass, 212s
+  humaneval: 120/164 done, 119 pass, 243s
+  humaneval: 140/164 done, 138 pass, 341s
+  humaneval: 160/164 done, 156 pass, 364s
+  humaneval: 164/164 done, 159 pass, 366s
+== humaneval: 159/164 = 97.0 %  (366 s, mean 243 completion tokens, 1 truncated)
+  gsm8k: 20/300 done, 19 pass, 94s
+  gsm8k: 40/300 done, 39 pass, 142s
+  gsm8k: 60/300 done, 59 pass, 203s
+  gsm8k: 80/300 done, 79 pass, 257s
+  gsm8k: 100/300 done, 97 pass, 325s
+  gsm8k: 120/300 done, 116 pass, 414s
+  gsm8k: 140/300 done, 136 pass, 444s
+  gsm8k: 160/300 done, 156 pass, 512s
+  gsm8k: 180/300 done, 175 pass, 572s
+  gsm8k: 200/300 done, 194 pass, 666s
+  gsm8k: 220/300 done, 214 pass, 726s
+  gsm8k: 240/300 done, 233 pass, 786s
+  gsm8k: 260/300 done, 252 pass, 907s
+  gsm8k: 280/300 done, 271 pass, 921s
+  gsm8k: 300/300 done, 291 pass, 990s
+== gsm8k: 291/300 = 97.0 %  (990 s, mean 358 completion tokens, 1 truncated)
+  extract: 20/100 done, 20 pass, 15s
+  extract: 40/100 done, 40 pass, 29s
+  extract: 60/100 done, 60 pass, 43s
+  extract: 80/100 done, 80 pass, 57s
+  extract: 100/100 done, 100 pass, 70s
+== extract: 100/100 = 100.0 %  (70 s, mean 63 completion tokens, 0 truncated)
+{"humaneval": {"n": 164, "passed": 159, "rate": 0.9695, "seconds": 366, "mean_completion_tokens": 243, "truncated": 1}, "gsm8k": {"n": 300, "passed": 291, "rate": 0.97, "seconds": 990, "mean_completion_tokens": 358, "truncated": 1}, "extract": {"n": 100, "passed": 100, "rate": 1.0, "seconds": 70, "mean_completion_tokens": 63, "truncated": 0}}

@@ -1413,3 +1413,87 @@ warp, or a 128-wide block) with the same per-element chain; the two
 accuracy trades (the scale folded into the bf16 fragment, bf16 partials)
 remain the user's decision. The reference launcher, probe and breakdown
 scripts are copied to `reference_vllm/` beside this file.
+
+## Round 20 — the accuracy trades as deployment keys (2026-09-30, 15:19–)
+
+The user's decision: the non-bitwise prefill levers exist in dgpp, off by
+default, on only through a deployment's config (`engine.prefill_bf16_partials`,
+`engine.prefill_fold_scales`, `engine.prefill_fp8_gemm`; plan §6.15). New
+this round: the folded-scale wide kernel (`packq_gemm` variant 3), the fp8
+prefill GEMM pair (`kernels/fp8_gemm`: the per-token 1 x 128 e4m3 quantizer
+and a 128 x 128 x 64 mma.sync e4m3 GEMM with per-group fp32 promotion and a
+grouped tile order), the keys through the config parser, the worker record
+and the serve app, the gates (`packq_gemm_test`: the fold within 2^-7
+relative RMS of the exact chain; `fp8_gemm_test`: 1e-7 of the exact sum of
+its quantized inputs, 2.5–2.8 % of the dequantized chain), and
+`fp8_gemm_bench` (the fp8 GEMM at cuBLASLt's bf16 rate, 86–98 TF: −2..−4 %
+at the large dense shapes with the dequant gone, +57 % at [320 x 10240]
+where the quantizer's pass over the activation costs more than the GEMM —
+the hook skips n < 1,024; cuBLASLt 13.0's block-scale modes return no
+kernel on this GPU under any pairing).
+
+**Session R20** (`serve_r20/`, 15:19–15:31; one binary, five configs, the
+prefill probe 2K/8K/32K x3 and the 17K-prompt greedy sha per leg; the
+first leg cold):
+
+| leg | 2K | 8K | 32K | vs base2 | greedy sha |
+|---|---|---|---|---|---|
+| base1 (cold) | 1.338 | 4.444 | 17.695 | | 927ffd8a |
+| bf16 partials | 1.204 | 4.198 | 17.118 | −6.6 / −3.8 / −2.8 % | 927ffd8a |
+| fold scales | 1.276 | 4.450 | 18.235 | −1.0 / +2.0 / +3.6 % | 927ffd8a |
+| fp8 GEMM | 1.249 | 4.352 | 17.579 | −3.1 / −0.3 / −0.2 % | 927ffd8a |
+| all three | 1.208 | 4.327 | 17.827 | −6.3 / −0.8 / +1.3 % | 927ffd8a |
+| base2 | 1.289 | 4.363 | 17.606 | | 927ffd8a |
+
+Each leg's server log names its levers (`prefill levers on ...`). The bf16
+partials pay at every length; the fp8 GEMM pays little (its kernel runs at
+the bf16 rate, so it saves the dequant launches alone); the fold loses at
+32K (its per-code multiply in the decode phase costs more issue slots than
+the per-group fma it removes, on a kernel that is issue-bound), and cancels
+the other two when combined. Every single-lever leg kept the long prompt's
+greedy transcript — the argmax survived the changed arithmetic on this
+prompt; that is not a bitwise claim.
+
+**Session R20b** (`serve_r20b/`, 15:31–): the pair that pays — bf16
+partials + fp8 GEMM, no fold — around a base leg, with the task evals on
+the pair at the baseline's settings (depth 3, greedy, thinking off,
+max_tokens 2048, seed 20260908):
+
+| leg | 2K | 8K | 32K | greedy sha |
+|---|---|---|---|---|
+| pair1 | 1.209 | 4.236 | 17.116 | 857f15c6 (43 tokens) |
+| base3 | 1.294 | 4.373 | 17.671 | 927ffd8a |
+| pair2 | 1.210 | 4.226 | 17.096 | 857f15c6 |
+
+The pair against the two base legs around it: −6.3 / −3.2 / −3.1 % at
+2K / 8K / 32K (1.21 / 4.23 / 17.10 s against 1.29 / 4.37 / 17.64), both
+pair legs within 0.1 % of each other.
+
+The pair diverges the long prompt's greedy transcript (the first leg to:
+the combined perturbation crossed an argmax margin each lever alone did
+not). Evals on the pair: HumanEval 159/164 (366 s), GSM8K 291/300 (990 s),
+extraction 100/100 (70 s), two responses at the token cap — against the
+default chain's 159 / 292 / 100 (one at cap) and the templates' band
+(HumanEval 153–161, GSM8K 291–296): within noise. The AutoRound example
+template turns the pair on from this round; the fold stays off everywhere.
+
+**Session R20c** (`serve_r20c/`): the docs/benchmarks.md decode protocol
+on the pair config (timed_load C1/C2/C4 x all classes x 3, 256 tokens,
+greedy) for the levers-on row's decode cells — the levers touch
+prefill-shaped launches only, so the cells are expected level with round
+14's — and are (16:01–16:08):
+
+| | prose | code | json | math | chat |
+|---|---|---|---|---|---|
+| C1 engine tok/s (median of 3) | 48.0 | 59.5 | 71.5 | 64.0 | 45.9 |
+| C1 ms/pass, tok/pass | 52.1, 2.50 | 52.9, 3.15 | 53.2, 3.81 | 53.1, 3.40 | 52.9, 2.43 |
+| C2 loaded wall tok/s | 55.3 | 80.6 | 89.0 | 82.9 | 59.0 |
+| C4 loaded wall tok/s | 78.0 | 107.1 | 116.3 | 104.6 | 82.3 |
+
+The benchmarks-document row for the levers-on template: C1 engine
+45.9–71.5, C4 loaded 78.0–116.3, cold prefill 1.210 / 4.226 / 17.096
+(the exact chain's row stays 44.7–71.5, 77.3–118.6, 1.294 / 4.417 /
+17.817). The full ctest of the tree passed 176/177 with `dsv41_tp_test`
+failing on a port collision — its four loopback worlds bound 29968–29971,
+the deployment defaults' fabric and journal ports, so it could not start
+beside a live deployment; moved to 29980+ and passing alone (3/3).

@@ -19,6 +19,18 @@
 
 namespace dgpp {
 
+namespace {
+bool g_prefill_bf16_partials = false;
+bool g_prefill_fold_scales = false;
+}  // namespace
+
+void GlmMoeLayer::set_prefill_options(bool bf16_partials, bool fold_scales) {
+  g_prefill_bf16_partials = bf16_partials;
+  g_prefill_fold_scales = fold_scales;
+}
+bool GlmMoeLayer::prefill_bf16_partials() { return g_prefill_bf16_partials; }
+bool GlmMoeLayer::prefill_fold_scales() { return g_prefill_fold_scales; }
+
 size_t GlmMoeLayer::scratch_bytes(const GlmMoeConfig& cfg, int max_tokens,
                                   int decode_slots, int graph_table_slots,
                                   size_t* pinned_bytes) {
@@ -528,7 +540,8 @@ bool GlmMoeLayer::packq_tile_list() const {
     const char* e = std::getenv("DGPP_MOE_TILE_LIST");
     return e == nullptr || e[0] != '0';  // default on; =0 keeps the max_rows grid
   }();
-  return enabled && w_.packq() && w_.experts_packed[0].bits == 4 && packq_gemm_variant_default() == 1;
+  return enabled && w_.packq() && w_.experts_packed[0].bits == 4 &&
+         (packq_gemm_variant_default() == 1 || g_prefill_fold_scales);
 }
 
 // Builds the routed segments' tile list on the stream when the chain's
@@ -765,16 +778,16 @@ void GlmMoeLayer::grouped_expert_chain(MoeExpertKernel kernel,
   // unless DGPP_MOE_W4A4_F32_DOWN=1; only without a shared segment, whose
   // rows would share the buffer in fp32.
   static const bool f32_down = std::getenv("DGPP_MOE_W4A4_F32_DOWN") != nullptr;
-  // OPT-IN, NOT BITWISE (2026-09-30, DGPP_MOE_PACKQ_DOWN_BF16=1): the packed
-  // chain's down projection written in bf16 and accumulated from bf16
-  // partials (the reference stack's form: half the 419 MB a 4,096-token
-  // chunk writes and reads back); the fp32 partials' ordered chain is the
-  // default and the served transcripts' contract.
-  static const bool packq_down_bf16 = [] {
-    const char* e = std::getenv("DGPP_MOE_PACKQ_DOWN_BF16");
-    return e != nullptr && e[0] != '\0' && e[0] != '0';
-  }();
-  const bool packq_mma_bf16_down = packq && kernel == MoeExpertKernel::kMma && packq_down_bf16;
+  // OPT-IN, NOT BITWISE (2026-09-30, engine.prefill_bf16_partials): the
+  // packed chain's down projection written in bf16 and accumulated from
+  // bf16 partials (the reference stack's form: half the 419 MB a
+  // 4,096-token chunk writes and reads back); the fp32 partials' ordered
+  // chain is the default and the served transcripts' contract.
+  const bool packq_mma_bf16_down = packq && kernel == MoeExpertKernel::kMma && g_prefill_bf16_partials;
+  // OPT-IN, NOT BITWISE (engine.prefill_fold_scales): the wide kernel's
+  // folded-scale form (variant 3) for every packed tensor-core launch of
+  // this chain; -1 is the default variant (DGPP_PACKQ_GEMM).
+  const int packq_variant = g_prefill_fold_scales && routed_bits == 4 ? 3 : -1;
   down_bf16_ = (w4a4 || packq_mma_bf16_down) && shared_seg == nullptr && !f32_down;
   if (w4a4) {
     static const bool logged = [&] {
@@ -823,7 +836,7 @@ void GlmMoeLayer::grouped_expert_chain(MoeExpertKernel kernel,
     if (packq && mma)
       launch_moe_grouped_mma_packq_bf16(hidden, H, sg, ns, mr, d_views_prefill_, which, out, I_max,
                                         n, H, routed_arg ? routed_bits : shared_bits, stream,
-                                        d_rows_, routed_arg ? routed_sf : 0, -1,
+                                        d_rows_, routed_arg ? routed_sf : 0, packq_variant,
                                         routed_arg ? tiles : nullptr, tile_count, tile_cap);
     else if (packq)
       launch_moe_grouped_gemv_packq_bf16(d_gather_, H, sg, ns, mr, split, d_views_prefill_,
@@ -853,12 +866,12 @@ void GlmMoeLayer::grouped_expert_chain(MoeExpertKernel kernel,
       launch_moe_grouped_mma_packq_bf16(d_act_, I_max, sg, ns, mr, d_views_prefill_, 2,
                                         reinterpret_cast<uint16_t*>(d_down_), H, H, k,
                                         routed_arg ? routed_bits : shared_bits, stream, nullptr,
-                                        routed_arg ? routed_sf : 0, -1, routed_arg ? tiles : nullptr,
+                                        routed_arg ? routed_sf : 0, packq_variant, routed_arg ? tiles : nullptr,
                                         tile_count, tile_cap);
     else if (packq && mma)
       launch_moe_grouped_mma_packq_f32(d_act_, I_max, sg, ns, mr, d_views_prefill_, 2, d_down_, H,
                                        H, k, routed_arg ? routed_bits : shared_bits, stream,
-                                       nullptr, routed_arg ? routed_sf : 0, -1,
+                                       nullptr, routed_arg ? routed_sf : 0, packq_variant,
                                        routed_arg ? tiles : nullptr, tile_count, tile_cap);
     else if (packq)
       launch_moe_grouped_gemv_packq_f32(d_act_, I_max, sg, ns, mr, split, d_views_prefill_,
@@ -895,8 +908,8 @@ void GlmMoeLayer::grouped_expert_chain(MoeExpertKernel kernel,
   const bool paired = packq && mma && packq_pair && routed_bits == 4;
   if (paired)
     launch_moe_grouped_mma_packq_bf16(hidden, H, segs, n_segs, max_rows, d_views_prefill_, 0, d_gate_, I_max,
-                                      I_r, H, routed_bits, stream, d_rows_, routed_sf, -1, tiles, tile_count,
-                                      tile_cap, d_up_, 1);
+                                      I_r, H, routed_bits, stream, d_rows_, routed_sf, packq_variant, tiles,
+                                      tile_count, tile_cap, d_up_, 1);
   else
     gemm_bf16(segs, n_segs, max_rows, 0, 0, d_gate_, I_r, true);
   if (shared_seg) gemm_bf16(shared_seg, 1, tokens, shared_split, 0, d_gate_, I_s, false);
