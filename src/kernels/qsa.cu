@@ -236,12 +236,14 @@ __global__ __launch_bounds__(kScoreThreads) void index_score_kernel(
     const uint16_t* __restrict__ q, int64_t q_row_stride, const int32_t* __restrict__ req_ids,
     const int64_t* __restrict__ pos, const int32_t* __restrict__ block_tables,
     int blocks_per_request, const uint16_t* __restrict__ index_cache, int pools_per_block,
-    int heads, int kpool, uint64_t* __restrict__ keys_ws, int64_t ws_stride, float sqrt_dim) {
+    int heads, int kpool, uint64_t* __restrict__ keys_ws, int64_t ws_stride, float sqrt_dim,
+    int select_k) {
   __shared__ float qs[4 * 128];
   const int64_t r = blockIdx.y;
   const int64_t p = pos[r];
   if (p < 0) return;
   const int64_t visible = (p + 1) / kpool;
+  if (visible <= select_k) return;
   const int64_t p0 = static_cast<int64_t>(blockIdx.x) * kScorePoolsPerBlock;
   if (p0 >= visible) return;
   // Heads beyond `heads` (<= 4) hold zeros: their lanes add nothing.
@@ -421,6 +423,14 @@ __global__ __launch_bounds__(kSelectThreads) void select_from_keys_kernel(
     return;
   }
   const int64_t visible = (p + 1) / kpool;
+  // Every complete pool and the incomplete tail survive. Their final token
+  // order is just [0, p], independent of scores (which need not be written).
+  if (visible <= select_k) {
+    for (int col = threadIdx.x; col < max_selected; col += blockDim.x)
+      topk_out[r * max_selected + col] = col <= p ? col : -1;
+    if (threadIdx.x == 0) out_counts[r] = static_cast<int32_t>(p + 1);
+    return;
+  }
   for (int i = threadIdx.x; i < select_k; i += blockDim.x) {
     best_hi[i] = 0xFFFFFFFFu;
     best_lo[i] = 0xFFFFFFFFu;
@@ -820,7 +830,7 @@ void qsa_index_score(const uint16_t* q, int64_t q_row_stride, const int32_t* req
                      const int64_t* pos, int rows, const int32_t* block_tables,
                      int blocks_per_request, const uint16_t* index_cache, int pools_per_block,
                      int heads, int dim, int kpool, uint64_t* keys_ws, int64_t ws_stride,
-                     cudaStream_t stream, int64_t visible_pool_bound) {
+                     cudaStream_t stream, int64_t visible_pool_bound, int select_k) {
   if (rows <= 0) return;
   if (!q || !req_ids || !pos || !block_tables || !index_cache || !keys_ws)
     throw std::invalid_argument("qsa_index_score: null pointer");
@@ -830,15 +840,17 @@ void qsa_index_score(const uint16_t* q, int64_t q_row_stride, const int32_t* req
     throw std::invalid_argument("qsa_index_score: pool ids must fit kIdxBits");
   if (visible_pool_bound < -1 || visible_pool_bound > ws_stride)
     throw std::invalid_argument("qsa_index_score: visible pool bound outside workspace");
+  if (select_k < 0 || select_k > 1024)
+    throw std::invalid_argument("qsa_index_score: select_k outside [0, 1024]");
   if (rows > 65535) throw std::invalid_argument("qsa_index_score: too many rows per launch");
   const int64_t pools = visible_pool_bound < 0 ? ws_stride : visible_pool_bound;
-  if (pools == 0) return;
+  if (pools <= select_k) return;
   const int64_t stripes = (pools + kScorePoolsPerBlock - 1) / kScorePoolsPerBlock;
   if (stripes > 0x7fffffff) throw std::invalid_argument("qsa_index_score: too many pools");
   const dim3 grid(static_cast<unsigned>(stripes), static_cast<unsigned>(rows));
   index_score_kernel<<<grid, kScoreThreads, 0, stream>>>(
-      q, q_row_stride, req_ids, pos, block_tables, blocks_per_request, index_cache,
-      pools_per_block, heads, kpool, keys_ws, ws_stride, std::sqrt(static_cast<float>(dim)));
+      q, q_row_stride, req_ids, pos, block_tables, blocks_per_request, index_cache, pools_per_block,
+      heads, kpool, keys_ws, ws_stride, std::sqrt(static_cast<float>(dim)), select_k);
   DGPP_CUDA_OK(cudaGetLastError());
 }
 

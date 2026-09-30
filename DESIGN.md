@@ -13,10 +13,22 @@ and GLM-4.7's GQA and NVFP4 layout in [its implementation notes](docs/glm47_plan
 Shared session and engine interfaces live in `src/engine/`.
 
 Qwen's QSA indexer preserves its FP32 scoring order and deterministic
-score/pool tie rule. Long rows use exact radix selection; short rows use
-streaming top-k. Both expand the same sorted pool ids with the existing
-workspace and captured graph shape. See the
+score/pool tie rule. Rows whose visible pools fit the selection budget emit
+all visible tokens directly, including the incomplete tail, without scoring
+or sorting keys. Compression and ring updates still run so later rows can
+select from the full history. Other rows use exact radix selection above
+2048 pools and streaming top-k below it, expanding sorted pool ids with the
+existing workspace and captured graph shape. See the
 [selection measurements](benchmarks/results/2026-09-21-qwen-qsa-select.md).
+
+Prefill scoring launches only enough pool stripes to cover the chunk's final
+position, including cached history, and omits the launch when the whole chunk
+fits the selection budget. Decode and verify keep the full workspace grid;
+each row decides whether to score from its device position on every replay.
+This shared BF16 QSA path applies to FP8, NVFP4 and AutoRound int4 experts,
+including FP8 dense projections. The
+[launch and selection validation](benchmarks/results/2026-09-30-qsa-launch-selection.md)
+also records the rejected bounded decode-grid experiment.
 
 QSA scoring storage (`keys_ws_`, one stripe per activation row) is sized by
 the effective per-request context — the lesser of the positional ceiling and
