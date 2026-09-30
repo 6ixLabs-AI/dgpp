@@ -395,6 +395,10 @@ std::string encode_journal_settings(const WorldSettings& s) {
   append_json_string(&out, s.draft_vocab);
   out += std::format(",\"pfb16\":{},\"pffold\":{},\"pffp8\":{}", s.prefill_bf16_partials ? 1 : 0,
                      s.prefill_fold_scales ? 1 : 0, s.prefill_fp8_gemm ? 1 : 0);
+  out += ",\"xgemm\":";
+  append_json_string(&out, s.expert_gemm);
+  out += std::format(",\"xpf\":{},\"xtl\":{},\"xpair\":{},\"npre\":{}", s.expert_gemm_prefetch,
+                     s.expert_tile_list ? 1 : 0, s.expert_gemm_pair ? 1 : 0, s.ngram_prestage ? 1 : 0);
   out += std::format(",\"compact\":{}", s.compact_batches ? 1 : 0);
   out += ",\"pf\":";
   append_json_string(&out, s.prefill);
@@ -578,6 +582,12 @@ JournalRecord decode_journal_line(std::string_view line) {
     if (v.find("pfb16")) s.prefill_bf16_partials = flag("pfb16");
     if (v.find("pffold")) s.prefill_fold_scales = flag("pffold");
     if (v.find("pffp8")) s.prefill_fp8_gemm = flag("pffp8");
+    // The expert GEMM's form and companions (2026-09-30): records before them carry the defaults.
+    if (const dgpp::minijson::Value* xg = v.find("xgemm")) s.expert_gemm = std::string(xg->as_string());
+    if (const dgpp::minijson::Value* xpf = v.find("xpf")) s.expert_gemm_prefetch = static_cast<int>(xpf->as_int());
+    if (v.find("xtl")) s.expert_tile_list = flag("xtl");
+    if (v.find("xpair")) s.expert_gemm_pair = flag("xpair");
+    if (v.find("npre")) s.ngram_prestage = flag("npre");
     // Records before 2026-09-14 carry no prefill mode: bounded.
     if (const dgpp::minijson::Value* pf = v.find("pf")) s.prefill = std::string(pf->as_string());
     // Records without the rope ramp key carry none: the plain table

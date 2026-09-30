@@ -257,6 +257,23 @@ DGPP_TEST(packq_gemm_grouped_maps_padding_and_graph) {
       DGPP_CUDA_OK(cudaStreamSynchronize(stream));
       require(std::memcmp(reg.p, out.p, static_cast<size_t>(total) * os * 4) == 0,
               "the register-decode kernel must be bitwise the decoded-tile one (segment-major)");
+      // The four-warp forms (variants 4 and 5, 2026-09-30: 64 x 32 warp
+      // tiles, decoded-tile and register-decode), listed and segment-major:
+      // bitwise the eight-warp kernel.
+      for (const int wide4 : {4, 5}) {
+        std::fill(reg.p, reg.p + static_cast<size_t>(total) * os, -12345.f);
+        dgpp::launch_moe_grouped_mma_packq_f32(a.p, k, segs.p, ns, /*max_rows=*/1, views.p, 1, reg.p, os, n, k,
+                                               bits, stream, rows.p, sf, wide4, tiles.p, tile_count.p, tile_cap);
+        DGPP_CUDA_OK(cudaStreamSynchronize(stream));
+        require(std::memcmp(reg.p, out.p, static_cast<size_t>(total) * os * 4) == 0,
+                "the four-warp kernel must be bitwise the eight-warp one (listed)");
+        std::fill(reg.p, reg.p + static_cast<size_t>(total) * os, -12345.f);
+        dgpp::launch_moe_grouped_mma_packq_f32(a.p, k, segs.p, ns, tokens, views.p, 1, reg.p, os, n, k, bits,
+                                               stream, rows.p, sf, wide4);
+        DGPP_CUDA_OK(cudaStreamSynchronize(stream));
+        require(std::memcmp(reg.p, out.p, static_cast<size_t>(total) * os * 4) == 0,
+                "the four-warp kernel must be bitwise the eight-warp one (segment-major)");
+      }
       // The folded-scale form (variant 3, engine.prefill_fold_scales): NOT
       // bitwise — each weight x scale rounded to bf16 and one accumulator —
       // but within the packed model's tolerance of the exact chain: the

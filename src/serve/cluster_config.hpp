@@ -117,6 +117,24 @@ struct ClusterConfig {
     bool prefill_bf16_partials = false;
     bool prefill_fold_scales = false;
     bool prefill_fp8_gemm = false;
+    // The packed expert GEMM's form and companions (2026-09-30; every
+    // serving switch is a config key — no environment variable selects a
+    // kernel). All bitwise the default chain.
+    //   expert_gemm: "wide" (the default: the 64 x 128 tensor-core tile,
+    //     eight warps, the codes decoded once per step), "wide3" (register
+    //     decode, three stages), "wide4" / "wide4r" (the four-warp forms),
+    //     "narrow" (the 32 x 64 kernel).
+    //   expert_gemm_prefetch: the L2 prefetch distance in k-steps (0 off).
+    //   expert_tile_list: the compact tile list over the routed segments
+    //     (off: the grid over the longest segment).
+    //   expert_gemm_pair: gate and up as one launch (measured level).
+    //   ngram_prestage (Qwen): the next chunk's n-gram rows gathered while
+    //     this chunk runs (off: the one-channel staging).
+    std::string expert_gemm = "wide";
+    int expert_gemm_prefetch = 3;
+    bool expert_tile_list = true;
+    bool expert_gemm_pair = false;
+    bool ngram_prestage = true;
     // The DeepSeek-V4.1 prefill mode (docs/deepseek_v41_flash_plan.md
     // §1.8): "bounded" (the default: the encoder over every prompt row,
     // the decoder over the last window rows — the model's own serving

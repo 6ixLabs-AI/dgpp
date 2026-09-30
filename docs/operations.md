@@ -703,6 +703,14 @@ first two together −3 to −6 % with HumanEval / GSM8K / extraction inside the
 default chain's band, which is why the AutoRound template turns those two
 on and no template turns on the fold.
 
+**The expert GEMM's form and companions** (`engine.expert_gemm`,
+`engine.expert_gemm_prefetch`, `engine.expert_tile_list`,
+`engine.expert_gemm_pair`; `engine.ngram_prestage` for Qwen) are deployment
+keys too, all bitwise the default chain and all at their measured best by
+default (`wide`, 3, on, off, on). They exist so an A/B can pin a form from a
+config file; nothing in the engine reads an environment variable to choose
+a kernel.
+
 Nothing else on the node needs setting. In particular a locked GPU clock
 (`nvidia-smi -lgc`) is **not** required: the governor sits at 2400-2560 MHz
 throughout decode on its own and the measured step distribution is the same

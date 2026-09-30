@@ -15,15 +15,17 @@ constexpr int kPackqMmaFromRows = 128;
 // D[m,n] = Act[m,k] W[n,k]^T. K is a positive multiple of 64; packed
 // weight rows are 16-byte aligned. Activations may have a padded stride.
 // These explicit GEMM entry points do not change the GEMV decode launchers.
-// `variant` (2026-09-29): -1 = the default kernel (the 64 x 128 wide tile
-// for int4 rows unless DGPP_PACKQ_GEMM=narrow), 0 = the narrow 32 x 64
-// kernel, 1 = the wide one, 2 (2026-09-30, DGPP_PACKQ_GEMM=wide3) = the
+// `variant` (2026-09-29): -1 = the default kernel (engine.expert_gemm; the
+// 64 x 128 wide tile for int4 rows), 0 = the narrow 32 x 64
+// kernel, 1 = the wide one, 2 (2026-09-30, engine.expert_gemm = wide3) = the
 // wide tile with its B fragments decoded in registers and three pipeline
 // stages. Those give bitwise the same D. 3 (2026-09-30,
 // engine.prefill_fold_scales; NOT bitwise) = the wide tile with each
 // group's scale folded into the decoded bf16 values — bf16(code x scale)
 // — and one fp32 accumulator across K (Marlin's form: no per-group
 // partial or fma); within the packed model's tolerance of the exact chain.
+// 4 / 5 (2026-09-30, engine.expert_gemm = wide4 / wide4r) = the four-warp
+// forms of 1 / 2 (64 x 32 warp tiles): bitwise, measured level in situ.
 void launch_packq_gemm_bf16(const uint16_t* act, size_t act_stride, const GlmPackedMatrix& w,
                             uint16_t* out, int m, int n, int k, cudaStream_t stream);
 void launch_packq_gemm_f32(const uint16_t* act, size_t act_stride, const GlmPackedMatrix& w,
@@ -69,8 +71,15 @@ void launch_moe_grouped_mma_packq_f32(const uint16_t* act, size_t act_stride,
                                       int scale_fmt = 0, int variant = -1,
                                       const MoeTile* tiles = nullptr,
                                       const int32_t* tile_count = nullptr, int tile_cap = 0);
-// The kernel the default `variant` selects: 1 = the wide tile, 0 = narrow
-// (never 3: the folded form is a config key's choice, not an env's).
+// The kernel the default `variant` selects (engine.expert_gemm: "wide" = 1,
+// "wide3" = 2, "wide4" = 4, "wide4r" = 5, "narrow" = 0; never 3 — the folded
+// form is engine.prefill_fold_scales) and the L2 prefetch distance
+// (engine.expert_gemm_prefetch, default 3). Set once at startup from the
+// deployment's config; no environment variable selects a kernel.
+int packq_gemm_form_index(const std::string& name);  // -1 for an unknown name
+void packq_gemm_set_form(int variant);
+void packq_gemm_set_prefetch(int steps);
 int packq_gemm_variant_default();
+int packq_gemm_prefetch_ahead();
 
 }  // namespace dgpp

@@ -22,11 +22,15 @@ namespace dgpp {
 namespace {
 bool g_prefill_bf16_partials = false;
 bool g_prefill_fold_scales = false;
+bool g_expert_tile_list = true;
+bool g_expert_gemm_pair = false;
 }  // namespace
 
-void GlmMoeLayer::set_prefill_options(bool bf16_partials, bool fold_scales) {
+void GlmMoeLayer::set_prefill_options(bool bf16_partials, bool fold_scales, bool tile_list, bool pair) {
   g_prefill_bf16_partials = bf16_partials;
   g_prefill_fold_scales = fold_scales;
+  g_expert_tile_list = tile_list;
+  g_expert_gemm_pair = pair;
 }
 bool GlmMoeLayer::prefill_bf16_partials() { return g_prefill_bf16_partials; }
 bool GlmMoeLayer::prefill_fold_scales() { return g_prefill_fold_scales; }
@@ -536,12 +540,10 @@ void GlmMoeLayer::upload_expert_views(MoeExpertView* d_dst, bool with_shared,
 }
 
 bool GlmMoeLayer::packq_tile_list() const {
-  static const bool enabled = [] {
-    const char* e = std::getenv("DGPP_MOE_TILE_LIST");
-    return e == nullptr || e[0] != '0';  // default on; =0 keeps the max_rows grid
-  }();
-  return enabled && w_.packq() && w_.experts_packed[0].bits == 4 &&
-         (packq_gemm_variant_default() == 1 || g_prefill_fold_scales);
+  // engine.expert_tile_list (default on; off keeps the max_rows grid).
+  // Every wide form (variants 1-5) takes the tile list; the narrow kernel (0) keeps the max_rows grid.
+  return g_expert_tile_list && w_.packq() && w_.experts_packed[0].bits == 4 &&
+         (packq_gemm_variant_default() != 0 || g_prefill_fold_scales);
 }
 
 // Builds the routed segments' tile list on the stream when the chain's
@@ -786,7 +788,7 @@ void GlmMoeLayer::grouped_expert_chain(MoeExpertKernel kernel,
   const bool packq_mma_bf16_down = packq && kernel == MoeExpertKernel::kMma && g_prefill_bf16_partials;
   // OPT-IN, NOT BITWISE (engine.prefill_fold_scales): the wide kernel's
   // folded-scale form (variant 3) for every packed tensor-core launch of
-  // this chain; -1 is the default variant (DGPP_PACKQ_GEMM).
+  // this chain; -1 is the default variant (engine.expert_gemm).
   const int packq_variant = g_prefill_fold_scales && routed_bits == 4 ? 3 : -1;
   down_bf16_ = (w4a4 || packq_mma_bf16_down) && shared_seg == nullptr && !f32_down;
   if (w4a4) {
@@ -898,14 +900,10 @@ void GlmMoeLayer::grouped_expert_chain(MoeExpertKernel kernel,
                                   2, d_down_, H, H, k, stream);
   };
   // The packed tensor-core chain can run gate and up as one launch (each
-  // token row gathered once for both): DGPP_MOE_PACKQ_PAIR=1. Off by
+  // token row gathered once for both): engine.expert_gemm_pair. Off by
   // default (2026-09-30, session P: level to +1 % on the fabric against
   // two launches — the activation re-gather is not what bounds the kernel).
-  static const bool packq_pair = [] {
-    const char* e = std::getenv("DGPP_MOE_PACKQ_PAIR");
-    return e != nullptr && e[0] != '\0' && e[0] != '0';
-  }();
-  const bool paired = packq && mma && packq_pair && routed_bits == 4;
+  const bool paired = packq && mma && g_expert_gemm_pair && routed_bits == 4;
   if (paired)
     launch_moe_grouped_mma_packq_bf16(hidden, H, segs, n_segs, max_rows, d_views_prefill_, 0, d_gate_, I_max,
                                       I_r, H, routed_bits, stream, d_rows_, routed_sf, packq_variant, tiles,

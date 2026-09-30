@@ -316,6 +316,11 @@ class QwenLayerStream : public ResidentLayerStream<QwenLoaderFamily> {
   // before the model is built (the activation scratch follows it).
   static void set_prefill_fp8_gemm(bool on);
   static bool prefill_fp8_gemm();
+  // The chunk-ahead n-gram staging (engine.ngram_prestage, default on;
+  // round 19: the next chunk's rows gathered while this one runs, bitwise).
+  // Off keeps the one-channel staging. Set before the model is built.
+  static void set_ngram_prestage(bool on);
+  static bool ngram_prestage();
   // The draft vocabulary slice (engine.draft_vocab, 2026-09-29): a .npy of
   // token ids read once here (sorted, unique); the hybrid's loader gathers
   // those rows of the int8 head into the draft's own plane-layout matrix.
