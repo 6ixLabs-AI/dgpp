@@ -434,6 +434,200 @@ struct SelectFixture {
 
 }  // namespace
 
+DGPP_TEST(qsa_visible_pool_bound_preserves_scores_selection_and_graphs) {
+  SelectFixture sf(20);
+  const Geo& g = sf.f.g;
+  cudaStream_t stream = test_stream();
+  // Leave many empty scoring stripes while keeping the same row stride.
+  constexpr int64_t stride = 4096;
+  constexpr size_t guard = 16;
+  struct Result {
+    std::vector<uint64_t> keys;
+    std::vector<int32_t> selected, counts;
+    bool operator==(const Result&) const = default;
+  };
+  const auto calculate = [&](int64_t bound, bool replay_graph = false) {
+    const size_t count = static_cast<size_t>(sf.rows()) * stride;
+    const size_t width = static_cast<size_t>(sf.rows()) * g.max_selected();
+    DevBuf keys((count + 2 * guard) * sizeof(uint64_t));
+    DevBuf selected(width * sizeof(int32_t)), counts(sf.rows() * sizeof(int32_t));
+    DGPP_CUDA_OK(cudaMemsetAsync(keys.p, 0xff, keys.bytes, stream));
+    const auto launch = [&] {
+      dgpp::qsa_index_score(ptr<uint16_t>(sf.dq), int64_t(g.idx_heads) * g.idx_dim,
+                            ptr<int32_t>(sf.dreq), ptr<int64_t>(sf.dpos), sf.rows(),
+                            ptr<int32_t>(sf.f.dtable), g.blocks_per_request,
+                            ptr<uint16_t>(sf.dcache), g.pools_per_block(), g.idx_heads,
+                            g.idx_dim, g.kpool, mptr<uint64_t>(keys) + guard, stride, stream, bound);
+      dgpp::qsa_select_from_keys(ptr<uint64_t>(keys) + guard, stride, ptr<int64_t>(sf.dpos),
+                                 sf.rows(), g.select_k, g.kpool, g.max_selected(),
+                                 mptr<int32_t>(selected), mptr<int32_t>(counts), stream);
+    };
+    if (replay_graph) {
+      DGPP_CUDA_OK(cudaStreamBeginCapture(stream, cudaStreamCaptureModeGlobal));
+      launch();
+      cudaGraph_t graph;
+      cudaGraphExec_t exec;
+      DGPP_CUDA_OK(cudaStreamEndCapture(stream, &graph));
+      DGPP_CUDA_OK(cudaGraphInstantiate(&exec, graph, nullptr, nullptr, 0));
+      for (int repeat = 0; repeat < 2; ++repeat)
+        DGPP_CUDA_OK(cudaGraphLaunch(exec, stream));
+      DGPP_CUDA_OK(cudaStreamSynchronize(stream));
+      DGPP_CUDA_OK(cudaGraphExecDestroy(exec));
+      DGPP_CUDA_OK(cudaGraphDestroy(graph));
+    } else {
+      launch();
+      DGPP_CUDA_OK(cudaStreamSynchronize(stream));
+    }
+    Result result{down<uint64_t>(keys, count + 2 * guard),
+                  down<int32_t>(selected, width), down<int32_t>(counts, sf.rows())};
+    for (size_t i = 0; i < guard; ++i)
+      require(result.keys[i] == UINT64_MAX && result.keys[guard + count + i] == UINT64_MAX,
+              "visible-pool scoring changed a workspace guard");
+    return result;
+  };
+  const int64_t visible = (*std::max_element(sf.pos.begin(), sf.pos.end()) + 1) / g.kpool;
+  const auto reference = calculate(-1);
+  require(reference == calculate(visible), "visible-pool cap changed scores or selection");
+  require(reference == calculate(visible, true), "visible-pool graph changed scores or selection");
+  require(reference == calculate(stride), "full-stride cap changed scores or selection");
+
+  // With no complete compressed key, selection still includes the token tail.
+  sf.pos.assign(static_cast<size_t>(sf.rows()), g.kpool - 2);
+  sf.pos.back() = -1;
+  sf.dpos.upload(sf.pos.data(), sf.pos.size() * sizeof(int64_t));
+  require(calculate(-1) == calculate(0, true), "zero-visible cap changed keys or token tails");
+  for (int64_t invalid : {int64_t{-2}, stride + 1}) {
+    bool threw = false;
+    try {
+      (void)calculate(invalid);
+    } catch (const std::invalid_argument&) {
+      threw = true;
+    }
+    require(threw, "invalid visible-pool bound accepted");
+  }
+}
+
+DGPP_TEST(qsa_select_all_skips_keys_and_replays_across_the_budget) {
+  constexpr int dim = 128, ppb = 16, kpool = 4, stride = 4096, requests = 2, guard = 16;
+  constexpr int blocks = stride / ppb, rows = 12;
+  cudaStream_t stream = test_stream();
+  std::vector<int32_t> table(requests * blocks), req(rows);
+  std::iota(table.begin(), table.end(), 0);
+  std::mt19937 rng(20260930);
+  std::shuffle(table.begin(), table.end(), rng);
+  for (int r = 0; r < rows; ++r) req[r] = r % requests;
+  const auto cache = random_bf16_normal(301, int64_t(requests) * stride * dim, 1.f);
+  DevBuf dc = up(cache), dt = up(table), dr = up(req);
+  for (int heads : {1, 2, 4}) {
+    const auto q = random_bf16_normal(302, rows * heads * dim, 1.f);
+    DevBuf dq = up(q);
+    for (int select_k : {8, 512, 1024}) {
+      const int width = select_k * kpool + kpool - 1;
+      std::vector<int64_t> pos(rows, 0);
+      DevBuf dp = up(pos), keys((size_t(rows) * stride + 2 * guard) * sizeof(uint64_t));
+      DevBuf selected(rows * width * sizeof(int32_t)), counts(rows * sizeof(int32_t));
+      const auto launch = [&](int64_t bound, int budget) {
+        dgpp::qsa_index_score(ptr<uint16_t>(dq), heads * dim, ptr<int32_t>(dr), ptr<int64_t>(dp),
+                              rows, ptr<int32_t>(dt), blocks, ptr<uint16_t>(dc), ppb, heads, dim,
+                              kpool, mptr<uint64_t>(keys) + guard, stride, stream, bound, budget);
+        dgpp::qsa_select_from_keys(ptr<uint64_t>(keys) + guard, stride, ptr<int64_t>(dp), rows,
+                                   select_k, kpool, width, mptr<int32_t>(selected),
+                                   mptr<int32_t>(counts), stream);
+      };
+      // Capture below the budget, then grow, shrink and deactivate different
+      // rows. A host decision based on the capture positions would be wrong.
+      cudaGraph_t graph;
+      cudaGraphExec_t exec;
+      DGPP_CUDA_OK(cudaStreamBeginCapture(stream, cudaStreamCaptureModeGlobal));
+      launch(-1, select_k);
+      DGPP_CUDA_OK(cudaStreamEndCapture(stream, &graph));
+      DGPP_CUDA_OK(cudaGraphInstantiate(&exec, graph, nullptr, nullptr, 0));
+      const std::vector<int64_t> cases{-1,
+                                       0,
+                                       2,
+                                       3,
+                                       (select_k - 1) * kpool - 1,
+                                       select_k * kpool - 1,
+                                       select_k * kpool + 2,
+                                       select_k * kpool + 3,
+                                       255 * kpool - 1,
+                                       256 * kpool - 1,
+                                       257 * kpool - 1,
+                                       stride * kpool - 1};
+      for (int phase = 0; phase < 5; ++phase) {
+        for (int r = 0; r < rows; ++r) {
+          if (phase == 0)
+            pos[r] = r % kpool - 1;
+          else if (phase == 1 || phase == 4)
+            pos[r] = r == 0 ? -1 : select_k * kpool - 1 + r % kpool;
+          else
+            pos[r] = cases[(r + phase * 5) % rows];
+          req[r] = pos[r] < 0 ? -1 : r % requests;
+        }
+        dp.upload(pos.data(), pos.size() * sizeof(int64_t));
+        dr.upload(req.data(), req.size() * sizeof(int32_t));
+        // Check both the graph's device decision and the prefill host bound.
+        for (bool replay : {true, false}) {
+          DGPP_CUDA_OK(cudaMemsetAsync(keys.p, 0xff, keys.bytes, stream));
+          DGPP_CUDA_OK(cudaMemsetAsync(selected.p, 0x7f, selected.bytes, stream));
+          if (replay) {
+            DGPP_CUDA_OK(cudaGraphLaunch(exec, stream));
+          } else {
+            const int64_t bound = (*std::max_element(pos.begin(), pos.end()) + 1) / kpool;
+            launch(bound, select_k);
+          }
+          DGPP_CUDA_OK(cudaStreamSynchronize(stream));
+          const auto got_keys = down<uint64_t>(keys, size_t(rows) * stride + 2 * guard);
+          const auto got = down<int32_t>(selected, rows * width);
+          const auto got_counts = down<int32_t>(counts, rows);
+          for (int i = 0; i < guard; ++i)
+            require(got_keys[i] == UINT64_MAX &&
+                        got_keys[guard + size_t(rows) * stride + i] == UINT64_MAX,
+                    "select-all scoring overwrote a guard");
+          for (int r = 0; r < rows; ++r) {
+            const int visible = pos[r] < 0 ? 0 : int((pos[r] + 1) / kpool);
+            std::vector<float> scores(visible);
+            for (int pool = 0; pool < stride; ++pool) {
+              uint64_t want = UINT64_MAX;
+              if (pool < visible) {
+                const int slot = table[req[r] * blocks + pool / ppb] * ppb + pool % ppb;
+                scores[pool] = dgpp::qwen_ref::qsa_index_score(q.data() + r * heads * dim,
+                                                               cache.data() + slot * dim, heads);
+                if (visible > select_k) {
+                  uint32_t bits;
+                  std::memcpy(&bits, &scores[pool], sizeof(bits));
+                  const uint32_t sortable = bits >> 31 ? ~bits : bits | 0x80000000u;
+                  want = (static_cast<uint64_t>(~sortable) << 21) | pool;
+                }
+              }
+              require(got_keys[guard + size_t(r) * stride + pool] == want,
+                      "select-all wrote skipped keys or changed a required score");
+            }
+            std::vector<int32_t> ids, tokens;
+            dgpp::qwen_ref::qsa_select(scores, select_k, ids);
+            dgpp::qwen_ref::qsa_expand(ids, pos[r], kpool, tokens);
+            require(got_counts[r] == static_cast<int>(tokens.size()), "select-all count differs");
+            tokens.resize(width, -1);
+            require(std::equal(tokens.begin(), tokens.end(), got.begin() + r * width),
+                    "select-all tokens or padding differ from host oracle");
+          }
+        }
+      }
+      DGPP_CUDA_OK(cudaGraphExecDestroy(exec));
+      DGPP_CUDA_OK(cudaGraphDestroy(graph));
+      for (int invalid : {-1, 1025}) {
+        bool threw = false;
+        try {
+          launch(-1, invalid);
+        } catch (const std::invalid_argument& e) {
+          threw = std::string(e.what()).find("select_k") != std::string::npos;
+        }
+        require(threw, "invalid select-all budget accepted or not named");
+      }
+    }
+  }
+}
+
 DGPP_TEST(qsa_index_score_and_select_match_the_reference_bitwise) {
   SelectFixture sf(20);
   const Geo& g = sf.f.g;
@@ -471,6 +665,101 @@ DGPP_TEST(qsa_index_score_and_select_match_the_reference_bitwise) {
   std::printf("[ .. ] select: %d rows, lists of", sf.rows());
   for (int r = 0; r < sf.rows(); ++r) std::printf(" %d", got_counts[static_cast<size_t>(r)]);
   std::printf(" tokens, keys and lists bitwise\n");
+}
+
+DGPP_TEST(qsa_request_bounded_workspace_preserves_scores_selection_and_graphs) {
+  constexpr int heads = 4, dim = 128, ppb = 16, kpool = 4, select_k = 512;
+  constexpr int requests = 2, width = select_k * kpool + kpool - 1, guard = 16;
+  cudaStream_t stream = test_stream();
+  // Full prefill row capacity with short/tail positions, then the native
+  // 256K ceiling and an unaligned ceiling. Physical blocks span the shared
+  // pool, including addresses beyond the compact logical workspace stride.
+  for (int context : {201, 262144, 262145}) {
+    const int rows = context == 201 ? 4096 : 8;
+    const int wide = context == 201 ? 4096 : 212512;
+    const int compact = (context + kpool - 1) / kpool;
+    const int blocks = (compact + ppb - 1) / ppb;
+    std::vector<int32_t> physical(wide / ppb);
+    std::iota(physical.begin(), physical.end(), 0);
+    std::mt19937 rng(20260927);
+    std::shuffle(physical.begin(), physical.end(), rng);
+    std::vector<int32_t> table(physical.begin(), physical.begin() + requests * blocks);
+    const std::vector<int64_t> cases{-1, 0, 2, 3, context / 2, context - 3,
+                                     context - 2, context - 1};
+    std::vector<int64_t> pos(rows);
+    std::vector<int32_t> req(rows);
+    for (int r = 0; r < rows; ++r) {
+      pos[r] = cases[static_cast<size_t>(r) % cases.size()];
+      req[r] = pos[r] < 0 ? -1 : r % requests;
+    }
+    const auto cache = random_bf16_normal(202, int64_t(wide) * dim, 1.0f);
+    const auto q = random_bf16_normal(203, int64_t(rows) * heads * dim, 1.0f);
+    DevBuf dc = up(cache), dq = up(q), dt = up(table), dp = up(pos), dr = up(req);
+    struct Result {
+      std::vector<uint64_t> keys;
+      std::vector<int32_t> selected, counts;
+    };
+    const auto calculate = [&](int stride, bool replay_graph) {
+      const size_t nkeys = size_t(rows) * stride;
+      DevBuf keys((nkeys + 2 * guard) * sizeof(uint64_t));
+      DevBuf selected(size_t(rows) * width * sizeof(int32_t)), counts(rows * sizeof(int32_t));
+      DGPP_CUDA_OK(cudaMemsetAsync(keys.p, 0xff, keys.bytes, stream));
+      const auto launch = [&] {
+        dgpp::qsa_index_score(ptr<uint16_t>(dq), heads * dim, ptr<int32_t>(dr),
+                             ptr<int64_t>(dp), rows, ptr<int32_t>(dt), blocks,
+                             ptr<uint16_t>(dc), ppb, heads, dim, kpool,
+                             mptr<uint64_t>(keys) + guard, stride, stream);
+        dgpp::qsa_select_from_keys(ptr<uint64_t>(keys) + guard, stride, ptr<int64_t>(dp),
+                                  rows, select_k, kpool, width, mptr<int32_t>(selected),
+                                  mptr<int32_t>(counts), stream);
+      };
+      launch();
+      DGPP_CUDA_OK(cudaStreamSynchronize(stream));
+      Result result{down<uint64_t>(keys, nkeys + 2 * guard),
+                    down<int32_t>(selected, size_t(rows) * width),
+                    down<int32_t>(counts, rows)};
+      for (int i = 0; i < guard; ++i)
+        require(result.keys[i] == UINT64_MAX && result.keys[guard + nkeys + i] == UINT64_MAX,
+                "scoring changed a workspace guard");
+      for (int r = 0; r < rows; ++r) {
+        const int visible = pos[r] < 0 ? 0 : int((pos[r] + 1) / kpool);
+        for (int p = visible; p < stride; ++p)
+          require(result.keys[guard + size_t(r) * stride + p] == UINT64_MAX,
+                  "scoring changed an invisible key or inactive row");
+      }
+      if (replay_graph) {
+        cudaGraph_t graph;
+        cudaGraphExec_t exec;
+        DGPP_CUDA_OK(cudaStreamBeginCapture(stream, cudaStreamCaptureModeGlobal));
+        launch();
+        DGPP_CUDA_OK(cudaStreamEndCapture(stream, &graph));
+        DGPP_CUDA_OK(cudaGraphInstantiate(&exec, graph, nullptr, nullptr, 0));
+        for (int repeat = 0; repeat < 2; ++repeat) {
+          DGPP_CUDA_OK(cudaGraphLaunch(exec, stream));
+          DGPP_CUDA_OK(cudaStreamSynchronize(stream));
+          require(down<uint64_t>(keys, nkeys + 2 * guard) == result.keys,
+                  "compact graph changed scoring keys or guards");
+          require(down<int32_t>(selected, size_t(rows) * width) == result.selected &&
+                      down<int32_t>(counts, rows) == result.counts,
+                  "compact graph changed selected tokens");
+        }
+        DGPP_CUDA_OK(cudaGraphExecDestroy(exec));
+        DGPP_CUDA_OK(cudaGraphDestroy(graph));
+      }
+      return result;
+    };
+    const auto reference = calculate(wide, false);
+    const auto bounded = calculate(compact, true);
+    require(reference.selected == bounded.selected && reference.counts == bounded.counts,
+            "request-bounded workspace changed selected tokens");
+    for (int r = 0; r < rows; ++r)
+      for (int p = 0; p < compact; ++p)
+        require(reference.keys[guard + size_t(r) * wide + p] ==
+                    bounded.keys[guard + size_t(r) * compact + p],
+                "request-bounded workspace changed scoring keys");
+    std::printf("[ .. ] %d rows, context %d, stride %d -> %d: keys, selection and graphs exact\n",
+                rows, context, wide, compact);
+  }
 }
 
 DGPP_TEST(qsa_index_large_paged_pools_match_every_host_key_and_token) {
@@ -709,6 +998,51 @@ DGPP_TEST(qsa_listed_attention_and_gate_match_the_reference) {
       std::printf("[ .. ] attention n_split=%d: max_abs %.3g l2_rel %.3g mismatches %ld/%ld (rms %.3g)\n", n_split,
                   s.max_abs, s.l2_rel, s.mismatches, s.n, rms);
       require_bf16("attention n_split=" + std::to_string(n_split), s, n_split == 1 ? 2e-3 : 4e-3, 0.01);
+    }
+  }
+  // The decode kernel's two gather forms (the cp.async phases and the
+  // serial gather) leave bitwise the same partials: the arithmetic is the
+  // same sequence either way.
+  for (int n_split : {1, 3}) {
+    const size_t part = static_cast<size_t>(rows) * n_split * g.local_heads;
+    std::vector<uint8_t> got[2];
+    for (int form = 0; form < 2; ++form) {
+      DevBuf m_ws(part * 4), l_ws(part * 4), c_ws(part * g.dim * 4);
+      dgpp::qsa_attn_partial_gather(ptr<uint16_t>(dqonly), static_cast<int64_t>(g.local_heads) * g.dim, ptr<uint16_t>(kc),
+                                    ptr<uint16_t>(vc), ptr<int32_t>(sf.dreq), ptr<int32_t>(dtopk), g.max_selected(),
+                                    ptr<int32_t>(dcounts), rows, n_split, g.local_heads, g.kv_heads, g.dim,
+                                    g.block_tokens, ptr<int32_t>(sf.f.dtable), g.blocks_per_request, 1.0f / 16.0f,
+                                    mptr<float>(m_ws), mptr<float>(l_ws), mptr<float>(c_ws), st, form, 0, 0);
+      DGPP_CUDA_OK(cudaStreamSynchronize(st));
+      const std::vector<uint8_t> m = down<uint8_t>(m_ws, part * 4), l = down<uint8_t>(l_ws, part * 4),
+                                 c = down<uint8_t>(c_ws, part * g.dim * 4);
+      got[form].insert(got[form].end(), m.begin(), m.end());
+      got[form].insert(got[form].end(), l.begin(), l.end());
+      got[form].insert(got[form].end(), c.begin(), c.end());
+    }
+    require_bitwise("async gather partials == serial gather partials, n_split=" + std::to_string(n_split), got[0].data(),
+                    got[1].data(), got[0].size());
+    // Every head of a kv head in one block, several heads per warp: the
+    // same partials, bitwise (the fixture's three heads per kv head as one
+    // warp of three, and as a block of three one-head warps).
+    for (const int hpw : {1, 3}) {
+      DevBuf m_ws(part * 4), l_ws(part * 4), c_ws(part * g.dim * 4);
+      dgpp::qsa_attn_partial_gather(ptr<uint16_t>(dqonly), static_cast<int64_t>(g.local_heads) * g.dim, ptr<uint16_t>(kc),
+                                    ptr<uint16_t>(vc), ptr<int32_t>(sf.dreq), ptr<int32_t>(dtopk), g.max_selected(),
+                                    ptr<int32_t>(dcounts), rows, n_split, g.local_heads, g.kv_heads, g.dim,
+                                    g.block_tokens, ptr<int32_t>(sf.f.dtable), g.blocks_per_request, 1.0f / 16.0f,
+                                    mptr<float>(m_ws), mptr<float>(l_ws), mptr<float>(c_ws), st, 1,
+                                    g.local_heads / g.kv_heads, hpw);
+      DGPP_CUDA_OK(cudaStreamSynchronize(st));
+      std::vector<uint8_t> got2;
+      const std::vector<uint8_t> m = down<uint8_t>(m_ws, part * 4), l = down<uint8_t>(l_ws, part * 4),
+                                 c = down<uint8_t>(c_ws, part * g.dim * 4);
+      got2.insert(got2.end(), m.begin(), m.end());
+      got2.insert(got2.end(), l.begin(), l.end());
+      got2.insert(got2.end(), c.begin(), c.end());
+      require_bitwise("heads-per-kv block, " + std::to_string(hpw) + " heads per warp == serial partials, n_split=" +
+                          std::to_string(n_split),
+                      got2.data(), got[0].data(), got2.size());
     }
   }
 }

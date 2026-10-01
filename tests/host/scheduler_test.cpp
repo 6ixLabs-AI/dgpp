@@ -47,6 +47,8 @@ void require(bool cond, const std::string& what) {
 // block reservations, and the op stream the tests pin.
 class FakeEngine : public SchedulerEngine {
  public:
+  // The boundaries the scheduler handed the last prefill (the cut rule's gate).
+  std::vector<int64_t> last_boundaries;
   FakeEngine(int slots, int64_t total_blocks, int64_t block_tokens,
              int batch_capacity = 1, bool can_sample = false)
       : slots_(slots),
@@ -180,6 +182,7 @@ class FakeEngine : public SchedulerEngine {
   int32_t prefill_cached(int req, const std::vector<int64_t>& prompt,
                          dgpp::sched::SchedulerEngine::PrefixPrefill* plan) override {
     require(plan != nullptr && plan->boundaries != nullptr, "fake: plan");
+    last_boundaries = *plan->boundaries;
     if (plan->attach_slot >= 0) {
       require(pinned_.count(plan->attach_slot) != 0, "fake: attach from an empty arena slot");
       require(pinned_positions_[plan->attach_slot] == plan->attach_position,
@@ -203,6 +206,16 @@ class FakeEngine : public SchedulerEngine {
       plan->body_snap_taken = true;
       ops_.push_back("N:" + std::to_string(req) + ":" + std::to_string(plan->body_snap_position) +
                      "@" + std::to_string(plan->body_snap_slot));
+    }
+    if (plan->head_snap_slot >= 0) {
+      require(pinned_.count(plan->head_snap_slot) == 0, "fake: head snapshot slot occupied");
+      require(plan->head_snap_position > plan->attach_position &&
+                  plan->head_snap_position < plan->snap_position,
+              "fake: the head cut sits between the attach and the deepest cut");
+      pin(plan->head_snap_slot, plan->head_snap_position);
+      plan->head_snap_taken = true;
+      ops_.push_back("H:" + std::to_string(req) + ":" + std::to_string(plan->head_snap_position) +
+                     "@" + std::to_string(plan->head_snap_slot));
     }
     return token;
   }
@@ -435,13 +448,15 @@ class ChunkFakeEngine : public FakeEngine {
   int64_t prefill_group_total_limit() const override { return 32; }
   void begin_prefill(int req, const std::vector<int64_t>& prompt, int64_t reserved,
                      int64_t budget, const PrefixPrefill& plan) override {
+    if (plan.boundaries) last_boundaries = *plan.boundaries;
     auto copy = plan;
-    const int32_t first = plan.attach_slot >= 0 || plan.snap_slot >= 0 || plan.body_snap_slot >= 0
+    const int32_t first = plan.attach_slot >= 0 || plan.snap_slot >= 0 ||
+                                  plan.body_snap_slot >= 0 || plan.head_snap_slot >= 0
                               ? FakeEngine::prefill_cached(req, prompt, &copy)
                               : FakeEngine::prefill(req, prompt);
     FakeEngine::reserve(req, reserved);
     pending_[req] = {static_cast<int64_t>(prompt.size()) - plan.attach_position, budget, first,
-                     copy.snap_taken, copy.body_snap_taken};
+                     copy.snap_taken, copy.body_snap_taken, copy.head_snap_taken};
   }
   PrefillProgress advance_prefill(int req, int64_t budget = 0) override {
     auto& pending = pending_.at(req);
@@ -449,7 +464,7 @@ class ChunkFakeEngine : public FakeEngine {
     pending.remaining -= count;
     ops_.push_back("PF:" + std::to_string(req) + ":" + std::to_string(count));
     PrefillProgress out{count, pending.remaining == 0 ? pending.first : -1, pending.snap,
-                        pending.body};
+                        pending.body, pending.head};
     if (pending.remaining == 0) pending_.erase(req);
     return out;
   }
@@ -465,7 +480,7 @@ class ChunkFakeEngine : public FakeEngine {
   struct Pending {
     int64_t remaining, budget;
     int32_t first;
-    bool snap, body;
+    bool snap, body, head;
   };
   std::map<int, Pending> pending_;
 };
@@ -606,6 +621,38 @@ DGPP_TEST(scheduler_chunked_prefill_yields_reservation_to_older_decode) {
   require(sched.meters().prompt_tokens_computed == 10 && sched.meters().prompt_tokens == 10 &&
               sched.meters().pool_blocks_in_use == 0,
           "partial work is counted and the reservation is released");
+}
+
+DGPP_TEST(scheduler_prefill_cuts_only_where_a_snapshot_can_stand) {
+  // GIVEN a 40-token prompt with structural boundaries at 4, 8 and 32 and a
+  // chunked engine, WHEN the entry floor sits at 16, THEN the engine cuts
+  // at 32 only (its aligned image clears the floor); with the floor at 0
+  // every boundary cuts, and with the cache off none does — a cut a
+  // snapshot never stands on made the cold walk differ from a group walk.
+  for (const int variant : {0, 1, 2}) {
+    ChunkFakeEngine engine;
+    if (variant != 2) engine.set_prefix_arena(4, 2, 4);
+    engine.arm(0, {10, 11}, 2);
+    dgpp::sched::AdmissionPolicy policy;
+    policy.prefill_budget_tokens = 16;
+    policy.prefix_min_tokens = variant == 1 ? 16 : 0;
+    Scheduler sched(&engine, {}, 0, policy, variant == 2 ? 0 : -1);
+    SchedulerRequest request;
+    request.id = "cuts";
+    request.prompt.assign(40, 3);
+    request.max_steps = 2;
+    request.boundaries = {4, 8, 32};
+    sched.submit(request);
+    sched.tick();
+    const std::vector<int64_t> want = variant == 0   ? std::vector<int64_t>{4, 8, 32}
+                                      : variant == 1 ? std::vector<int64_t>{32}
+                                                     : std::vector<int64_t>{};
+    require(engine.last_boundaries == want,
+            "variant " + std::to_string(variant) + ": the engine cuts at " +
+                std::to_string(engine.last_boundaries.size()) + " boundaries, expected " +
+                std::to_string(want.size()));
+    sched.run_to_completion();
+  }
 }
 
 DGPP_TEST(scheduler_chunked_prefill_cancel_at_each_yield_releases_cache_and_reservations) {
@@ -2657,6 +2704,131 @@ DGPP_TEST(scheduler_logitBias_armsTheEngineAfterTheGrammarAndIsRefusedWithoutSup
   SchedulerRequest bad = make_request("c", 5, 2);
   bad.logit_bias = {{-1, 1.0f}};
   require(refused(sched, bad), "a negative token id is refused");
+}
+
+DGPP_TEST(scheduler_prefixCache_entryFloorKeepsShortPromptsOutOfTheArena) {
+  // GIVEN two identical 21-token prompts whose answers run eight tokens
+  // (committed 24 is aligned: a rolling snapshot; the retire at 28 the
+  // close entry) WHEN the entry floor sits above the prompt (32) THEN
+  // nothing takes a slot — no prefill cut, no rolling snapshot, no close
+  // entry — and the second prefills cold like the first; under a floor
+  // the prompt clears (8) the run is the cached one.
+  for (const int floor : {32, 8}) {
+    FakeEngine engine(/*slots=*/2, /*total_blocks=*/100, /*block_tokens=*/4);
+    engine.set_prefix_arena(/*slots=*/4, /*align=*/4);
+    engine.arm(0, {1, 2, 3, 4, 5, 6, 7, 8}, 8);
+    engine.arm(0, {1, 2, 3, 4, 5, 6, 7, 8}, 8);
+    dgpp::sched::AdmissionPolicy policy;
+    policy.prefix_min_tokens = floor;
+    Scheduler sched(&engine, {kEos}, 0, policy);
+    sched.submit(make_cached_request("a", counted_prompt(21), {5, 13}, 8));
+    sched.run_to_completion();
+    sched.submit(make_cached_request("b", counted_prompt(21), {5, 13}, 8));
+    sched.run_to_completion();
+    const Scheduler::Meters m = sched.meters();
+    const std::string ops = engine.op_stream();
+    if (floor == 32) {
+      require(m.prefix_snapshots == 0 && m.prefix_rolling == 0 && m.prefix_close_entries == 0 &&
+                  m.prefix_entries == 0 && m.prefix_hits == 0 && m.prefix_misses == 2,
+              "under the floor no entry of any kind exists and both prompts run cold");
+      require(ops.find("N:") == std::string::npos && ops.find("RS:") == std::string::npos,
+              "under the floor the engine takes no snapshot: " + ops);
+    } else {
+      require(m.prefix_snapshots == 1 && m.prefix_rolling >= 1 && m.prefix_close_entries == 1 &&
+                  m.prefix_hits == 1 && m.prefix_misses == 1 && m.prefix_tokens_saved == 12,
+              "above the floor the cached run is unchanged: " + ops);
+    }
+  }
+}
+
+DGPP_TEST(scheduler_prefixCache_headCutServesTheNextConversationUnderTheSameSystemPrompt) {
+  // GIVEN a 41-token prompt whose first structural boundary sits at 12 (a
+  // twelve-token system prompt), a user turn at 29 and the header at 40,
+  // WHEN a second conversation shares the first 12 tokens and nothing else
+  // THEN with the head cut on it attaches at 12 (the entry the cold
+  // prefill took beside its deepest cut); off, it prefills cold; and a
+  // floor above the head (16) keeps the cut from taking a slot.
+  struct Case {
+    bool head;
+    int floor;
+    int64_t saved;
+    int64_t head_snaps;
+  };
+  for (const Case c : {Case{true, 0, 12, 1}, Case{false, 0, 0, 0}, Case{true, 16, 0, 0}}) {
+    FakeEngine engine(/*slots=*/1, /*total_blocks=*/100, /*block_tokens=*/4);
+    engine.set_prefix_arena(/*slots=*/4, /*align=*/4);
+    engine.arm(0, {10}, 1);
+    engine.arm(0, {10}, 1);
+    dgpp::sched::AdmissionPolicy policy;
+    policy.prefix_head_snapshots = c.head;
+    policy.prefix_min_tokens = c.floor;
+    Scheduler sched(&engine, {kEos}, 0, policy);
+    const auto first = counted_prompt(41);
+    auto second = first;
+    for (size_t i = 12; i < second.size(); ++i) second[i] += 100000;
+    sched.submit(make_cached_request("a", first, {12, 29, 40}, 1));
+    sched.run_to_completion();
+    sched.submit(make_cached_request("b", second, {12, 29, 40}, 1));
+    sched.run_to_completion();
+    const Scheduler::Meters m = sched.meters();
+    const std::string label =
+        " (head " + std::string(c.head ? "on" : "off") + ", floor " + std::to_string(c.floor) + ")";
+    require(m.prefix_tokens_saved == c.saved && m.prefix_head_snapshots == c.head_snaps,
+            "the head cut's reuse" + label + ": saved " + std::to_string(m.prefix_tokens_saved) +
+                ", head snapshots " + std::to_string(m.prefix_head_snapshots) + ": " +
+                engine.op_stream());
+    if (c.head && c.floor == 0)
+      require(engine.op_stream().find("H:0:12@1") != std::string::npos &&
+                  engine.op_stream().find("X:0:12@1") != std::string::npos,
+              "the head entry at 12 in slot 1, attached by the next conversation: " +
+                  engine.op_stream());
+  }
+}
+
+DGPP_TEST(scheduler_prefixCache_headCutYieldsToTheDeepestCutWhenSlotsAreScarce) {
+  // A one-slot arena: the deepest cut takes the slot first; the head cut
+  // finds nothing free or evictable, is skipped and counted.
+  FakeEngine engine(/*slots=*/1, /*total_blocks=*/100, /*block_tokens=*/4);
+  engine.set_prefix_arena(/*slots=*/1, /*align=*/4);
+  engine.arm(0, {10}, 1);
+  dgpp::sched::AdmissionPolicy policy;
+  policy.prefix_head_snapshots = true;
+  Scheduler sched(&engine, {kEos}, 0, policy);
+  sched.submit(make_cached_request("a", counted_prompt(41), {12, 29, 40}, 1));
+  sched.run_to_completion();
+  const Scheduler::Meters m = sched.meters();
+  require(m.prefix_snapshots == 1 && m.prefix_head_snapshots == 0 && m.prefix_skipped == 1 &&
+              engine.op_stream().find("N:0:40@0") != std::string::npos &&
+              engine.op_stream().find("H:") == std::string::npos,
+          "one slot: the deepest cut taken, the head cut skipped: " + engine.op_stream());
+}
+
+DGPP_TEST(scheduler_prefixCache_headCutThroughChunkedPrefill) {
+  // The resumable prefill takes the head cut too: a 20-token prompt whose
+  // system prompt ends at 6 and header sits at 19, read in 4-token chunks
+  // (the deepest cut 18, the body cut 16, the head 6); the next
+  // conversation under the same system prompt attaches at 6.
+  ChunkFakeEngine engine;
+  engine.set_prefix_arena(4, 2, 4);
+  engine.arm(0, {10}, 1);
+  engine.arm(0, {10}, 1);
+  dgpp::sched::AdmissionPolicy policy;
+  policy.prefill_budget_tokens = 4;
+  policy.prefix_head_snapshots = true;
+  Scheduler sched(&engine, {}, 0, policy);
+  const auto first = counted_prompt(20);
+  auto second = first;
+  for (size_t i = 6; i < second.size(); ++i) second[i] += 100000;
+  sched.submit(make_cached_request("a", first, {6, 19}, 1));
+  sched.run_to_completion();
+  sched.submit(make_cached_request("b", second, {6, 19}, 1));
+  sched.run_to_completion();
+  const Scheduler::Meters m = sched.meters();
+  require(m.prefix_head_snapshots == 1 && m.prefix_hits == 1 && m.prefix_tokens_saved == 6 &&
+              engine.op_stream().find("H:0:6@") != std::string::npos,
+          "the chunked prefill's head cut serves the next conversation: saved " +
+              std::to_string(m.prefix_tokens_saved) + ", head " +
+              std::to_string(m.prefix_head_snapshots) + ": " + engine.op_stream());
 }
 
 int main() {

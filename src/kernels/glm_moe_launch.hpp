@@ -123,6 +123,30 @@ void launch_moe_segment(const int32_t* ids, int tokens, int top_k,
                         int n_experts, int32_t* rows, int32_t* slot_row,
                         MoeSegment* segs, cudaStream_t stream);
 
+// The compact tile list (2026-09-29, the hybrid's 8K prefill profile): a
+// grouped launch whose grid is n_segs x ceil(max_rows / tile_rows) sizes
+// every segment by the longest one, and one hot expert (a routed expert in
+// nearly every token's top-k: 3,000-4,096 rows of a 4,096-token chunk in
+// most layers) makes that 62 m-tiles x 512 experts x n-tiles of blocks
+// of which ~97 % read their segment and exit — gate/up 4.0-4.4 ms and down
+// 5.4-7.0 ms a launch against 2.0-2.5 ms for the same rows spread evenly.
+// This list is the real tiles only: entry i = (segment, first row within
+// it) in segment order, tile j of segment e at row j * tile_rows, and
+// *count = the number of entries. A kernel then runs a 1-D grid of
+// n_tiles x capacity blocks and block b takes tile b / n_tiles (exiting
+// past *count). moe_tile_list_capacity bounds the count from the host
+// without a sync: every non-empty segment adds at most one partial tile.
+struct MoeTile {
+  int32_t seg = 0;  // index into the segment table
+  int32_t m0 = 0;   // first row of the tile within the segment
+};
+inline int moe_tile_list_capacity(int n_segs, int total_rows, int tile_rows) {
+  return n_segs + (total_rows + tile_rows - 1) / tile_rows;
+}
+// One block; n_segs <= 65535; tiles has moe_tile_list_capacity entries.
+void launch_moe_tile_list(const MoeSegment* segs, int n_segs, int tile_rows,
+                          MoeTile* tiles, int32_t* count, cudaStream_t stream);
+
 // The ordered accumulation in one pass: for every token, its top_k routed
 // slots in ASCENDING expert id (sorted here, whatever order the router left)
 // then the shared expert's row — moe_accum_kernel's __fmaf_rn chain from
@@ -339,28 +363,35 @@ void launch_moe_slot_down_fp4(const uint16_t* act, size_t act_stride,
 // slot. k must satisfy packq_gemv's contract (a multiple of 64 in the
 // compiled set). Every row's arithmetic is the packed core's, bitwise
 // across the grouped and slot launchers and the single-matrix launcher.
+// scale_fmt / routed_scale_fmt: the routed entries' packed scale format
+// (kPackedScale*, quant_matrix.hpp; 0 = bf16 per 64, 1 = f16 per 128); the
+// shared expert's entries are always format 0.
 void launch_moe_grouped_gemv_packq_bf16(const uint16_t* act, size_t act_stride,
                                         const MoeSegment* segs, int n_segs,
                                         int max_rows, int rows_per_block,
                                         const MoeExpertView* views, int which,
                                         uint16_t* out, size_t out_stride, int n,
-                                        int k, int bits, cudaStream_t stream);
+                                        int k, int bits, cudaStream_t stream,
+                                        int scale_fmt = 0);
 void launch_moe_grouped_gemv_packq_f32(const uint16_t* act, size_t act_stride,
                                        const MoeSegment* segs, int n_segs,
                                        int max_rows, int rows_per_block,
                                        const MoeExpertView* views, int which,
                                        float* out, size_t out_stride, int n,
-                                       int k, int bits, cudaStream_t stream);
+                                       int k, int bits, cudaStream_t stream,
+                                       int scale_fmt = 0);
 void launch_moe_slot_gate_up_swiglu_packq(
     const uint16_t* x, size_t x_stride, const int32_t* ids, const int32_t* order,
     const MoeExpertView* views, int n_routed, int k_routed, int routed_bits,
     int n_shared, int shared_bits, uint16_t* act, int act_stride, int slots,
-    int top_k, float limit, cudaStream_t stream, int shared_view_base);
+    int top_k, float limit, cudaStream_t stream, int shared_view_base,
+    int routed_scale_fmt = 0);
 void launch_moe_slot_down_packq(const uint16_t* act, size_t act_stride,
                                 const int32_t* ids, const int32_t* order,
                                 const MoeExpertView* views, int n_routed, int k_routed,
                                 int routed_bits, int n_shared, int shared_bits,
                                 float* out, int out_stride, int slots, int top_k,
-                                cudaStream_t stream, int shared_view_base);
+                                cudaStream_t stream, int shared_view_base,
+                                int routed_scale_fmt = 0);
 
 }  // namespace dgpp

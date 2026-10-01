@@ -98,20 +98,25 @@ void qsa_index_decode_update(const uint16_t* raw_k, int64_t k_stride, const uint
 // keys_ws[r * ws_stride + b] = (~sortable(score) << kIdxBits) | b for every
 // visible pool b < (pos[r] + 1) / kpool of every row (pos < 0: none). q:
 // bf16 [rows, heads * dim] with heads <= 4 and dim == 128 (the lane
-// layout; absent heads contribute nothing). The score's fp32 order: lane (h, c) sums dims [16c, 16c + 16)
-// with fma, a 3-level xor tree over the head's 8 lanes, relu, a 2-level
-// tree over the heads, one division by sqrt(dim). Grid: pool stripes x
-// rows. Every row's visible count must fit ws_stride.
+// layout; absent heads contribute nothing). The score's fp32 order: lane (h, c) sums dims [16c, 16c
+// + 16) with fma, a 3-level xor tree over the head's 8 lanes, relu, a 2-level tree over the heads,
+// one division by sqrt(dim). Grid: pool stripes x rows. Every row's visible count must fit
+// ws_stride. A host-known visible_pool_bound skips empty stripes without changing row strides. It
+// must cover every row, including on graph replay; -1 launches over ws_stride.
+// Optional select_k skips scoring rows with at most that many visible pools;
+// their keys remain untouched. Pair with qsa_select_from_keys using the same
+// budget. Zero (the default) materializes every visible key for diagnostics.
 void qsa_index_score(const uint16_t* q, int64_t q_row_stride, const int32_t* req_ids,
                      const int64_t* pos, int rows, const int32_t* block_tables,
-                     int blocks_per_request, const uint16_t* index_cache,
-                     int pools_per_block, int heads, int dim, int kpool, uint64_t* keys_ws,
-                     int64_t ws_stride, cudaStream_t stream);
+                     int blocks_per_request, const uint16_t* index_cache, int pools_per_block,
+                     int heads, int dim, int kpool, uint64_t* keys_ws, int64_t ws_stride,
+                     cudaStream_t stream, int64_t visible_pool_bound = -1, int select_k = 0);
 
 // One block per row: the select_k smallest keys of keys_ws[r, 0..visible)
 // (exact radix selection above 2048 pools, streaming top-k otherwise), with
 // pools expanded in ascending order and the row's incomplete tail appended; topk_out int32
 // [rows, max_selected] (-1 padded), out_counts [rows]. select_k <= 1024.
+// Rows with visible <= select_k emit all tokens directly without reading keys.
 void qsa_select_from_keys(const uint64_t* keys_ws, int64_t ws_stride, const int64_t* pos,
                           int rows, int select_k, int kpool, int max_selected,
                           int32_t* topk_out, int32_t* out_counts, cudaStream_t stream);
@@ -130,6 +135,18 @@ void qsa_attn_partial(const uint16_t* q, int64_t q_row_stride, const uint16_t* k
                       int local_heads, int kv_heads, int dim, int block_tokens,
                       const int32_t* block_tables, int blocks_per_request, float scale,
                       float* m_ws, float* l_ws, float* c_ws, cudaStream_t stream);
+// The same with the tile gather pinned: 1 = the cp.async phases (the
+// default; DGPP_QSA_ASYNC=0 turns the default to the serial gather),
+// 0 = serial, -1 = the default; heads_per_block (a divisor of the heads per
+// kv head, 0 = the default rule) and heads_per_warp (1..3, 0 = 1). Every
+// form is bitwise every other; only the default geometry is served.
+void qsa_attn_partial_gather(const uint16_t* q, int64_t q_row_stride, const uint16_t* k_cache,
+                      const uint16_t* v_cache, const int32_t* req_ids, const int32_t* topk,
+                      int topk_stride, const int32_t* counts, int rows, int n_split,
+                      int local_heads, int kv_heads, int dim, int block_tokens,
+                      const int32_t* block_tables, int blocks_per_request, float scale,
+                      float* m_ws, float* l_ws, float* c_ws, cudaStream_t stream,
+                      int async_gather, int heads_per_block, int heads_per_warp);
 
 // Prefill variant with wider KV sharing and cooperative warp softmax at dim=256;
 // other dimensions use qsa_attn_partial. Identical split/tile arithmetic and

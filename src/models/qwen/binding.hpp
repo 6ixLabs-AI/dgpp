@@ -53,6 +53,14 @@ enum class QwenTensorRole : uint8_t {
   Fp4Scale,    // F8_E4M3 [N, K/16]
   Fp4Global,   // F32 [], the matrix's weight_scale_2
   InputScale,  // F32 [], the recipe's activation scale (unused: W4A16)
+  // The AutoRound hybrid's GPTQ triple (docs/qwen38_autoround_int4_plan.md
+  // §1.1): `base.qweight` I32 [K*bits/32, N] (codes packed along K, N
+  // contiguous — the packed core's rows transposed, at load), `base.scales`
+  // F16 [K/128, N], `base.qzeros` I32 [K/128, N*bits/32] (the symmetric
+  // constant, verified at load and never resident).
+  GptqCodes,
+  GptqScales,
+  GptqZeros,
 };
 
 struct QwenExpectedTensor {
@@ -64,7 +72,10 @@ struct QwenExpectedTensor {
   int expert = -1;  // routed-expert id; the shard index for NgramShard
   QwenTensorRole role = QwenTensorRole::Plain;
 
-  bool quantized() const { return role == QwenTensorRole::Fp8Payload || role == QwenTensorRole::Fp4Payload; }
+  bool quantized() const {
+    return role == QwenTensorRole::Fp8Payload || role == QwenTensorRole::Fp4Payload ||
+           role == QwenTensorRole::GptqCodes;
+  }
   size_t numel() const {
     size_t n = 1;
     for (auto d : shape) n *= static_cast<size_t>(d);

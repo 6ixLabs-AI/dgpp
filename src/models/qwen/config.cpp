@@ -356,8 +356,63 @@ QwenTextConfig QwenTextConfig::parse(const minijson::Value& tc,
       c.ngram_table_fp8 = false;
       return c;
     }
+    // The AutoRound hybrid (docs/qwen38_autoround_int4_plan.md D7): the
+    // GPTQ block the hybrid's tools write. Strict on purpose: the codes and
+    // scales the packed core reads, the one `+` rule lifting the lm_head to
+    // 8 bits, and `-` rules excluding exactly the classes the engine reads
+    // unpacked. Intel's raw release (BF16 head and side layers) and the
+    // base hybrid (BF16 draft experts, `-:.*layers\.48\..*`) are refused
+    // by name: the served checkpoint is the -MTP_int4RTN variant.
+    if (method == "gptq") {
+      auto bad = [](const std::string& what) {
+        throw std::runtime_error("Qwen quantization_config (gptq): " + what);
+      };
+      if (require_int(q, "bits") != 4) bad("only 4-bit codes are implemented");
+      if (require_int(q, "group_size") != 128) bad("only group 128 is implemented");
+      if (!optional_bool(q, "sym", false)) bad("only symmetric codes are implemented");
+      if (optional_bool(q, "desc_act", false)) bad("act-order (desc_act) is not implemented");
+      if (!optional_bool(q, "lm_head", false))
+        bad("the hybrid's int8 lm_head (lm_head: true) is required — Intel's raw AutoRound release is not served");
+      const minijson::Value* dyn = q.find("dynamic");
+      if (dyn == nullptr || !dyn->is_object()) bad("the dynamic rule map is missing");
+      bool head8 = false;
+      std::vector<std::string> excluded;
+      for (const auto& m : dyn->members()) {
+        if (m.key.rfind("+:", 0) == 0) {
+          if (m.key != "+:.*lm_head$") bad("unsupported + rule '" + m.key + "'");
+          if (!m.value.is_object() || require_int(m.value, "bits") != 8)
+            bad("the lm_head rule must lift it to 8 bits");
+          head8 = true;
+        } else if (m.key.rfind("-:", 0) == 0) {
+          excluded.push_back(m.key.substr(2));
+        } else {
+          bad("unknown dynamic rule '" + m.key + "'");
+        }
+      }
+      if (!head8) bad("the int8 lm_head rule (+:.*lm_head$) is missing — Intel's raw AutoRound release is not served");
+      for (const std::string& e : excluded)
+        if (e.find("layers\\.") != std::string::npos)
+          bad("a whole layer's experts are excluded ('" + e +
+              "': the base hybrid's BF16 draft experts) — serve the -MTP_int4RTN variant");
+      for (const char* need : {"linear_attn", "self_attn", "hyper_connection", "shared_expert",
+                               "\\.ple\\.", "embed", "fc_hidden", "\\.gate$"}) {
+        bool found = false;
+        for (const std::string& e : excluded) found = found || e.find(need) != std::string::npos;
+        if (!found)
+          bad(std::string("the exclusion of '") + need + "' is missing (the engine reads that class unpacked)");
+      }
+      c.experts_fp8 = false;
+      c.experts_nvfp4 = false;
+      c.experts_gptq_int4 = true;
+      c.lm_head_gptq_int8 = true;
+      c.dense_fp8_shipped = true;
+      c.gptq_group = 128;
+      c.ngram_table_fp8 = true;  // served from the FP8 release's shards (engine.ngram_table_dir)
+      (void)c.ngram_geometry();
+      return c;
+    }
     if (method != "fp8")
-      throw std::runtime_error("Qwen quantization_config.quant_method: only fp8 is implemented, got '" + method + "'");
+      throw std::runtime_error("Qwen quantization_config.quant_method: only fp8 and gptq are implemented, got '" + method + "'");
     const std::vector<int64_t> bs = require_int_array(q, "weight_block_size");
     if (bs.size() != 2 || bs[0] != 128 || bs[1] != 128)
       throw std::runtime_error("Qwen quantization_config.weight_block_size: only [128, 128] is implemented");

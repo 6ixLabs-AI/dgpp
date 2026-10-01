@@ -466,4 +466,23 @@ void qwen_ple_conv_bf16(const uint16_t* un, const uint16_t* gv, uint16_t* state,
   DGPP_CUDA_OK(cudaGetLastError());
 }
 
+namespace {
+__global__ void publish_stage_kernel(uint64_t* __restrict__ device_seq, uint64_t* __restrict__ pinned_seq,
+                                     int32_t* __restrict__ pinned_rows, int rows) {
+  if (threadIdx.x != 0) return;
+  asm volatile("st.relaxed.sys.global.s32 [%0], %1;" ::"l"(pinned_rows), "r"(rows) : "memory");
+  __threadfence_system();
+  const uint64_t v = *device_seq + 1;
+  *device_seq = v;
+  asm volatile("st.release.sys.global.u64 [%0], %1;" ::"l"(pinned_seq), "l"(v) : "memory");
+}
+}  // namespace
+
+void qwen_ple_publish_stage(uint64_t* device_seq, uint64_t* pinned_seq, int32_t* pinned_rows, int rows,
+                            cudaStream_t stream) {
+  if (!device_seq || !pinned_seq || !pinned_rows) throw std::invalid_argument("qwen_ple_publish_stage: null");
+  publish_stage_kernel<<<1, 32, 0, stream>>>(device_seq, pinned_seq, pinned_rows, rows);
+  DGPP_CUDA_OK(cudaGetLastError());
+}
+
 }  // namespace dgpp

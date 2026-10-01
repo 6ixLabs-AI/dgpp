@@ -50,9 +50,25 @@ __global__ void spec_commit_kernel(const PickVerdict* __restrict__ verdict, int 
   if (req < 0) return;
   const int accepted = verdict->accepted;
   if (accepted <= 0) return;  // fixed-batch padding slot
-  if (blockIdx.x == 0 && blockIdx.y == 0 && threadIdx.x == 0) session_pos[req] += accepted;
+  if (blockIdx.x == 0 && blockIdx.y == 0 && threadIdx.x == 0) {
+    session_pos[req] += accepted;
+    if (segments.replay_pending != nullptr) segments.replay_pending[req] = accepted;
+  }
+  if (segments.replay_dst != nullptr && blockIdx.y == static_cast<unsigned>(segments.count)) {
+    // The replay family's rows: this pass's saved inputs become the next
+    // pass's replay source, whatever the verdict (it replays `accepted`).
+    const size_t units = segments.replay_bytes / kUnit;
+    const uint4* src = reinterpret_cast<const uint4*>(
+        static_cast<const char*>(segments.replay_src) + static_cast<size_t>(req) * segments.replay_request_stride_bytes);
+    uint4* dst = reinterpret_cast<uint4*>(static_cast<char*>(segments.replay_dst) +
+                                          static_cast<size_t>(req) * segments.replay_request_stride_bytes);
+    for (size_t i = static_cast<size_t>(blockIdx.x) * kCopyThreads + threadIdx.x;
+         i < units; i += static_cast<size_t>(gridDim.x) * kCopyThreads)
+      dst[i] = src[i];
+    return;
+  }
   if (accepted >= rows) return;  // every row stood: nothing to retract
-  if (blockIdx.y >= segments.count) return;  // position-only configuration
+  if (blockIdx.y >= static_cast<unsigned>(segments.count)) return;  // position-only configuration
 
   const GlmSpecSegment& s = segments.seg[blockIdx.y];
   const size_t units = s.bytes / kUnit;
@@ -65,21 +81,30 @@ __global__ void spec_commit_kernel(const PickVerdict* __restrict__ verdict, int 
     dst[i] = src[i];
 }
 
+// A row at or past the context ceiling is padding (-1), like a closed
+// slot's rows: a request's lifetime reservation is capped at the ceiling,
+// so the fixed-width verify's trailing rows past it must land in no K/V
+// block, index stripe or state row. Their verdicts are past the request's
+// budget by construction (2026-09-28).
 __global__ void spec_positions_kernel(const int64_t* __restrict__ session_pos,
-                                      int rows, int64_t* __restrict__ step_pos) {
+                                      int rows, int64_t max_context,
+                                      int64_t* __restrict__ step_pos) {
   const int r = threadIdx.x;
-  if (r < rows) step_pos[r] = *session_pos + r;
+  if (r >= rows) return;
+  const int64_t p = *session_pos + r;
+  step_pos[r] = p < max_context ? p : -1;
 }
 
 __global__ void spec_positions_batched_kernel(
     const int64_t* __restrict__ session_pos,
     const int32_t* __restrict__ request_ids, int rows, int rows_per_request,
-    int64_t* __restrict__ step_pos) {
+    int64_t max_context, int64_t* __restrict__ step_pos) {
   const int r = threadIdx.x + blockIdx.x * blockDim.x;
   if (r >= rows) return;
   const int req = request_ids[r];
   const int64_t base = req >= 0 ? session_pos[req] : 0;
-  step_pos[r] = base > 0 ? base + (r % rows_per_request) : -1;
+  const int64_t p = base + (r % rows_per_request);
+  step_pos[r] = base > 0 && p < max_context ? p : -1;
 }
 
 __global__ void spec_draft_rows_kernel(const PickVerdict* __restrict__ verdict,
@@ -409,12 +434,20 @@ void glm_spec_commit(const PickVerdict* verdict, int rows, const GlmSpecSegments
           " must be 16-byte aligned with 16-byte-multiple sizes");
     max_units = std::max(max_units, s.bytes / kUnit);
   }
+  const bool replay = segments.replay_dst != nullptr;
+  if (replay) {
+    if (!aligned16(segments.replay_dst) || !aligned16(segments.replay_src) || segments.replay_bytes % kUnit != 0 ||
+        segments.replay_request_stride_bytes % kUnit != 0 || segments.replay_pending == nullptr)
+      throw std::invalid_argument("glm_spec_commit: the replay rows must be 16-byte aligned with a pending counter");
+    max_units = std::max(max_units, segments.replay_bytes / kUnit);
+  }
   // A single block still runs (the position advance) when no segment
-  // exists; otherwise enough blocks to stream the largest segment.
+  // exists; otherwise enough blocks to stream the largest segment. The
+  // replay family's copy runs as one more y-slice (index `count`).
   const unsigned chunks = static_cast<unsigned>(
       std::min<size_t>(1024, (max_units + kCopyThreads - 1) / kCopyThreads));
   const dim3 grid(std::max(1u, chunks),
-                  static_cast<unsigned>(std::max(1, segments.count)));
+                  static_cast<unsigned>(std::max(1, segments.count + (replay ? 1 : 0))));
   spec_commit_kernel<<<grid, kCopyThreads, 0, stream>>>(verdict, rows, segments, session_pos,
                                                         request_map, batch_index);
   DGPP_CUDA_OK(cudaGetLastError());
@@ -454,24 +487,39 @@ void glm_device_copy(void* dst, const void* src, size_t bytes,
   DGPP_CUDA_OK(cudaGetLastError());
 }
 
-void glm_spec_positions(const int64_t* session_pos, int rows,
+namespace {
+__global__ void store_u8x2_kernel(uint8_t* __restrict__ dst, uint8_t a, uint8_t b) {
+  dst[0] = a;
+  dst[1] = b;
+}
+}  // namespace
+
+void glm_device_store_u8x2(uint8_t* dst, uint8_t a, uint8_t b, cudaStream_t stream) {
+  if (dst == nullptr) throw std::invalid_argument("glm_device_store_u8x2: null");
+  store_u8x2_kernel<<<1, 1, 0, stream>>>(dst, a, b);
+  DGPP_CUDA_OK(cudaGetLastError());
+}
+
+void glm_spec_positions(const int64_t* session_pos, int rows, int64_t max_context,
                         int64_t* step_pos, cudaStream_t stream) {
   if (rows < 1 || rows > kPickMaxRows) throw std::invalid_argument("glm_spec_positions: rows");
-  spec_positions_kernel<<<1, kPickMaxRows, 0, stream>>>(session_pos, rows, step_pos);
+  if (max_context < 1) throw std::invalid_argument("glm_spec_positions: context ceiling");
+  spec_positions_kernel<<<1, kPickMaxRows, 0, stream>>>(session_pos, rows, max_context, step_pos);
   DGPP_CUDA_OK(cudaGetLastError());
 }
 
 void glm_spec_positions_batched(const int64_t* session_pos,
                                 const int32_t* request_ids, int rows,
-                                int rows_per_request, int64_t* step_pos,
-                                cudaStream_t stream) {
+                                int rows_per_request, int64_t max_context,
+                                int64_t* step_pos, cudaStream_t stream) {
   if (session_pos == nullptr || request_ids == nullptr || step_pos == nullptr)
     throw std::invalid_argument("glm_spec_positions_batched: null argument");
   if (rows < 1 || rows > kPickMaxRows || rows_per_request < 1 ||
       rows % rows_per_request != 0)
     throw std::invalid_argument("glm_spec_positions_batched: row shape");
-  spec_positions_batched_kernel<<<1, kPickMaxRows, 0, stream>>>(session_pos, request_ids, rows,
-                                                                rows_per_request, step_pos);
+  if (max_context < 1) throw std::invalid_argument("glm_spec_positions_batched: context ceiling");
+  spec_positions_batched_kernel<<<1, kPickMaxRows, 0, stream>>>(
+      session_pos, request_ids, rows, rows_per_request, max_context, step_pos);
   DGPP_CUDA_OK(cudaGetLastError());
 }
 

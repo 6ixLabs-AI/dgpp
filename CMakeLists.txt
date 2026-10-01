@@ -35,6 +35,7 @@ enable_language(CUDA)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 option(DGPP_WERROR "Treat compiler warnings as errors" OFF)
+option(DGPP_BUILD_BENCHMARKS "Build platform, kernel and transport microbenchmarks" ON)
 set(DGPP_SANITIZE "" CACHE STRING "Host sanitizer (address or undefined)")
 set_property(CACHE DGPP_SANITIZE PROPERTY STRINGS "" address undefined)
 
@@ -163,9 +164,11 @@ add_library(dgpp_kernels STATIC
   src/kernels/kda.cu
   src/kernels/dsa.cu
   src/kernels/fp8_dequant.cu
+  src/kernels/fp8_gemm.cu
   src/kernels/fp4_gemv.cu
   src/kernels/packq_gemv.cu
   src/kernels/packq_gemm.cu
+  src/kernels/packq_head.cu
   src/kernels/scale_gemm.cu
   src/kernels/bf16_gemv.cu
   src/kernels/bf12_gemv.cu
@@ -433,7 +436,16 @@ set_tests_properties(qwen_forward_smoke PROPERTIES DEPENDS qwen_forward_fixture)
 add_test(NAME qwen_qsa_prefill
   COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/cuda/qwen_qsa_prefill_test.py
           $<TARGET_FILE:qwen_forward_test>)
-set_tests_properties(qwen_qsa_prefill PROPERTIES RUN_SERIAL TRUE TIMEOUT 180)
+set_tests_properties(qwen_qsa_prefill PROPERTIES RUN_SERIAL TRUE TIMEOUT 360)
+# QSA always sees BF16 activations, across both expert formats and dense modes.
+foreach(_dense_fp8 IN ITEMS 0 1)
+  add_test(NAME qwen_qsa_prefill_nvfp4_dense_${_dense_fp8}
+    COMMAND ${CMAKE_COMMAND} -E env DGPP_TEST_QWEN_NVFP4=1 DGPP_TEST_DENSE_FP8=${_dense_fp8}
+            ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/cuda/qwen_qsa_prefill_test.py
+            $<TARGET_FILE:qwen_forward_test>)
+  set_tests_properties(qwen_qsa_prefill_nvfp4_dense_${_dense_fp8}
+    PROPERTIES RUN_SERIAL TRUE TIMEOUT 360 LABELS "gpu")
+endforeach()
 # The same model under the engine's YaRN knob (engine.rope_scaling, factor 2
 # over the fixture's 4096 native positions): the table, the mscale and the
 # lifted ceiling through a whole forward, and logits that differ from the
@@ -457,6 +469,23 @@ add_test(NAME qwen_forward_test
   COMMAND qwen_forward_test --checkpoint-dir ${QWEN_FORWARD_FIXTURE}
           --dump-file ${CMAKE_CURRENT_BINARY_DIR}/qwen_pure_ref.qwndump)
 set_tests_properties(qwen_forward_test PROPERTIES DEPENDS qwen_forward_generate)
+# The AutoRound hybrid's twin (docs/qwen38_autoround_int4_plan.md S2): GPTQ
+# int4 g128 experts, the int8 g128 head and the shipped fp8 dense stack
+# through the same fixture chain — the Python reference dequantizes the
+# GPTQ triples exactly (no per-weight rounding, the packed core's policy).
+set(QWEN_GPTQ_FIXTURE ${CMAKE_CURRENT_BINARY_DIR}/qwen_gptq_fixture)
+add_test(NAME qwen_gptq_fixture COMMAND qwen_forward_test --write-fixture ${QWEN_GPTQ_FIXTURE} --gptq)
+add_test(NAME qwen_gptq_smoke COMMAND qwen_forward_test --smoke ${QWEN_GPTQ_FIXTURE})
+set_tests_properties(qwen_gptq_smoke PROPERTIES DEPENDS qwen_gptq_fixture)
+add_test(NAME qwen_gptq_generate
+  COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/qwen_reference_dump.py
+          gen-pure --checkpoint-dir ${QWEN_GPTQ_FIXTURE}
+          --out ${CMAKE_CURRENT_BINARY_DIR}/qwen_gptq_ref.qwndump)
+set_tests_properties(qwen_gptq_generate PROPERTIES DEPENDS qwen_gptq_fixture)
+add_test(NAME qwen_gptq_forward_test
+  COMMAND qwen_forward_test --checkpoint-dir ${QWEN_GPTQ_FIXTURE}
+          --dump-file ${CMAKE_CURRENT_BINARY_DIR}/qwen_gptq_ref.qwndump)
+set_tests_properties(qwen_gptq_forward_test PROPERTIES DEPENDS qwen_gptq_generate)
 
 # The Qwen session surface (Q6 stage A): incremental decode vs the re-forward.
 add_executable(qwen_decode_test tests/cuda/qwen_decode_test.cpp)
@@ -473,6 +502,9 @@ add_test(NAME qwen_decode_fp8_head_row_independent
           $<TARGET_FILE:qwen_decode_test> --fixture ${QWEN_FORWARD_FIXTURE} --fp8-head)
 set_tests_properties(qwen_decode_fp8_head qwen_decode_fp8_head_row_independent
   PROPERTIES DEPENDS qwen_forward_fixture RUN_SERIAL TRUE)
+add_test(NAME qwen_gptq_decode_test COMMAND qwen_decode_test --fixture ${QWEN_GPTQ_FIXTURE})
+add_test(NAME qwen_gptq_prefill_head COMMAND qwen_decode_test --fixture ${QWEN_GPTQ_FIXTURE} --prefill-head)
+set_tests_properties(qwen_gptq_decode_test qwen_gptq_prefill_head PROPERTIES DEPENDS qwen_gptq_fixture)
 add_test(NAME qwen_prefill_head
   COMMAND qwen_decode_test --fixture ${QWEN_FORWARD_FIXTURE} --prefill-head)
 add_test(NAME qwen_prefill_head_all_rows
@@ -1387,6 +1419,19 @@ foreach(_rows 4 256)
   set_tests_properties(qwen_engine_fp8_head_${_rows}
     PROPERTIES RESOURCE_LOCK qwen_engine_world RUN_SERIAL TRUE)
 endforeach()
+# The hybrid through the loopback engines (MTP == plain, the mmap'ed table,
+# depth 2, wide slots, graph == eager) on its own fixture.
+add_test(NAME qwen_engine_gptq
+  COMMAND ${CMAKE_COMMAND} -E env DGPP_TEST_QWEN_GPTQ=1 DGPP_TEST_DENSE_FP8=1 DGPP_TEST_FILTER=loopback_world_2
+          $<TARGET_FILE:qwen_engine_test>)
+set_tests_properties(qwen_engine_gptq PROPERTIES RESOURCE_LOCK qwen_engine_world LABELS "gpu;rdma" RUN_SERIAL TRUE)
+foreach(_dense_fp8 IN ITEMS 0 1)
+  add_test(NAME qwen_engine_nvfp4_dense_${_dense_fp8}
+    COMMAND ${CMAKE_COMMAND} -E env DGPP_TEST_QWEN_NVFP4=1 DGPP_TEST_DENSE_FP8=${_dense_fp8}
+            DGPP_TEST_FILTER=wide $<TARGET_FILE:qwen_engine_test>)
+  set_tests_properties(qwen_engine_nvfp4_dense_${_dense_fp8}
+    PROPERTIES RESOURCE_LOCK qwen_engine_world LABELS "gpu;rdma" RUN_SERIAL TRUE)
+endforeach()
 set_tests_properties(qwen_engine_test qwen_engine_row_independent qwen_engine_bf12 PROPERTIES RESOURCE_LOCK qwen_engine_world)
 set_tests_properties(qwen_engine_row_independent qwen_engine_bf12 PROPERTIES LABELS "gpu;rdma" RUN_SERIAL TRUE)
 add_test(NAME qwen_engine_fp8_wide
@@ -1497,12 +1542,25 @@ target_link_libraries(packq_gemv_test PRIVATE dgpp_kernels dgpp_loaders CUDA::cu
 dgpp_set_common(packq_gemv_test)
 add_test(NAME packq_gemv_test COMMAND packq_gemv_test)
 set_tests_properties(packq_gemv_test PROPERTIES SKIP_RETURN_CODE 2)
+add_executable(packq_head_test tests/cuda/packq_head_test.cu)
+target_include_directories(packq_head_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(packq_head_test PRIVATE dgpp_kernels CUDA::cudart Threads::Threads)
+dgpp_set_common(packq_head_test)
+add_test(NAME packq_head_test COMMAND packq_head_test)
+set_tests_properties(packq_head_test PROPERTIES SKIP_RETURN_CODE 2)
 add_executable(packq_gemm_test tests/cuda/packq_gemm_test.cu)
 target_include_directories(packq_gemm_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(packq_gemm_test PRIVATE dgpp_kernels CUDA::cudart)
 dgpp_set_common(packq_gemm_test)
 add_test(NAME packq_gemm_test COMMAND packq_gemm_test)
 set_tests_properties(packq_gemm_test PROPERTIES SKIP_RETURN_CODE 2 LABELS "gpu")
+
+add_executable(fp8_gemm_test tests/cuda/fp8_gemm_test.cu)
+target_include_directories(fp8_gemm_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(fp8_gemm_test PRIVATE dgpp_kernels CUDA::cudart)
+dgpp_set_common(fp8_gemm_test)
+add_test(NAME fp8_gemm_test COMMAND fp8_gemm_test)
+set_tests_properties(fp8_gemm_test PROPERTIES SKIP_RETURN_CODE 2 LABELS "gpu")
 
 add_executable(scale_gemm_test
   tests/cuda/scale_gemm_test.cu
@@ -1644,98 +1702,115 @@ if(DGPP_ENABLE_IBV)
   set_tests_properties(bus_selftest PROPERTIES SKIP_RETURN_CODE 2)
 endif()
 
-add_executable(micro_mem_bw benchmarks/micro/mem_bw.cu src/common/log.cpp)
-target_link_libraries(micro_mem_bw PRIVATE CUDA::cudart Threads::Threads)
-dgpp_set_common(micro_mem_bw)
+# Serving does not depend on the standalone benchmark sources.
+if(DGPP_BUILD_BENCHMARKS)
+  # Benchmark sources can be locally ignored or omitted from a checkout.
+  # Check every source, including auxiliary translation units, before defining
+  # the target so no target properties refer to a skipped benchmark.
+  function(dgpp_add_benchmark target)
+    cmake_parse_arguments(BENCH "" "" "SOURCES;LIBRARIES;INCLUDE_DIRECTORIES" ${ARGN})
+    foreach(source IN LISTS BENCH_SOURCES)
+      if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${source}")
+        message(STATUS "Skipping benchmark ${target}: missing ${source}")
+        return()
+      endif()
+    endforeach()
+    add_executable(${target} ${BENCH_SOURCES})
+    target_link_libraries(${target} PRIVATE ${BENCH_LIBRARIES})
+    if(BENCH_INCLUDE_DIRECTORIES)
+      target_include_directories(${target} PRIVATE ${BENCH_INCLUDE_DIRECTORIES})
+    endif()
+    dgpp_set_common(${target})
+  endfunction()
 
-add_executable(micro_zerocopy benchmarks/micro/zerocopy.cu src/common/log.cpp)
-target_link_libraries(micro_zerocopy PRIVATE CUDA::cudart Threads::Threads)
-dgpp_set_common(micro_zerocopy)
+  dgpp_add_benchmark(micro_mem_bw
+    SOURCES benchmarks/micro/mem_bw.cu src/common/log.cpp
+    LIBRARIES CUDA::cudart Threads::Threads)
 
-add_executable(micro_gemv_bw benchmarks/micro/gemv_bw.cu)
-target_include_directories(micro_gemv_bw PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(micro_gemv_bw PRIVATE dgpp_kernels CUDA::cudart)
-dgpp_set_common(micro_gemv_bw)
+  dgpp_add_benchmark(micro_zerocopy
+    SOURCES benchmarks/micro/zerocopy.cu src/common/log.cpp
+    LIBRARIES CUDA::cudart Threads::Threads)
 
-add_executable(micro_gemm_peak benchmarks/micro/gemm_peak.cu src/common/log.cpp)
-target_link_libraries(micro_gemm_peak PRIVATE CUDA::cudart CUDA::cublasLt)
-dgpp_set_common(micro_gemm_peak)
+  dgpp_add_benchmark(micro_gemv_bw
+    SOURCES benchmarks/micro/gemv_bw.cu
+    LIBRARIES dgpp_kernels CUDA::cudart)
 
-add_executable(kda_bench benchmarks/micro/kda_bench.cu src/common/log.cpp)
-target_link_libraries(kda_bench PRIVATE dgpp_models_kda CUDA::cudart CUDA::cublasLt)
-dgpp_set_common(kda_bench)
+  dgpp_add_benchmark(micro_gemm_peak
+    SOURCES benchmarks/micro/gemm_peak.cu src/common/log.cpp
+    LIBRARIES CUDA::cudart CUDA::cublasLt)
 
-add_executable(moe_slot_bench benchmarks/micro/moe_slot_bench.cu src/common/log.cpp)
-add_executable(mhc_site_bench benchmarks/micro/mhc_site_bench.cu src/common/log.cpp)
-target_include_directories(mhc_site_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(mhc_site_bench PRIVATE dgpp_kernels CUDA::cudart)
-dgpp_set_common(mhc_site_bench)
-add_executable(moe_tile_bench benchmarks/micro/moe_tile_bench.cu src/common/log.cpp)
-target_include_directories(moe_tile_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(moe_tile_bench PRIVATE dgpp_models_glm_loader dgpp_models_glm CUDA::cudart CUDA::cublasLt)
-dgpp_set_common(moe_tile_bench)
-add_executable(moe_prefill_bench benchmarks/micro/moe_prefill_bench.cu benchmarks/micro/moe_prefill_variants.cu)
-target_include_directories(moe_prefill_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(moe_prefill_bench PRIVATE dgpp_kernels CUDA::cudart)
-dgpp_set_common(moe_prefill_bench)
-add_executable(packq_prefill_bench benchmarks/micro/packq_prefill_bench.cu)
-target_include_directories(packq_prefill_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(packq_prefill_bench PRIVATE dgpp_kernels CUDA::cudart)
-dgpp_set_common(packq_prefill_bench)
-target_include_directories(moe_slot_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(moe_slot_bench PRIVATE dgpp_models_glm_loader dgpp_models_glm CUDA::cudart CUDA::cublasLt)
-dgpp_set_common(moe_slot_bench)
+  dgpp_add_benchmark(kda_bench
+    SOURCES benchmarks/micro/kda_bench.cu src/common/log.cpp
+    LIBRARIES dgpp_models_kda CUDA::cudart CUDA::cublasLt)
 
-add_executable(mimo_step_bench benchmarks/micro/mimo_step_bench.cu src/common/log.cpp)
-target_include_directories(mimo_step_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(mimo_step_bench PRIVATE dgpp_models_moe dgpp_models_glm dgpp_kernels CUDA::cudart CUDA::cublasLt)
-dgpp_set_common(mimo_step_bench)
+  dgpp_add_benchmark(moe_slot_bench
+    SOURCES benchmarks/micro/moe_slot_bench.cu src/common/log.cpp
+    LIBRARIES dgpp_models_glm_loader dgpp_models_glm CUDA::cudart CUDA::cublasLt)
+  dgpp_add_benchmark(qwen_dense_bench
+    SOURCES benchmarks/micro/qwen_dense_bench.cu src/common/log.cpp
+    LIBRARIES dgpp_kernels CUDA::cudart)
+  dgpp_add_benchmark(mhc_site_bench
+    SOURCES benchmarks/micro/mhc_site_bench.cu src/common/log.cpp
+    LIBRARIES dgpp_kernels CUDA::cudart)
+  dgpp_add_benchmark(moe_tile_bench
+    SOURCES benchmarks/micro/moe_tile_bench.cu src/common/log.cpp
+    LIBRARIES dgpp_models_glm_loader dgpp_models_glm CUDA::cudart CUDA::cublasLt)
+  dgpp_add_benchmark(moe_prefill_bench
+    SOURCES benchmarks/micro/moe_prefill_bench.cu benchmarks/micro/moe_prefill_variants.cu
+    LIBRARIES dgpp_kernels CUDA::cudart)
+  dgpp_add_benchmark(packq_prefill_bench
+    SOURCES benchmarks/micro/packq_prefill_bench.cu
+    LIBRARIES dgpp_kernels CUDA::cudart)
 
-add_executable(dsa_select_bench benchmarks/micro/dsa_select_bench.cu)
-target_include_directories(dsa_select_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(dsa_select_bench PRIVATE dgpp_models_dsa CUDA::cudart)
-dgpp_set_common(dsa_select_bench)
+  dgpp_add_benchmark(fp8_gemm_bench
+    SOURCES benchmarks/micro/fp8_gemm_bench.cu
+    LIBRARIES dgpp_kernels CUDA::cudart CUDA::cublasLt)
 
-add_executable(qsa_prefill_bench benchmarks/micro/qsa_prefill_bench.cu)
-target_link_libraries(qsa_prefill_bench PRIVATE dgpp_kernels CUDA::cudart)
-dgpp_set_common(qsa_prefill_bench)
+  dgpp_add_benchmark(mimo_step_bench
+    SOURCES benchmarks/micro/mimo_step_bench.cu src/common/log.cpp
+    LIBRARIES dgpp_models_moe dgpp_models_glm dgpp_kernels CUDA::cudart CUDA::cublasLt)
 
-add_executable(qsa_index_bench benchmarks/micro/qsa_index_bench.cu)
-target_link_libraries(qsa_index_bench PRIVATE dgpp_models_qwen dgpp_kernels CUDA::cudart)
-dgpp_set_common(qsa_index_bench)
+  dgpp_add_benchmark(dsa_select_bench
+    SOURCES benchmarks/micro/dsa_select_bench.cu
+    LIBRARIES dgpp_models_dsa CUDA::cudart)
 
-add_executable(csa2_select_bench benchmarks/micro/csa2_select_bench.cu)
-target_link_libraries(csa2_select_bench PRIVATE dgpp_kernels CUDA::cudart)
-dgpp_set_common(csa2_select_bench)
+  dgpp_add_benchmark(qsa_prefill_bench
+    SOURCES benchmarks/micro/qsa_prefill_bench.cu
+    LIBRARIES dgpp_kernels CUDA::cudart)
 
-add_executable(dsa_bench benchmarks/micro/dsa_bench.cu src/common/log.cpp)
-target_link_libraries(dsa_bench PRIVATE dgpp_models_dsa CUDA::cudart CUDA::cublasLt)
-dgpp_set_common(dsa_bench)
+  dgpp_add_benchmark(qsa_index_bench
+    SOURCES benchmarks/micro/qsa_index_bench.cu
+    LIBRARIES dgpp_models_qwen dgpp_kernels CUDA::cudart)
 
-if(DGPP_ENABLE_IBV)
-  add_executable(micro_gdr_probe benchmarks/micro/gdr_probe.cpp src/common/log.cpp)
-  target_link_libraries(micro_gdr_probe PRIVATE CUDA::cudart)
-  dgpp_set_common(micro_gdr_probe)
-  target_link_libraries(micro_gdr_probe PRIVATE ${IBVERBS_LIBRARY})
-  target_include_directories(micro_gdr_probe PRIVATE ${IBVERBS_INCLUDE_DIR})
+  dgpp_add_benchmark(csa2_select_bench
+    SOURCES benchmarks/micro/csa2_select_bench.cu
+    LIBRARIES dgpp_kernels CUDA::cudart)
 
-  # The send-doorbell mapping probe (2026-09-19): mlx5 direct verbs, only
-  # where libmlx5 is installed.
-  find_library(MLX5_LIBRARY NAMES mlx5)
-  if(MLX5_LIBRARY)
-    add_executable(micro_uar_probe benchmarks/micro/uar_probe.cpp)
-    dgpp_set_common(micro_uar_probe)
-    target_link_libraries(micro_uar_probe PRIVATE ${MLX5_LIBRARY} ${IBVERBS_LIBRARY} CUDA::cudart)
-    target_include_directories(micro_uar_probe PRIVATE ${IBVERBS_INCLUDE_DIR})
+  dgpp_add_benchmark(dsa_bench
+    SOURCES benchmarks/micro/dsa_bench.cu src/common/log.cpp
+    LIBRARIES dgpp_models_dsa CUDA::cudart CUDA::cublasLt)
+
+  if(DGPP_ENABLE_IBV)
+    dgpp_add_benchmark(micro_gdr_probe
+      SOURCES benchmarks/micro/gdr_probe.cpp src/common/log.cpp
+      LIBRARIES CUDA::cudart ${IBVERBS_LIBRARY}
+      INCLUDE_DIRECTORIES ${IBVERBS_INCLUDE_DIR})
+
+    # The send-doorbell mapping probe (2026-09-19): mlx5 direct verbs, only
+    # where libmlx5 is installed.
+    find_library(MLX5_LIBRARY NAMES mlx5)
+    if(MLX5_LIBRARY)
+      dgpp_add_benchmark(micro_uar_probe
+        SOURCES benchmarks/micro/uar_probe.cpp
+        LIBRARIES ${MLX5_LIBRARY} ${IBVERBS_LIBRARY} CUDA::cudart
+        INCLUDE_DIRECTORIES ${IBVERBS_INCLUDE_DIR})
+    endif()
+
+    dgpp_add_benchmark(micro_ibv_smoke
+      SOURCES benchmarks/micro/ibv_smoke.cpp src/net/nic_visibility.cu src/common/log.cpp
+      LIBRARIES ${IBVERBS_LIBRARY} CUDA::cudart
+      INCLUDE_DIRECTORIES ${IBVERBS_INCLUDE_DIR})
   endif()
-
-  add_executable(micro_ibv_smoke
-    benchmarks/micro/ibv_smoke.cpp
-    src/net/nic_visibility.cu
-    src/common/log.cpp)
-  target_link_libraries(micro_ibv_smoke PRIVATE ${IBVERBS_LIBRARY} CUDA::cudart)
-  target_include_directories(micro_ibv_smoke PRIVATE ${IBVERBS_INCLUDE_DIR})
-  dgpp_set_common(micro_ibv_smoke)
 endif()
 
 # Labels describe resources, not coverage guarantees. Some real-checkpoint
@@ -1766,6 +1841,7 @@ if(DGPP_ENABLE_IBV)
   set_tests_properties(nic_regress_selftest PROPERTIES LABELS "gpu;rdma" RUN_SERIAL TRUE)
 endif()
 set_tests_properties(qwen_engine_row_independent qwen_engine_bf12
+  qwen_engine_nvfp4_dense_0 qwen_engine_nvfp4_dense_1
   qwen_engine_fp8_wide qwen_engine_fp8_mtp3_rows32
   qwen_engine_mtp3_rows32_row_independent qwen_engine_fp8_mtp3_rows64
   qwen_engine_mtp3_rows64_row_independent

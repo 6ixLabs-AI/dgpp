@@ -1,0 +1,29 @@
+production down 04:16:42
+Mem:             121           5         109           0           8         116
+reserved 1G: 0  32M: 6
+== place device, 8 GiB rings 04:16:48
+gdn qkv+z fp8 multi [10240+6144 x 2560]        rows 4     191.0 us   219.6 GB/s  floor   179.6 us   94.0 %  gap   11.5 us
+out_proj fp8 [2560 x 6144] scale_gemv          rows 4      78.5 us   200.4 GB/s  floor    67.3 us   85.8 %  gap   11.2 us
+gr down+inject bf16 [320+4 x 10240]            rows 4      36.6 us   181.5 GB/s  floor    28.4 us   77.7 %  gap    8.1 us
+lm_head int8 g128 [248320 x 2560] packq_gemv   rows 4    2790.1 us   231.4 GB/s  floor  2763.8 us   99.1 %  gap   26.2 us
+== place host2m, 8 GiB rings 04:16:54
+gdn qkv+z fp8 multi [10240+6144 x 2560]        rows 4     261.1 us   160.7 GB/s  floor   179.6 us   68.8 %  gap   81.5 us
+out_proj fp8 [2560 x 6144] scale_gemv          rows 4     103.1 us   152.5 GB/s  floor    67.3 us   65.3 %  gap   35.8 us
+gr down+inject bf16 [320+4 x 10240]            rows 4      51.7 us   128.3 GB/s  floor    28.4 us   54.9 %  gap   23.3 us
+lm_head int8 g128 [248320 x 2560] packq_gemv   rows 4    3455.2 us   186.9 GB/s  floor  2763.8 us   80.0 %  gap  691.3 us
+== place huge32m, 8 GiB rings 04:16:59
+NVIDIA GB10: 48 SMs, L2 24 MiB, ring 8192 MiB per shape (place 2), floor rate 233.6 GB/s, 200 launches per cell
+NVIDIA GB10: 48 SMs, L2 24 MiB, ring 8192 MiB per shape (place 2), floor rate 233.6 GB/s, 200 launches per cell
+NVIDIA GB10: 48 SMs, L2 24 MiB, ring 8192 MiB per shape (place 2), floor rate 233.6 GB/s, 200 launches per cell
+NVIDIA GB10: 48 SMs, L2 24 MiB, ring 8192 MiB per shape (place 2), floor rate 233.6 GB/s, 12 launches per cell
+== place huge1g, 8 GiB rings 04:17:03
+NVIDIA GB10: 48 SMs, L2 24 MiB, ring 8192 MiB per shape (place 3), floor rate 233.6 GB/s, 200 launches per cell
+NVIDIA GB10: 48 SMs, L2 24 MiB, ring 8192 MiB per shape (place 3), floor rate 233.6 GB/s, 200 launches per cell
+NVIDIA GB10: 48 SMs, L2 24 MiB, ring 8192 MiB per shape (place 3), floor rate 233.6 GB/s, 200 launches per cell
+NVIDIA GB10: 48 SMs, L2 24 MiB, ring 8192 MiB per shape (place 3), floor rate 233.6 GB/s, 12 launches per cell
+== place device, 512 MiB rings (the warm reference)
+gdn qkv+z fp8 multi [10240+6144 x 2560]        rows 4     182.7 us   229.6 GB/s  floor   179.6 us   98.3 %  gap    3.1 us
+out_proj fp8 [2560 x 6144] scale_gemv          rows 4      74.6 us   210.7 GB/s  floor    67.3 us   90.2 %  gap    7.3 us
+released: 1G 0 32M 0
+production restored 04:17:44
+hugepage session done

@@ -1,0 +1,20 @@
+OK   rank 0 (192.168.88.11) platform: Linux aarch64; supported target is Linux/aarch64 GB10
+OK   rank 0 (192.168.88.11) Python: 3.12.3; Python 3.10+ is required
+OK   rank 0 (192.168.88.11) commands: python3, timeout, ldd, ssh, scp, curl, jq
+OK   rank 0 (192.168.88.11) node address: rank 0 address 192.168.88.11 belongs to this host
+OK   rank 0 (192.168.88.11) GPU: NVIDIA GB10, 12.1, [N/A]
+OK   rank 0 (192.168.88.11) logs/staging: /home/stephen/dgpp/log/deployments/ab0d8dd705def24d: parent /home/stephen/dgpp/log/deployments/ab0d8dd705def24d, 109.1 GiB free
+OK   rank 0 (192.168.88.11) resident cache: ~/.cache/dgpp/resident: parent /home/stephen/.cache/dgpp/resident, 109.1 GiB free
+OK   rank 0 (192.168.88.11) model cache: /home/stephen/.cache/huggingface/hub: parent /home/stephen/.cache/huggingface/hub, 109.1 GiB free
+OK   rank 0 (192.168.88.11) checkpoint: /home/stephen/.cache/huggingface/hub/models--Saren--Qwen3.8-Flash-Next-W4A16-AutoRound-hybrid-MTP_int4RTN/snapshots/19f9710c8f6600a32e15fb98bc77613ee8ec369b: 66.6 GiB; all indexed shards have consistent lengths (not a content hash check)
+OK   rank 0 (192.168.88.11) n-gram table: /home/stephen/.cache/huggingface/hub/models--Qwen--Qwen3.8-Flash-Next-FP8/snapshots/236dfdf285828023ca3bcd3f37366c58a3469b13: 172.8 GiB of shards
+OK   rank 0 (192.168.88.11) available memory: 116.2 GiB; startup enforces the exact model memory plan
+OK   rank 0 (192.168.88.11) HTTP port: 0.0.0.0:18080 is available
+OK   rank 0 (192.168.88.11) runtime libraries: all binary dependencies resolve
+OK   rank 0 (192.168.88.11) server version: dgpp-serve 0.1.0+g84028a497443.dirty (git 84028a497443, cuda 13.0)
+Preflight: 0 failed check(s). No files were installed and no services were started or stopped.
+2026-09-29 06:52:05.728 === staging dgpp-serve and the config to the peers
+2026-09-29 06:52:05.728 === rank 0 on 192.168.88.11 (HTTP :18080, fabric :29970, journal :29971)
+2026-09-29 06:52:05.729 head pid 3655775
+2026-09-29 06:52:31.734 rank 0 serving: ok (26s)
+2026-09-29 06:52:31.734 READY — curl http://192.168.88.11:18080/v1/models  (stop: python3 /home/stephen/workspace/dgpp-autoround/scripts/dgpp-cluster down --config /home/stephen/workspace/dgpp-autoround/deploy/cluster_qwen-3.8-flash-next_autoround-int4_w1.json --log-dir /home/stephen/dgpp/log/deployments/ab0d8dd705def24d)

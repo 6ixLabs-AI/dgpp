@@ -1,0 +1,2 @@
+[profiled] content chunks 399, ttft 306 ms, decode pace 25.68 ms/chunk (client), wall 10553 ms
+[profiled] text: 'We need answer user: "Explain, in a few paragraphs, why a CUDA graph replay can be faster than launching the same kernels eagerly, and what it costs." Need final few paragraphs. Need mention CUDA graph replay speed: capture kernel launches and dependencies into DAG, instantiate once, replay launches whole graph, reduces CPU launch overhead, driver validation, kernel node setup, synchronization/dep'

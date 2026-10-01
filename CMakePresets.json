@@ -18,6 +18,7 @@
         "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG -g0",
         "CMAKE_CUDA_FLAGS_RELEASE": "-O3 -DNDEBUG -Xcompiler=-g0",
         "CMAKE_EXE_LINKER_FLAGS_RELEASE": "-s",
+        "DGPP_BUILD_BENCHMARKS": "OFF",
         "DGPP_SANITIZE": ""
       }
     },

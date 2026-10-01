@@ -479,6 +479,24 @@ split chunks. Short cold prompts can group up to the selected budget.
 Larger idle chunks also increase the maximum wait for cancellation or a newly
 arriving request; they do not preempt a chunk already running.
 
+`engine.prefix_min_tokens` (`--prefix-min-tokens`, default 1024) is the prefix
+cache's entry floor. A cold prefill cuts at a prompt's structural boundaries
+only where a snapshot can stand — the cache on and the boundary at or past
+the floor — so a prompt under the floor is one walk, the same walk it gets
+as a span of a group admission, and its greedy transcript does not depend on
+what arrived beside it. No snapshot of any kind — prefill cut, head or body cut,
+rolling or close entry — is taken below that position. A shorter prompt still
+attaches to a matching entry; it just never takes a slot, so a stream of
+health probes or tiny side requests cannot push a long conversation's entries
+out of the arena. `engine.prefix_head_snapshots` (`--prefix-head-snapshots`,
+`--no-prefix-head-snapshots`, default on) keeps one more entry per cold
+prefill at the prompt's first structural boundary past its start (a long
+system prompt's end), where the next conversation under that prompt or the
+turn after a client-side compaction attaches. Both are world settings pushed
+to every peer; `/v1/metrics` shows them under `prefix_cache` as `min_tokens`
+and `head_cuts`, with `head_snapshots` counting the head entries taken. See
+[the sizing guide](prefix-cache.md).
+
 One long prefill progresses at a time in arrival order. Short prompts can
 still prefill together when the group fits the budget. Snapshots from an
 unfinished prefill remain private until completion. The settings and warm
@@ -534,7 +552,7 @@ on an otherwise idle server to compare the longest client update pause
 with the budget disabled and enabled. Keep the same tag and prompt size
 in matched fresh-server runs so the long prompt has no cached prefix.
 
-**The draft depth** (`engine.mtp_depth`, `--mtp-depth`, 1–3, with `mtp`)
+**The draft depth** (`engine.mtp_depth`, `--mtp-depth`, 1–5, with `mtp`)
 is the number of draft tokens verified per decode step. Depth 1 is the
 two-row step: the pending token and one draft through the main stack, the
 draft block proposing the next draft. A deeper step feeds 1 + depth rows,
@@ -659,6 +677,39 @@ before it through the ring. `exact` runs all forty layers over every row
 (every parity gate's mode; `docs/deepseek_v41_flash_plan.md` §1.8 and the
 G5 record). The mode is part of the world's settings (the head pushes it,
 the config digest carries it); decode is the same in both.
+
+**The opt-in prefill levers** (`engine.prefill_bf16_partials`,
+`engine.prefill_fold_scales`, `engine.prefill_fp8_gemm`; `--prefill-bf16-partials`,
+`--prefill-fold-scales`, `--prefill-fp8-gemm`; each default off) trade the
+prefill's exact arithmetic for speed within the quantized model's tolerance
+— none is bitwise the default chain, so a deployment that turns one on can
+serve transcripts that differ from the default's; the benchmarks list a
+template's default-chain and levers-on numbers as separate rows. They apply to the Qwen3.8 AutoRound hybrid's packed
+expert chain (the first two) and to any Qwen dense stack served under
+`engine.dense_weights: "fp8"` (the third; refused without it). `prefill_bf16_partials`
+writes the expert chain's down projection in bf16 and sums the per-expert
+partials from bf16 (half the bytes a 4,096-token chunk writes and reads
+back). `prefill_fold_scales` runs the wide packed expert GEMM with each
+group's scale folded into the bf16 weight values and one fp32 accumulator
+across K (Marlin's form). `prefill_fp8_gemm` runs the prefill-shaped dense
+projections on the fp8 tensor cores from per-token 1 x 128 e4m3 activations
+and the checkpoint's 128 x 128 weight scales (the reference stack's
+blockwise GEMM) instead of dequantizing each matrix to bf16 for cuBLASLt;
+its activation scratch is in the memory plan. Every rank runs the same
+setting (the config digest carries them). Measured on the AutoRound hybrid
+(docs/qwen38_autoround_int4_plan.md §6.15): the bf16 partials −3 to −7 %
+cold prefill, the fp8 GEMM 0 to −3 %, the fold no gain (+3 % at 32K); the
+first two together −3 to −6 % with HumanEval / GSM8K / extraction inside the
+default chain's band, which is why the AutoRound template turns those two
+on and no template turns on the fold.
+
+**The expert GEMM's form and companions** (`engine.expert_gemm`,
+`engine.expert_gemm_prefetch`, `engine.expert_tile_list`,
+`engine.expert_gemm_pair`; `engine.ngram_prestage` for Qwen) are deployment
+keys too, all bitwise the default chain and all at their measured best by
+default (`wide`, 3, on, off, on). They exist so an A/B can pin a form from a
+config file; nothing in the engine reads an environment variable to choose
+a kernel.
 
 Nothing else on the node needs setting. In particular a locked GPU clock
 (`nvidia-smi -lgc`) is **not** required: the governor sits at 2400-2560 MHz

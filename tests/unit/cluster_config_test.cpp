@@ -96,7 +96,8 @@ DGPP_TEST(cluster_config_parses_fills_defaults_and_derives_the_world) {
     "ports": {"http": 8081, "journal": 29001},
     "engine": {"max_concurrency": 2, "decode_graph": true, "prefix_cache_gib": 0.5,
                "admission": "grow", "stats_interval_s": 0, "mtp_depth": 2, "prefill": "exact",
-               "prefill_budget_tokens": 256, "prefill_idle_budget_tokens": 2048},
+               "prefill_budget_tokens": 256, "prefill_idle_budget_tokens": 2048,
+               "prefix_min_tokens": 512, "prefix_head_snapshots": false},
     "paths": {"log_dir": "/var/log/dgpp"}
   })";
   const dgpp::serve::ClusterConfig c = dgpp::serve::parse_cluster_config(json, "t");
@@ -108,7 +109,8 @@ DGPP_TEST(cluster_config_parses_fills_defaults_and_derives_the_world) {
   require(c.engine.max_concurrency == 2 && c.engine.decode_graph && !c.engine.mtp &&
               c.engine.mtp_depth == 2 && c.engine.prefix_cache_gib == 0.5 &&
               c.engine.admission == "grow" && c.engine.stats_interval_s == 0.0 && c.engine.prefill == "exact" &&
-              c.engine.prefill_budget_tokens == 256 && c.engine.prefill_idle_budget_tokens == 2048,
+              c.engine.prefill_budget_tokens == 256 && c.engine.prefill_idle_budget_tokens == 2048 &&
+              c.engine.prefix_min_tokens == 512 && !c.engine.prefix_head_snapshots,
           "the given engine knobs");
   // The engine defaults are the binary's flag defaults — one set of defaults.
   require(c.engine.kv_capacity == 8192 && c.engine.default_max_tokens == 256 &&
@@ -118,8 +120,28 @@ DGPP_TEST(cluster_config_parses_fills_defaults_and_derives_the_world) {
               c.engine.bulk_pace_gbps == -1.0 && c.engine.bulk_inflight == -1 &&
               c.engine.rendezvous_timeout_ms == 120000 && !c.engine.reasoning_in_content &&
               c.engine.kv_dtype == "bf16" && c.engine.bf16_weights == "checkpoint" &&
-              c.engine.fp8_head == "gemv",
+              c.engine.fp8_head == "gemv" && !c.engine.prefill_bf16_partials && !c.engine.prefill_fold_scales &&
+              !c.engine.prefill_fp8_gemm && c.engine.expert_gemm == "wide" && c.engine.expert_gemm_prefetch == 3 &&
+              c.engine.expert_tile_list && !c.engine.expert_gemm_pair && c.engine.ngram_prestage,
           "the engine defaults");
+  // The expert GEMM's form and companions (2026-09-30): keys, not environment switches.
+  const auto xg = dgpp::serve::parse_cluster_config(
+      R"({"model":"m","nodes":["h"],"engine":{"expert_gemm":"wide4r","expert_gemm_prefetch":0,"expert_tile_list":false,"expert_gemm_pair":true,"ngram_prestage":false}})",
+      "t");
+  require(xg.engine.expert_gemm == "wide4r" && xg.engine.expert_gemm_prefetch == 0 && !xg.engine.expert_tile_list &&
+              xg.engine.expert_gemm_pair && !xg.engine.ngram_prestage,
+          "the expert GEMM keys parse");
+  // The opt-in prefill levers (2026-09-30): off unless the config says so.
+  for (const std::string key : {"prefill_bf16_partials", "prefill_fold_scales", "prefill_fp8_gemm"}) {
+    const auto on = dgpp::serve::parse_cluster_config(
+        R"({"model":"m","nodes":["h"],"engine":{")" + key + R"(":true}})", "t");
+    const bool got = key == "prefill_bf16_partials" ? on.engine.prefill_bf16_partials
+                     : key == "prefill_fold_scales"  ? on.engine.prefill_fold_scales
+                                                     : on.engine.prefill_fp8_gemm;
+    const int others = (on.engine.prefill_bf16_partials ? 1 : 0) + (on.engine.prefill_fold_scales ? 1 : 0) +
+                       (on.engine.prefill_fp8_gemm ? 1 : 0);
+    require(got && others == 1, "engine." + key + " opt-in alone");
+  }
   const auto compact = dgpp::serve::parse_cluster_config(
       R"({"model":"m","nodes":["h"],"engine":{"compact_batches":true}})", "t");
   require(compact.engine.compact_batches, "compact_batches opt-in");
@@ -132,6 +154,14 @@ DGPP_TEST(cluster_config_parses_fills_defaults_and_derives_the_world) {
   const dgpp::serve::ClusterConfig fp8 = dgpp::serve::parse_cluster_config(
       R"({"model":"m","nodes":["h"],"engine":{"kv_dtype":"fp8"}})", "t");
   require(fp8.engine.kv_dtype == "fp8", "kv_dtype fp8");
+  // The Qwen n-gram table's snapshot (the AutoRound hybrid): a repository id,
+  // empty by default.
+  require(fp8.engine.ngram_table_model.empty(), "ngram_table_model empty by default");
+  const dgpp::serve::ClusterConfig table = dgpp::serve::parse_cluster_config(
+      R"({"model":"m","nodes":["h"],"engine":{"ngram_table_model":"Qwen/Qwen3.8-Flash-Next-FP8"}})", "t");
+  require(table.engine.ngram_table_model == "Qwen/Qwen3.8-Flash-Next-FP8", "ngram_table_model parses");
+  require(!refusal(R"({"model":"m","nodes":["h"],"engine":{"ngram_table_model":"nope"}})").empty(),
+          "ngram_table_model must be ORG/NAME");
   // The bf16 weights' resident form: named by the config, off by default.
   const dgpp::serve::ClusterConfig bf12 = dgpp::serve::parse_cluster_config(
       R"({"model":"m","nodes":["h"],"engine":{"bf16_weights":"bf12"}})", "t");
@@ -267,6 +297,10 @@ DGPP_TEST(cluster_config_refusesUnknownKeysAndBadValuesByName) {
        "'engine.admission' must be \"full\" or \"grow\""},
       {R"({"model":"m","nodes":["h"],"engine":{"prefix_cache_gib":-1}})",
        "'engine.prefix_cache_gib' must be >= 0"},
+      {R"({"model":"m","nodes":["h"],"engine":{"prefix_min_tokens":-1}})",
+       "'engine.prefix_min_tokens' must be in [0, 1073741824]"},
+      {R"({"model":"m","nodes":["h"],"engine":{"prefix_head_snapshots":"yes"}})",
+       "'engine.prefix_head_snapshots' must be true or false"},
       {R"({"model":"m","nodes":["h"],"engine":{"kv_dtype":"int8"}})",
        "'engine.kv_dtype' must be \"bf16\", \"fp8\" or \"fp4\""},
       {R"({"model":"m","nodes":["h"],"engine":{"kv_dtype":8}})",
@@ -275,6 +309,14 @@ DGPP_TEST(cluster_config_refusesUnknownKeysAndBadValuesByName) {
        "'engine.prefill' must be \"bounded\" or \"exact\""},
       {R"({"model":"m","nodes":["h"],"engine":{"compact_batches":"true"}})",
        "'engine.compact_batches' must be true or false"},
+      {R"({"model":"m","nodes":["h"],"engine":{"prefill_fold_scales":1}})",
+       "'engine.prefill_fold_scales' must be true or false"},
+      {R"({"model":"m","nodes":["h"],"engine":{"prefill_fp8_gemm":"on"}})",
+       "'engine.prefill_fp8_gemm' must be true or false"},
+      {R"({"model":"m","nodes":["h"],"engine":{"expert_gemm":"fast"}})",
+       "'engine.expert_gemm' must be \"wide\", \"wide3\", \"wide4\", \"wide4r\" or \"narrow\""},
+      {R"({"model":"m","nodes":["h"],"engine":{"expert_tile_list":"yes"}})",
+       "'engine.expert_tile_list' must be true or false"},
       {R"({"model":"m","nodes":["h"],"engine":{"fp8_head":"auto"}})",
        "'engine.fp8_head' must be \"gemv\" or \"mma\""},
       {R"({"model":"m","nodes":["h"],"engine":{"fp8_head":true}})",

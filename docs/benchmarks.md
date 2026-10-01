@@ -22,6 +22,8 @@ Rows are grouped by model family and node count, with configuration options next
 | Qwen3.8-Flash-Next NVFP4 | 2 | FP8 dense, YaRN 512K, 2 slots | 64.5–75.8 | C2: 96.1–111.1 | 1.278 / 5.117 / 20.975 |
 | Qwen3.8-Flash-Next FP8 | 2 | Default | 44.7–54.8 | C4: 89.3–101.7 | 1.311 / 5.178 / 21.110 |
 | Qwen3.8-Flash-Next FP8 | 4 | Default | 65.3–83.3 | C4: 143.3–164.9 | 1.113 / 4.440 / 18.315 |
+| Qwen3.8-Flash-Next AutoRound int4/int8 | 1 | 256K BF16 KV, 4 slots, MTP depth 3 | 44.7–71.5 | C4: 77.3–118.6 | 1.294 / 4.417 / 17.817 |
+| Qwen3.8-Flash-Next AutoRound int4/int8 | 1 | 256K BF16 KV, 4 slots, MTP depth 3, prefill levers on (the template) | 45.9–71.5 | C4: 78.0–116.3 | 1.210 / 4.226 / 17.096 |
 | GLM-5.3 int4/int8 | 4 | 120K BF16 KV | 26.8–30.6 | C8: 51.1–54.2 | 4.785 / 24.209 / 169.138 |
 | GLM-5.3 int4/int8 | 4 | 208K FP8 KV | 27.8–30.5 | C8: 51.4–54.8 | 4.747 / 24.735 / 186.045 |
 | DeepSeek-V4.1-Flash MXFP4/FP8 | 4 | Default | 39.8–75.5 | C6: 85.3–123.4 | 1.602 / 5.866 / 27.087 |
@@ -29,7 +31,7 @@ Rows are grouped by model family and node count, with configuration options next
 | MiMo-V2.6-Flash MXFP4/FP8 | 2 | 256K FP8 KV, 4 slots | 39.9–48.2 | C4: 72.1–78.5 | 3.486 / 13.201 / 58.513 |
 | MiMo-V2.6-Flash MXFP4/FP8 | 4 | 128K BF16 KV, 4 slots | 75.8–85.8 | C4: 128.7–142.1 | 1.771 / 6.547 / 28.428 |
 
-Rows cover the checked-in deployment templates, the GLM Flash FP8 checkpoint, and the three configuration variants described below. The MiMo-V2.6-Flash rows cover its two templates (four nodes with a 128K BF16 pool; two nodes with a 256K FP8 pool) and the two-node template's BF16-cache variant at 128K. For Qwen NVFP4, the Options column identifies the dense projection format; the expert weights remain NVFP4 in both cases. All Qwen NVFP4 rows map the n-gram table from NVMe. YaRN 512K denotes the extended-context configuration.
+Rows cover the checked-in deployment templates, the GLM Flash FP8 checkpoint, and the three configuration variants described below. The AutoRound int4/int8 hybrid has two rows: the exact default chain, and the same deployment with the two prefill levers its template turns on (`engine.prefill_bf16_partials`, `engine.prefill_fp8_gemm`; not bitwise the default chain — see the README's accuracy and correctness section); the levers touch prefill-shaped launches only, and the levers-on decode cells were re-measured under them. The Qwen3.8-Flash-Next AutoRound int4/int8 row is the single-Spark hybrid (`Saren/Qwen3.8-Flash-Next-W4A16-AutoRound-hybrid-MTP_int4RTN`, `deploy/cluster_qwen-3.8-flash-next_autoround-int4_w1.json`), measured 2026-09-29 on the `qwen-autoround-int4` branch with the head in bit planes and MTP depth 3 ([record](../benchmarks/results/2026-09-28-qwen-autoround-int4/README.md), `serve_docrows_r18/` for the decode cells and the long-context parcels, session U (round 18) for the prefill probe — after the wide packed-int expert GEMM, the prefill's combine inside the next norm pass, the batched page advice, the compact tile list over the routed segments and the wide kernel's L2 prefetch — round 15 for the task-level quality, `serve_docrows/` for the plain and deeper decode modes and the consistency checks); its optional draft vocabulary slice (`engine.draft_vocab`) is not in the row. Its decode step at context, measured through the endpoint after round 16's attention gather: 52.6 ms at under 200 prompt tokens, 56.3–56.5 ms from 12K to 47K (the sparse attention's selection budget is fixed, so its cost is), with prefill at 0.63–0.65 ms per token to 47K before round 17 (0.55 at 8K–32K after rounds 17–18). The MiMo-V2.6-Flash rows cover its two templates (four nodes with a 128K BF16 pool; two nodes with a 256K FP8 pool) and the two-node template's BF16-cache variant at 128K. For Qwen NVFP4, the Options column identifies the dense projection format; the expert weights remain NVFP4 in both cases. All Qwen NVFP4 rows map the n-gram table from NVMe. YaRN 512K denotes the extended-context configuration.
 
 The two-node GLM-5.3-Flash NVFP4/FP8 rows use the same checkpoint: one has a 163,840-token FP8 KV pool and four request slots; the other has a 262,144-token FP8 KV pool and two slots. NVFP4/FP8 identifies the [mixed-weight checkpoint](model_cards/GLM-5.3-Flash-NVFP4-FP8.md), which combines NVFP4 main-stack routed experts with the remaining tensors from the FP8 release, retaining their original formats.
 
@@ -55,6 +57,7 @@ MTP is speculative multi-token prediction. A pass can commit several output toke
 | Qwen3.8-Flash-Next NVFP4 | 2 | FP8 dense, YaRN 512K, 2 slots | 2 | 532,480 | bf16 | 1 |
 | Qwen3.8-Flash-Next FP8 | 2 | Default | 4 | 262,144 | bf16 | 1 |
 | Qwen3.8-Flash-Next FP8 | 4 | Default | 4 | 262,144 | bf16 | 1 |
+| Qwen3.8-Flash-Next AutoRound int4/int8 | 1 | 256K BF16 KV, 4 slots, MTP depth 3 | 4 | 262,144 | bf16 | 3 |
 | GLM-5.3 int4/int8 | 4 | 120K BF16 KV | 8 | 122,880 | bf16 | 1 |
 | GLM-5.3 int4/int8 | 4 | 208K FP8 KV | 8 | 212,992 | fp8 | 1 |
 | DeepSeek-V4.1-Flash MXFP4/FP8 | 4 | Default | 6 | 131,072 | model default | 4 (adaptive) |
@@ -90,6 +93,7 @@ Engine tokens/s, greedy; median of three repetitions.
 | Qwen3.8-Flash-Next NVFP4 | 2 | FP8 dense, YaRN 512K, 2 slots | 66.6 | 73.0 | 75.8 | 73.5 | 64.5 |
 | Qwen3.8-Flash-Next FP8 | 2 | Default | 48.4 | 53.4 | 54.8 | 51.1 | 44.7 |
 | Qwen3.8-Flash-Next FP8 | 4 | Default | 72.6 | 81.4 | 83.3 | 78.9 | 65.3 |
+| Qwen3.8-Flash-Next AutoRound int4/int8 | 1 | 256K BF16 KV, 4 slots, MTP depth 3 | 51.0 | 59.5 | 71.5 | 63.1 | 44.7 |
 | GLM-5.3 int4/int8 | 4 | 120K BF16 KV | 29.8 | 30.6 | 30.4 | 30.0 | 26.8 |
 | GLM-5.3 int4/int8 | 4 | 208K FP8 KV | 30.2 | 30.5 | 30.1 | 29.3 | 27.8 |
 | DeepSeek-V4.1-Flash MXFP4/FP8 | 4 | Default | 39.8 | 62.2 | 75.5 | 63.0 | 45.8 |
@@ -99,7 +103,7 @@ Engine tokens/s, greedy; median of three repetitions.
 
 ## Decode modes
 
-Single-request engine tokens/s, shown as the range of the five class medians. Plain decoding has MTP disabled. The deeper run uses depth two, or fixed depth five for DeepSeek. Full GLM's depth-two and DeepSeek's depth-five runs use two request slots. Other settings are saved with each run.
+Single-request engine tokens/s, shown as the range of the five class medians. Plain decoding has MTP disabled. The deeper run uses depth two, fixed depth five for DeepSeek, or depth four for the Qwen AutoRound hybrid (its template default is three). Full GLM's depth-two and DeepSeek's depth-five runs use two request slots. Other settings are saved with each run.
 
 | Model / weights | Nodes | Options | Plain | Template default | Deeper MTP |
 |---|---|---|---|---|---|
@@ -113,6 +117,7 @@ Single-request engine tokens/s, shown as the range of the five class medians. Pl
 | Qwen3.8-Flash-Next NVFP4 | 2 | FP8 dense, YaRN 512K, 2 slots | 47.2–47.4 | 64.5–75.8 | 65.9–91.5 |
 | Qwen3.8-Flash-Next FP8 | 2 | Default | 35.7–35.9 | 44.7–54.8 | 48.4–68.1 |
 | Qwen3.8-Flash-Next FP8 | 4 | Default | 50.6–50.8 | 65.3–83.3 | 71.7–106.6 |
+| Qwen3.8-Flash-Next AutoRound int4/int8 | 1 | 256K BF16 KV, 4 slots, MTP depth 3 | 31.6–31.7 | 44.7–71.5 | 35.9–65.9 |
 | GLM-5.3 int4/int8 | 4 | 120K BF16 KV | 19.8–20.1 | 26.8–30.6 | 28.0–35.0 |
 | GLM-5.3 int4/int8 | 4 | 208K FP8 KV | 19.8–20.1 | 27.8–30.5 | — |
 | DeepSeek-V4.1-Flash MXFP4/FP8 | 4 | Default | 32.2–32.3 | 39.8–75.5 | 34.2–82.7 |
@@ -140,6 +145,8 @@ HumanEval executes generated code in a container without network access or host-
 | Qwen3.8-Flash-Next NVFP4 | 2 | FP8 dense, YaRN 512K, 2 slots | 161/164 | 293/300 | 100/100 | 0 |
 | Qwen3.8-Flash-Next FP8 | 2 | Default | 160/164 | 292/300 | 100/100 | 0 |
 | Qwen3.8-Flash-Next FP8 | 4 | Default | 158/164 | 291/300 | 100/100 | 0 |
+| Qwen3.8-Flash-Next AutoRound int4/int8 | 1 | 256K BF16 KV, 4 slots, MTP depth 3 | 159/164 | 292/300 | 100/100 | 1 |
+| Qwen3.8-Flash-Next AutoRound int4/int8 | 1 | 256K BF16 KV, 4 slots, MTP depth 3, prefill levers on (the template) | 159/164 | 291/300 | 100/100 | 2 |
 | GLM-5.3 int4/int8 | 4 | 120K BF16 KV | 159/164 | 292/300 | 100/100 | 0 |
 | GLM-5.3 int4/int8 | 4 | 208K FP8 KV | 160/164 | 293/300 | 100/100 | 0 |
 | DeepSeek-V4.1-Flash MXFP4/FP8 | 4 | Default | 160/164 | 296/300 | 100/100 | 0 |
@@ -161,6 +168,7 @@ Complete matching operation streams were collected for 54/54 recorded launches o
 | Qwen3.8-Flash-Next NVFP4 | 2 | FP8 dense, YaRN 512K, 2 slots | 5/5 | 5/5 classes | identical |
 | Qwen3.8-Flash-Next FP8 | 2 | Default | 4/4 | 5/5 classes | different |
 | Qwen3.8-Flash-Next FP8 | 4 | Default | 4/4 | 5/5 classes | different |
+| Qwen3.8-Flash-Next AutoRound int4/int8 | 1 | 256K BF16 KV, 4 slots, MTP depth 3 | 5/5 | 5/5 classes | different |
 | GLM-5.3 int4/int8 | 4 | 120K BF16 KV | 4/4 | 5/5 classes | identical |
 | GLM-5.3 int4/int8 | 4 | 208K FP8 KV | 3/3 | 5/5 classes | identical |
 | DeepSeek-V4.1-Flash MXFP4/FP8 | 4 | Default | 5/5 | 5/5 classes | identical |
@@ -191,6 +199,9 @@ Each deterministic parcel document is generated once cold and twice more with th
 | Qwen3.8-Flash-Next NVFP4 | 2 | FP8 dense, YaRN 512K, 2 slots | 129,826 | 93.769 | 29.69 | 1.83 | 61.8 |
 | Qwen3.8-Flash-Next NVFP4 | 2 | FP8 dense, YaRN 512K, 2 slots | 259,964 | 216.397 | 31.45 | 1.83 | 58.3 |
 | Qwen3.8-Flash-Next NVFP4 | 2 | FP8 dense, YaRN 512K, 2 slots | 520,053 | 658.938 | 37.24 | 1.89 | 50.7 |
+| Qwen3.8-Flash-Next AutoRound int4/int8 | 1 | 256K BF16 KV, 4 slots, MTP depth 3 | 3,855 | 2.107 | 57.00 | 2.97 | 52.0 |
+| Qwen3.8-Flash-Next AutoRound int4/int8 | 1 | 256K BF16 KV, 4 slots, MTP depth 3 | 32,299 | 17.523 | 57.10 | 3.19 | 55.8 |
+| Qwen3.8-Flash-Next AutoRound int4/int8 | 1 | 256K BF16 KV, 4 slots, MTP depth 3 | 129,826 | 82.015 | 58.57 | 3.11 | 53.1 |
 | DeepSeek-V4.1-Flash MXFP4/FP8 | 4 | Default | 3,836 | 2.576 | 53.94 | 2.93 | 54.3 |
 | DeepSeek-V4.1-Flash MXFP4/FP8 | 4 | Default | 32,365 | 25.446 | 56.39 | 3.07 | 54.5 |
 | DeepSeek-V4.1-Flash MXFP4/FP8 | 4 | Default | 121,107 | 172.642 | 59.31 | 2.97 | 50.0 |

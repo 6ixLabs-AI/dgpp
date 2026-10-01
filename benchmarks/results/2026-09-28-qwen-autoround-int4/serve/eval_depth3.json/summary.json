@@ -1,0 +1,36 @@
+{
+  "model": "qwen",
+  "settings": {
+    "max_tokens": 2048,
+    "reasoning_effort": "low",
+    "no_think": true,
+    "limit": 300,
+    "seed": 20260908
+  },
+  "tasks": {
+    "humaneval": {
+      "n": 164,
+      "passed": 159,
+      "rate": 0.9695,
+      "seconds": 414,
+      "mean_completion_tokens": 240,
+      "truncated": 0
+    },
+    "gsm8k": {
+      "n": 300,
+      "passed": 292,
+      "rate": 0.9733,
+      "seconds": 1087,
+      "mean_completion_tokens": 350,
+      "truncated": 1
+    },
+    "extract": {
+      "n": 100,
+      "passed": 100,
+      "rate": 1.0,
+      "seconds": 79,
+      "mean_completion_tokens": 63,
+      "truncated": 0
+    }
+  }
+}

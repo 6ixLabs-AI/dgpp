@@ -55,6 +55,13 @@ struct ClusterConfig {
     // on the NVMe behind the page cache and gathers each step's rows on
     // the host — the single-Spark deployment.
     std::string ngram_table = "resident";
+    // Where the Qwen n-gram table's shards live when the checkpoint does not
+    // carry them (the AutoRound hybrid, docs/qwen38_autoround_int4_plan.md
+    // D6): a Hugging Face repository id resolved through the model cache
+    // like `model` — the FP8 release (`Qwen/Qwen3.8-Flash-Next-FP8`, whose
+    // shards hold the table) or the extracted table repo. Only the table's
+    // tensors are taken from it. Empty: the checkpoint's own shards.
+    std::string ngram_table_model;
     // The Qwen dense stack's form: "checkpoint" (the default:
     // the BF16 the checkpoint ships) or "fp8" (every dense projection
     // encoded to block FP8 at load — the same recipe as the FP8 releases;
@@ -78,6 +85,56 @@ struct ClusterConfig {
     // bf16 bytes in place, +0.75 of those matrices' memory). The memory
     // plan carries either (common/bf16_residency.hpp).
     std::string bf16_weights = "checkpoint";
+    // The opt-in draft vocabulary slice (2026-09-29, the Qwen3.8 hybrid;
+    // docs/qwen38_autoround_int4_plan.md §6.7): a .npy of token ids (int32
+    // or int64, one dimension) — the MTP draft head scores only those rows
+    // of the lm head (every other id is -inf for the draft), so a draft
+    // step reads that slice instead of the whole head. The target verifies
+    // every draft, so outputs are unchanged; only the draft acceptance can
+    // move (a token outside the set is never proposed). Empty (the
+    // default): the draft scores the whole vocabulary. Never counted toward
+    // a headline number; tools/build_draft_vocab.py builds a set.
+    std::string draft_vocab;
+    // The opt-in prefill speed levers (2026-09-30, the Qwen3.8 hybrid;
+    // docs/qwen38_autoround_int4_plan.md §6.15). Each changes the
+    // prefill's arithmetic within the quantized model's tolerance — the
+    // served transcripts can differ from the default chain's — so each is
+    // off unless the deployment's config turns it on (the AutoRound
+    // template turns on the first and the third, measured within the
+    // default chain's eval band; the benchmarks list both rows).
+    //   prefill_bf16_partials: the packed expert chain's down projection
+    //     written in bf16 and its per-expert partials summed from bf16
+    //     (half the bytes a chunk writes and reads back; the reference
+    //     stack's form). Default: fp32 partials in the ordered chain.
+    //   prefill_fold_scales: the wide packed expert GEMM with each
+    //     group's scale folded into the bf16 weight values and one fp32
+    //     accumulator across K (Marlin's form; no per-group fma).
+    //   prefill_fp8_gemm: the block-FP8 dense stack's prefill GEMMs on
+    //     the fp8 tensor cores (per-token 1 x 128 e4m3 activations, the
+    //     checkpoint's 128 x 128 weight scales, fp32 promotion per group —
+    //     the reference stack's cutlass blockwise GEMM) instead of the
+    //     dequantized bf16 GEMM. Requires engine.dense_weights = fp8.
+    bool prefill_bf16_partials = false;
+    bool prefill_fold_scales = false;
+    bool prefill_fp8_gemm = false;
+    // The packed expert GEMM's form and companions (2026-09-30; every
+    // serving switch is a config key — no environment variable selects a
+    // kernel). All bitwise the default chain.
+    //   expert_gemm: "wide" (the default: the 64 x 128 tensor-core tile,
+    //     eight warps, the codes decoded once per step), "wide3" (register
+    //     decode, three stages), "wide4" / "wide4r" (the four-warp forms),
+    //     "narrow" (the 32 x 64 kernel).
+    //   expert_gemm_prefetch: the L2 prefetch distance in k-steps (0 off).
+    //   expert_tile_list: the compact tile list over the routed segments
+    //     (off: the grid over the longest segment).
+    //   expert_gemm_pair: gate and up as one launch (measured level).
+    //   ngram_prestage (Qwen): the next chunk's n-gram rows gathered while
+    //     this chunk runs (off: the one-channel staging).
+    std::string expert_gemm = "wide";
+    int expert_gemm_prefetch = 3;
+    bool expert_tile_list = true;
+    bool expert_gemm_pair = false;
+    bool ngram_prestage = true;
     // The DeepSeek-V4.1 prefill mode (docs/deepseek_v41_flash_plan.md
     // §1.8): "bounded" (the default: the encoder over every prompt row,
     // the decoder over the last window rows — the model's own serving
@@ -121,6 +178,8 @@ struct ClusterConfig {
     int graph_batch_min_live = 0;  // 0 = min(2, max_concurrency) (the batch family, 2026-09-07)
     int sampling_candidates = 128;
     double prefix_cache_gib = 1.5;
+    int prefix_min_tokens = 1024;       // no prefix snapshot below this position (0: every cut)
+    bool prefix_head_snapshots = true;  // a cold prompt also keeps its first structural cut (the system prompt's end)
     std::string admission = "full";
     int admission_window = 256;
     int prefill_budget_tokens = -1;  // automatic on engines with resumable prefill

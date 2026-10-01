@@ -1,0 +1,14 @@
+qa        think=1 completion 62 in 1.4s
+code      think=1 completion 100 in 2.7s
+json      think=1 completion 100 in 1.9s
+math      think=1 completion 64 in 1.2s
+longcode  think=1 completion 100 in 2.5s
+prose     think=1 completion 200 in 4.2s
+sse       think=1 completion 200 in 4.6s
+qa        think=0 completion 100 in 1.7s
+code      think=0 completion 100 in 1.8s
+json      think=0 completion 100 in 1.7s
+math      think=0 completion 9 in 0.4s
+longcode  think=0 completion 100 in 1.8s
+prose     think=0 completion 200 in 4.5s
+sse       think=0 completion 200 in 3.8s

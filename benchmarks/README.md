@@ -19,9 +19,19 @@ full traces and the pre-fix structured-output API failures.
 
 ## Build
 
+The `release` and `spark-cross` presets disable microbenchmarks. Enable them
+explicitly for an optimized benchmark build; development presets enable them
+by default. The release build preset selects only the server, so use the
+build directory to build all targets or select a benchmark with `--target`.
+Files under `benchmarks/` may be locally ignored. CMake skips a probe with
+a status message when any of its sources are missing; available probes
+remain buildable, and an absent benchmark directory does not block the project.
+
 ```bash
-cmake --preset release
-cmake --build --preset release -j
+cmake --preset release -DDGPP_BUILD_BENCHMARKS=ON
+cmake --build build-release -j
+# Or build just one probe:
+cmake --build build-release --target micro_mem_bw -j
 ```
 
 Examples below use:

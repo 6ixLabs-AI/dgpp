@@ -1,0 +1,20 @@
+production down 02:46:30
+deployment /home/stephen/dgpp/log/deployments/ab0d8dd705def24d/
+INFO  rank 0: memory plan for a 262144-token context — model weights (resident; the n-gram table mmap'ed from the checkpoint) 65.31 GiB; loader staging (pinne
+INFO  rank 0: memory plan total 88.59 GiB (83.74 GiB device + 4.86 GiB pinned) + 4.00 GiB headroom against 114.63 GiB free (device free 109.95 GiB of 121.63 GiB
+INFO  rank 0: graph variants warm-captured in 16.86s
+== transcripts vs depth3 02:46:58
+identical transcripts: 4 of 4
+== classes
+class  tokens wall ms/tok  ms/pass tok/pass accept  finish
+== bench_qwen35 thinking on
+== bench_qwen35 thinking off
+== stats
+10.0 s | decode 58.2 tok/s, 16.2 ms/tok, 56.8 ms/step (166 steps / 583 tok, 94 % of wall) | mtp 3.51 tok/step/
+10.0 s | decode 63.2 tok/s, 15.8 ms/tok, 58.5 ms/step (171 steps / 634 tok, 100 % of wall) | mtp 3.71 tok/step
+10.0 s | decode 62.0 tok/s, 16.1 ms/tok, 59.7 ms/step (167 steps / 620 tok, 100 % of wall) | mtp 3.71 tok/step
+== profile 02:52:08
+[profiled] content chunks 400, ttft 304 ms, decode pace 27.81 ms/chunk (client), wall 11425 ms
+window: 187 steps between markers 'spec_commit_kernel' (skipping the first 20); wall 59.165 ms/step, GPU busy 73.143 ms/step (123.6 %), 1575.0 kernels/step
+production restored 02:53:34
+ab done

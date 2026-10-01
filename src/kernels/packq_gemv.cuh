@@ -39,10 +39,20 @@
 // LOP3 and one HSUB2 per pair, then one conversion per code. Bytes use
 // 0x6400 | b = 1024 + b and subtract 1152.
 //
-// CONTRACT: K a multiple of 64 with at most 32 chunks per lane (int4 K <=
-// 32768, int8 K <= 16384; the compiled set is dispatch_k's); packed rows
-// 16-byte aligned. Scales are bf16 [n, K/64] row-major; a NaN scale
-// propagates as NaN.
+// CONTRACT: K a multiple of the scale group with at most 32 chunks per lane
+// (int4 K <= 32768, int8 K <= 16384; the compiled set is dispatch_k's and
+// sf_compiled's); packed rows 16-byte aligned. Scales are [n, K/group]
+// row-major in the scale format's dtype; a NaN scale propagates as NaN.
+//
+// SCALE FORMATS (2026-09-28, docs/qwen38_autoround_int4_plan.md D1): the
+// template parameter SF picks the group and the scale dtype, nothing else
+// — a chunk still lies inside ONE group (128 is a multiple of 32 and 16),
+// so the chain, the lane geometry and the reduction are the same.
+//   kScaleBf16G64 (0): one bf16 scale per 64 codes (compressed-tensors
+//     pack-quantized: full GLM-5.3), the form described above.
+//   kScaleF16G128 (1): one IEEE f16 scale per 128 codes (GPTQ / AutoRound
+//     int4 g128 and int8 g128: the Qwen3.8 AutoRound hybrid). The
+//     checkpoint's scales untouched; f16 -> fp32 is exact.
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
 
@@ -63,17 +73,42 @@ using gemv::kWarps;
 using gemv::smem_bytes;
 using gemv::stage_activations;
 
-constexpr int kGroup = 64;                        // codes per bf16 scale
+constexpr int kGroup = 64;                        // codes per bf16 scale (format 0)
 constexpr int kMaxChunksPerLane = 4;              // chunks in flight per lane per pass
 constexpr int kSteps = 1;                         // row steps per warp
 constexpr int kMaxPasses = 8;                     // chunk passes per lane
 
-template <int Bits>
+constexpr int kScaleBf16G64 = 0;
+constexpr int kScaleF16G128 = 1;
+template <int SF>
+struct ScaleFmt;
+template <>
+struct ScaleFmt<kScaleBf16G64> {
+  static constexpr int group = 64;
+  __device__ __forceinline__ static float to_float(uint16_t b) { return bf16_bits_to_float(b); }
+};
+template <>
+struct ScaleFmt<kScaleF16G128> {
+  static constexpr int group = 128;
+  __device__ __forceinline__ static float to_float(uint16_t b) {
+    return __half2float(__ushort_as_half(b));
+  }
+};
+__host__ __device__ constexpr int scale_group_of(int sf) {
+  return sf == kScaleF16G128 ? 128 : 64;
+}
+__host__ __device__ constexpr bool scale_fmt_known(int sf) {
+  return sf == kScaleBf16G64 || sf == kScaleF16G128;
+}
+
+template <int Bits, int SF = kScaleBf16G64>
 struct Fmt {
   static_assert(Bits == 4 || Bits == 8, "packq_gemv: 4- or 8-bit codes");
+  static_assert(scale_fmt_known(SF), "packq_gemv: unknown scale format");
+  static constexpr int group = ScaleFmt<SF>::group;
   static constexpr int codes_per_chunk = 8 * kChunkBytes / Bits;   // 32 or 16
   static constexpr int codes_per_word = 32 / Bits;                 // 8 or 4
-  static constexpr int chunks_per_group = kGroup / codes_per_chunk; // 2 or 4
+  static constexpr int chunks_per_group = group / codes_per_chunk; // 2 or 4 (g64), 4 or 8 (g128)
   static constexpr int window_vecs = codes_per_chunk / 8;          // uint4 of bf16 per chunk: 4 or 2
   static constexpr int max_k = codes_per_chunk * 32 * kMaxChunksPerLane * kMaxPasses;
 };
@@ -101,24 +136,28 @@ template <int Bits>
 __host__ __device__ constexpr int chunks_of(int k) {
   return row_chunks_of<Bits>(k) / lanes_per_row_of<Bits>(k);
 }
-template <int Bits>
+template <int Bits, int SF = kScaleBf16G64>
 __host__ __device__ constexpr bool k_supported(int k) {
-  return k >= kGroup && k % kGroup == 0 &&
+  return k >= ScaleFmt<SF>::group && k % ScaleFmt<SF>::group == 0 &&
          chunks_of<Bits>(k) <= kMaxChunksPerLane * kMaxPasses;
 }
-__host__ __device__ constexpr bool k_supported_bits(int bits, int k) {
+__host__ __device__ constexpr bool k_supported_bits(int bits, int k, int sf = kScaleBf16G64) {
+  if (sf == kScaleF16G128)
+    return bits == 4 ? k_supported<4, kScaleF16G128>(k)
+                     : (bits == 8 ? k_supported<8, kScaleF16G128>(k) : false);
+  if (sf != kScaleBf16G64) return false;
   return bits == 4 ? k_supported<4>(k) : (bits == 8 ? k_supported<8>(k) : false);
 }
 
-__host__ inline bool shape_ok(const void* packed, int bits, int k) {
-  return k_supported_bits(bits, k) && gemv::aligned16(packed);
+__host__ inline bool shape_ok(const void* packed, int bits, int k, int sf = kScaleBf16G64) {
+  return k_supported_bits(bits, k, sf) && gemv::aligned16(packed);
 }
 
 // The compile-time row geometry.
-template <int Bits, int K>
+template <int Bits, int K, int SF = kScaleBf16G64>
 struct Geom {
-  static_assert(k_supported<Bits>(K), "packq_gemv: K must be a multiple of 64 with at most 32 chunks per lane");
-  using F = Fmt<Bits>;
+  static_assert(k_supported<Bits, SF>(K), "packq_gemv: K must be a multiple of the scale group with at most 32 chunks per lane");
+  using F = Fmt<Bits, SF>;
   static constexpr int row_chunks = row_chunks_of<Bits>(K);
   static constexpr int lanes_per_row = lanes_per_row_of<Bits>(K);   // 1 .. 32
   static constexpr int chunks = row_chunks / lanes_per_row;         // per lane, over every pass
@@ -127,7 +166,7 @@ struct Geom {
   static constexpr int rows_per_warp = kSteps * rows_per_step;
   static constexpr int rows_per_block = kWarps * rows_per_warp;
   static constexpr int row_bytes = K * Bits / 8;
-  static constexpr int scale_cols = K / kGroup;
+  static constexpr int scale_cols = K / F::group;
   static constexpr int pass_chunks(int p) {
     const int left = chunks - p * kMaxChunksPerLane;
     return left < 1 ? 1 : (left < kMaxChunksPerLane ? left : kMaxChunksPerLane);
@@ -245,14 +284,14 @@ __device__ __forceinline__ void store_dot(float* out, float v) { *out = v; }
 // of the pass (the chunk and its scale) is issued before any is consumed;
 // the chunks are then consumed column by column, each row's chunks in k
 // order into its own accumulator. No warp-uniform early return.
-template <int Bits, int K, int kRows, int C0, int NC>
+template <int Bits, int K, int kRows, int C0, int NC, int SF>
 __device__ __forceinline__ void pass_row_dots(const uint8_t* __restrict__ w,
                                               const uint16_t* __restrict__ scales,
                                               const uint16_t* __restrict__ sx,
                                               int n0, int n,
                                               float (&acc)[kSteps][kRows]) {
-  using G = Geom<Bits, K>;
-  using F = Fmt<Bits>;
+  using G = Geom<Bits, K, SF>;
+  using F = Fmt<Bits, SF>;
   const int warp = threadIdx.x / 32;
   const int lane = threadIdx.x % 32;
   const int group = lane / G::lanes_per_row;
@@ -286,21 +325,21 @@ __device__ __forceinline__ void pass_row_dots(const uint8_t* __restrict__ w,
       const int row = row_base + st * G::rows_per_step + group;
       if (row >= n) continue;  // per lane; no barrier inside
       const int i = st * NC + c;
-      consume_chunk<Bits, kRows>(wv[i], bf16_bits_to_float(sv[i]), xv, acc[st]);
+      consume_chunk<Bits, kRows>(wv[i], ScaleFmt<SF>::to_float(sv[i]), xv, acc[st]);
     }
   }
 }
 
-template <int Bits, int K, int kRows, int P>
+template <int Bits, int K, int kRows, int P, int SF>
 __device__ __forceinline__ void pass_chain(const uint8_t* __restrict__ w,
                                            const uint16_t* __restrict__ scales,
                                            const uint16_t* __restrict__ sx,
                                            int n0, int n,
                                            float (&acc)[kSteps][kRows]) {
-  using G = Geom<Bits, K>;
+  using G = Geom<Bits, K, SF>;
   if constexpr (P < G::passes) {
-    pass_row_dots<Bits, K, kRows, P * kMaxChunksPerLane, G::pass_chunks(P)>(w, scales, sx, n0, n, acc);
-    pass_chain<Bits, K, kRows, P + 1>(w, scales, sx, n0, n, acc);
+    pass_row_dots<Bits, K, kRows, P * kMaxChunksPerLane, G::pass_chunks(P), SF>(w, scales, sx, n0, n, acc);
+    pass_chain<Bits, K, kRows, P + 1, SF>(w, scales, sx, n0, n, acc);
   }
 }
 
@@ -310,18 +349,18 @@ __device__ __forceinline__ void pass_chain(const uint8_t* __restrict__ w,
 // of the group holds the reduced value. Each row's chunks are consumed in
 // k order into its own accumulator across the passes, so a row's result
 // is the same whatever kRows, the pass split or the launcher.
-template <int Bits, int K, int kRows>
+template <int Bits, int K, int kRows, int SF = kScaleBf16G64>
 __device__ __forceinline__ void warp_row_dots(const uint8_t* __restrict__ w,
                                               const uint16_t* __restrict__ scales,
                                               const uint16_t* __restrict__ sx,
                                               int n0, int n,
                                               float (&acc)[kSteps][kRows]) {
-  using G = Geom<Bits, K>;
+  using G = Geom<Bits, K, SF>;
 #pragma unroll
   for (int st = 0; st < kSteps; ++st)
 #pragma unroll
     for (int a = 0; a < kRows; ++a) acc[st][a] = 0.f;
-  pass_chain<Bits, K, kRows, 0>(w, scales, sx, n0, n, acc);
+  pass_chain<Bits, K, kRows, 0, SF>(w, scales, sx, n0, n, acc);
 #pragma unroll
   for (int st = 0; st < kSteps; ++st) group_reduce<kRows, G::lanes_per_row>(acc[st]);
 }
@@ -329,14 +368,14 @@ __device__ __forceinline__ void warp_row_dots(const uint8_t* __restrict__ w,
 // One pass of two matrices over the same rows and activations (gate and
 // up): every load of both issued before either is consumed. Each
 // matrix's row chain is pass_row_dots's exactly (bitwise).
-template <int Bits, int K, int kRows, int C0, int NC>
+template <int Bits, int K, int kRows, int C0, int NC, int SF>
 __device__ __forceinline__ void pass_row_dots_pair(
     const uint8_t* __restrict__ w0, const uint16_t* __restrict__ scales0,
     const uint8_t* __restrict__ w1, const uint16_t* __restrict__ scales1,
     const uint16_t* __restrict__ sx, int n0, int n,
     float (&acc0)[kSteps][kRows], float (&acc1)[kSteps][kRows]) {
-  using G = Geom<Bits, K>;
-  using F = Fmt<Bits>;
+  using G = Geom<Bits, K, SF>;
+  using F = Fmt<Bits, SF>;
   const int warp = threadIdx.x / 32;
   const int lane = threadIdx.x % 32;
   const int group = lane / G::lanes_per_row;
@@ -371,38 +410,38 @@ __device__ __forceinline__ void pass_row_dots_pair(
       const int row = row_base + st * G::rows_per_step + group;
       if (row >= n) continue;
       const int i = st * NC + c;
-      consume_chunk<Bits, kRows>(wv0[i], bf16_bits_to_float(sv0[i]), xv, acc0[st]);
-      consume_chunk<Bits, kRows>(wv1[i], bf16_bits_to_float(sv1[i]), xv, acc1[st]);
+      consume_chunk<Bits, kRows>(wv0[i], ScaleFmt<SF>::to_float(sv0[i]), xv, acc0[st]);
+      consume_chunk<Bits, kRows>(wv1[i], ScaleFmt<SF>::to_float(sv1[i]), xv, acc1[st]);
     }
   }
 }
 
-template <int Bits, int K, int kRows, int P>
+template <int Bits, int K, int kRows, int P, int SF>
 __device__ __forceinline__ void pass_chain_pair(
     const uint8_t* __restrict__ w0, const uint16_t* __restrict__ scales0,
     const uint8_t* __restrict__ w1, const uint16_t* __restrict__ scales1,
     const uint16_t* __restrict__ sx, int n0, int n,
     float (&acc0)[kSteps][kRows], float (&acc1)[kSteps][kRows]) {
-  using G = Geom<Bits, K>;
+  using G = Geom<Bits, K, SF>;
   if constexpr (P < G::passes) {
-    pass_row_dots_pair<Bits, K, kRows, P * kMaxChunksPerLane, G::pass_chunks(P)>(
+    pass_row_dots_pair<Bits, K, kRows, P * kMaxChunksPerLane, G::pass_chunks(P), SF>(
         w0, scales0, w1, scales1, sx, n0, n, acc0, acc1);
-    pass_chain_pair<Bits, K, kRows, P + 1>(w0, scales0, w1, scales1, sx, n0, n, acc0, acc1);
+    pass_chain_pair<Bits, K, kRows, P + 1, SF>(w0, scales0, w1, scales1, sx, n0, n, acc0, acc1);
   }
 }
 
-template <int Bits, int K, int kRows>
+template <int Bits, int K, int kRows, int SF = kScaleBf16G64>
 __device__ __forceinline__ void warp_row_dots_pair(
     const uint8_t* __restrict__ w0, const uint16_t* __restrict__ scales0,
     const uint8_t* __restrict__ w1, const uint16_t* __restrict__ scales1,
     const uint16_t* __restrict__ sx, int n0, int n,
     float (&acc0)[kSteps][kRows], float (&acc1)[kSteps][kRows]) {
-  using G = Geom<Bits, K>;
+  using G = Geom<Bits, K, SF>;
 #pragma unroll
   for (int st = 0; st < kSteps; ++st)
 #pragma unroll
     for (int a = 0; a < kRows; ++a) acc0[st][a] = acc1[st][a] = 0.f;
-  pass_chain_pair<Bits, K, kRows, 0>(w0, scales0, w1, scales1, sx, n0, n, acc0, acc1);
+  pass_chain_pair<Bits, K, kRows, 0, SF>(w0, scales0, w1, scales1, sx, n0, n, acc0, acc1);
 #pragma unroll
   for (int st = 0; st < kSteps; ++st) {
     group_reduce<kRows, G::lanes_per_row>(acc0[st]);
@@ -412,9 +451,9 @@ __device__ __forceinline__ void warp_row_dots_pair(
 
 // Which lane owns the reduced dot of the warp's step-st row, and that
 // row's index: lane `lig == 0` of its group.
-template <int Bits, int K>
+template <int Bits, int K, int SF = kScaleBf16G64>
 __device__ __forceinline__ int owned_row(int n0, int st, bool& mine) {
-  using G = Geom<Bits, K>;
+  using G = Geom<Bits, K, SF>;
   const int warp = threadIdx.x / 32;
   const int lane = threadIdx.x % 32;
   mine = (lane % G::lanes_per_row) == 0;
@@ -422,9 +461,10 @@ __device__ __forceinline__ int owned_row(int n0, int st, bool& mine) {
 }
 
 // The block body: kWarps warps x rows_per_warp rows each of an [n, K]
-// packed matrix (payload [n, K*Bits/8] bytes, scales bf16 [n, K/64]):
+// packed matrix (payload [n, K*Bits/8] bytes, scales [n, K/group] in the
+// scale format's dtype):
 //   out[a * out_stride + row] = store_dot(dot(row, sx[a]))
-template <int Bits, int K, int kRows, typename OutT>
+template <int Bits, int K, int kRows, int SF = kScaleBf16G64, typename OutT>
 __device__ __forceinline__ void block_rows(const uint8_t* __restrict__ w,
                                            const uint16_t* __restrict__ scales,
                                            const uint16_t* __restrict__ sx,
@@ -432,11 +472,11 @@ __device__ __forceinline__ void block_rows(const uint8_t* __restrict__ w,
                                            OutT* __restrict__ out,
                                            size_t out_stride) {
   float acc[kSteps][kRows];
-  warp_row_dots<Bits, K, kRows>(w, scales, sx, n0, n, acc);
+  warp_row_dots<Bits, K, kRows, SF>(w, scales, sx, n0, n, acc);
 #pragma unroll
   for (int st = 0; st < kSteps; ++st) {
     bool mine = false;
-    const int row = owned_row<Bits, K>(n0, st, mine);
+    const int row = owned_row<Bits, K, SF>(n0, st, mine);
     if (mine && row < n) {
 #pragma unroll
       for (int a = 0; a < kRows; ++a)
@@ -449,7 +489,9 @@ __device__ __forceinline__ void block_rows(const uint8_t* __restrict__ w,
 // Production widths of the full GLM-5.3 (docs/glm53_plan.md D2): 6144
 // (q_a, kv_a, gate/up at every world), 2048 (q_b; the expert and shared
 // down at world 1), 1024 / 512 (the down at worlds 2 / 4; kv_b), 16384 /
-// 8192 / 4096 (o_proj at worlds 1 / 2 / 4), plus the test geometries.
+// 8192 / 4096 (o_proj at worlds 1 / 2 / 4), plus the test geometries; the
+// Qwen3.8 AutoRound hybrid's 640 (the expert down) and 2560 (gate / up,
+// the int8 head) (docs/qwen38_autoround_int4_plan.md).
 template <typename F>
 __host__ inline void dispatch_k(int k, F&& f) {
   switch (k) {
@@ -459,10 +501,12 @@ __host__ inline void dispatch_k(int k, F&& f) {
     case 256: f(std::integral_constant<int, 256>{}); return;
     case 384: f(std::integral_constant<int, 384>{}); return;
     case 512: f(std::integral_constant<int, 512>{}); return;
+    case 640: f(std::integral_constant<int, 640>{}); return;
     case 768: f(std::integral_constant<int, 768>{}); return;
     case 1024: f(std::integral_constant<int, 1024>{}); return;
     case 1536: f(std::integral_constant<int, 1536>{}); return;
     case 2048: f(std::integral_constant<int, 2048>{}); return;
+    case 2560: f(std::integral_constant<int, 2560>{}); return;
     case 3072: f(std::integral_constant<int, 3072>{}); return;
     case 4096: f(std::integral_constant<int, 4096>{}); return;
     case 6144: f(std::integral_constant<int, 6144>{}); return;
@@ -471,14 +515,29 @@ __host__ inline void dispatch_k(int k, F&& f) {
     case 16384: f(std::integral_constant<int, 16384>{}); return;
     default:
       throw std::invalid_argument(
-          "packq_gemv: K is not in the compiled set (64, 128, 192, 256, 384, 512, 768, "
-          "1024, 1536, 2048, 3072, 4096, 6144, 8192, 12288, 16384)");
+          "packq_gemv: K is not in the compiled set (64, 128, 192, 256, 384, 512, 640, 768, "
+          "1024, 1536, 2048, 2560, 3072, 4096, 6144, 8192, 12288, 16384)");
   }
 }
 __host__ __device__ constexpr bool k_compiled(int k) {
-  return k == 64 || k == 128 || k == 192 || k == 256 || k == 384 || k == 512 || k == 768 ||
-         k == 1024 || k == 1536 || k == 2048 || k == 3072 || k == 4096 || k == 6144 ||
-         k == 8192 || k == 12288 || k == 16384;
+  return k == 64 || k == 128 || k == 192 || k == 256 || k == 384 || k == 512 || k == 640 ||
+         k == 768 || k == 1024 || k == 1536 || k == 2048 || k == 2560 || k == 3072 ||
+         k == 4096 || k == 6144 || k == 8192 || k == 12288 || k == 16384;
+}
+// The instantiated (scale format, K) pairs: format 0 at every compiled K;
+// format 1 (f16 per 128) at the 128-multiples up to 2560 — the AutoRound
+// hybrid's widths and the test geometries below them. Every launcher
+// checks this before its dispatch; a width outside it throws.
+__host__ __device__ constexpr bool sf_compiled(int sf, int k) {
+  return sf == kScaleBf16G64 ? k_compiled(k)
+                             : (sf == kScaleF16G128 && k_compiled(k) && k % 128 == 0 && k <= 2560);
+}
+// Dispatch over the scale format: f(std::integral_constant<int, SF>{}).
+template <typename F>
+__host__ inline void dispatch_sf(int sf, F&& f) {
+  if (sf == kScaleBf16G64) f(std::integral_constant<int, kScaleBf16G64>{});
+  else if (sf == kScaleF16G128) f(std::integral_constant<int, kScaleF16G128>{});
+  else throw std::invalid_argument("packq_gemv: the scale format must be 0 (bf16 per 64) or 1 (f16 per 128)");
 }
 // Dispatch over the code width: f(std::integral_constant<int, Bits>{}).
 template <typename F>

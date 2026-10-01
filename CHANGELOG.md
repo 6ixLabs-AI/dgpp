@@ -6,6 +6,187 @@ The history by milestone. The dated engineering record in
 
 ## Unreleased
 
+- **Engine behavior is set by the deployment config, not the environment**
+  (2026-09-30): the switches this campaign had added as environment
+  variables are `engine.*` keys — `expert_gemm` (`wide` | `wide3` | `wide4` |
+  `wide4r` | `narrow`; was `DGPP_PACKQ_GEMM`), `expert_gemm_prefetch` (was
+  `DGPP_PACKQ_PREFETCH`), `expert_tile_list` (was `DGPP_MOE_TILE_LIST`),
+  `expert_gemm_pair` (was `DGPP_MOE_PACKQ_PAIR`) and `ngram_prestage` (was
+  `DGPP_QWEN_PLE_PRESTAGE`) — parsed and validated with the config, carried
+  to every rank in the worker record, applied through setters (the env reads
+  are gone; `packq_prefill_bench --prefetch N` sets the distance). The
+  remaining environment switches in the tree are the next sweep.
+- **The packed expert GEMM parameterized on its warp count** (2026-09-30,
+  round 21 of the [record](benchmarks/results/2026-09-28-qwen-autoround-int4/README.md),
+  plan §6.16): four-warp forms at 64 x 32 warp tiles (`engine.expert_gemm:
+  "wide4"`, the decoded tile; `"wide4r"`, register decode and three stages),
+  bitwise the shipped eight-warp kernel and gated so in `packq_gemm_test`.
+  Measured −2..−6 % on the launch in the bench and +0.6 / −1.2 / −0.3 % of
+  cold prefill on the fabric: the default stays the eight-warp form, the new
+  ones are opt-ins, and the record corrects the round's estimate (the
+  in-situ launches already run at 63–67 % of the dense bf16 rate).
+
+- **The prefill's accuracy trades as deployment keys, off by default**
+  (2026-09-30, round 20 of the
+  [record](benchmarks/results/2026-09-28-qwen-autoround-int4/README.md),
+  plan §6.15): `engine.prefill_bf16_partials` (the packed expert chain's
+  down projection in bf16, its partials summed from bf16 — the former
+  `DGPP_MOE_PACKQ_DOWN_BF16` env knob is gone), `engine.prefill_fold_scales`
+  (the wide packed expert GEMM with each group's scale folded into the
+  bf16 weight values and one fp32 accumulator; kernel variant 3) and
+  `engine.prefill_fp8_gemm` (the block-FP8 dense stack's prefill-shaped
+  products on the fp8 tensor cores from per-token 1 x 128 e4m3 activations
+  with the checkpoint's 128 x 128 weight scales — `kernels/fp8_gemm`, a new
+  quantizer + mma.sync e4m3 GEMM with per-group fp32 promotion; requires
+  `dense_weights: "fp8"`). None is bitwise the default chain; each is
+  gated in its kernel test (2^-7 relative RMS of the exact chain for the
+  fold; 1e-7 of the exact sum of its quantized inputs and 2.5–2.8 % of the
+  dequantized chain for the fp8 GEMM), refused with the wrong type in the
+  config, forwarded to every rank in the worker record, and documented in
+  docs/operations.md and the README key table. Measured on the fabric
+  (one Spark, the hybrid, cold prefill 2K / 8K / 32K against 1.29 / 4.37 /
+  17.64 s): the bf16 partials −6.6 / −3.8 / −2.8 %, the fp8 GEMM −3.1 /
+  −0.3 / −0.2 % (its kernel runs at cuBLASLt's bf16 rate: 86–98 TF, ~35 %
+  of the fp8 peak, the gap recorded), the fold −1.0 / +2.0 / +3.6 % (a
+  measured loss: it stays off); the bf16 partials + fp8 GEMM pair 1.21 /
+  4.23 / 17.10 s (−6.3 / −3.2 / −3.1 %) with HumanEval 159/164, GSM8K
+  291/300, extraction 100/100 against the default chain's 159 / 292 / 100.
+  The AutoRound example template turns on `prefill_bf16_partials` and
+  `prefill_fp8_gemm` (evals inside the default chain's band; the benchmarks
+  list the default and the levers-on rows); the fold stays off everywhere.
+  The README gains an accuracy-and-correctness section and
+  docs/optimizing_performance.md the levers' guide.
+
+- **Restore clean-checkout builds** ([#70](https://github.com/HawkBearPig/dgpp/issues/70)):
+  skip optional microbenchmark targets when any of their source files are
+  absent, including the locally ignored `qwen_dense_bench.cu`.
+  `DGPP_BUILD_BENCHMARKS` controls these targets; production presets disable
+  them. Missing files under `benchmarks/` no longer block configuration.
+- **The hybrid's prefill: the n-gram rows of the next chunk gathered
+  while this one runs** (2026-09-30, round 19 of the
+  [record](benchmarks/results/2026-09-28-qwen-autoround-int4/README.md)):
+  a scalar prefill chunk hashes the following chunk's tokens (its n-gram
+  context this chunk's last two) and publishes them on a second staging
+  channel the gather thread serves while this chunk's layers run; the next
+  chunk claims the rows by request, position, row count and a token check
+  and skips its own gather. The PLE layer's wait for the table — 1.08 s of
+  GPU time on a 32K prefill, the gather of ~65K table rows a chunk from
+  NVMe outrunning the two layers before it — is gone: −0.65..−0.75 s at
+  32K when the table's pages are cold, level when the page cache holds
+  them; bitwise (the long-prompt sha on every leg; an in-situ self-check,
+  `DGPP_QWEN_PLE_PRESTAGE_CHECK=1`, gathers both channels and compares
+  them; `DGPP_QWEN_PLE_PRESTAGE=0` keeps the one channel). The round also
+  served the author's vLLM stack on the same box for a kernel-level
+  comparison (their expert GEMM 1.8x ours per token, their fp8 dense GEMMs
+  and bf16 partials; our attention, indexer, hyper-connection glue and
+  n-gram path level or ahead) and left two opt-in forms: the expert GEMM
+  with its weight fragments decoded in registers and three pipeline stages
+  (`DGPP_PACKQ_GEMM=wide3`, bitwise, level), the gate and up projections
+  as one launch (`DGPP_MOE_PACKQ_PAIR=1`, bitwise, level) and the down
+  projection's bf16 partials (`DGPP_MOE_PACKQ_DOWN_BF16=1`, −3..−4 %, not
+  bitwise, off).
+- **The hybrid's prefill: the expert GEMM's weight stream kept ahead of
+  the copies** (2026-09-29, round 18 of the
+  [record](benchmarks/results/2026-09-28-qwen-autoround-int4/README.md)):
+  the wide packed-int expert kernel prefetches each activation row's line
+  and each code row's line three k-steps ahead into L2
+  (`DGPP_PACKQ_PREFETCH`, default 3) — the two-stage pipeline's one step
+  of lookahead had left the launch's 419 MB weight stream serialized with
+  its compute (a Zipf-routed gate launch 4.6–5.0 → 3.5 ms, the down 6.8 →
+  5.8, a 556-token launch 3.6 → 2.1 on the device-memory bench; the bench's
+  managed buffers had hidden it behind ~1 ms of page mapping a launch, so
+  `packq_prefill_bench` gained `--device-copy`, `--gather`, `--same-weights`
+  and `--shuffle-rows`) — and runs a compact tile list over the routed
+  segments (`launch_moe_tile_list`, `DGPP_MOE_TILE_LIST`): one block per
+  real 64-row tile instead of n-tiles × the longest segment × 512
+  segments (160K blocks, 97 % exiting, when one expert takes most of a
+  chunk), and no per-layer host sync for the longest segment. Both bitwise
+  (`packq_gemm_test`, the bench's byte compare, the long-prompt sha on
+  every fabric leg). On the fabric at 4,096-token chunks: 2K 1.40 → 1.29 s,
+  8K 4.61 → 4.42, 32K 18.46 → 17.82 (−7 / −4 / −4 %).
+- **The hybrid's decode at the author's protocol: 57 → 54 ms a pass, the
+  head in bit planes** (2026-09-29, S6 rounds 4–12 of the
+  [record](benchmarks/results/2026-09-28-qwen-autoround-int4/README.md)):
+  the int8 head is stored as three per-row planes (high nibbles, bits 3..2,
+  bits 1..0) and an argmax-only head read — every MTP draft step and the
+  greedy verify — takes a pass over the high six bits that gives each row a
+  provable logit interval, then reads only the rows whose interval reaches
+  the best lower bound (a few hundred of 248,320) in full through the packed
+  core's exact chain: 75 % of the head bytes at line rate, the pick's argmax
+  and its logit bit for bit (`kernels/packq_head`, `packq_head_test`; sampled
+  rows read every plane and are the row layout's chain bit for bit; the
+  engine writes a per-slot greedy flag beside the sampling specs because the
+  decode graph is fixed at capture; github issue #69 carries the
+  generalization to the other head formats and the DRAM-burst lesson that
+  the planes must be contiguous per row). Also in the rounds: the QSA
+  attention over the selected keys 181 → 137 us; the draft layer's bf16
+  projections and fc matrices packed bf12 under the hybrid's fp8 dense stack;
+  the recurrent state kept as a checkpoint plus the pass's row inputs
+  (replayed next pass) instead of three snapshot stores a layer; the up GEMV
+  of a hyper-connection site with the mix in its epilogue, the routed
+  accumulation in the shared expert's down epilogue, the combine in the next
+  site's norm launch, the chunked greedy argmax, the n-gram gather on a
+  thread with a device wait — each bitwise the chain it replaces. Measured
+  and left as they were: the byte prefetch (a size cap or off costs 1.3–2 ms
+  a pass), depth 3 (depth 4 is slower and takes other kernel families), and
+  a per-launch prologue prefetch of each GEMV warp's first weight pass
+  (−4..−8 % on `qwen_dense_bench`'s cold ring, +1.1–1.5 % a step on the
+  fabric: the step's matrices are already in L2; the bench's new
+  `--sweep` fits the per-launch intercept per kernel family and
+  `--only pdl` runs the down/up pair as a graph-launched chain). The
+  decode step at context, measured through the endpoint: 52.6 ms at
+  under 200 tokens, 55.7–56.9 from 3K to 47K (a fixed selection budget);
+  the listed attention's tile gather became cp.async phases in the same
+  shared buffers (the next tile's K rows under this tile's PV, its V rows
+  under the next scores; the arithmetic unchanged, `DGPP_QSA_ASYNC=0`
+  keeps the serial gather): −0.4 to −0.5 ms a step from 12K to 47K. The
+  GDN layer's a and b projections ride the fp8 in-projection launch as
+  bf16 problems (one launch fewer per GDN layer, bitwise); the batched
+  group norm staged into the down GEMV (bitwise) measured +0.8 ms a step
+  and stays behind `DGPP_QWEN_GR_NORM_FOLD=on`. The hybrid's prefill, profiled
+  at 32K (the packed-int expert GEMMs 34 %, cuBLAS 15 %, the hyper-connection
+  elementwise passes 12 %): a wide-tile packed-int tensor-core GEMM (64 x 128
+  x 64, two blocks per SM, the codes decoded once per k-step into a bf16
+  tile — bitwise the narrow kernel, `DGPP_PACKQ_GEMM=narrow` keeps it), the
+  prefill's combine riding the next site's norm pass, and the chunk's page
+  advice batched: prefill −7 to −9 % at 2K / 8K / 32K, bit for bit.
+  `engine.draft_vocab` (opt-in, never a headline): the draft head scores a
+  `.npy` set of ids (`tools/build_draft_vocab.py`), 49 ms a pass, outputs
+  unchanged.
+
+- **Qwen3.8-Flash-Next AutoRound int4 hybrid on one Spark** (2026-09-28):
+  `Saren/Qwen3.8-Flash-Next-W4A16-AutoRound-hybrid-MTP_int4RTN` is served in
+  its packed form — int4 group-128 experts (backbone and draft) and the int8
+  group-128 head through the packed-int cores, which gained a scale format
+  (f16 scales per 128 beside the bf16 per 64 of full GLM-5.3) and the Qwen
+  widths; the GPTQ layout is transposed into packed rows at load, its scales
+  untouched, its zeros verified and dropped; the checkpoint's block-FP8 side
+  layers load as shipped (bitwise our own at-load encode of the BF16
+  originals), and the classes it ships in BF16 stay BF16. The n-gram table
+  comes from another cached snapshot (`engine.ngram_table_model`, the FP8
+  release's shards); `download_model.py` fetches and syncs it. New gates on
+  the hybrid's fixture: forward parity against the pure-Python reference
+  (which dequantizes GPTQ exactly), the decode and prefill-head gates and
+  the loopback engines. Performance on the real checkpoint is the next
+  campaign (docs/qwen38_autoround_int4_plan.md, the
+  [record](benchmarks/results/2026-09-28-qwen-autoround-int4/README.md)).
+
+- **Prefix cache: an entry floor, a head cut, and arenas sized to the node**
+  (2026-09-28): `engine.prefix_min_tokens` (default 1024) takes no snapshot
+  below that position, so short probes and side requests never push a long
+  conversation's entries out of the arena; `engine.prefix_head_snapshots`
+  (default on) keeps a cold prefill's cut at its first structural boundary,
+  a long system prompt's end, where the next conversation under it or the
+  turn after a client-side compaction attaches. Both ride the settings and
+  warm records. A single-Spark field log replayed under a 13-slot arena lost
+  every turn of a 66K conversation to three 45-token requests per turn and
+  none with the floor. The checked-in recipes now give the arena the memory
+  the node has left under the plan's headroom, except the one-node Qwen
+  recipes, whose spare memory is the page cache behind the mmap'ed n-gram
+  table. See the [record](benchmarks/results/2026-09-28-prefix-entry-floor-head-cut.md)
+  and the [sizing guide](docs/prefix-cache.md).
+
+
 - **Faster batched GLM decode** (2026-09-27): merge the validated row-batched
   attention projections, reusing weights across decode rows while preserving
   each row's bitwise result. The recorded four-Spark full GLM-5.3 comparison

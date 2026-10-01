@@ -125,6 +125,15 @@ struct WorldSettings {
   std::string dense_weights = "checkpoint";  // the Qwen dense stack's form
   std::string mtp_expert_format = "fp8";      // the Qwen MTP draft experts: fp8 | bf16_fused
   std::string bf16_weights = "checkpoint";   // the bf16 decode weights' resident form: checkpoint | bf12 | bf12+bf16
+  std::string draft_vocab;                   // the Qwen draft head's vocabulary slice (.npy of ids); empty = whole
+  bool prefill_bf16_partials = false;        // the opt-in prefill levers (2026-09-30); absent legacy field = off
+  bool prefill_fold_scales = false;
+  bool prefill_fp8_gemm = false;
+  std::string expert_gemm = "wide";          // the packed expert GEMM's form (2026-09-30); absent legacy field = wide
+  int expert_gemm_prefetch = 3;
+  bool expert_tile_list = true;
+  bool expert_gemm_pair = false;
+  bool ngram_prestage = true;
   std::string prefill = "bounded";           // the DeepSeek-V4.1 prefill mode: bounded | exact
   std::optional<dgpp::RopeScaling> rope_scaling;  // the opt-in YaRN ramp: absent = plain
   std::string embed_sharding = "replicated";  // the full GLM-5.3's embedding: replicated | vocab
@@ -150,6 +159,8 @@ struct WorldSettings {
   int admission_window = 0;
   int prefill_budget_tokens = 0;  // settings: -1 = automatic; absent legacy field = disabled
   int prefill_idle_budget_tokens = 0;
+  int prefix_min_tokens = 0;          // the prefix cache's entry floor (2026-09-28); absent legacy field = 0
+  bool prefix_head_snapshots = false;  // the head cut (2026-09-28); absent legacy field = off
   double bulk_pace_gbps = 0.0;
   int bulk_inflight = 0;
   int rendezvous_timeout_ms = 0;

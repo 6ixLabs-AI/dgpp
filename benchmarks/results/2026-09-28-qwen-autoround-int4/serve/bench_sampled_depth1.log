@@ -1,0 +1,3 @@
+[hybrid_depth1] status 200 finish=length usage={'prompt_tokens': 87, 'completion_tokens': 200, 'total_tokens': 287, 'prompt_tokens_details': {'cached_tokens': 0}, 'completion_tokens_details': {'reasoning_tokens': 200}}
+[hybrid_depth1] content chunks 200, ttft 278 ms, decode pace 26.13 ms/chunk (client), wall 5478 ms
+[hybrid_depth1] text: 'We need answer user: "Explain, in a few paragraphs, why a CUDA graph replay can be faster than launching the same kernels eagerly, and what it costs." Need concise, few paragraphs. Need explain CUDA graphs: capture sequence of kernel launches, memcpys etc into graph, instantiate, replay. Why faster: reduces CPU overhead of many launch API calls, reduces work distribution/dispatch overhead? CUDA gr'

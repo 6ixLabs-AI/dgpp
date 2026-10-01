@@ -2,7 +2,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <stdexcept>
+#include <type_traits>
 
 #include <cuda_bf16.h>
 
@@ -234,12 +236,14 @@ __global__ __launch_bounds__(kScoreThreads) void index_score_kernel(
     const uint16_t* __restrict__ q, int64_t q_row_stride, const int32_t* __restrict__ req_ids,
     const int64_t* __restrict__ pos, const int32_t* __restrict__ block_tables,
     int blocks_per_request, const uint16_t* __restrict__ index_cache, int pools_per_block,
-    int heads, int kpool, uint64_t* __restrict__ keys_ws, int64_t ws_stride, float sqrt_dim) {
+    int heads, int kpool, uint64_t* __restrict__ keys_ws, int64_t ws_stride, float sqrt_dim,
+    int select_k) {
   __shared__ float qs[4 * 128];
   const int64_t r = blockIdx.y;
   const int64_t p = pos[r];
   if (p < 0) return;
   const int64_t visible = (p + 1) / kpool;
+  if (visible <= select_k) return;
   const int64_t p0 = static_cast<int64_t>(blockIdx.x) * kScorePoolsPerBlock;
   if (p0 >= visible) return;
   // Heads beyond `heads` (<= 4) hold zeros: their lanes add nothing.
@@ -419,6 +423,14 @@ __global__ __launch_bounds__(kSelectThreads) void select_from_keys_kernel(
     return;
   }
   const int64_t visible = (p + 1) / kpool;
+  // Every complete pool and the incomplete tail survive. Their final token
+  // order is just [0, p], independent of scores (which need not be written).
+  if (visible <= select_k) {
+    for (int col = threadIdx.x; col < max_selected; col += blockDim.x)
+      topk_out[r * max_selected + col] = col <= p ? col : -1;
+    if (threadIdx.x == 0) out_counts[r] = static_cast<int32_t>(p + 1);
+    return;
+  }
   for (int i = threadIdx.x; i < select_k; i += blockDim.x) {
     best_hi[i] = 0xFFFFFFFFu;
     best_lo[i] = 0xFFFFFFFFu;
@@ -440,7 +452,14 @@ __global__ __launch_bounds__(kSelectThreads) void select_from_keys_kernel(
 // ---- listed GQA attention -----------------------------------------------------
 constexpr int kQsaTile = 32;
 
-template <int D>
+// kHpw heads per warp (2026-09-29): a block covers hpb = warps x kHpw heads
+// of one kv head. Each head's chain — its scores tree per token, its running
+// max and rescale, its PV order — is the one-head-per-warp kernel's exactly,
+// so every geometry is bitwise every other (the test pins them against each
+// other). The default stays one head per warp, up to 8 per block: gathering
+// a kv head's rows once per block (12 heads per block, one or two per warp)
+// measured +0.1 to +0.3 ms a step at 12K and 47K context on the fabric.
+template <int D, int kHpw>
 __global__ void attn_partial_kernel(const uint16_t* __restrict__ q, int64_t q_row_stride,
                                     const uint16_t* __restrict__ k_cache,
                                     const uint16_t* __restrict__ v_cache,
@@ -450,17 +469,19 @@ __global__ void attn_partial_kernel(const uint16_t* __restrict__ q, int64_t q_ro
                                     int local_heads, int kv_heads, int block_tokens,
                                     const int32_t* __restrict__ block_tables,
                                     int blocks_per_request, float scale, float* __restrict__ m_ws,
-                                    float* __restrict__ l_ws, float* __restrict__ c_ws) {
+                                    float* __restrict__ l_ws, float* __restrict__ c_ws,
+                                    int async_gather) {
   constexpr int kGroups = 32;
   constexpr int kDslice = D / kGroups;  // 8 at D=256
   constexpr int kRowStride = D + 8;     // padded smem row (u16)
   const int64_t r = blockIdx.x;
   const int s = blockIdx.y;
-  const int hpb = blockDim.x / 32;
+  const int warps = blockDim.x / 32;
+  const int hpb = warps * kHpw;  // heads per block
   const int h0 = blockIdx.z * hpb;
   const int hl = threadIdx.x / 32;
   const int g = threadIdx.x % 32;
-  const int h = h0 + hl;
+  const int hw0 = h0 + hl * kHpw;  // this warp's first head
   const int heads_per_kv = local_heads / kv_heads;
   const int kvh = h0 / heads_per_kv;
   const int width = kv_heads * D;
@@ -486,16 +507,28 @@ __global__ void attn_partial_kernel(const uint16_t* __restrict__ q, int64_t q_ro
   float* scores = reinterpret_cast<float*>(vt + kQsaTile * kRowStride);  // [hpb][kQsaTile + 1]
   float* l = scores + hpb * (kQsaTile + 1);       // [hpb]
   const int scores_stride = kQsaTile + 1;
+  // The tile's physical K/V rows, resolved once per tile by kQsaTile threads
+  // (2026-09-29): the gather loop below used to chase topk -> block table ->
+  // row inside every iteration — three dependent global loads per uint4,
+  // eleven iterations per thread in series, ~25 us a tile against the 2 us
+  // one round trip costs; the kernel ran 180 us per layer at 2K context for
+  // ~16 MB of K/V. With the offsets in shared memory every row load of the
+  // tile issues back to back. The arithmetic is untouched: bitwise.
+  __shared__ int64_t phys_rows[kQsaTile];
+  __shared__ int64_t phys_next[kQsaTile];
 
-  float m_reg = -INFINITY;
-  float creg[kDslice];
+  float m_reg[kHpw];
+  float creg[kHpw][kDslice];
+  float qreg[kHpw][kDslice];
 #pragma unroll
-  for (int i = 0; i < kDslice; ++i) creg[i] = 0.0f;
-  float qreg[kDslice];
-  {
-    const uint16_t* qrow = q + r * q_row_stride + static_cast<int64_t>(h) * D + g * kDslice;
+  for (int j = 0; j < kHpw; ++j) {
+    m_reg[j] = -INFINITY;
+    const uint16_t* qrow = q + r * q_row_stride + static_cast<int64_t>(hw0 + j) * D + g * kDslice;
 #pragma unroll
-    for (int i = 0; i < kDslice; ++i) qreg[i] = bf16_bits_to_float(qrow[i]);
+    for (int i = 0; i < kDslice; ++i) {
+      creg[j][i] = 0.0f;
+      qreg[j][i] = bf16_bits_to_float(qrow[i]);
+    }
   }
   if (threadIdx.x < hpb) l[threadIdx.x] = 0.0f;
   __syncthreads();
@@ -504,60 +537,190 @@ __global__ void attn_partial_kernel(const uint16_t* __restrict__ q, int64_t q_ro
   const int32_t* toks = topk + r * topk_stride;
   constexpr int kVecPerRow = D / 8;
 
-  for (int t0 = t_begin; t0 < t_end; t0 += kQsaTile) {
-    const int n = min(kQsaTile, t_end - t0);
-    // Gather the tile's K and V rows (kv head kvh) as uint4s.
-    for (int idx = threadIdx.x; idx < n * kVecPerRow * 2; idx += blockDim.x) {
-      const int which = idx / (n * kVecPerRow);
-      const int rem = idx - which * (n * kVecPerRow);
-      const int tt = rem / kVecPerRow;
-      const int c8 = rem - tt * kVecPerRow;
-      const int64_t tok = toks[t0 + tt];
+  // The tile loop with the gather as cp.async copies (2026-09-29, the
+  // register-lean revision): a tile's K rows and V rows are two async
+  // groups into the same kt / vt buffers; the next tile's K copy is issued
+  // as soon as this tile's scores have read kt (it runs under this tile's
+  // PV phase), the next V copy as soon as PV has read vt (it runs under the
+  // next tile's resolve and scores). No registers hold the tile (the first
+  // pipelined form held twelve uint4 across the compute: 125 registers, one
+  // block per SM, 170 us against the serial 137 at 2K context), the shared
+  // footprint is the serial form's, and every arithmetic step is the serial
+  // loop's in the same order: bitwise. DGPP_QSA_ASYNC=0 keeps the serial
+  // form (the A/B's other leg).
+  constexpr int kGatherBatch = 12;
+  const auto resolve = [&](int t0, int n, int64_t* phys) {
+    if (static_cast<int>(threadIdx.x) < n) {
+      const int64_t tok = toks[t0 + threadIdx.x];
       const int32_t blk = bt[tok / block_tokens];
-      const int64_t phys = static_cast<int64_t>(blk) * block_tokens + tok % block_tokens;
-      const uint16_t* src = (which == 0 ? k_cache : v_cache) + phys * width + kvh * D + c8 * 8;
-      uint16_t* dst = (which == 0 ? kt : vt) + tt * kRowStride + c8 * 8;
-      *reinterpret_cast<uint4*>(dst) = *reinterpret_cast<const uint4*>(src);
+      phys[threadIdx.x] = static_cast<int64_t>(blk) * block_tokens + tok % block_tokens;
     }
-    __syncthreads();
-    float tile_max = -INFINITY;
-    for (int tt = 0; tt < n; ++tt) {
-      const uint16_t* krow = kt + tt * kRowStride + g * kDslice;
-      float partial = 0.f;
+  };
+  const auto load_tile = [&](int n, const int64_t* phys, uint4 (&buf)[kGatherBatch], int base) {
+    const int total = n * kVecPerRow * 2;
 #pragma unroll
-      for (int i = 0; i < kDslice; ++i) partial += qreg[i] * bf16_bits_to_float(krow[i]);
-#pragma unroll
-      for (int off = 16; off > 0; off >>= 1) partial += __shfl_xor_sync(~0u, partial, off);
-      const float score = partial * scale;
-      if (g == 0) scores[hl * scores_stride + tt] = score;
-      tile_max = fmaxf(tile_max, score);
+    for (int j = 0; j < kGatherBatch; ++j) {
+      const int idx = base + j * static_cast<int>(blockDim.x) + static_cast<int>(threadIdx.x);
+      if (idx < total) {
+        const int which = idx / (n * kVecPerRow);
+        const int rem = idx - which * (n * kVecPerRow);
+        const int tt = rem / kVecPerRow;
+        const int c8 = rem - tt * kVecPerRow;
+        const uint16_t* src = (which == 0 ? k_cache : v_cache) + phys[tt] * width + kvh * D + c8 * 8;
+        buf[j] = *reinterpret_cast<const uint4*>(src);
+      }
     }
-    __syncthreads();
-    const float m_new = fmaxf(m_reg, tile_max);
-    const float rescale = expf(m_reg - m_new);
+  };
+  const auto store_tile = [&](int n, const uint4 (&buf)[kGatherBatch], int base) {
+    const int total = n * kVecPerRow * 2;
 #pragma unroll
-    for (int i = 0; i < kDslice; ++i) creg[i] *= rescale;
+    for (int j = 0; j < kGatherBatch; ++j) {
+      const int idx = base + j * static_cast<int>(blockDim.x) + static_cast<int>(threadIdx.x);
+      if (idx < total) {
+        const int which = idx / (n * kVecPerRow);
+        const int rem = idx - which * (n * kVecPerRow);
+        const int tt = rem / kVecPerRow;
+        const int c8 = rem - tt * kVecPerRow;
+        uint16_t* dst = (which == 0 ? kt : vt) + tt * kRowStride + c8 * 8;
+        *reinterpret_cast<uint4*>(dst) = buf[j];
+      }
+    }
+  };
+  // One matrix's rows of a tile as a cp.async group (16 bytes per copy;
+  // the rows and the vectors are 16-byte aligned as the uint4 loads were).
+  const auto issue_rows = [&](int n, const int64_t* phys, const uint16_t* cache, uint16_t* dst_tile) {
+    const int total = n * kVecPerRow;
+    for (int idx = static_cast<int>(threadIdx.x); idx < total; idx += static_cast<int>(blockDim.x)) {
+      const int tt = idx / kVecPerRow;
+      const int c8 = idx - tt * kVecPerRow;
+      const uint16_t* src = cache + phys[tt] * width + kvh * D + c8 * 8;
+      const unsigned d = static_cast<unsigned>(__cvta_generic_to_shared(dst_tile + tt * kRowStride + c8 * 8));
+      asm volatile("cp.async.cg.shared.global [%0], [%1], 16;\n" ::"r"(d), "l"(src));
+    }
+    asm volatile("cp.async.commit_group;\n" ::);
+  };
+  // The tile's scores out of kt (part 1) and, after the barrier the serial
+  // form had between them, the softmax bookkeeping and PV out of vt (part 2),
+  // head by head for the warp's kHpw heads.
+  float tile_max[kHpw];
+  const auto scores_phase = [&](int n) {
+#pragma unroll
+    for (int j = 0; j < kHpw; ++j) {
+      // The tile's scores: every lane's 8-dim partial for all 32 tokens
+      // first, then the xor tree over all 32 at once (the per-token tree was
+      // five dependent shuffles per token, 32 tokens in series). The same
+      // tree per token, so the scores are bitwise.
+      float partial[kQsaTile];
+#pragma unroll
+      for (int tt = 0; tt < kQsaTile; ++tt) {
+        float acc = 0.f;
+        if (tt < n) {
+          const uint16_t* krow = kt + tt * kRowStride + g * kDslice;
+#pragma unroll
+          for (int i = 0; i < kDslice; ++i) acc += qreg[j][i] * bf16_bits_to_float(krow[i]);
+        }
+        partial[tt] = acc;
+      }
+#pragma unroll
+      for (int off = 16; off > 0; off >>= 1) {
+#pragma unroll
+        for (int tt = 0; tt < kQsaTile; ++tt) partial[tt] += __shfl_xor_sync(~0u, partial[tt], off);
+      }
+      float tm = -INFINITY;
+      float* srow = scores + (hl * kHpw + j) * scores_stride;
+#pragma unroll
+      for (int tt = 0; tt < kQsaTile; ++tt) {
+        if (tt < n) {
+          const float score = partial[tt] * scale;
+          if (g == 0) srow[tt] = score;
+          tm = fmaxf(tm, score);
+        }
+      }
+      tile_max[j] = tm;
+    }
+  };
+  const auto pv_phase = [&](int n) {
+#pragma unroll
+    for (int j = 0; j < kHpw; ++j) {
+      const int hrow = hl * kHpw + j;
+      const float* srow = scores + hrow * scores_stride;
+      const float m_new = fmaxf(m_reg[j], tile_max[j]);
+      const float rescale = expf(m_reg[j] - m_new);
+#pragma unroll
+      for (int i = 0; i < kDslice; ++i) creg[j][i] *= rescale;
+      if (g == 0) {
+        float ladd = 0.0f;
+        for (int tt = 0; tt < n; ++tt) ladd += expf(srow[tt] - m_new);
+        l[hrow] = l[hrow] * rescale + ladd;
+      }
+      for (int tt = 0; tt < n; ++tt) {
+        const float p = round_bf16(expf(srow[tt] - m_new));
+        const uint16_t* vrow = vt + tt * kRowStride + g * kDslice;
+#pragma unroll
+        for (int i = 0; i < kDslice; ++i) creg[j][i] += p * bf16_bits_to_float(vrow[i]);
+      }
+      m_reg[j] = m_new;
+    }
+  };
+
+  if (async_gather) {
+    int n = min(kQsaTile, t_end - t_begin);
+    int64_t* phys_cur = phys_rows;
+    int64_t* phys_nxt = phys_next;
+    resolve(t_begin, n, phys_cur);
+    __syncthreads();
+    issue_rows(n, phys_cur, k_cache, kt);
+    issue_rows(n, phys_cur, v_cache, vt);
+    for (int t0 = t_begin; t0 < t_end; t0 += kQsaTile) {
+      const int t1 = t0 + kQsaTile;
+      const bool has_next = t1 < t_end;
+      const int n1 = has_next ? min(kQsaTile, t_end - t1) : 0;
+      if (has_next) resolve(t1, n1, phys_nxt);
+      asm volatile("cp.async.wait_group 1;\n" ::);  // this tile's K rows landed (its V may still be in flight)
+      __syncthreads();
+      scores_phase(n);
+      __syncthreads();  // every warp is done with kt
+      if (has_next) issue_rows(n1, phys_nxt, k_cache, kt);  // under this tile's PV
+      if (has_next)
+        asm volatile("cp.async.wait_group 1;\n" ::);  // this tile's V rows landed
+      else
+        asm volatile("cp.async.wait_group 0;\n" ::);
+      __syncthreads();
+      pv_phase(n);
+      __syncthreads();  // every warp is done with vt and scores
+      if (has_next) issue_rows(n1, phys_nxt, v_cache, vt);  // under the next tile's resolve and scores
+      n = n1;
+      int64_t* tmp = phys_cur; phys_cur = phys_nxt; phys_nxt = tmp;
+    }
+  } else {
+    for (int t0 = t_begin; t0 < t_end; t0 += kQsaTile) {
+      const int n = min(kQsaTile, t_end - t0);
+      resolve(t0, n, phys_rows);
+      __syncthreads();
+      const int total = n * kVecPerRow * 2;
+      for (int base = 0; base < total; base += kGatherBatch * static_cast<int>(blockDim.x)) {
+        uint4 buf[kGatherBatch];
+        load_tile(n, phys_rows, buf, base);
+        store_tile(n, buf, base);
+      }
+      __syncthreads();
+      scores_phase(n);
+      __syncthreads();
+      pv_phase(n);
+      __syncthreads();
+    }
+  }
+#pragma unroll
+  for (int j = 0; j < kHpw; ++j) {
+    const int h = hw0 + j;
     if (g == 0) {
-      float ladd = 0.0f;
-      for (int tt = 0; tt < n; ++tt) ladd += expf(scores[hl * scores_stride + tt] - m_new);
-      l[hl] = l[hl] * rescale + ladd;
+      m_ws[base_m + h] = m_reg[j];
+      l_ws[base_m + h] = l[hl * kHpw + j];
     }
-    for (int tt = 0; tt < n; ++tt) {
-      const float p = round_bf16(expf(scores[hl * scores_stride + tt] - m_new));
-      const uint16_t* vrow = vt + tt * kRowStride + g * kDslice;
+    float* crow = c_ws + (base_m + h) * D + g * kDslice;
 #pragma unroll
-      for (int i = 0; i < kDslice; ++i) creg[i] += p * bf16_bits_to_float(vrow[i]);
-    }
-    m_reg = m_new;
-    __syncthreads();
+    for (int i = 0; i < kDslice; ++i) crow[i] = creg[j][i];
   }
-  if (g == 0) {
-    m_ws[base_m + h] = m_reg;
-    l_ws[base_m + h] = l[hl];
-  }
-  float* crow = c_ws + (base_m + h) * D + g * kDslice;
-#pragma unroll
-  for (int i = 0; i < kDslice; ++i) crow[i] = creg[i];
 }
 
 __global__ void gate_out_kernel(const float* __restrict__ c, const uint16_t* __restrict__ gate,
@@ -667,7 +830,7 @@ void qsa_index_score(const uint16_t* q, int64_t q_row_stride, const int32_t* req
                      const int64_t* pos, int rows, const int32_t* block_tables,
                      int blocks_per_request, const uint16_t* index_cache, int pools_per_block,
                      int heads, int dim, int kpool, uint64_t* keys_ws, int64_t ws_stride,
-                     cudaStream_t stream) {
+                     cudaStream_t stream, int64_t visible_pool_bound, int select_k) {
   if (rows <= 0) return;
   if (!q || !req_ids || !pos || !block_tables || !index_cache || !keys_ws)
     throw std::invalid_argument("qsa_index_score: null pointer");
@@ -675,13 +838,19 @@ void qsa_index_score(const uint16_t* q, int64_t q_row_stride, const int32_t* req
     throw std::invalid_argument("qsa_index_score: the lane layout is <= 4 heads x 128 dims");
   if (ws_stride > (int64_t(1) << kIdxBits))
     throw std::invalid_argument("qsa_index_score: pool ids must fit kIdxBits");
+  if (visible_pool_bound < -1 || visible_pool_bound > ws_stride)
+    throw std::invalid_argument("qsa_index_score: visible pool bound outside workspace");
+  if (select_k < 0 || select_k > 1024)
+    throw std::invalid_argument("qsa_index_score: select_k outside [0, 1024]");
   if (rows > 65535) throw std::invalid_argument("qsa_index_score: too many rows per launch");
-  const int64_t stripes = (ws_stride + kScorePoolsPerBlock - 1) / kScorePoolsPerBlock;
+  const int64_t pools = visible_pool_bound < 0 ? ws_stride : visible_pool_bound;
+  if (pools <= select_k) return;
+  const int64_t stripes = (pools + kScorePoolsPerBlock - 1) / kScorePoolsPerBlock;
   if (stripes > 0x7fffffff) throw std::invalid_argument("qsa_index_score: too many pools");
   const dim3 grid(static_cast<unsigned>(stripes), static_cast<unsigned>(rows));
   index_score_kernel<<<grid, kScoreThreads, 0, stream>>>(
-      q, q_row_stride, req_ids, pos, block_tables, blocks_per_request, index_cache,
-      pools_per_block, heads, kpool, keys_ws, ws_stride, std::sqrt(static_cast<float>(dim)));
+      q, q_row_stride, req_ids, pos, block_tables, blocks_per_request, index_cache, pools_per_block,
+      heads, kpool, keys_ws, ws_stride, std::sqrt(static_cast<float>(dim)), select_k);
   DGPP_CUDA_OK(cudaGetLastError());
 }
 
@@ -708,6 +877,18 @@ void qsa_attn_partial(const uint16_t* q, int64_t q_row_stride, const uint16_t* k
                       int local_heads, int kv_heads, int dim, int block_tokens,
                       const int32_t* block_tables, int blocks_per_request, float scale,
                       float* m_ws, float* l_ws, float* c_ws, cudaStream_t stream) {
+  qsa_attn_partial_gather(q, q_row_stride, k_cache, v_cache, req_ids, topk, topk_stride, counts, rows,
+                          n_split, local_heads, kv_heads, dim, block_tokens, block_tables,
+                          blocks_per_request, scale, m_ws, l_ws, c_ws, stream, -1, 0, 0);
+}
+
+void qsa_attn_partial_gather(const uint16_t* q, int64_t q_row_stride, const uint16_t* k_cache,
+                             const uint16_t* v_cache, const int32_t* req_ids, const int32_t* topk,
+                             int topk_stride, const int32_t* counts, int rows, int n_split,
+                             int local_heads, int kv_heads, int dim, int block_tokens,
+                             const int32_t* block_tables, int blocks_per_request, float scale,
+                             float* m_ws, float* l_ws, float* c_ws, cudaStream_t stream,
+                             int async_gather, int heads_per_block, int heads_per_warp) {
   if (rows <= 0) return;
   if (!q || !k_cache || !v_cache || !req_ids || !topk || !counts || !block_tables || !m_ws ||
       !l_ws || !c_ws)
@@ -715,28 +896,52 @@ void qsa_attn_partial(const uint16_t* q, int64_t q_row_stride, const uint16_t* k
   if (kv_heads <= 0 || local_heads % kv_heads != 0)
     throw std::invalid_argument("qsa_attn_partial: local_heads must be a multiple of kv_heads");
   const int heads_per_kv = local_heads / kv_heads;
-  int hpb = 8;
-  while (hpb > 1 && heads_per_kv % hpb != 0) --hpb;
   if (n_split <= 0) throw std::invalid_argument("qsa_attn_partial: n_split must be positive");
+  // The block's heads (a divisor of the heads per kv head) and the heads per
+  // warp: a caller's pin, or the default — up to 8 heads, one per warp. The
+  // other geometries (every head of a kv head in one block, so its rows are
+  // gathered once; two heads per warp) are bitwise this one and were
+  // measured on the fabric 2026-09-29 at 12K and 47K context: +0.1 to +0.3
+  // ms a step against the default, so the default stays; the test keeps
+  // them bitwise. DGPP_QSA_ASYNC=0: the serial gather.
+  static const int env_async = [] {
+    const char* v = std::getenv("DGPP_QSA_ASYNC");
+    return (v && v[0] == '0') ? 0 : 1;
+  }();
+  if (async_gather < 0) async_gather = env_async;
+  int hpb = heads_per_block;
+  if (hpb <= 0) {
+    hpb = 8;
+    while (hpb > 1 && heads_per_kv % hpb != 0) --hpb;
+  }
+  if (hpb > heads_per_kv || heads_per_kv % hpb != 0)
+    throw std::invalid_argument("qsa_attn_partial: heads per block must divide the heads per kv head");
+  const int hpw = heads_per_warp > 0 ? heads_per_warp : 1;
+  if (hpw > 3 || hpb % hpw != 0 || (hpb / hpw) * 32 > 1024)
+    throw std::invalid_argument("qsa_attn_partial: heads per warp must be 1..3 and divide the block's heads");
   const int row_stride = dim + 8;
   const size_t smem = static_cast<size_t>(2 * kQsaTile) * row_stride * 2 +
                       static_cast<size_t>(hpb) * (kQsaTile + 1) * 4 + static_cast<size_t>(hpb) * 4;
   const dim3 grid(static_cast<unsigned>(rows), static_cast<unsigned>(n_split),
                   static_cast<unsigned>(local_heads / hpb));
-  const int threads = hpb * 32;
+  const int threads = (hpb / hpw) * 32;
+  const auto launch = [&](auto dim_tag, auto hpw_tag) {
+    constexpr int D = decltype(dim_tag)::value;
+    constexpr int H = decltype(hpw_tag)::value;
+    attn_partial_kernel<D, H><<<grid, threads, smem, stream>>>(
+        q, q_row_stride, k_cache, v_cache, req_ids, topk, topk_stride, counts, n_split, local_heads,
+        kv_heads, block_tokens, block_tables, blocks_per_request, scale, m_ws, l_ws, c_ws, async_gather);
+  };
+  const auto by_hpw = [&](auto dim_tag) {
+    switch (hpw) {
+      case 1: launch(dim_tag, std::integral_constant<int, 1>{}); break;
+      case 2: launch(dim_tag, std::integral_constant<int, 2>{}); break;
+      default: launch(dim_tag, std::integral_constant<int, 3>{}); break;
+    }
+  };
   switch (dim) {
-    case 256:
-      attn_partial_kernel<256><<<grid, threads, smem, stream>>>(
-          q, q_row_stride, k_cache, v_cache, req_ids, topk, topk_stride, counts, n_split,
-          local_heads, kv_heads, block_tokens, block_tables, blocks_per_request, scale, m_ws,
-          l_ws, c_ws);
-      break;
-    case 512:
-      attn_partial_kernel<512><<<grid, threads, smem, stream>>>(
-          q, q_row_stride, k_cache, v_cache, req_ids, topk, topk_stride, counts, n_split,
-          local_heads, kv_heads, block_tokens, block_tables, blocks_per_request, scale, m_ws,
-          l_ws, c_ws);
-      break;
+    case 256: by_hpw(std::integral_constant<int, 256>{}); break;
+    case 512: by_hpw(std::integral_constant<int, 512>{}); break;
     default:
       throw std::invalid_argument("qsa_attn_partial: dim must be 256 or 512");
   }

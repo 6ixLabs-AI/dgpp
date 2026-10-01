@@ -7,6 +7,7 @@
 // n-gram hash buffers are the config's derivation (the loader refuses
 // anything else) and the table shards follow the checkpoint's row split.
 #include <cstdint>
+#include <cstdlib>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -74,6 +75,32 @@ inline const char* tiny_nvfp4_quant_json() {
     "num_bits":4,"type":"float","group_size":16}}}})json";
 }
 
+// The AutoRound hybrid's tiny twin (docs/qwen38_autoround_int4_plan.md):
+// experts and the shared expert of 256 (whole GPTQ groups of 128 on the
+// down projection's K at worlds 1 and 2; world 4 refused), the gptq block
+// with the hybrid's dynamic rules.
+inline const char* tiny_gptq_text_json() {
+  static const std::string s = [] {
+    std::string t = tiny_text_json();
+    for (const char* key : {"\"moe_intermediate_size\": 64", "\"shared_expert_intermediate_size\": 64"}) {
+      const std::string from = key;
+      const size_t at = t.find(from);
+      if (at == std::string::npos) throw std::runtime_error("fixture: intermediate size anchor");
+      t.replace(at, from.size(), from.substr(0, from.size() - 2) + "256");
+    }
+    return t;
+  }();
+  return s.c_str();
+}
+
+inline const char* tiny_gptq_quant_json() {
+  return R"json({"quant_method": "gptq", "bits": 4, "group_size": 128, "desc_act": false,
+  "sym": true, "lm_head": true,
+  "dynamic": {"+:.*lm_head$": {"bits": 8}, "-:.*linear_attn.*": {}, "-:.*self_attn.*": {},
+              "-:.*hyper_connection.*": {}, "-:.*visual.*": {}, "-:.*shared_expert.*": {},
+              "-:.*\\.ple\\..*": {}, "-:.*embed.*": {}, "-:.*fc_hidden.*": {}, "-:.*\\.gate$": {}}})json";
+}
+
 inline QwenTextConfig tiny_config() {
   const auto t = dgpp::minijson::parse(tiny_text_json());
   const auto q = dgpp::minijson::parse(tiny_quant_json());
@@ -83,6 +110,12 @@ inline QwenTextConfig tiny_config() {
 inline QwenTextConfig tiny_nvfp4_config() {
   const auto t = dgpp::minijson::parse(tiny_text_json());
   const auto q = dgpp::minijson::parse(tiny_nvfp4_quant_json());
+  return QwenTextConfig::parse(t.root, &q.root);
+}
+
+inline QwenTextConfig tiny_gptq_config() {
+  const auto t = dgpp::minijson::parse(tiny_gptq_text_json());
+  const auto q = dgpp::minijson::parse(tiny_gptq_quant_json());
   return QwenTextConfig::parse(t.root, &q.root);
 }
 
@@ -107,6 +140,33 @@ inline std::vector<uint8_t> tensor_bytes(const QwenTextConfig& cfg, const QwenEx
   }
   Rng rng(seed_for(name));
   const size_t n = e.numel();
+  // The GPTQ triple: random codes (every nibble / byte legal), the
+  // symmetric zero constant, F16 scales in the release's range.
+  if (e.role == QwenTensorRole::GptqCodes || e.role == QwenTensorRole::GptqZeros) {
+    const int bits = e.cls == QwenWeightClass::LmHead ? 8 : 4;
+    const uint32_t zero_word = bits == 4 ? 0x77777777u : 0x7F7F7F7Fu;
+    for (size_t i = 0; i < n; ++i) {
+      const uint32_t w = e.role == QwenTensorRole::GptqZeros ? zero_word
+                                                             : static_cast<uint32_t>(rng.next());
+      std::memcpy(&out[i * 4], &w, 4);
+    }
+    return out;
+  }
+  if (e.role == QwenTensorRole::GptqScales) {
+    // The expert scale base sits where the tiny model's routing has no
+    // near-tie against the pure-Python reference in the forward parity AND
+    // none across the decode gates' transcripts (a factor sweep on
+    // 2026-09-28: 0.004 flips two slots at layer 1, 0.0034 one decode step;
+    // 0.00265 flips none in either, every layer within 5 ulps, its
+    // neighbours 0.0024 and 0.003 clean too).
+    const float lo = e.cls == QwenWeightClass::LmHead ? 0.001f : 0.00265f;
+    for (size_t i = 0; i < n; ++i) {
+      const float v = lo * (1.0f + 0.75f * (0.5f * (rng.unit() + 1.0f)));
+      const uint16_t h = dgpp::float_to_fp16_bits(v);
+      std::memcpy(&out[i * 2], &h, 2);
+    }
+    return out;
+  }
   const bool is_norm = has(name, "norm") && e.shape.size() == 1;  // the (1+w) norms: w near 0
   const bool is_gdn_norm = has(name, "linear_attn.norm.weight");   // plain w near 1
   const bool is_scale_inv = has(name, "_scale_inv");
@@ -147,6 +207,30 @@ inline std::vector<uint8_t> tensor_bytes(const QwenTextConfig& cfg, const QwenEx
     }
   }
   return out;
+}
+
+inline void write_fixture(const QwenTextConfig& cfg, const std::string& dir,
+                          const char* text_json, const char* quant_json,
+                          const std::vector<QwenExpectedTensor>& extra_tensors);
+
+// Writes `dir` for `cfg` with the json the config's forms came from: the
+// FP8 release's (the default), the NVFP4 release's, or the AutoRound hybrid's.
+inline void write_fixture_for(const QwenTextConfig& cfg, const std::string& dir) {
+  if (cfg.experts_gptq_int4) write_fixture(cfg, dir, tiny_gptq_text_json(), tiny_gptq_quant_json(), {});
+  else if (cfg.experts_nvfp4) write_fixture(cfg, dir, tiny_text_json(), tiny_nvfp4_quant_json(), {});
+  else write_fixture(cfg, dir, tiny_text_json(), tiny_quant_json(), {});
+}
+
+// The engine test's fixture config: DGPP_TEST_QWEN_GPTQ=1 selects the
+// AutoRound hybrid (its dense stack ships as fp8: the test's main puts the
+// loader in the fp8 dense mode for the process). DGPP_TEST_QWEN_NVFP4=1
+// selects NVFP4 experts, independently of the test's dense-weight mode.
+inline QwenTextConfig test_config() {
+  const char* g = std::getenv("DGPP_TEST_QWEN_GPTQ");
+  if (g != nullptr && g[0] == '1') return tiny_gptq_config();
+  const char* n = std::getenv("DGPP_TEST_QWEN_NVFP4");
+  if (n != nullptr && n[0] == '1') return tiny_nvfp4_config();
+  return tiny_config();
 }
 
 // Writes `dir` (config.json + one safetensors shard) for `cfg`.

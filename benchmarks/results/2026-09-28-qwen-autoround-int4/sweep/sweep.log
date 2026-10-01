@@ -1,0 +1,11 @@
+production down 02:11:23
+== baseline: DGPP_SWEEP=1 02:11:23
+INFO  l2 prefetch: on, window budget 12 MiB, boundary rate light, layer rate light
+[short] content chunks 940, ttft 279 ms, decode pace 25.33 ms/chunk (client), wall 24061 ms
+10.0 s | decode 34.9 tok/s, 24.2 ms/tok, 42.2 ms/step (201 steps / 350 tok, 85 % of wall) | mtp 1.74 tok/step/
+10.0 s | decode 38.9 tok/s, 25.7 ms/tok, 42.7 ms/step (235 steps / 390 tok, 100 % of wall) | mtp 1.66 tok/step
+[ctx2k] content chunks 512, ttft 9658 ms, decode pace 24.79 ms/chunk (client), wall 22327 ms
+11.6 s | decode 23.0 tok/s, 25.1 ms/tok, 42.9 ms/step (156 steps / 266 tok, 58 % of wall) | mtp 1.71 tok/step/
+10.0 s | decode 20.7 tok/s, 25.1 ms/tok, 44.7 ms/step (117 steps / 208 tok, 52 % of wall) | mtp 1.78 tok/step/
+== off: DGPP_L2_PREFETCH=off 02:12:41
+INFO  l2 prefetch: off (DGPP_L2_PREFETCH=off)

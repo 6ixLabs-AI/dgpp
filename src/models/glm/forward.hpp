@@ -391,6 +391,11 @@ class GlmDiagnosticModel : public PrefillReporting {
   // meters see the capacity again) and the slot may be reopened by a
   // later prefill. No collective — safe between any two session ops.
   void session_close(int req);
+  // Diagnostic: when set, session_run_rows appends the stream buffer
+  // [T, hc_mult, hidden] after the embedding and after every attention and
+  // FFN stream update (prefill rows only) — the site-by-site view the
+  // bitwise group-vs-solo gate reads (tests/cuda/glm_tp_test.cpp).
+  void set_walk_capture(std::vector<std::vector<uint16_t>>* capture) { walk_capture_ = capture; }
   int64_t session_position(int req) const;
 
   // ---- the graph era (DESIGN §6.2, the decode step) --------------------
@@ -1059,6 +1064,7 @@ class GlmDiagnosticModel : public PrefillReporting {
   int* mhc_counters_ = nullptr;                // [T] fused-finish tickets
   uint16_t* comb_ = nullptr;                   // [T, 4, 4]
   uint16_t* collapsed_ = nullptr;              // [T, hidden] (also final mean)
+  std::vector<std::vector<uint16_t>>* walk_capture_ = nullptr;  // set_walk_capture (diagnostic)
   uint16_t* normed_ = nullptr;                 // [T, hidden] (also final out)
   uint16_t* sub_out_ = nullptr;                // [T, hidden]
   uint16_t* dense_g_ = nullptr;                // [T, dense_inter]

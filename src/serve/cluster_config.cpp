@@ -2,6 +2,7 @@
 
 #include <arpa/inet.h>
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
 #include <cstdlib>
@@ -193,6 +194,11 @@ ClusterConfig parse_cluster_config(const std::string& json, const std::string& w
           if (e.ngram_table != "resident" && e.ngram_table != "mmap")
             fail(what, "'" + ek + "' must be \"resident\" or \"mmap\"");
         }
+        else if (p.key == "ngram_table_model") {
+          e.ngram_table_model = text(x, ek, what);
+          if (e.ngram_table_model.empty() || std::count(e.ngram_table_model.begin(), e.ngram_table_model.end(), '/') != 1)
+            fail(what, "'" + ek + "' must be a Hugging Face ORG/NAME repository id");
+        }
         else if (p.key == "dense_weights") {
           e.dense_weights = text(x, ek, what);
           if (e.dense_weights != "checkpoint" && e.dense_weights != "fp8")
@@ -212,6 +218,27 @@ ClusterConfig parse_cluster_config(const std::string& json, const std::string& w
           e.bf16_weights = text(x, ek, what);
           if (!parse_bf16_residency(e.bf16_weights, nullptr))
             fail(what, "'" + ek + "' must be \"checkpoint\", \"bf12\" or \"bf12+bf16\"");
+        } else if (p.key == "draft_vocab") {
+          e.draft_vocab = text(x, ek, what);
+        } else if (p.key == "prefill_bf16_partials") {
+          e.prefill_bf16_partials = boolean(x, ek, what);
+        } else if (p.key == "prefill_fold_scales") {
+          e.prefill_fold_scales = boolean(x, ek, what);
+        } else if (p.key == "prefill_fp8_gemm") {
+          e.prefill_fp8_gemm = boolean(x, ek, what);
+        } else if (p.key == "expert_gemm") {
+          e.expert_gemm = text(x, ek, what);
+          if (e.expert_gemm != "wide" && e.expert_gemm != "wide3" && e.expert_gemm != "wide4" &&
+              e.expert_gemm != "wide4r" && e.expert_gemm != "narrow")
+            fail(what, "'" + ek + "' must be \"wide\", \"wide3\", \"wide4\", \"wide4r\" or \"narrow\"");
+        } else if (p.key == "expert_gemm_prefetch") {
+          e.expert_gemm_prefetch = static_cast<int>(integer(x, ek, what, 0, 16));
+        } else if (p.key == "expert_tile_list") {
+          e.expert_tile_list = boolean(x, ek, what);
+        } else if (p.key == "expert_gemm_pair") {
+          e.expert_gemm_pair = boolean(x, ek, what);
+        } else if (p.key == "ngram_prestage") {
+          e.ngram_prestage = boolean(x, ek, what);
         } else if (p.key == "prefill") {
           e.prefill = text(x, ek, what);
           if (e.prefill != "bounded" && e.prefill != "exact")
@@ -299,7 +326,9 @@ ClusterConfig parse_cluster_config(const std::string& json, const std::string& w
         else if (p.key == "prefix_cache_gib") {
           e.prefix_cache_gib = number(x, ek, what);
           if (e.prefix_cache_gib < 0.0) fail(what, "'" + ek + "' must be >= 0 (0 turns the cache off)");
-        } else if (p.key == "admission") {
+        } else if (p.key == "prefix_min_tokens") e.prefix_min_tokens = static_cast<int>(integer(x, ek, what, 0, 1 << 30));
+        else if (p.key == "prefix_head_snapshots") e.prefix_head_snapshots = boolean(x, ek, what);
+        else if (p.key == "admission") {
           e.admission = text(x, ek, what);
           if (e.admission != "full" && e.admission != "grow")
             fail(what, "'" + ek + "' must be \"full\" or \"grow\"");

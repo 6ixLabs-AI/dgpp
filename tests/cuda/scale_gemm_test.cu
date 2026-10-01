@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <random>
 #include <cstdio>
 
 #include <cuda_runtime.h>
@@ -14,6 +15,7 @@
 #include "common/cuda_check.hpp"
 #include "common/test.hpp"
 #include "kernels/fp8_gemv.cuh"
+#include "kernels/bf16_gemv.hpp"
 #include "kernels/scale_gemm.hpp"
 #include "scale_gemm_test_helpers.hpp"
 
@@ -506,6 +508,67 @@ DGPP_TEST(scale_gemm_gemv_multi_is_bitwise_the_single_launches) {
     }
     DGPP_CUDA_OK(cudaFree(act));
     std::printf("[ OK ] the multi-problem fp8 GEMV is bitwise the single launches at %d rows\n", rows);
+  }
+}
+
+DGPP_TEST(scale_gemm_gemv_multi_takes_bf16_problems_bitwise_the_bf16_launch) {
+  const int k = 1008;
+  const int ns[4] = {100, 24, 40, 12};  // two fp8 problems, two bf16 ones
+  for (const int rows : {1, 2, 4}) {
+    Problem ps[2];
+    for (int i = 0; i < 2; ++i) ps[i] = make_problem(rows, ns[i], k, 0xA0 + i + rows);
+    ps[1].act = ps[0].act;
+    std::vector<uint16_t> single[2];
+    for (int i = 0; i < 2; ++i) single[i] = run_kernel(ps[i]);
+    uint16_t* act = nullptr;
+    DGPP_CUDA_OK(cudaMallocManaged(&act, ps[0].act.size() * 2));
+    std::memcpy(act, ps[0].act.data(), ps[0].act.size() * 2);
+    uint8_t* w[2] = {};
+    float* sc[2] = {};
+    uint16_t* w16[2] = {};
+    uint16_t* out[4] = {};
+    uint16_t* ref16[2] = {};
+    dgpp::Fp8GemvProblem probs[4];
+    for (int i = 0; i < 2; ++i) {
+      DGPP_CUDA_OK(cudaMallocManaged(&w[i], ps[i].payload.size()));
+      DGPP_CUDA_OK(cudaMallocManaged(&sc[i], ps[i].scales.size() * 4));
+      DGPP_CUDA_OK(cudaMallocManaged(&out[i], static_cast<size_t>(rows) * ns[i] * 2));
+      std::memcpy(w[i], ps[i].payload.data(), ps[i].payload.size());
+      std::memcpy(sc[i], ps[i].scales.data(), ps[i].scales.size() * 4);
+      probs[i].payload = w[i];
+      probs[i].scales = sc[i];
+      probs[i].out = out[i];
+      probs[i].n = ns[i];
+    }
+    std::mt19937 rng(0xB16 + rows);
+    std::normal_distribution<float> nd(0.f, 0.05f);
+    for (int i = 0; i < 2; ++i) {
+      const size_t elems = static_cast<size_t>(ns[2 + i]) * k;
+      DGPP_CUDA_OK(cudaMallocManaged(&w16[i], elems * 2));
+      for (size_t j = 0; j < elems; ++j) w16[i][j] = dgpp::float_to_bf16_bits(nd(rng));
+      DGPP_CUDA_OK(cudaMallocManaged(&out[2 + i], static_cast<size_t>(rows) * ns[2 + i] * 2));
+      DGPP_CUDA_OK(cudaMallocManaged(&ref16[i], static_cast<size_t>(rows) * ns[2 + i] * 2));
+      probs[2 + i].bf16_weight = w16[i];
+      probs[2 + i].out = out[2 + i];
+      probs[2 + i].n = ns[2 + i];
+      dgpp::launch_bf16_gemv(act, static_cast<size_t>(k), w16[i], ref16[i], /*out_f32=*/false, rows, ns[2 + i], k, nullptr);
+    }
+    dgpp::launch_scale_gemv_multi_bf16(probs, 4, act, static_cast<size_t>(k), rows, k, nullptr);
+    DGPP_CUDA_OK(cudaDeviceSynchronize());
+    for (int i = 0; i < 2; ++i) {
+      require(std::memcmp(out[i], single[i].data(), single[i].size() * 2) == 0,
+              "mixed multi GEMV: an fp8 problem differs from its single launch");
+      require(std::memcmp(out[2 + i], ref16[i], static_cast<size_t>(rows) * ns[2 + i] * 2) == 0,
+              "mixed multi GEMV: a bf16 problem differs from launch_bf16_gemv");
+      DGPP_CUDA_OK(cudaFree(w[i]));
+      DGPP_CUDA_OK(cudaFree(sc[i]));
+      DGPP_CUDA_OK(cudaFree(w16[i]));
+      DGPP_CUDA_OK(cudaFree(out[i]));
+      DGPP_CUDA_OK(cudaFree(out[2 + i]));
+      DGPP_CUDA_OK(cudaFree(ref16[i]));
+    }
+    DGPP_CUDA_OK(cudaFree(act));
+    std::printf("[ OK ] the multi-problem GEMV takes bf16 problems bitwise the bf16 launch at %d rows\n", rows);
   }
 }
 

@@ -178,8 +178,11 @@ check("logit_bias refused by name", st == 400 and r.get("error", {}).get("param"
 
 # --- usage details ----------------------------------------------------------
 # A fresh leading marker keeps this cold/hot comparison valid when the
-# smoke test is repeated against the same running server.
-long_prompt = [{"role": "user", "content": str(uuid.uuid4()) + "\nSummarize the causes of the fall of the Roman Republic in four sentences."}]
+# smoke test is repeated against the same running server. The prompt runs
+# past the cache's entry floor (engine.prefix_min_tokens, 1024 by default):
+# a shorter prompt attaches to nothing and takes no snapshot slot.
+long_prompt = [{"role": "user", "content": str(uuid.uuid4()) + "\n" + ("Background note. " * 700)
+                + "\nSummarize the causes of the fall of the Roman Republic in four sentences."}]
 st, a = post("/v1/chat/completions", chat(long_prompt, max_tokens=96))
 st2, b = post("/v1/chat/completions", chat(long_prompt, max_tokens=96))
 ua, ub = a.get("usage", {}), b.get("usage", {})

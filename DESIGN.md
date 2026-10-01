@@ -13,10 +13,32 @@ and GLM-4.7's GQA and NVFP4 layout in [its implementation notes](docs/glm47_plan
 Shared session and engine interfaces live in `src/engine/`.
 
 Qwen's QSA indexer preserves its FP32 scoring order and deterministic
-score/pool tie rule. Long rows use exact radix selection; short rows use
-streaming top-k. Both expand the same sorted pool ids with the existing
-workspace and captured graph shape. See the
+score/pool tie rule. Rows whose visible pools fit the selection budget emit
+all visible tokens directly, including the incomplete tail, without scoring
+or sorting keys. Compression and ring updates still run so later rows can
+select from the full history. Other rows use exact radix selection above
+2048 pools and streaming top-k below it, expanding sorted pool ids with the
+existing workspace and captured graph shape. See the
 [selection measurements](benchmarks/results/2026-09-21-qwen-qsa-select.md).
+
+Prefill scoring launches only enough pool stripes to cover the chunk's final
+position, including cached history, and omits the launch when the whole chunk
+fits the selection budget. Decode and verify keep the full workspace grid;
+each row decides whether to score from its device position on every replay.
+This shared BF16 QSA path applies to FP8, NVFP4 and AutoRound int4 experts,
+including FP8 dense projections. The
+[launch and selection validation](benchmarks/results/2026-09-30-qsa-launch-selection.md)
+also records the rejected bounded decode-grid experiment.
+
+QSA scoring storage (`keys_ws_`, one stripe per activation row) is sized by
+the effective per-request context — the lesser of the positional ceiling and
+the KV pool, rounded up to a compressed-key pool — not by the pool: a pool
+past the ceiling seats more requests and adds no visible keys to any one row
+(4.5 GiB at 4096 rows over an 850048-token pool with a 256K ceiling). The
+bound holds because no decode row is staged past the ceiling: a request's
+lifetime reservation is capped there, so the fixed-width verify's trailing
+rows past it are padding (`glm_spec_positions` emits -1, as the chain rows
+already did), and admission refuses a prompt-plus-budget past the ceiling.
 
 QSA prefills of at least 128 rows use one warp per query and KV-head group
 when the head dimension is 256 and each KV head serves at most 16 query heads.
@@ -1624,6 +1646,31 @@ read every row keep the full head. `DGPP_PREFILL_HEAD_ALL_ROWS=1` restores
 the full head for comparison. The [prefill-head record](benchmarks/results/2026-09-24-pr43-prefill-head.md)
 describes the regression checks across the 128-row dispatch boundary.
 
+*Group admission is bitwise the prefills alone (2026-09-28).* The scheduler
+admits cold prompts queued in the same tick as the spans of one prefill walk
+(`admissible_group`, `session_prefill_group`); which tick sees two arrivals is
+timing, so a span's rows in that walk must be bitwise the same prompt's cold
+prefill or greedy transcripts at concurrency would depend on it. Two things
+kept them apart. A cold prefill cut at every structural boundary of the prompt
+(the chat template's message markers) so that a cache hit and a miss compute
+the same walk; the cache's entry floor removed the snapshots below 1024 tokens
+but not the cuts, and a group walks each span whole — and a DSA site is not
+split-invariant. The scheduler now hands the engine only the boundaries a
+snapshot can stand on (`cut_boundaries`: the cache on and the aligned image at
+or past the floor), so a groupable prompt is one walk either way and a cache
+hit is still the miss's walk. And a prefill chunk's bf16 head ran over every
+row through cuBLASLt, whose algorithm and tile placement follow the row count;
+it now runs over the mirrored rows only (the last row, or each span's last
+row), gathered to the front, in the four-row GEMV form the decode head takes.
+The gates: `glm_tp_group_prefill_is_bitwise_the_prefills_alone_site_by_site`
+(world 1) and its world-2 twin capture the streams after the embedding and
+after every attention and FFN update (`set_walk_capture`) and require every
+span's rows, its logits and its eager decode steps bitwise; `glm_gen_check
+--group-check-b` runs the same check on the served checkpoint across the
+fabric. What still moves a transcript with the cut positions is the chunk
+grid itself: a prompt longer than the busy prefill budget is cut on that
+budget's grid when decode is active and on the idle budget's grid otherwise.
+
 *Companions and the prefetch windows.* `WeightPrefetcher::add` coalesces a
 window's adds and bridges holes of up to 2 MB between them — a read of
 whatever lies between, which inside one layer image is a neighbouring tensor
@@ -1708,6 +1755,23 @@ past the attached prefix and before the deepest cut. For 2048-token chunks,
 this leaves 2048–4095 tokens for a changed question after the shared document.
 Both snapshots use existing cuts; the final snapshot gets an arena slot
 first. Short prompts and one-slot arenas retain the original policy.
+
+A cold prefill also keeps the cut at the prompt's first structural
+boundary past its start — the aligned image of the first role marker
+after position 0, which is where a system prompt ends — when
+`engine.prefix_head_snapshots` is on (the default). The next conversation
+under the same system prompt, or the turn after an agent client compacted
+its history, attaches there instead of prefilling the head cold. The head
+cut takes its slot after the deepest cut and before the body cut; the
+same walk takes all three.
+
+No snapshot of any kind is taken below `engine.prefix_min_tokens` (1024 by
+default): a prompt shorter than the floor attaches to whatever exists but
+never takes a prefill-cut, head, body, rolling or close entry. Every entry
+costs the same slot whatever its position, and LRU eviction cannot tell a
+45-token probe's entry from a 180K-token conversation's; a single-Spark
+field log replayed under a 13-slot arena lost every turn of a 66K
+conversation to three such probes per turn, and lost none with the floor.
 DeepSeek's bounded prefill retains the original policy too: saving an extra
 state would run another decoder span and change its computation.
 
@@ -1741,6 +1805,13 @@ Entries hold references to their cache blocks, which count against pool
 usage. Admission can evict the least-recently-used eligible entry when it
 needs blocks or an arena slot. Entries attached to live requests are
 protected, and blocks are freed only when their references reach zero.
+The entry floor and the head cut are world settings like the rest of the
+policy: rank 0's values ride the settings and warm records, every rank's
+scheduler runs the same ones, and the journal's decision digest checks
+that they did. The checked-in recipes size the arena to the memory the
+node has left under the plan's headroom (see the sizing guide); the
+one-node Qwen recipes keep it small on purpose, because that memory is
+the page cache behind the mmap'ed n-gram table.
 
 Image identities share immutable RGB storage across matching entries and
 have a separate 256 MiB host-byte budget. An insertion that would exceed it
@@ -1831,7 +1902,7 @@ not broadcast an accepted count: every rank folds the identical
 candidate table and computes the identical verdict (`judge_verify`); the
 pick's readback check pins the equality.
 
-**The draft depth (2026-09-06).** `engine.mtp_depth` (1–3) makes the
+**The draft depth (2026-09-06).** `engine.mtp_depth` (1–5) makes the
 verify 1 + depth rows and the block propose the later drafts by recursion:
 after its rows off the verdict (the head at the last accepted row gives
 draft 1), it runs one more row per further draft at the position after
@@ -1951,8 +2022,8 @@ and fallback against the same sampling oracle, including count tables and
 subsequent draft state. Greedy MTP is checked for transcript identity;
 sampled runs are checked against the corresponding speculative algorithm.
 
-`engine.mtp_depth` selects 1–3 draft tokens. GLM-5.3 and Qwen use scalar
-graphs beyond depth 1. GLM-4.7 supports deeper batched draft chains within
+`engine.mtp_depth` selects 1–5 draft tokens. GLM-5.3 uses scalar graphs
+beyond depth 1. Qwen and GLM-4.7 support deeper batched draft chains within
 its runtime row limit. Depth 1 remains the default because extra verify
 rows read more expert weights, and higher acceptance does not always
 offset that cost. See [the MTP guide](docs/mtp.md) and

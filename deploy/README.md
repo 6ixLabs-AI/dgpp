@@ -32,15 +32,16 @@ a template does not name are knobs appended at boot:
 
 | Template | Deployment | The shapes it replaced, as knobs |
 |---|---|---|
-| [cluster_glm-5.3-flash_nvfp4-fp8_w4.example.json](cluster_glm-5.3-flash_nvfp4-fp8_w4.example.json) | GLM-5.3-Flash hybrid on four nodes: MTP depth 1, bf16 latent cache, 768K context, an 8 GiB prefix arena, four request slots | the 8K-context template: `--kv-capacity 8192 --prefix-cache-gib 1.5`; T=1: `--no-mtp` |
-| [cluster_glm-5.3-flash_nvfp4-fp8_w2.example.json](cluster_glm-5.3-flash_nvfp4-fp8_w2.example.json) | the same hybrid on two nodes: MTP depth 1, FP8 latent cache, 160K context, four request slots; the BF16 decode weights resident in their 12-bit form alone (`"bf12"`: 107.0 GiB per rank, 1 GiB under the BF16 plan, 4.8 GiB of the node left at boot) | both forms resident (no prefill cost, 132K context): `--bf16-weights bf12+bf16 --kv-capacity 135168`; the 256K-context two-slot shape: `--max-concurrency 2 --kv-capacity 262144 --prefix-cache-gib 2` |
-| [cluster_qwen-3.8-flash-next_fp8_w4.example.json](cluster_qwen-3.8-flash-next_fp8_w4.example.json) | Qwen3.8-Flash-Next FP8 on four nodes: MTP depth 1, 256K context, four request slots | T=1: `--no-mtp`; depth 2: `--mtp-depth 2` |
+| [cluster_glm-5.3-flash_nvfp4-fp8_w4.example.json](cluster_glm-5.3-flash_nvfp4-fp8_w4.example.json) | GLM-5.3-Flash hybrid on four nodes: MTP depth 1, bf16 latent cache, 768K context, a 22 GiB prefix arena (639 snapshots), four request slots | the 8K-context template: `--kv-capacity 8192 --prefix-cache-gib 1.5`; T=1: `--no-mtp` |
+| [cluster_glm-5.3-flash_nvfp4-fp8_w2.example.json](cluster_glm-5.3-flash_nvfp4-fp8_w2.example.json) | the same hybrid on two nodes: MTP depth 1, FP8 latent cache, 160K context, four request slots; the BF16 decode weights resident in their 12-bit form alone (`"bf12"`: 110.0 GiB per rank with its 4.5 GiB prefix arena of 65 snapshots, 1.8 GiB of the node left at boot) | both forms resident (no prefill cost, 132K context): `--bf16-weights bf12+bf16 --kv-capacity 135168`; the 256K-context two-slot shape: `--max-concurrency 2 --kv-capacity 262144 --prefix-cache-gib 2` |
+| [cluster_qwen-3.8-flash-next_fp8_w4.example.json](cluster_qwen-3.8-flash-next_fp8_w4.example.json) | Qwen3.8-Flash-Next FP8 on four nodes: MTP depth 1, 256K context, four request slots, a 50 GiB prefix arena (1846 snapshots) | T=1: `--no-mtp`; depth 2: `--mtp-depth 2` |
 | [cluster_qwen-3.8-flash-next_fp8_w2.example.json](cluster_qwen-3.8-flash-next_fp8_w2.example.json) | the same on two nodes | T=1: `--no-mtp` |
 | [cluster_qwen-3.8-flash-next_nvfp4_w1.example.json](cluster_qwen-3.8-flash-next_nvfp4_w1.example.json) | Qwen3.8-Flash-Next NVFP4 on one Spark: MTP depth 1, the dense projections FP8 at load (`dense_weights: "fp8"`: 31 ms/step T=1 and 21–26 ms/token against the BF16 stack's 38 and 31–38), the n-gram table mapped, a 262144-token shared KV pool and 4096-token busy/idle prefill budgets | the BF16 dense stack: `--dense-weights checkpoint --fp8-head gemv`; T=1: `--no-mtp`; depth 2: `--mtp-depth 2` |
-| [cluster_qwen-3.8-flash-next_nvfp4_w2.example.json](cluster_qwen-3.8-flash-next_nvfp4_w2.example.json) | Qwen3.8-Flash-Next NVFP4 on two Sparks: MTP depth 1, FP8 dense projections, the n-gram table mapped, 262K context and four request slots | the resident n-gram table: `--ngram-table resident`; T=1: `--no-mtp`; depth 2: `--mtp-depth 2` |
+| [cluster_qwen-3.8-flash-next_nvfp4_w2.example.json](cluster_qwen-3.8-flash-next_nvfp4_w2.example.json) | Qwen3.8-Flash-Next NVFP4 on two Sparks: MTP depth 1, FP8 dense projections, the n-gram table mapped, 262K context, four request slots and a 58 GiB prefix arena (1074 snapshots) | the resident n-gram table: `--ngram-table resident`; T=1: `--no-mtp`; depth 2: `--mtp-depth 2` |
 | [cluster_qwen-3.8-flash-next_nvfp4-radixark_w1.example.json](cluster_qwen-3.8-flash-next_nvfp4-radixark_w1.example.json) | RadixArk's Qwen3.8-Flash-Next NVFP4 on one Spark: tuned engine configuration (4K prefill chunks with matching 4096-token busy/idle budgets, MTP depth 2, grow admission), dense projections FP8 at load, n-gram table mapped, 256K context | the BF16 dense stack: `--dense-weights checkpoint`; T=1: `--no-mtp`; depth 1: `--mtp-depth 1` |
 | [cluster_qwen-3.8-flash-next_nvfp4-radixark_w2.example.json](cluster_qwen-3.8-flash-next_nvfp4-radixark_w2.example.json) | RadixArk's Qwen3.8-Flash-Next NVFP4 on two Sparks: identical engine configuration to the NVIDIA release, MTP depth 1, FP8 dense projections, n-gram table mapped, 262K context and four request slots | the resident n-gram table: `--ngram-table resident`; T=1: `--no-mtp`; depth 2: `--mtp-depth 2` |
 | [cluster_qwen-3.8-flash-next_nvfp4_w2_yarn512k.example.json](cluster_qwen-3.8-flash-next_nvfp4_w2_yarn512k.example.json) | the two-Spark NVFP4 deployment with the opt-in YaRN ramp: `engine.rope_scaling` yarn ×2 over the checkpoint's 262 144 positions, so one request reaches 524 288 tokens; two request slots, a 565 248-token pool, the n-gram table mapped, FP8 dense projections, MTP depth 1 | two full-length streams at once: `--kv-capacity 1114112` (see [the YaRN notes](#the-512k-yarn-template-enginerope_scaling)); the plain 262K template: [cluster_qwen-3.8-flash-next_nvfp4_w2.example.json](cluster_qwen-3.8-flash-next_nvfp4_w2.example.json) |
+| [cluster_qwen-3.8-flash-next_autoround-int4_w1.example.json](cluster_qwen-3.8-flash-next_autoround-int4_w1.example.json) | the AutoRound int4/int8 hybrid (`Saren/Qwen3.8-Flash-Next-W4A16-AutoRound-hybrid-MTP_int4RTN`) on one Spark in its packed form: MTP depth 3, the dense projections FP8 at load, a 256K BF16 KV pool, four request slots, a 3 GiB prefix cache; `engine.draft_vocab` (a `.npy` id set for the draft head) is opt-in and off | T=1: `--no-mtp` |
 | [cluster_glm-4.7_nvfp4_w4.example.json](cluster_glm-4.7_nvfp4_w4.example.json) | GLM-4.7 NVFP4 on four nodes: MTP depth 1, 256K context, four request slots | T=1: `--no-mtp`; depth 2: `--mtp-depth 2` (single-stream +4–13 %, measured behind depth 1 under concurrency before the 2026-09-14 lowering) |
 | [cluster_glm-5.3_int4-int8_w4.example.json](cluster_glm-5.3_int4-int8_w4.example.json) | the full GLM-5.3 (int4/int8 RTN) on four nodes: MTP depth 1, eight request slots (sixteen decode rows; c=4 the four-slot shape's 41–42 tok/s, c=8 48–50 aggregate), 120K bf16 context, the embedding vocab-sharded; the BF16 decode weights resident in their 12-bit form alone (`"bf12"`: 110.1 GiB per rank under the 4 GiB headroom — 0.3 GiB under the BF16 plan, where both forms resident stopped at 100K) | both forms resident (100K context): `--bf16-weights bf12+bf16 --kv-capacity 102400`; T=1: `--no-mtp` (144K context with `--kv-capacity 147456`); the fp8 latent cache at 208K: `--kv-dtype fp8 --kv-capacity 212992 --prefix-cache-gib 1.5`; depth 2 at two slots: `--mtp-depth 2 --max-concurrency 2` |
 | [cluster_mimo-v2.6-flash_mxfp4-fp8_w4.example.json](cluster_mimo-v2.6-flash_mxfp4-fp8_w4.example.json) | MiMo-V2.6-Flash as shipped on four nodes: MTP depth 1 (the first of the release's three draft layers), the BF16 o_proj / head / eh_proj resident in their 12-bit form alone (`"bf12"`), 128K context (every layer's K/V paged, the sliding-window layers read theirs through the window), four request slots; text prompts only (the vision and audio encoders are not served) | T=1: `--no-mtp`; depth 2: `--mtp-depth 2` |
@@ -124,7 +125,17 @@ python3 scripts/dgpp-cluster up \
 
 Existing local deployment files are not overwritten by an example update.
 Copy the three fields into the local config and use the normal restart process
-to adopt them. See the [single-GB10 observations](../benchmarks/results/2026-09-27-qwen-nvfp4-w1-prefill.md)
+to adopt them.
+
+Since 2026-09-28 the templates give the prefix arena (`prefix_cache_gib`) the
+memory the node has left under the memory plan's 4 GiB headroom, less a 1 GiB
+margin, because a snapshot slot is only ever spent on a prompt above
+`engine.prefix_min_tokens` (1024 by default) and an idle GiB buys nothing. The
+one-node Qwen templates are the exception: their n-gram table is mmap'ed, and
+the memory they leave free is the page cache that keeps fresh-text prefill at
+full speed, so they stay at 3 GiB (27 snapshots). The
+[sizing guide](../docs/prefix-cache.md) has every template's slot count and the
+entry policy's keys. See the [single-GB10 observations](../benchmarks/results/2026-09-27-qwen-nvfp4-w1-prefill.md)
 for measured prefill performance, concurrent-stream effects and setup limits.
 
 ## The 512K YaRN template (`engine.rope_scaling`)
@@ -168,14 +179,16 @@ sharing bytes. For two concurrent 524 288-token streams set `--kv-capacity
 
 Memory headroom: at TP=2 the resident weights are 44.1 GiB per rank, the pool is
 7.45 GiB at 565 248 tokens (14.68 GiB at 1 114 112) and the plan's activations,
-the prefix arena and the engine's tables come on top — 53.53 GiB per rank for
-this shape, plus the 4 GiB headroom the pre-flight check adds
+the prefix arena and the engine's tables come on top — 96.8 GiB per rank for
+this shape with its 40 GiB arena (56.8 GiB without it, as the plan of
+2026-09-28 measures it), plus the 4 GiB headroom the pre-flight check adds
 (`--memory-plan` prints the itemised total and refuses the configuration before
 the first allocation if the node cannot cover it). The 1 114 112-token variant
-is 62.86 GiB plus headroom per rank. Nothing about the rope ramp changes those
-numbers: they move with `kv_capacity`, `max_concurrency` and `prefix_cache_gib`.
+adds about 9.3 GiB per rank, which is why the arena stops at 40 GiB rather than
+filling the node. Nothing about the rope ramp changes those numbers: they move
+with `kv_capacity`, `max_concurrency` and `prefix_cache_gib`.
 
-The current 1.5 GiB prefix arena holds 27 snapshots per rank at TP=2.
+The 40 GiB prefix arena holds 741 snapshots per rank at TP=2.
 Long prompts also retain an earlier chunk snapshot so changed questions can
 share the document's KV blocks. Snapshot size does not grow with context;
 KV-pool capacity limits how many independent long documents remain cached.

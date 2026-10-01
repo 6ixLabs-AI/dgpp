@@ -1,0 +1,45 @@
+production down 05:50:33
+== bytes: DGPP_SWEEP=1 05:50:33
+== prose concurrency 1: 05:51:04.318 .. 05:51:11.452  wall 7.1 s	   320 tokens in 7.13 s = 44.86 tok/s (prefill included)
+== prose concurrency 1: 05:51:11.452 .. 05:51:18.576  wall 7.1 s	   320 tokens in 7.12 s = 44.92 tok/s (prefill included)
+== prose concurrency 2: 05:51:18.577 .. 05:51:30.597  wall 12.0 s	   640 tokens in 12.02 s = 53.25 tok/s (prefill included)
+== prose concurrency 2: 05:51:30.597 .. 05:51:42.716  wall 12.1 s	   640 tokens in 12.12 s = 52.81 tok/s (prefill included)
+== prose concurrency 4: 05:51:42.718 .. 05:51:59.862  wall 17.1 s	   1280 tokens in 17.14 s = 74.66 tok/s (prefill included)
+== prose concurrency 4: 05:51:59.863 .. 05:52:17.138  wall 17.3 s	   1280 tokens in 17.28 s = 74.09 tok/s (prefill included)
+== code concurrency 1: 05:52:17.144 .. 05:52:22.887  wall 5.7 s	   320 tokens in 5.74 s = 55.72 tok/s (prefill included)
+== code concurrency 1: 05:52:22.888 .. 05:52:28.620  wall 5.7 s	   320 tokens in 5.73 s = 55.83 tok/s (prefill included)
+== code concurrency 2: 05:52:28.624 .. 05:52:36.964  wall 8.3 s	   640 tokens in 8.34 s = 76.74 tok/s (prefill included)
+== code concurrency 2: 05:52:36.964 .. 05:52:45.428  wall 8.5 s	   640 tokens in 8.46 s = 75.62 tok/s (prefill included)
+== code concurrency 4: 05:52:45.435 .. 05:52:57.677  wall 12.2 s	   1280 tokens in 12.24 s = 104.56 tok/s (prefill included)
+== code concurrency 4: 05:52:57.677 .. 05:53:09.720  wall 12.0 s	   1280 tokens in 12.04 s = 106.29 tok/s (prefill included)
+== per-class wall aggregate tokens/s (prefill included), greedy, max_tokens 320	
+== touch2m: DGPP_L2_PREFETCH_FORM=touch DGPP_L2_PREFETCH_TOUCH_KB=2048 05:53:11
+== prose concurrency 1: 05:53:42.326 .. 05:53:49.613  wall 7.3 s	   320 tokens in 7.29 s = 43.91 tok/s (prefill included)
+== prose concurrency 1: 05:53:49.614 .. 05:53:56.895  wall 7.3 s	   320 tokens in 7.28 s = 43.95 tok/s (prefill included)
+== prose concurrency 2: 05:53:56.897 .. 05:54:09.465  wall 12.6 s	   640 tokens in 12.57 s = 50.92 tok/s (prefill included)
+== prose concurrency 2: 05:54:09.466 .. 05:54:21.881  wall 12.4 s	   640 tokens in 12.41 s = 51.55 tok/s (prefill included)
+== prose concurrency 4: 05:54:21.883 .. 05:54:39.395  wall 17.5 s	   1280 tokens in 17.51 s = 73.09 tok/s (prefill included)
+== prose concurrency 4: 05:54:39.396 .. 05:54:56.674  wall 17.3 s	   1280 tokens in 17.28 s = 74.08 tok/s (prefill included)
+== code concurrency 1: 05:54:56.681 .. 05:55:02.534  wall 5.9 s	   320 tokens in 5.85 s = 54.68 tok/s (prefill included)
+== code concurrency 1: 05:55:02.535 .. 05:55:08.403  wall 5.9 s	   320 tokens in 5.87 s = 54.53 tok/s (prefill included)
+== code concurrency 2: 05:55:08.412 .. 05:55:17.101  wall 8.7 s	   640 tokens in 8.69 s = 73.66 tok/s (prefill included)
+== code concurrency 2: 05:55:17.102 .. 05:55:25.749  wall 8.6 s	   640 tokens in 8.65 s = 74.01 tok/s (prefill included)
+== code concurrency 4: 05:55:25.757 .. 05:55:37.962  wall 12.2 s	   1280 tokens in 12.20 s = 104.88 tok/s (prefill included)
+== code concurrency 4: 05:55:37.963 .. 05:55:50.287  wall 12.3 s	   1280 tokens in 12.32 s = 103.86 tok/s (prefill included)
+== per-class wall aggregate tokens/s (prefill included), greedy, max_tokens 320	
+== bytes2: DGPP_SWEEP=1 05:55:52
+== prose concurrency 1: 05:56:22.978 .. 05:56:30.132  wall 7.2 s	   320 tokens in 7.15 s = 44.73 tok/s (prefill included)
+== prose concurrency 1: 05:56:30.133 .. 05:56:37.290  wall 7.2 s	   320 tokens in 7.16 s = 44.71 tok/s (prefill included)
+== prose concurrency 2: 05:56:37.291 .. 05:56:49.374  wall 12.1 s	   640 tokens in 12.08 s = 52.97 tok/s (prefill included)
+== prose concurrency 2: 05:56:49.375 .. 05:57:01.410  wall 12.0 s	   640 tokens in 12.03 s = 53.18 tok/s (prefill included)
+== prose concurrency 4: 05:57:01.411 .. 05:57:18.732  wall 17.3 s	   1280 tokens in 17.32 s = 73.90 tok/s (prefill included)
+== prose concurrency 4: 05:57:18.732 .. 05:57:35.766  wall 17.0 s	   1280 tokens in 17.03 s = 75.15 tok/s (prefill included)
+== code concurrency 1: 05:57:35.770 .. 05:57:41.511  wall 5.7 s	   320 tokens in 5.74 s = 55.73 tok/s (prefill included)
+== code concurrency 1: 05:57:41.512 .. 05:57:47.250  wall 5.7 s	   320 tokens in 5.74 s = 55.77 tok/s (prefill included)
+== code concurrency 2: 05:57:47.256 .. 05:57:55.678  wall 8.4 s	   640 tokens in 8.42 s = 75.99 tok/s (prefill included)
+== code concurrency 2: 05:57:55.679 .. 05:58:04.015  wall 8.3 s	   640 tokens in 8.34 s = 76.77 tok/s (prefill included)
+== code concurrency 4: 05:58:04.020 .. 05:58:16.141  wall 12.1 s	   1280 tokens in 12.12 s = 105.60 tok/s (prefill included)
+== code concurrency 4: 05:58:16.142 .. 05:58:28.249  wall 12.1 s	   1280 tokens in 12.11 s = 105.73 tok/s (prefill included)
+== per-class wall aggregate tokens/s (prefill included), greedy, max_tokens 320	
+production restored 05:59:06
+c4 session done

@@ -908,6 +908,38 @@ DGPP_TEST(serve_ssePing_rejectsInvalidRequestIntervals) {
   require(rig.service.stats().requests_total == 0, "invalid requests never reach admission");
 }
 
+DGPP_TEST(serve_admission_refusesABudgetPastThePositionalCeiling) {
+  // GIVEN a 400-token pool past a 12-token positional ceiling (the excess
+  // pool seats concurrency, never a longer request),
+  ServiceRig rig(8, dgpp::sample::greedy_params(), false, std::nullopt, false, false, {}, 0, {},
+                 std::nullopt, /*position_ceiling=*/12, /*kv_pool_tokens=*/400);
+  const auto post = [&](bool chat, int max_tokens, const char* until) {
+    Client c(rig.port());
+    const std::string budget = ",\"max_tokens\":" + std::to_string(max_tokens) + "}";
+    const std::string body =
+        chat ? "{\"model\":\"glm-5.3-flash-fp8\",\"messages\":[{\"role\":\"user\",\"content\":\"abcd\"}]" + budget
+             : "{\"model\":\"glm-5.3-flash-fp8\",\"prompt\":\"abcd\"" + budget;
+    c.send_all(std::string("POST ") + (chat ? "/v1/chat/completions" : "/v1/completions") +
+               " HTTP/1.1\r\nHost: t\r\nContent-Type: application/json\r\nContent-Length: " +
+               std::to_string(body.size()) + "\r\n\r\n" + body);
+    return c.read_until(until, 3000);
+  };
+  for (bool chat : {true, false}) {
+    // WHEN a 4-id prompt asks for one token past the ceiling,
+    const std::string over = post(chat, 9, "\"code\":");
+    // THEN it is refused before admission with the context code, naming
+    // the ceiling rather than the pool it would have fit in,
+    require(over.find("400 Bad Request") != std::string::npos &&
+                over.find("context_length_exceeded") != std::string::npos &&
+                over.find("12-token positional ceiling") != std::string::npos,
+            "past the ceiling: " + over.substr(0, 400));
+    // and a budget that meets the ceiling exactly is served.
+    const std::string fits = post(chat, 8, "\"finish_reason\"");
+    require(fits.find("200 OK") != std::string::npos, "at the ceiling: " + fits.substr(0, 400));
+  }
+  require(rig.service.stats().requests_total == 2, "only the fitting requests reach admission");
+}
+
 DGPP_TEST(serve_chatNonStream_exactCompletionShape) {
   // GIVEN the service with a 4-byte prompt ("abcd" → 4 ids, no early
   // EOS) and max_tokens 3,

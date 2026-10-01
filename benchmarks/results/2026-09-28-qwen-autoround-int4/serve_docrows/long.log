@@ -1,0 +1,9 @@
+4096 r0: 3855 prompt tokens, 0 cached, prefill 2.337s, decode 51.95 tok/s, 57.08 ms/pass
+4096 r1: 3855 prompt tokens, 3848 cached, prefill 0.095s, decode 51.97 tok/s, 57.05 ms/pass
+4096 r2: 3855 prompt tokens, 3848 cached, prefill 0.095s, decode 52.10 tok/s, 56.91 ms/pass
+32768 r0: 32299 prompt tokens, 0 cached, prefill 19.540s, decode 55.32 tok/s, 57.61 ms/pass
+32768 r1: 32299 prompt tokens, 32292 cached, prefill 0.094s, decode 55.97 tok/s, 56.95 ms/pass
+32768 r2: 32299 prompt tokens, 32292 cached, prefill 0.094s, decode 55.86 tok/s, 57.06 ms/pass
+131072 r0: 129826 prompt tokens, 0 cached, prefill 89.831s, decode 52.58 tok/s, 59.14 ms/pass
+131072 r1: 129826 prompt tokens, 129820 cached, prefill 0.092s, decode 53.19 tok/s, 58.46 ms/pass
+131072 r2: 129826 prompt tokens, 129820 cached, prefill 0.091s, decode 53.25 tok/s, 58.40 ms/pass

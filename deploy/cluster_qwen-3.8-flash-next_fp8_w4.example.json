@@ -13,7 +13,7 @@
     "decode_graph": true,
     "mtp": true,
     "mtp_depth": 1,
-    "prefix_cache_gib": 1.5,
+    "prefix_cache_gib": 50,
     "admission": "full",
     "admission_window": 256,
     "sampling_candidates": 128,

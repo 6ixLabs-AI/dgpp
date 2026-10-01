@@ -1,14 +1,19 @@
 #include "models/qwen/loader.hpp"
+#include "kernels/packq_head.hpp"
 
 #include "loaders/fp8_quant.hpp"
 
 #include <sys/mman.h>
+#include <sys/uio.h>
+#include <sys/syscall.h>
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <thread>
 #include <unordered_map>
 #include <algorithm>
+#include <chrono>
+#include <atomic>
 #include <vector>
 #include <cstdlib>
 #include <cmath>
@@ -18,8 +23,11 @@
 #include <numeric>
 #include <stdexcept>
 
+#include <initializer_list>
+#include <utility>
 #include "common/cuda_check.hpp"
 #include "common/log.hpp"
+#include "loaders/gptq_repack.hpp"
 
 namespace dgpp {
 namespace {
@@ -82,8 +90,67 @@ std::string& resident_image_dir_storage() {
 // The n-gram table's residency: process-wide, set before
 // any stream is built (the memory plan reads it too).
 bool g_ngram_table_mmap = false;
+std::string& ngram_table_dir_storage() {
+  static std::string dir;
+  return dir;
+}
 // The dense stack's form (engine.dense_weights = "fp8", 2026-09-10).
 bool g_dense_weights_fp8 = false;
+std::vector<int32_t> g_draft_vocab_ids;
+
+// A one-dimensional int32/int64 .npy (format 1.0 or 2.0, little-endian, C order).
+bool read_npy_ids(const std::string& path, std::vector<int32_t>* ids, std::string* err) {
+  std::ifstream f(path, std::ios::binary);
+  if (!f) { *err = "cannot open"; return false; }
+  char magic[8];
+  f.read(magic, 8);
+  if (!f || std::memcmp(magic, "\x93NUMPY", 6) != 0) { *err = "not a .npy file"; return false; }
+  const int major = static_cast<unsigned char>(magic[6]);
+  uint32_t hlen = 0;
+  if (major == 1) {
+    unsigned char b[2];
+    f.read(reinterpret_cast<char*>(b), 2);
+    hlen = b[0] | (b[1] << 8);
+  } else {
+    unsigned char b[4];
+    f.read(reinterpret_cast<char*>(b), 4);
+    hlen = b[0] | (b[1] << 8) | (b[2] << 16) | (static_cast<uint32_t>(b[3]) << 24);
+  }
+  std::string header(hlen, '\0');
+  f.read(header.data(), hlen);
+  if (!f) { *err = "truncated header"; return false; }
+  int width = 0;
+  if (header.find("'<i4'") != std::string::npos) width = 4;
+  else if (header.find("'<i8'") != std::string::npos) width = 8;
+  else { *err = "dtype must be little-endian int32 or int64"; return false; }
+  if (header.find("'fortran_order': False") == std::string::npos) { *err = "fortran order"; return false; }
+  const size_t sp = header.find("'shape': (");
+  if (sp == std::string::npos) { *err = "no shape"; return false; }
+  const size_t n = static_cast<size_t>(std::strtoull(header.c_str() + sp + 10, nullptr, 10));
+  const size_t close = header.find(')', sp);
+  if (close == std::string::npos || header.substr(sp + 10, close - sp - 10).find(',') != std::string::npos) {
+    const std::string inner = close == std::string::npos ? "" : header.substr(sp + 10, close - sp - 10);
+    // "(N,)" is one-dimensional; "(N, M)" is not.
+    size_t commas = 0;
+    for (char c : inner) commas += c == ',';
+    if (commas != 1 || inner.find_first_not_of("0123456789, ") != std::string::npos) { *err = "shape must be (N,)"; return false; }
+  }
+  if (n == 0) { *err = "empty"; return false; }
+  std::vector<char> raw(n * width);
+  f.read(raw.data(), static_cast<std::streamsize>(raw.size()));
+  if (!f) { *err = "truncated data"; return false; }
+  ids->resize(n);
+  for (size_t i = 0; i < n; ++i) {
+    int64_t v;
+    if (width == 4) { int32_t x; std::memcpy(&x, raw.data() + i * 4, 4); v = x; }
+    else { std::memcpy(&v, raw.data() + i * 8, 8); }
+    if (v < 0 || v > 0x7FFFFFFF) { *err = "an id is outside int32"; return false; }
+    (*ids)[i] = static_cast<int32_t>(v);
+  }
+  std::sort(ids->begin(), ids->end());
+  ids->erase(std::unique(ids->begin(), ids->end()), ids->end());
+  return true;
+}
 // The RadixArk MTP expert format (engine.mtp_expert_format = "bf16_fused"):
 // fused BF16 gate_up_proj + down_proj instead of per-expert FP8 tensors.
 bool g_mtp_experts_bf16_fused = false;
@@ -127,9 +194,161 @@ struct QwenLoaderFamily::Builder : WeightBuilder<QwenExpectedTensor> {
     return width;
   }
 
+  // ---- the AutoRound hybrid (docs/qwen38_autoround_int4_plan.md) ------------
+  // The checkpoint ships its dense stack as block FP8: the model's fp8 paths
+  // (engine.dense_weights = fp8) are the only ones that can read it.
+  void require_dense_fp8_mode() const {
+    if (!g_dense_weights_fp8)
+      fail("the checkpoint ships its dense stack as block FP8 (the AutoRound hybrid): "
+           "set engine.dense_weights = \"fp8\" (the loader takes the shipped codes and scales as is)");
+  }
+
+  // A pre-encoded block-FP8 matrix's row segments (the GDN's q | k | v at
+  // the local geometry) into one resident matrix: payload rows and their
+  // 128-row scale rows concatenated. Every segment starts and spans whole
+  // 128-row blocks.
+  GlmQuantMatrix load_quant_row_segments(const std::string& name,
+                                         std::initializer_list<std::pair<int64_t, int64_t>> segs) {
+    const QwenExpectedTensor& e = expected(name);
+    const QwenExpectedTensor& es = expected(name + "_scale_inv");
+    const int64_t cols = e.shape[1];
+    const int64_t sb = (cols + 127) / 128;
+    int64_t total = 0;
+    for (const auto& [s, n] : segs) {
+      if (s % 128 != 0 || n % 128 != 0)
+        fail("quantized row segment of '" + name + "' must start and span whole 128-row blocks");
+      check_range(name, s, n, e.shape[0]);
+      total += n;
+    }
+    GlmQuantMatrix q;
+    q.rows = total;
+    q.cols = cols;
+    q.payload = static_cast<const uint8_t*>(bump.alloc(static_cast<size_t>(total) * cols));
+    q.scales = static_cast<const float*>(bump.alloc(static_cast<size_t>(total / 128) * sb * 4));
+    if (copy) {
+      const TensorInfo& tp = source(name);
+      const TensorInfo& ts = source(es.name);
+      uint8_t* hp = bump.host(const_cast<uint8_t*>(q.payload));
+      float* hs = bump.host(const_cast<float*>(q.scales));
+      int64_t dst = 0;
+      for (const auto& [s, n] : segs) {
+        std::memcpy(hp + dst * cols, static_cast<const uint8_t*>(tp.data) + s * cols,
+                    static_cast<size_t>(n) * cols);
+        for (int64_t r = 0; r < n / 128; ++r) {
+          const int64_t src_row = s / 128 + r, dst_row = dst / 128 + r;
+          if (ts.dtype == DType::F32) {
+            std::memcpy(hs + dst_row * sb, static_cast<const float*>(ts.data) + src_row * sb, static_cast<size_t>(sb) * 4);
+          } else if (ts.dtype == DType::BF16) {
+            for (int64_t c = 0; c < sb; ++c) {
+              uint16_t bits;
+              std::memcpy(&bits, static_cast<const uint8_t*>(ts.data) + (src_row * sb + c) * 2, 2);
+              hs[dst_row * sb + c] = bf16_bits_to_float(bits);
+            }
+          } else {
+            fail("scale tensor '" + es.name + "' is neither F32 nor BF16");
+          }
+        }
+        dst += n;
+      }
+      consumed(tp);
+      consumed(ts);
+    }
+    note_read(e, static_cast<size_t>(total) * cols + static_cast<size_t>(total / 128) * sb * dtype_size(es.dtype));
+    return q;
+  }
+
+  // The GPTQ triple of the logical [N, K] matrix `base` — qweight I32
+  // [K*bits/32, N], scales F16 [K/g, N], qzeros I32 [K/g, N*bits/32] — as
+  // the packed core's [n, K*bits/32] words and [n, K/g] f16 scales for the
+  // N range [n0, +n) and the K range [k0, +kn) (whole groups): the same
+  // words and scales, transposed at load (loaders/gptq_repack.hpp), the
+  // zeros verified and dropped. The copies are deferred to gptq_jobs_ and
+  // run in parallel by run_gptq_jobs() (the bump's grant order stays
+  // sequential, as the counting build walks it).
+  std::vector<GptqRepackJob> gptq_jobs_;
+  std::vector<std::string> gptq_job_names_;
+  GlmPackedMatrix gptq_slice(const std::string& base, int bits, int64_t n0, int64_t n, int64_t k0,
+                             int64_t kn) {
+    const int g = cfg.gptq_group;
+    const int per = 32 / bits;
+    const QwenExpectedTensor& ew = expected(base + ".qweight");
+    const QwenExpectedTensor& es = expected(base + ".scales");
+    const QwenExpectedTensor& ez = expected(base + ".qzeros");
+    const int64_t N = ew.shape[1], K = ew.shape[0] * per;
+    if (es.shape[0] != K / g || es.shape[1] != N || ez.shape[0] != K / g || ez.shape[1] != N * bits / 32)
+      fail("GPTQ triple geometry mismatch on " + base);
+    check_range(base, n0, n, N);
+    check_range(base, k0, kn, K);
+    if (k0 % g != 0 || kn % g != 0 || kn <= 0)
+      fail("GPTQ column slice of '" + base + "' must start and span whole groups of " +
+           std::to_string(g) + " (world 1 serves the AutoRound hybrid; its down projection's K "
+           "does not slice on the group grid)");
+    GlmPackedMatrix m;
+    m.rows = n;
+    m.cols = kn;
+    m.bits = bits;
+    m.scale_fmt = kPackedScaleF16G128;
+    const size_t word_rows = static_cast<size_t>(kn / per);
+    const size_t groups = static_cast<size_t>(kn / g);
+    m.packed = static_cast<const uint32_t*>(bump.alloc(static_cast<size_t>(n) * word_rows * 4));
+    m.scales = static_cast<const uint16_t*>(bump.alloc(static_cast<size_t>(n) * groups * 2));
+    if (copy) {
+      const TensorInfo& tw = source(ew.name);
+      const TensorInfo& ts = source(es.name);
+      const TensorInfo& tz = source(ez.name);
+      GptqRepackJob j;
+      j.qweight = static_cast<const uint32_t*>(tw.data);
+      j.qw_stride = N;
+      j.word_row0 = k0 / per;
+      j.word_rows = kn / per;
+      j.n0 = n0;
+      j.n = n;
+      j.scales = static_cast<const uint16_t*>(ts.data);
+      j.sc_stride = N;
+      j.group0 = k0 / g;
+      j.groups = kn / g;
+      j.qzeros = static_cast<const uint32_t*>(tz.data);
+      j.qz_stride = N * bits / 32;
+      j.bits = bits;
+      j.dst_words = bump.host(const_cast<uint32_t*>(m.packed));
+      j.dst_scales = bump.host(const_cast<uint16_t*>(m.scales));
+      gptq_jobs_.push_back(j);
+      gptq_job_names_.push_back(base);
+    }
+    note_read(ew, static_cast<size_t>(n) * word_rows * 4);
+    note_read(es, static_cast<size_t>(n) * groups * 2);
+    note_read(ez, groups * (static_cast<size_t>(n) * bits / 32) * 4);
+    return m;
+  }
+  GlmPackedMatrix load_gptq_rows(const std::string& base, int64_t row_start, int64_t rows, int bits) {
+    const QwenExpectedTensor& ew = expected(base + ".qweight");
+    return gptq_slice(base, bits, row_start, rows, 0, ew.shape[0] * (32 / bits));
+  }
+  GlmPackedMatrix load_gptq_cols(const std::string& base, int64_t col_start, int64_t cols, int bits) {
+    const QwenExpectedTensor& ew = expected(base + ".qweight");
+    return gptq_slice(base, bits, 0, ew.shape[1], col_start, cols);
+  }
+  void run_gptq_jobs() {
+    if (gptq_jobs_.empty()) return;
+    const int64_t bad = gptq_repack_all(gptq_jobs_, 16);
+    if (bad >= 0)
+      fail("'" + gptq_job_names_[static_cast<size_t>(bad)] +
+           "': a qzeros word is not the symmetric constant (the packed core's fixed offset "
+           "needs zero = 2^(bits-1); an asymmetric GPTQ checkpoint is not served)");
+    for (const std::string& base : gptq_job_names_) {
+      consumed(source(base + ".qweight"));
+      consumed(source(base + ".scales"));
+      consumed(source(base + ".qzeros"));
+    }
+    gptq_jobs_.clear();
+    gptq_job_names_.clear();
+  }
+
   void build_gr(const std::string& p, QwenGrResident& g, bool combine) {
     g.hc_norm = load_bf16(p + "hc_norm.weight");
-    if (g_dense_weights_fp8) {
+    // The at-load fp8 encode applies to the BF16 releases only: the hybrid
+    // ships this class in BF16 and it stays so (as shipped, D4).
+    if (g_dense_weights_fp8 && !cfg.dense_fp8_shipped) {
       g.down_fp8 = load_bf16_fp8(p + "input_mix_weight_down.weight");
       g.up_fp8 = load_bf16_fp8(p + "input_mix_weight_up.weight");
     } else {
@@ -153,7 +372,13 @@ struct QwenLoaderFamily::Builder : WeightBuilder<QwenExpectedTensor> {
     // matrix, byte for byte.
     const int64_t local_rows = 2 * lk * dk + lv * dv;
     const std::string qkv_name = p + "in_proj_qkv.weight";
-    if (g_dense_weights_fp8) {
+    if (cfg.dense_fp8_shipped) {
+      // The hybrid's pre-encoded block FP8: the three segments' codes and
+      // scale rows as shipped.
+      require_dense_fp8_mode();
+      g.in_proj_qkv_fp8 = load_quant_row_segments(
+          qkv_name, {{r * lk * dk, lk * dk}, {K + r * lk * dk, lk * dk}, {2 * K + r * lv * dv, lv * dv}});
+    } else if (g_dense_weights_fp8 && !cfg.dense_fp8_shipped) {
       // The three segments assembled on the host, encoded into the bump.
       std::vector<uint16_t> merged;
       if (copy) {
@@ -189,7 +414,9 @@ struct QwenLoaderFamily::Builder : WeightBuilder<QwenExpectedTensor> {
     copy_rows_into(conv_name, 2 * K + r * lv * dv, lv * dv, conv, 2 * lk * dk);
     if (copy) consumed(source(conv_name));
     g.conv = conv;
-    if (g_dense_weights_fp8)
+    if (cfg.dense_fp8_shipped)
+      g.in_proj_z_fp8 = load_quant_rows(p + "in_proj_z.weight", r * lv * dv, lv * dv);
+    else if (g_dense_weights_fp8 && !cfg.dense_fp8_shipped)
       g.in_proj_z_fp8 = load_bf16_rows_fp8(p + "in_proj_z.weight", r * lv * dv, lv * dv);
     else
       g.in_proj_z = load_bf16_rows(p + "in_proj_z.weight", r * lv * dv, lv * dv);
@@ -198,7 +425,9 @@ struct QwenLoaderFamily::Builder : WeightBuilder<QwenExpectedTensor> {
     g.a_log = load_bf16_as_f32(p + "A_log", r * lv, lv);
     g.dt_bias = load_bf16_as_f32(p + "dt_bias", r * lv, lv);
     g.norm = load_bf16(p + "norm.weight");
-    if (g_dense_weights_fp8)
+    if (cfg.dense_fp8_shipped)
+      g.out_proj_fp8 = load_quant_cols(p + "out_proj.weight", r * lv * dv, lv * dv);
+    else if (g_dense_weights_fp8 && !cfg.dense_fp8_shipped)
       g.out_proj_fp8 = load_bf16_cols_fp8(p + "out_proj.weight", r * lv * dv, lv * dv);
     else
       g.out_proj = load_bf16_cols(p + "out_proj.weight", r * lv * dv, lv * dv);
@@ -214,7 +443,13 @@ struct QwenLoaderFamily::Builder : WeightBuilder<QwenExpectedTensor> {
     const int64_t q0 = static_cast<int64_t>(geo.head_begin) * 2 * d, qn = static_cast<int64_t>(geo.local_heads) * 2 * d;
     const int64_t kv0 = static_cast<int64_t>(geo.kv_head_begin) * d, kvn = static_cast<int64_t>(geo.local_kv_heads) * d;
     const int64_t o0 = static_cast<int64_t>(geo.head_begin) * d, on = static_cast<int64_t>(geo.local_heads) * d;
-    if (g_dense_weights_fp8) {
+    if (cfg.dense_fp8_shipped && out.layer != cfg.mtp_layer()) {
+      require_dense_fp8_mode();
+      a.q_proj_fp8 = load_quant_rows(p + "q_proj.weight", q0, qn);
+      a.k_proj_fp8 = load_quant_rows(p + "k_proj.weight", kv0, kvn);
+      a.v_proj_fp8 = load_quant_rows(p + "v_proj.weight", kv0, kvn);
+      a.o_proj_fp8 = load_quant_cols(p + "o_proj.weight", o0, on);
+    } else if (g_dense_weights_fp8 && !cfg.dense_fp8_shipped) {
       a.q_proj_fp8 = load_bf16_rows_fp8(p + "q_proj.weight", q0, qn);
       a.k_proj_fp8 = load_bf16_rows_fp8(p + "k_proj.weight", kv0, kvn);
       a.v_proj_fp8 = load_bf16_rows_fp8(p + "v_proj.weight", kv0, kvn);
@@ -227,7 +462,7 @@ struct QwenLoaderFamily::Builder : WeightBuilder<QwenExpectedTensor> {
     }
     a.q_norm = load_bf16(p + "q_norm.weight");
     a.k_norm = load_bf16(p + "k_norm.weight");
-    if (g_dense_weights_fp8)
+    if (g_dense_weights_fp8 && !cfg.dense_fp8_shipped)
       a.index_qk_proj_fp8 = load_bf16_fp8(p + "indexer.index_qk_proj.weight");
     else
       a.index_qk_proj = load_bf16(p + "indexer.index_qk_proj.weight");
@@ -245,7 +480,13 @@ struct QwenLoaderFamily::Builder : WeightBuilder<QwenExpectedTensor> {
     m.local_shared_inter = S;
     m.scale_block = geo.scale_block;
     const std::string sp = p + "shared_expert.";
-    if (g_dense_weights_fp8) {
+    if (cfg.dense_fp8_shipped && out.layer != cfg.mtp_layer()) {
+      require_dense_fp8_mode();
+      const int sblk = gcd_int(128, static_cast<int>(S));
+      m.shared_fp8[0] = load_quant_rows(sp + "gate_proj.weight", r * S, S, sblk);
+      m.shared_fp8[1] = load_quant_rows(sp + "up_proj.weight", r * S, S, sblk);
+      m.shared_fp8[2] = load_quant_cols(sp + "down_proj.weight", r * S, S, sblk);
+    } else if (g_dense_weights_fp8 && !cfg.dense_fp8_shipped) {
       m.shared_fp8[0] = load_bf16_rows_fp8(sp + "gate_proj.weight", r * S, S);
       m.shared_fp8[1] = load_bf16_rows_fp8(sp + "up_proj.weight", r * S, S);
       m.shared_fp8[2] = load_bf16_cols_fp8(sp + "down_proj.weight", r * S, S);
@@ -255,6 +496,18 @@ struct QwenLoaderFamily::Builder : WeightBuilder<QwenExpectedTensor> {
       m.shared[2] = load_bf16_cols(sp + "down_proj.weight", r * S, S);
     }
     const int E = cfg.num_experts;
+    // The AutoRound hybrid: every layer's experts (the draft layer's too) as
+    // int4 g128 GPTQ triples, transposed into the packed core's rows.
+    if (cfg.experts_gptq_int4) {
+      m.experts_packed.resize(static_cast<size_t>(E) * 3);
+      for (int e = 0; e < E; ++e) {
+        const std::string ep = p + "experts." + std::to_string(e) + ".";
+        m.experts_packed[static_cast<size_t>(e) * 3 + 0] = load_gptq_rows(ep + "gate_proj", r * I, I, 4);
+        m.experts_packed[static_cast<size_t>(e) * 3 + 1] = load_gptq_rows(ep + "up_proj", r * I, I, 4);
+        m.experts_packed[static_cast<size_t>(e) * 3 + 2] = load_gptq_cols(ep + "down_proj", r * I, I, 4);
+      }
+      return;
+    }
     // The NVFP4 release's backbone experts (the MTP layer's stay FP8): the
     // modelopt triple per matrix, sliced on the intermediate axis like the
     // FP8 form — rows for gate/up, whole 16-blocks of columns for down.
@@ -444,7 +697,7 @@ struct QwenLoaderFamily::Builder : WeightBuilder<QwenExpectedTensor> {
     l.rows = geo.table_rows;
     const int64_t c0 = static_cast<int64_t>(geo.hash_head_begin) * hd;
     const int64_t cn = static_cast<int64_t>(geo.hash_heads) * hd;
-    if (g_dense_weights_fp8) {
+    if (g_dense_weights_fp8 && !cfg.dense_fp8_shipped) {
       l.key_proj_fp8 = load_bf16_cols_fp8(p + "key_proj.weight", c0, cn);
       l.value_proj_fp8 = load_bf16_cols_fp8(p + "value_proj.weight", c0, cn);
     } else {
@@ -487,6 +740,7 @@ struct QwenLoaderFamily::Builder : WeightBuilder<QwenExpectedTensor> {
       build_qsa(p + "self_attn.");
     build_gr(p + "mlp_hyper_connection.", out.mlp_gr, true);
     build_moe(p + "mlp.");
+    run_gptq_jobs();
   }
 };
 
@@ -595,15 +849,24 @@ size_t QwenLoaderFamily::globals_bytes(const QwenTextConfig& cfg, int rank, int 
   const size_t r = static_cast<size_t>(cfg.hc_lowrank);
   // A dense [n, k] matrix's resident bytes: BF16, or block FP8 (codes + the
   // fp32 scale grid) under engine.dense_weights = "fp8".
-  const auto dense = [](size_t n, size_t k) -> size_t {
-    if (!g_dense_weights_fp8) return align_up_256(n * k * 2);
+  const auto dense = [&cfg](size_t n, size_t k) -> size_t {
+    if (!g_dense_weights_fp8 || cfg.dense_fp8_shipped) return align_up_256(n * k * 2);
     return align_up_256(n * k) +
            align_up_256(static_cast<size_t>(fp8_quant::scale_rows(static_cast<int64_t>(n))) *
                         static_cast<size_t>(fp8_quant::scale_cols(static_cast<int64_t>(k))) * 4);
   };
   size_t b = 0;
   b += align_up_256(static_cast<size_t>(cfg.vocab_size) * H * 2);                  // embed
-  b += dense(static_cast<size_t>(QwenLocalGeometry::from_config(cfg, rank, world, head).lm_vocab_count), H);
+  const size_t head_rows = static_cast<size_t>(QwenLocalGeometry::from_config(cfg, rank, world, head).lm_vocab_count);
+  if (cfg.lm_head_gptq_int8) {  // the hybrid's int8 g128 head: packed words + f16 scales
+    b += align_up_256(head_rows * H) + align_up_256(head_rows * (H / static_cast<size_t>(cfg.gptq_group)) * 2);
+    if (!g_draft_vocab_ids.empty()) {  // the draft vocabulary slice: rows, scales, ids
+      const size_t n = g_draft_vocab_ids.size();
+      b += align_up_256(n * H) + align_up_256(n * (H / static_cast<size_t>(cfg.gptq_group)) * 2) + align_up_256(n * 4);
+    }
+  } else {
+    b += dense(head_rows, H);
+  }
   b += align_up_256(W * 2) + dense(r, W) + dense(W, r);                             // mixer
   if (cfg.mtp_layer() >= 0) {
     b += 2 * align_up_256(H * H * 2);                          // fc_embedding, fc_hidden
@@ -665,7 +928,7 @@ void QwenLoaderFamily::build_globals(const QwenTextConfig& cfg_, const QwenLocal
   };
   auto copy_gr = [&](const std::string& p, QwenGrResident& g) {
     g.hc_norm = copy_global(p + "hc_norm.weight");
-    if (g_dense_weights_fp8) {
+    if (g_dense_weights_fp8 && !cfg_.dense_fp8_shipped) {
       g.down_fp8 = encode_global_fp8(p + "input_mix_weight_down.weight");
       g.up_fp8 = encode_global_fp8(p + "input_mix_weight_up.weight");
     } else {
@@ -675,7 +938,97 @@ void QwenLoaderFamily::build_globals(const QwenTextConfig& cfg_, const QwenLocal
     g.inject = nullptr;
   };
   globals_.embed = copy_global("model.language_model.embed_tokens.weight");
-  {
+  if (cfg_.lm_head_gptq_int8) {
+    // The hybrid's int8 g128 head: the vocab slice's columns of the GPTQ
+    // triple transposed into packed rows (loaders/gptq_repack.hpp), the
+    // scales untouched, the zeros verified. Every boot (the globals are
+    // not in the resident image); 16 threads over the columns.
+    const TensorInfo& tw = lookup("lm_head.qweight");
+    const TensorInfo& ts = lookup("lm_head.scales");
+    const TensorInfo& tz = lookup("lm_head.qzeros");
+    const int64_t H = cfg_.hidden_size, V = cfg_.vocab_size, g = cfg_.gptq_group;
+    constexpr int bits = 8, per = 4;
+    if (tw.shape != std::vector<int64_t>{H / per, V} || ts.shape != std::vector<int64_t>{H / g, V} ||
+        tz.shape != std::vector<int64_t>{H / g, V / per})
+      throw std::runtime_error("qwen loader: the lm_head GPTQ triple has the wrong geometry");
+    const int begin = geo_.lm_vocab_begin, count = geo_.lm_vocab_count;
+    GlmPackedMatrix m;
+    m.rows = count;
+    m.cols = H;
+    m.bits = bits;
+    m.scale_fmt = kPackedScaleF16G128;
+    const size_t word_rows = static_cast<size_t>(H / per), groups = static_cast<size_t>(H / g);
+    m.packed = static_cast<const uint32_t*>(globals_bump_->alloc(static_cast<size_t>(count) * word_rows * 4));
+    m.scales = static_cast<const uint16_t*>(globals_bump_->alloc(static_cast<size_t>(count) * groups * 2));
+    GptqRepackJob j;
+    j.qweight = static_cast<const uint32_t*>(tw.data);
+    j.qw_stride = V;
+    j.word_row0 = 0;
+    j.word_rows = static_cast<int64_t>(word_rows);
+    j.n0 = begin;
+    j.n = count;
+    j.scales = static_cast<const uint16_t*>(ts.data);
+    j.sc_stride = V;
+    j.group0 = 0;
+    j.groups = static_cast<int64_t>(groups);
+    j.qzeros = static_cast<const uint32_t*>(tz.data);
+    j.qz_stride = V / per;
+    j.bits = bits;
+    j.dst_words = globals_bump_->host(const_cast<uint32_t*>(m.packed));
+    j.dst_scales = globals_bump_->host(const_cast<uint16_t*>(m.scales));
+    if (gptq_repack_all(gptq_repack_split(j, 16), 16) >= 0)
+      throw std::runtime_error(
+          "qwen loader: 'lm_head.qzeros' holds a word that is not the symmetric constant "
+          "(the packed core's fixed offset needs zero = 128)");
+    // The bit-plane layout (kernels/packq_head.hpp, 2026-09-29): the
+    // argmax-only head reads three of every four sectors. Default on;
+    // DGPP_QWEN_HEAD_PLANES=off keeps the row layout (the A/B knob).
+    if (!g_draft_vocab_ids.empty()) {
+      // The draft's slice: the set's rows of the row-layout head (and their
+      // scales) into their own matrix, in the plane layout, plus the ids.
+      const std::vector<int32_t>& ids = g_draft_vocab_ids;
+      for (int32_t id : ids)
+        if (id < begin || id >= begin + count)
+          throw std::runtime_error("qwen loader: engine.draft_vocab holds an id outside this rank's vocab slice");
+      const size_t n_slice = ids.size();
+      GlmPackedMatrix d = m;
+      d.rows = static_cast<int64_t>(n_slice);
+      d.layout = kPackedLayoutPlanes8;
+      d.packed = static_cast<const uint32_t*>(globals_bump_->alloc(n_slice * static_cast<size_t>(H)));
+      d.scales = static_cast<const uint16_t*>(globals_bump_->alloc(n_slice * groups * 2));
+      const int32_t* dev_ids = static_cast<const int32_t*>(globals_bump_->alloc(n_slice * 4));
+      uint8_t* dst = reinterpret_cast<uint8_t*>(globals_bump_->host(const_cast<uint32_t*>(d.packed)));
+      uint16_t* dsc = globals_bump_->host(const_cast<uint16_t*>(d.scales));
+      int32_t* hid = globals_bump_->host(const_cast<int32_t*>(dev_ids));
+      const uint8_t* src = reinterpret_cast<const uint8_t*>(j.dst_words);
+      const uint16_t* ssc = j.dst_scales;
+      for (size_t r = 0; r < n_slice; ++r) {
+        const size_t row = static_cast<size_t>(ids[r] - begin);
+        std::memcpy(dst + r * static_cast<size_t>(H), src + row * static_cast<size_t>(H), static_cast<size_t>(H));
+        std::memcpy(dsc + r * groups, ssc + row * groups, groups * 2);
+        hid[r] = ids[r];
+      }
+      packq_planes_permute_int8(dst, static_cast<int64_t>(n_slice), H);
+      globals_.draft_head_packed = d;
+      globals_.draft_vocab_ids = dev_ids;
+      globals_.draft_vocab_count = static_cast<int>(n_slice);
+      DGPP_LOG_INFO("qwen loader: draft vocabulary slice: {} of {} head rows ({:.0f} MiB)", n_slice,
+                    count, static_cast<double>(n_slice * (static_cast<size_t>(H) + groups * 2)) / (1 << 20));
+    }
+    {
+      const char* e = std::getenv("DGPP_QWEN_HEAD_PLANES");
+      const bool planes = !(e != nullptr && (std::string(e) == "off" || std::string(e) == "0"));
+      if (planes) {
+        packq_planes_permute_int8(reinterpret_cast<uint8_t*>(j.dst_words), count, H);
+        m.layout = kPackedLayoutPlanes8;
+      }
+    }
+    source_bytes_ += static_cast<size_t>(count) * word_rows * 4 + static_cast<size_t>(count) * groups * 2 +
+                     groups * (static_cast<size_t>(count) / per) * 4;
+    globals_.lm_head_packed = m;
+    globals_.lm_vocab_begin = begin;
+    globals_.lm_vocab_count = count;
+  } else {
     const TensorInfo& t = lookup("lm_head.weight");
     const size_t row_bytes = static_cast<size_t>(cfg_.hidden_size) * 2;
     const int begin = geo_.lm_vocab_begin, count = geo_.lm_vocab_count;
@@ -746,11 +1099,39 @@ const std::string& QwenLayerStream::resident_image_dir() { return resident_image
 
 void QwenLayerStream::set_ngram_table_mmap(bool on) { g_ngram_table_mmap = on; }
 bool QwenLayerStream::ngram_table_mmap() { return g_ngram_table_mmap; }
+void QwenLayerStream::set_ngram_table_dir(const std::string& dir) { ngram_table_dir_storage() = dir; }
+const std::string& QwenLayerStream::ngram_table_dir() { return ngram_table_dir_storage(); }
+std::string QwenLoaderFamily::extra_shard_dir() { return ngram_table_dir_storage(); }
+bool QwenLoaderFamily::admit_extra_tensor(const std::string& name) {
+  return name.find("ple.ple_embedding.ngram_embedding.") != std::string::npos;
+}
 
 // ---- the dense stack's form (engine.dense_weights) ------------------------------
 
 void QwenLayerStream::set_dense_weights_fp8(bool on) { g_dense_weights_fp8 = on; }
+bool QwenLayerStream::set_draft_vocab(const std::string& npy_path, std::string* err) {
+  std::vector<int32_t> ids;
+  std::string e;
+  if (!read_npy_ids(npy_path, &ids, &e)) {
+    if (err) *err = e;
+    return false;
+  }
+  g_draft_vocab_ids = std::move(ids);
+  return true;
+}
+int QwenLayerStream::draft_vocab_count() { return static_cast<int>(g_draft_vocab_ids.size()); }
+const std::vector<int32_t>& QwenLayerStream::draft_vocab_ids() { return g_draft_vocab_ids; }
 bool QwenLayerStream::dense_weights_fp8() { return g_dense_weights_fp8; }
+namespace {
+bool g_prefill_fp8_gemm = false;
+}
+void QwenLayerStream::set_prefill_fp8_gemm(bool on) { g_prefill_fp8_gemm = on; }
+bool QwenLayerStream::prefill_fp8_gemm() { return g_prefill_fp8_gemm; }
+namespace {
+bool g_ngram_prestage = true;
+}
+void QwenLayerStream::set_ngram_prestage(bool on) { g_ngram_prestage = on; }
+bool QwenLayerStream::ngram_prestage() { return g_ngram_prestage; }
 // Bit 8: the NVFP4 experts' activation scales live in the layer image (a
 // resident image written without them is rebuilt, not misread).
 uint64_t QwenLoaderFamily::loader_format() {
@@ -823,15 +1204,63 @@ void QwenNgramTableMmap::gather(const int32_t* ids, int n, int heads, int head_b
       std::memcpy(dst + static_cast<size_t>(pair) * head_dim_, row(id), static_cast<size_t>(head_dim_));
     }
   };
-  for (int64_t pair = 0; pair < total; ++pair) {
-    const int64_t t = pair / heads_local, hl = pair - t * heads_local;
-    const uint8_t* p = row(ids[t * heads + head_begin + hl]);
-    const uintptr_t page = reinterpret_cast<uintptr_t>(p) & ~uintptr_t{4095};
-    madvise(reinterpret_cast<void*>(page), 4096 + static_cast<size_t>(head_dim_), MADV_WILLNEED);
+  static const bool timing = [] {
+    const char* v = std::getenv("DGPP_QWEN_PLE_STAGE_TIMING");
+    return v && *v && std::string(v) != "0";
+  }();
+  const auto t0 = timing ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+  // The advice for every row's page in ONE syscall (process_madvise on our
+  // own pidfd; 2026-09-29: the per-row madvise loop was 249 us of a 440 us
+  // decode gather — 64 syscalls at ~4 us). The kernel issues the reads
+  // asynchronously; the copies below then fault only on what is not yet
+  // resident. Falls back to the per-row loop if the batched call is refused.
+  static const int pidfd = static_cast<int>(syscall(SYS_pidfd_open, getpid(), 0));
+  static std::atomic<bool> batched_ok{pidfd >= 0};
+  bool advised = false;
+  // A prefill chunk's tens of thousands of rows batch the same way (2026-09-29:
+  // the per-row loop below was the 56 ms stage wait of every 4096-token chunk
+  // in the 32K profile — 4 us a syscall).
+  if (batched_ok.load(std::memory_order_relaxed)) {
+    std::vector<iovec> iov(static_cast<size_t>(total));
+    for (int64_t pair = 0; pair < total; ++pair) {
+      const int64_t t = pair / heads_local, hl = pair - t * heads_local;
+      const uint8_t* p = row(ids[t * heads + head_begin + hl]);
+      const uintptr_t page = reinterpret_cast<uintptr_t>(p) & ~uintptr_t{4095};
+      iov[static_cast<size_t>(pair)].iov_base = reinterpret_cast<void*>(page);
+      iov[static_cast<size_t>(pair)].iov_len = 4096 + static_cast<size_t>(head_dim_);
+    }
+    // One call covers up to IOV_MAX (1024) ranges.
+    advised = true;
+    for (size_t off = 0; off < iov.size(); off += 1024) {
+      const size_t n = std::min<size_t>(1024, iov.size() - off);
+      const long r = syscall(SYS_process_madvise, pidfd, iov.data() + off, n, MADV_WILLNEED, 0);
+      if (r < 0) { advised = false; batched_ok.store(false, std::memory_order_relaxed); break; }
+    }
   }
+  if (!advised) {
+    for (int64_t pair = 0; pair < total; ++pair) {
+      const int64_t t = pair / heads_local, hl = pair - t * heads_local;
+      const uint8_t* p = row(ids[t * heads + head_begin + hl]);
+      const uintptr_t page = reinterpret_cast<uintptr_t>(p) & ~uintptr_t{4095};
+      madvise(reinterpret_cast<void*>(page), 4096 + static_cast<size_t>(head_dim_), MADV_WILLNEED);
+    }
+  }
+  const auto t1 = timing ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
   constexpr int64_t kPerThread = 256;
   if (total <= kPerThread) {
     copy_range(0, total);
+    if (timing) {
+      // The two phases of a decode gather, every 200th call: the advice
+      // loop (one madvise per row) and the copies (the faults land here).
+      static std::atomic<long long> calls{0}, adv_us{0}, copy_us{0};
+      const auto t2 = std::chrono::steady_clock::now();
+      const long long n = calls.fetch_add(1) + 1;
+      adv_us.fetch_add(std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count());
+      copy_us.fetch_add(std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count());
+      if (n % 200 == 0)
+        DGPP_LOG_INFO("qwen ple: gather phases x{} — advise {} us, copy {} us (means)", n, adv_us.load() / n,
+                      copy_us.load() / n);
+    }
     return;
   }
   const int threads = static_cast<int>(std::min<int64_t>(16, (total + kPerThread - 1) / kPerThread));

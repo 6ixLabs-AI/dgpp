@@ -99,6 +99,11 @@ struct Fp8GemvProblem {
   size_t out_stride = 0;
   int rs = 7;  // the problem's scale grid, log2 (2026-09-13: 5 for a 32 x 32 grid)
   int cs = 7;
+  // A bf16 [n, k] matrix in place of the fp8 payload (2026-09-29): its rows
+  // run bf16_gemv::row_dots over the same staged activations, so the output
+  // is bitwise launch_bf16_gemv_multi's for that problem — a GDN layer's
+  // a / b projections ride the qkv + z launch (one launch and gap fewer).
+  const uint16_t* bf16_weight = nullptr;
 };
 constexpr int kFp8GemvMaxProblems = 4;
 void launch_scale_gemv_multi_bf16(const Fp8GemvProblem* problems, int n_problems,

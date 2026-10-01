@@ -1,0 +1,5 @@
+decode 181 tok / 53 passes in 2.9 s: 63.5 tok/s, 15.8 ms/tok, 54 ms/pass, 3.42 tok/pass, accept p1 92 % p2 85 % p3 68 %
+decode 187 tok / 51 passes in 2.7 s: 68.1 tok/s, 14.7 ms/tok, 54 ms/pass, 3.67 tok/pass, accept p1 98 % p2 90 % p3 80 %
+decode 848 tok / 225 passes in 12.7 s: 67.0 tok/s, 14.9 ms/tok, 56 ms/pass, 3.77 tok/pass, accept p1 95 % p2 93 % p3 90 
+decode 8 tok / 4 passes in 0.1 s: 132.3 tok/s, 7.6 ms/tok, 15 ms/pass, 2.00 tok/pass, accept p1 100 % p2 50 % p3 25 %
+decode 2047 tok / 563 passes in 33.2 s: 61.6 tok/s, 16.2 ms/tok, 59 ms/pass, 3.64 tok/pass, accept p1 95 % p2 89 % p3 81

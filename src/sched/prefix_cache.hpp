@@ -52,6 +52,7 @@ class PrefixCache {
     int64_t misses = 0;
     int64_t tokens_saved = 0;   // sum of attach positions
     int64_t snapshots = 0;      // entries taken at a prefill cut
+    int64_t head_snapshots = 0; // of them, at the head cut (a long system prompt's end)
     int64_t close_entries = 0;  // entries taken from a rolling snapshot
     int64_t rolling = 0;        // rolling snapshots taken (the hops included)
     int64_t hops = 0;           // of them, taken from a two-row step's first row

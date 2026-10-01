@@ -972,7 +972,7 @@ void GlmDiagnosticModel::session_decode_host_prep(
     glm_upload_i32(h_req_ids_, d_req_ids_, T, stream_);
     if (device_positions) {
       if (d_step_pos_ != nullptr)
-        glm_spec_positions(d_session_pos_ + req, T, d_step_pos_, stream_);
+        glm_spec_positions(d_session_pos_ + req, T, max_context_, d_step_pos_, stream_);
     } else {
       glm_upload_i64(h_step_pos_, d_step_pos_, T, stream_);
     }
@@ -1086,7 +1086,7 @@ void GlmDiagnosticModel::session_graph_capture_batch(int rows_per_request, int r
   glm_upload_i32(h_req_ids_, d_req_ids_, rows, stream_);
   glm_upload_i32(h_req_spans_, d_req_spans_, 2 * requests, stream_);
   glm_spec_positions_batched(d_session_pos_, d_req_ids_, rows,
-                             rows_per_request, d_step_pos_, stream_);
+                             rows_per_request, max_context_, d_step_pos_, stream_);
 
   // Device tokens persist from one replay to the next; inactive groups were
   // zero-initialized and admissions seed their group before a replay.
@@ -1391,6 +1391,16 @@ GlmDiagnosticModel::Outputs GlmDiagnosticModel::session_run_rows(
   bool ffn_b_pending = false;  // the previous layer's FFN fold of block B is in flight
   const size_t H4 = static_cast<size_t>(mhc_cfg_.hc_mult) * H;
   const size_t coeff = static_cast<size_t>(mhc_cfg_.coeff_rows());
+  // The diagnostic capture (set_walk_capture): the streams after the
+  // embedding and after every site's update, prefill rows only.
+  const auto capture_walk = [&](const uint16_t* buf) {
+    if (walk_capture_ == nullptr || decode_row) return;
+    DGPP_CUDA_OK(cudaStreamSynchronize(stream_));
+    std::vector<uint16_t> host(static_cast<size_t>(T) * H4);
+    DGPP_CUDA_OK(cudaMemcpy(host.data(), buf, host.size() * 2, cudaMemcpyDeviceToHost));
+    walk_capture_->push_back(std::move(host));
+  };
+  capture_walk(cur);
   // One mHC site over rows [r0, r0 + rows) of `streams` (never deferred:
   // the prefill forms compute the comb in-block).
   const auto mhc_site_rows = [&](const uint16_t* streams, const GlmMhcWeights& w, const uint16_t* ln,
@@ -1609,6 +1619,7 @@ GlmDiagnosticModel::Outputs GlmDiagnosticModel::session_run_rows(
     launch_mhc_stream_update(post_, comb_, attn_out, cur, nxt, mhc_cfg_, T,
                              stream_);
     std::swap(cur, nxt);
+    capture_walk(cur);
 
     // ---- feed-forward site -----------------------------------------
     GlmMhcWeights fw;
@@ -1712,6 +1723,7 @@ GlmDiagnosticModel::Outputs GlmDiagnosticModel::session_run_rows(
       launch_mhc_stream_update(post_, comb_, ffn_out, cur, nxt, mhc_cfg_, T,
                                stream_);
       std::swap(cur, nxt);
+      capture_walk(cur);
     }
   }
   if (ffn_b_pending) {
@@ -1751,11 +1763,43 @@ GlmDiagnosticModel::Outputs GlmDiagnosticModel::session_run_rows(
           static_cast<size_t>(T) * H * 2, cudaMemcpyDeviceToDevice, stream_));
     }
   }
-  glm_rmsnorm_bf16(collapsed_, globals_.final_norm, normed_, T, H, eps,
+  // A prefill chunk's head runs over the rows the tail mirrors — the last
+  // row, or every span's last row of a group walk — gathered to the front
+  // of the collapsed buffer, in the few-row GEMV form decode uses
+  // (2026-09-28): a row's logits are then the same whatever the chunk's
+  // row count, so a span's first token in a group walk is bitwise its
+  // prefill alone (cuBLASLt's per-row-count algorithm choice and tile
+  // placement are not), and the prompt-sized logits matrix is never
+  // computed. Decode rows keep their batch-wide head.
+  int head_rows = T;
+  if (!decode_row) {
+    head_rows = group_num_spans_ > 0 ? group_num_spans_ : 1;
+    if (head_rows > kDecodeRows)
+      throw std::invalid_argument("session: a group walk of more spans than the tail's rows");
+    int64_t row0 = 0;
+    for (int r = 0; r < head_rows; ++r) {
+      const int64_t last = group_num_spans_ > 0 ? row0 + group_span_lens_[r] - 1 : T - 1;
+      if (last != r)
+        DGPP_CUDA_OK(cudaMemcpyAsync(collapsed_ + static_cast<size_t>(r) * H,
+                                     collapsed_ + static_cast<size_t>(last) * H, static_cast<size_t>(H) * 2,
+                                     cudaMemcpyDeviceToDevice, stream_));
+      if (group_num_spans_ > 0) row0 += group_span_lens_[r];
+    }
+  }
+  glm_rmsnorm_bf16(collapsed_, globals_.final_norm, normed_, head_rows, H, eps,
                    stream_);
-  gemm_.matmul(normed_, globals_.lm_head, logits_, T, lm_vocab_count_, H,
-               DType::BF16, GemmOut::F32, H, gemm_ws_, gemm_ws_bytes_,
-               stream_);
+  if (decode_row) {
+    gemm_.matmul(normed_, globals_.lm_head, logits_, T, lm_vocab_count_, H,
+                 DType::BF16, GemmOut::F32, H, gemm_ws_, gemm_ws_bytes_,
+                 stream_);
+  } else {
+    // In the GEMV lowering's row chunks (four rows a launch, the form the
+    // decode head takes), never a per-row-count GEMM algorithm.
+    for (int r0 = 0; r0 < head_rows; r0 += 4)
+      gemm_.matmul(normed_ + static_cast<size_t>(r0) * H, globals_.lm_head,
+                   logits_ + static_cast<size_t>(r0) * lm_vocab_count_, std::min(4, head_rows - r0),
+                   lm_vocab_count_, H, DType::BF16, GemmOut::F32, H, gemm_ws_, gemm_ws_bytes_, stream_);
+  }
   // The prefetch side stream rejoins here: a capture must end with every
   // forked stream joined, and the eager tail's sync below should cover
   // the prefetches too (they read weights, nothing else).
@@ -1772,30 +1816,14 @@ GlmDiagnosticModel::Outputs GlmDiagnosticModel::session_run_rows(
     // Decode rows: all T rows (T <= kDecodeRows). Prefill chunks: the
     // LAST row only, into mirror row 0 (a prompt-sized logits matrix is
     // 100s of MB; greedy needs one row).
-    const size_t first = decode_row ? 0 : static_cast<size_t>(T - 1);
-    const size_t rows = decode_row ? static_cast<size_t>(T) : 1;
-    if (!decode_row && group_num_spans_ > 0) {
-      // A group prefill: every span's last row, span-major, into the
-      // mirrors' rows (the group is bounded by the mirrors' kDecodeRows).
-      int64_t row0 = 0;
-      for (int sp = 0; sp < group_num_spans_; ++sp) {
-        const size_t last = static_cast<size_t>(row0 + group_span_lens_[sp] - 1);
-        DGPP_CUDA_OK(cudaMemcpyAsync(h_tail_logits_ + static_cast<size_t>(sp) * lm_vocab_count_,
-                                     logits_ + last * lm_vocab_count_, lm_vocab_count_ * sizeof(float),
-                                     cudaMemcpyDeviceToHost, stream_));
-        DGPP_CUDA_OK(cudaMemcpyAsync(h_tail_hidden_ + static_cast<size_t>(sp) * H, normed_ + last * H, H * 2,
-                                     cudaMemcpyDeviceToHost, stream_));
-        row0 += group_span_lens_[sp];
-      }
-    } else {
-      DGPP_CUDA_OK(cudaMemcpyAsync(h_tail_logits_,
-                                   logits_ + first * lm_vocab_count_,
-                                   rows * lm_vocab_count_ * sizeof(float),
-                                   cudaMemcpyDeviceToHost, stream_));
-      DGPP_CUDA_OK(cudaMemcpyAsync(h_tail_hidden_, normed_ + first * H,
-                                   rows * H * 2, cudaMemcpyDeviceToHost,
-                                   stream_));
-    }
+    // Decode rows: all T rows. Prefill chunks: the head ran over the
+    // mirrored rows only, gathered to the front (one row, or one per span
+    // of a group walk, span-major).
+    const size_t rows = static_cast<size_t>(head_rows);
+    DGPP_CUDA_OK(cudaMemcpyAsync(h_tail_logits_, logits_, rows * lm_vocab_count_ * sizeof(float),
+                                 cudaMemcpyDeviceToHost, stream_));
+    DGPP_CUDA_OK(cudaMemcpyAsync(h_tail_hidden_, normed_, rows * H * 2, cudaMemcpyDeviceToHost,
+                                 stream_));
   }
 
   // Capture ends HERE: nothing executed, so there is nothing to sync

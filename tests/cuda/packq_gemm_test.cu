@@ -26,31 +26,35 @@ struct Buffer {
 };
 
 struct Matrix {
-  int bits, n, k;
+  int bits, n, k, sf;
   Buffer<uint32_t> packed;
   Buffer<uint16_t> scales;
-  Matrix(int bits, int n, int k, uint64_t seed)
+  int group() const { return dgpp::packed_scale_group(sf); }
+  Matrix(int bits, int n, int k, uint64_t seed, int sf = 0)
       : bits(bits),
         n(n),
         k(k),
+        sf(sf),
         packed(static_cast<size_t>(n) * k * bits / 32),
-        scales(static_cast<size_t>(n) * k / 64) {
+        scales(static_cast<size_t>(n) * k / dgpp::packed_scale_group(sf)) {
     scale_gemm_test::Rng rng(seed);
     for (size_t i = 0; i < static_cast<size_t>(n) * k * bits / 32; ++i)
       packed.p[i] = static_cast<uint32_t>(rng.next());
-    for (size_t i = 0; i < static_cast<size_t>(n) * k / 64; ++i)
-      scales.p[i] =
-          dgpp::float_to_bf16_bits(static_cast<float>(std::exp2(rng.unit() * 4) * 0.0031));
+    for (size_t i = 0; i < static_cast<size_t>(n) * k / group(); ++i) {
+      const float v = static_cast<float>(std::exp2(rng.unit() * 4) * 0.0031);
+      scales.p[i] = sf == 0 ? dgpp::float_to_bf16_bits(v) : dgpp::float_to_fp16_bits(v);
+    }
     scales.p[0] = 0;  // zero scales must also have exact semantics
   }
-  dgpp::GlmPackedMatrix view() const { return {packed.p, scales.p, n, k, bits}; }
+  dgpp::GlmPackedMatrix view() const { return {packed.p, scales.p, n, k, bits, sf}; }
   double value(int row, int col) const {
     const int per = 32 / bits;
+    const int g = group();
     const uint32_t w = packed.p[static_cast<size_t>(row) * (k / per) + col / per];
     const int code =
         static_cast<int>((w >> (bits * (col % per))) & ((1u << bits) - 1)) - (1 << (bits - 1));
-    return code * static_cast<double>(dgpp::bf16_bits_to_float(
-                      scales.p[static_cast<size_t>(row) * (k / 64) + col / 64]));
+    return code * static_cast<double>(dgpp::packed_scale_to_float(
+                      scales.p[static_cast<size_t>(row) * (k / g) + col / g], sf));
   }
 };
 
@@ -98,8 +102,8 @@ void oracle_check(const Matrix& w, const uint16_t* a, int stride, const float* g
       }
     }
   const double relative = std::sqrt(error2 / std::max(norm2, 1e-30));
-  std::printf("int%d M%d N%d K%d: fp32 l2_rel %.3g max_error/max_abs %.3g\n", w.bits, m, w.n, w.k,
-              relative, max_error / std::max(max_abs, 1e-30));
+  std::printf("int%d%s M%d N%d K%d: fp32 l2_rel %.3g max_error/max_abs %.3g\n", w.bits,
+              w.sf ? " g128/f16" : "", m, w.n, w.k, relative, max_error / std::max(max_abs, 1e-30));
   require(relative < 5e-6 && max_error < std::max(1e-8, max_abs * 4e-5),
           "packed GEMM differs from exact FP64 oracle");
   if (baseline) {
@@ -115,15 +119,17 @@ void oracle_check(const Matrix& w, const uint16_t* a, int stride, const float* g
 }  // namespace
 
 DGPP_TEST(packq_gemm_exact_weights_and_ragged_tiles) {
+  // Format 1 (f16 per 128) at the AutoRound hybrid's widths and the small
+  // 128-multiples: the tile's scale is the group of its 64-deep step.
+  const std::vector<std::vector<int>> shapes0 = {{1, 1, 64},     {17, 70, 192},  {33, 129, 512},
+                                                 {65, 35, 6144}, {32, 67, 2048}, {3, 17, 16384}};
+  const std::vector<std::vector<int>> shapes1 = {{1, 1, 128},   {17, 70, 640},   {33, 129, 2560},
+                                                 {32, 67, 256}, {65, 35, 1024},  {3, 17, 2560}};
+  for (int sf : {0, 1})
   for (int bits : {4, 8})
-    for (auto shape : {std::vector<int>{1, 1, 64},
-                       {17, 70, 192},
-                       {33, 129, 512},
-                       {65, 35, 6144},
-                       {32, 67, 2048},
-                       {3, 17, 16384}}) {
+    for (const auto& shape : sf == 0 ? shapes0 : shapes1) {
       const int m = shape[0], n = shape[1], k = shape[2];
-      Matrix w(bits, n, k, 917 + bits + k);
+      Matrix w(bits, n, k, 917 + bits + k, sf);
       const int stride = k + (m % 2 ? 3 : 0);
       Buffer<uint16_t> storage(static_cast<size_t>(m) * stride + 1), b(static_cast<size_t>(m) * n);
       uint16_t* a = storage.p + 1;  // explicitly unaligned base
@@ -145,11 +151,13 @@ DGPP_TEST(packq_gemm_exact_weights_and_ragged_tiles) {
 }
 
 DGPP_TEST(packq_gemm_grouped_maps_padding_and_graph) {
-  constexpr int n = 70, k = 192, os = 77, tokens = 137, ns = 9;
+  constexpr int n = 70, os = 77, tokens = 137, ns = 9;
+  for (int sf : {0, 1})
   for (int bits : {4, 8}) {
-    Matrix w(bits, n, k, 611 + bits);
-    w.scales.p[9 * (k / 64) + 1] = 0x7fc0;
-    Matrix other(bits, n, k, 975 + bits);
+    const int k = sf == 0 ? 192 : 640;
+    Matrix w(bits, n, k, 611 + bits, sf);
+    w.scales.p[9 * (k / w.group()) + 1] = sf == 0 ? 0x7fc0 : 0x7e00;
+    Matrix other(bits, n, k, 975 + bits, sf);
     Buffer<dgpp::MoeExpertView> views(ns * 3);
     Buffer<dgpp::MoeSegment> segs(ns);
     const int counts[ns] = {0, 1, 16, 17, 31, 32, 33, 65, 130};
@@ -178,14 +186,122 @@ DGPP_TEST(packq_gemm_grouped_maps_padding_and_graph) {
     DGPP_CUDA_OK(cudaDeviceSynchronize());
     DGPP_CUDA_OK(cudaStreamBeginCapture(stream, cudaStreamCaptureModeGlobal));
     dgpp::launch_moe_grouped_mma_packq_f32(a.p, k, segs.p, ns, tokens, views.p, 1, out.p, os, n, k,
-                                           bits, stream, rows.p);
+                                           bits, stream, rows.p, sf);
     dgpp::launch_moe_grouped_mma_packq_bf16(a.p, k, segs.p, ns, tokens, views.p, 1, bf.p, os, n, k,
-                                            bits, stream, rows.p);
+                                            bits, stream, rows.p, sf);
     DGPP_CUDA_OK(cudaStreamEndCapture(stream, &graph));
     DGPP_CUDA_OK(cudaGraphInstantiate(&exec, graph, nullptr, nullptr, 0));
     for (int repeat = 0; repeat < 2; ++repeat) DGPP_CUDA_OK(cudaGraphLaunch(exec, stream));
     dgpp::launch_packq_gemm_f32(gathered.p, k, w.view(), ref.p, total, n, k, stream);
+    // The compact tile list (glm_moe_launch.hpp): the same tiles from a 1-D
+    // grid, bitwise the segment-major launch; its entries as the host
+    // expects them (one 64-row tile per started 64 rows, segment order).
+    const int tile_cap = dgpp::moe_tile_list_capacity(ns, total, dgpp::kPackqGemmWideRows);
+    Buffer<dgpp::MoeTile> tiles(tile_cap);
+    Buffer<int32_t> tile_count(1);
+    Buffer<float> listed(static_cast<size_t>(total) * os);
+    std::fill(listed.p, listed.p + static_cast<size_t>(total) * os, -12345.f);
+    dgpp::launch_moe_tile_list(segs.p, ns, dgpp::kPackqGemmWideRows, tiles.p, tile_count.p, stream);
+    if (bits == 4)  // the wide kernel takes the list; int8 rows keep the narrow grid
+      dgpp::launch_moe_grouped_mma_packq_f32(a.p, k, segs.p, ns, /*max_rows=*/1, views.p, 1, listed.p, os,
+                                             n, k, bits, stream, rows.p, sf, /*variant=*/1, tiles.p,
+                                             tile_count.p, tile_cap);
     DGPP_CUDA_OK(cudaStreamSynchronize(stream));
+    {
+      int want = 0;
+      for (int e = 0; e < ns; ++e) {
+        for (int j = 0; j < counts[e]; j += dgpp::kPackqGemmWideRows) {
+          require(want < tile_cap, "tile list within its capacity");
+          require(tiles.p[want].seg == e && tiles.p[want].m0 == j, "tile list entry");
+          ++want;
+        }
+      }
+      require(tile_count.p[0] == want, "tile list count");
+      if (bits == 4)
+        require(std::memcmp(listed.p, out.p, static_cast<size_t>(total) * os * 4) == 0,
+                "the listed launch must be bitwise the segment-major one");
+    }
+    if (bits == 4) {
+      // The paired launch: projection 1 (w) and projection 0 (other) in one
+      // launch, each bitwise its own launch.
+      Buffer<uint16_t> pa(static_cast<size_t>(total) * os), pb(static_cast<size_t>(total) * os);
+      Buffer<uint16_t> sb(static_cast<size_t>(total) * os);
+      std::fill(pa.p, pa.p + static_cast<size_t>(total) * os, uint16_t{0x1234});
+      std::fill(pb.p, pb.p + static_cast<size_t>(total) * os, uint16_t{0x1234});
+      std::fill(sb.p, sb.p + static_cast<size_t>(total) * os, uint16_t{0x1234});
+      dgpp::launch_moe_grouped_mma_packq_bf16(a.p, k, segs.p, ns, tokens, views.p, 1, pa.p, os, n, k, bits,
+                                              stream, rows.p, sf, /*variant=*/1, tiles.p, tile_count.p, tile_cap,
+                                              pb.p, /*which2=*/0);
+      dgpp::launch_moe_grouped_mma_packq_bf16(a.p, k, segs.p, ns, tokens, views.p, 0, sb.p, os, n, k, bits,
+                                              stream, rows.p, sf, /*variant=*/1);
+      DGPP_CUDA_OK(cudaStreamSynchronize(stream));
+      require(std::memcmp(pa.p, bf.p, static_cast<size_t>(total) * os * 2) == 0,
+              "the paired launch's first projection must be bitwise its own launch");
+      require(std::memcmp(pb.p, sb.p, static_cast<size_t>(total) * os * 2) == 0,
+              "the paired launch's second projection must be bitwise its own launch");
+    }
+    if (bits == 4) {
+      // The register-decode three-stage form (variant 2), listed and
+      // segment-major: bitwise the decoded-tile kernel.
+      Buffer<float> reg(static_cast<size_t>(total) * os);
+      std::fill(reg.p, reg.p + static_cast<size_t>(total) * os, -12345.f);
+      dgpp::launch_moe_grouped_mma_packq_f32(a.p, k, segs.p, ns, /*max_rows=*/1, views.p, 1, reg.p, os, n, k,
+                                             bits, stream, rows.p, sf, /*variant=*/2, tiles.p, tile_count.p,
+                                             tile_cap);
+      DGPP_CUDA_OK(cudaStreamSynchronize(stream));
+      require(std::memcmp(reg.p, out.p, static_cast<size_t>(total) * os * 4) == 0,
+              "the register-decode kernel must be bitwise the decoded-tile one (listed)");
+      std::fill(reg.p, reg.p + static_cast<size_t>(total) * os, -12345.f);
+      dgpp::launch_moe_grouped_mma_packq_f32(a.p, k, segs.p, ns, tokens, views.p, 1, reg.p, os, n, k, bits,
+                                             stream, rows.p, sf, /*variant=*/2);
+      DGPP_CUDA_OK(cudaStreamSynchronize(stream));
+      require(std::memcmp(reg.p, out.p, static_cast<size_t>(total) * os * 4) == 0,
+              "the register-decode kernel must be bitwise the decoded-tile one (segment-major)");
+      // The four-warp forms (variants 4 and 5, 2026-09-30: 64 x 32 warp
+      // tiles, decoded-tile and register-decode), listed and segment-major:
+      // bitwise the eight-warp kernel.
+      for (const int wide4 : {4, 5}) {
+        std::fill(reg.p, reg.p + static_cast<size_t>(total) * os, -12345.f);
+        dgpp::launch_moe_grouped_mma_packq_f32(a.p, k, segs.p, ns, /*max_rows=*/1, views.p, 1, reg.p, os, n, k,
+                                               bits, stream, rows.p, sf, wide4, tiles.p, tile_count.p, tile_cap);
+        DGPP_CUDA_OK(cudaStreamSynchronize(stream));
+        require(std::memcmp(reg.p, out.p, static_cast<size_t>(total) * os * 4) == 0,
+                "the four-warp kernel must be bitwise the eight-warp one (listed)");
+        std::fill(reg.p, reg.p + static_cast<size_t>(total) * os, -12345.f);
+        dgpp::launch_moe_grouped_mma_packq_f32(a.p, k, segs.p, ns, tokens, views.p, 1, reg.p, os, n, k, bits,
+                                               stream, rows.p, sf, wide4);
+        DGPP_CUDA_OK(cudaStreamSynchronize(stream));
+        require(std::memcmp(reg.p, out.p, static_cast<size_t>(total) * os * 4) == 0,
+                "the four-warp kernel must be bitwise the eight-warp one (segment-major)");
+      }
+      // The folded-scale form (variant 3, engine.prefill_fold_scales): NOT
+      // bitwise — each weight x scale rounded to bf16 and one accumulator —
+      // but within the packed model's tolerance of the exact chain: the
+      // relative RMS distance under 2^-7 (bf16's own rounding is 2^-9 a
+      // value; the sum of k of them over the exact chain's fp32 stays
+      // well inside), and every finite output finite.
+      Buffer<float> fold(static_cast<size_t>(total) * os);
+      std::fill(fold.p, fold.p + static_cast<size_t>(total) * os, -12345.f);
+      dgpp::launch_moe_grouped_mma_packq_f32(a.p, k, segs.p, ns, /*max_rows=*/1, views.p, 1, fold.p, os, n, k,
+                                             bits, stream, rows.p, sf, /*variant=*/3, tiles.p, tile_count.p,
+                                             tile_cap);
+      DGPP_CUDA_OK(cudaStreamSynchronize(stream));
+      double num = 0, den = 0;
+      bool any_diff = false;
+      for (int row = 0; row < total; ++row)
+        for (int col = 0; col < n; ++col) {
+          const double exact = out.p[static_cast<size_t>(row) * os + col];
+          const double got = fold.p[static_cast<size_t>(row) * os + col];
+          require(std::isfinite(got) == std::isfinite(exact), "the folded kernel's finiteness follows the exact chain");
+          if (!std::isfinite(exact)) continue;
+          num += (got - exact) * (got - exact);
+          den += exact * exact;
+          any_diff |= got != exact;
+        }
+      require(den > 0 && std::sqrt(num / den) < 1.0 / 128,
+              "the folded-scale kernel must stay within 2^-7 relative RMS of the exact chain");
+      (void)any_diff;  // it need not differ on every fixture; it must never be far
+    }
     oracle_check(w, gathered.p, k, out.p, os, total);
     for (int row = 0; row < total; ++row) {
       require(std::memcmp(out.p + row * os, ref.p + row * n, n * 4) == 0,
@@ -227,6 +343,20 @@ DGPP_TEST(packq_gemm_rejects_invalid_geometry) {
   matrix = w.view();
   matrix.packed += 1;
   require(rejects(matrix, 64, 16, 64), "unaligned packed row");
+  matrix = w.view();
+  matrix.scale_fmt = 1;
+  require(rejects(matrix, 64, 16, 64), "g128 format with K=64 (not a multiple of 128)");
+  matrix.scale_fmt = 2;
+  require(rejects(matrix, 64, 16, 64), "unknown scale format");
+  Matrix g(4, 16, 128, 921, 1);
+  Buffer<uint16_t> a128(128);
+  bool ok = true;
+  try {
+    dgpp::launch_packq_gemm_bf16(a128.p, 128, g.view(), out.p, 1, 16, 128, nullptr);
+  } catch (const std::invalid_argument&) {
+    ok = false;
+  }
+  require(ok, "g128 format with K=128 accepted");
 }
 
 int main() {

@@ -74,6 +74,8 @@
 #include "engine/memory_plan.hpp"
 #include "loaders/architecture.hpp"
 #include "models/glm/fabric_engine.hpp"
+#include "models/glm/moe_layer.hpp"
+#include "kernels/packq_gemm.hpp"
 #include "models/glm/forward.hpp"
 #include "models/glm/gen_engine.hpp"
 #include "models/qwen/config.hpp"
@@ -384,6 +386,13 @@ struct QwenFamily final : ServeFamily {
     // engine config or CLI before the family is built); it must be on the
     // config before the binding table and the loader see it.
     cfg.mtp_experts_bf16_fused = dgpp::QwenLayerStream::mtp_experts_bf16_fused();
+    // The AutoRound hybrid ships its dense stack as block FP8: the fp8 dense
+    // mode is the only one that reads it, so it is selected here whatever
+    // the recipe says (docs/qwen38_autoround_int4_plan.md D4).
+    if (cfg.dense_fp8_shipped && !dgpp::QwenLayerStream::dense_weights_fp8()) {
+      dgpp::QwenLayerStream::set_dense_weights_fp8(true);
+      DGPP_LOG_INFO("qwen: the checkpoint ships its dense stack as block FP8 — engine.dense_weights = fp8 selected");
+    }
     // The engine's opt-in YaRN ramp (engine.rope_scaling): it rides the
     // parsed config, so the layer's table, the session's max_context()
     // and the memory plan's context line all take it from one place.
@@ -1177,6 +1186,10 @@ int main(int argc, char** argv) {
       "disables\n"
       "  [--prefill-idle-budget-tokens N (default 0)]: larger budget without active decode; 0 uses "
       "the busy budget\n"
+      "  [--prefix-min-tokens N (default 1024)]: no prefix-cache entry below this position; a\n"
+      "    short prompt attaches to what exists but never takes a snapshot slot\n"
+      "  [--prefix-head-snapshots | --no-prefix-head-snapshots (default on)]: a cold prompt\n"
+      "    also keeps the cut at its first structural boundary (a long system prompt's end)\n"
       "  bus (the prefill's bulk all-reduce): [--bulk-pace-gbps X]: sender\n"
       "    pacing per (peer, lane) queue pair (default: derived from the\n"
       "    port rate, port / ((world-1) x lanes) x 0.85; 0 = unpaced)\n"
@@ -1201,10 +1214,20 @@ int main(int argc, char** argv) {
   int sse_ping_interval = dgpp::serve::kDefaultSsePingInterval;
   std::string kv_dtype = "bf16";  // the latent cache's format
   std::string ngram_table = "resident";  // the Qwen n-gram table: resident | mmap
+  std::string ngram_table_model;         // the table's shards from another cached snapshot (engine.ngram_table_model)
   std::string fp8_head = "gemv";
   std::string dense_weights = "checkpoint";  // the Qwen dense stack: checkpoint | fp8
   std::string mtp_expert_format = "fp8";    // the Qwen MTP draft experts: fp8 | bf16_fused
   std::string bf16_weights = "checkpoint";  // the bf16 decode weights' resident form: checkpoint | bf12 | bf12+bf16
+  std::string draft_vocab;                  // the Qwen draft head's vocabulary slice (engine.draft_vocab)
+  bool prefill_bf16_partials = false;       // the opt-in prefill levers (engine.prefill_*; 2026-09-30)
+  bool prefill_fold_scales = false;
+  bool prefill_fp8_gemm = false;
+  std::string expert_gemm = "wide";         // the packed expert GEMM's form and companions (engine.expert_*)
+  int expert_gemm_prefetch = 3;
+  bool expert_tile_list = true;
+  bool expert_gemm_pair = false;
+  bool ngram_prestage = true;               // engine.ngram_prestage (Qwen)
   std::string prefill = "bounded";  // the DeepSeek-V4.1 prefill: bounded | exact
   // The opt-in YaRN rope ramp (engine.rope_scaling): absent = the plain
   // table, the default and the behaviour every earlier build had.
@@ -1222,6 +1245,10 @@ int main(int argc, char** argv) {
   int admission_window = 256;
   int prefill_budget_tokens = -1;
   int prefill_idle_budget_tokens = 0;
+  // The prefix cache's entry policy (2026-09-28): no entry below the floor,
+  // and a cold prompt keeps the cut at its first structural boundary.
+  int prefix_min_tokens = 1024;
+  bool prefix_head_snapshots = true;
   // The bulk collective's sender pacing (prefill all-reduces): negative
   // derives the per-QP rate from the port at bus start.
   double bulk_pace_gbps = -1.0;
@@ -1287,10 +1314,20 @@ int main(int argc, char** argv) {
     kv_capacity = e.kv_capacity;
     kv_dtype = e.kv_dtype;
     ngram_table = e.ngram_table;
+    ngram_table_model = e.ngram_table_model;
     dense_weights = e.dense_weights;
     fp8_head = e.fp8_head;
     mtp_expert_format = e.mtp_expert_format;
     bf16_weights = e.bf16_weights;
+    draft_vocab = e.draft_vocab;
+    prefill_bf16_partials = e.prefill_bf16_partials;
+    prefill_fold_scales = e.prefill_fold_scales;
+    prefill_fp8_gemm = e.prefill_fp8_gemm;
+    expert_gemm = e.expert_gemm;
+    expert_gemm_prefetch = e.expert_gemm_prefetch;
+    expert_tile_list = e.expert_tile_list;
+    expert_gemm_pair = e.expert_gemm_pair;
+    ngram_prestage = e.ngram_prestage;
     prefill = e.prefill;
     rope_scaling = e.rope_scaling;
     embed_sharding = e.embed_sharding;
@@ -1318,6 +1355,8 @@ int main(int argc, char** argv) {
     model_alias = e.model_alias;
     prefill_budget_tokens = e.prefill_budget_tokens;
     prefill_idle_budget_tokens = e.prefill_idle_budget_tokens;
+    prefix_min_tokens = e.prefix_min_tokens;
+    prefix_head_snapshots = e.prefix_head_snapshots;
     bulk_pace_gbps = e.bulk_pace_gbps;
     bulk_inflight = e.bulk_inflight;
     rendezvous_timeout_ms = e.rendezvous_timeout_ms;
@@ -1362,11 +1401,21 @@ int main(int argc, char** argv) {
       kv_capacity = std::stoll(next());
     else if (a == "--kv-dtype") kv_dtype = next();
     else if (a == "--ngram-table") ngram_table = next();
+    else if (a == "--ngram-table-model") ngram_table_model = next();
     else if (a == "--dense-weights") dense_weights = next();
     else if (a == "--fp8-head")
       fp8_head = next();
     else if (a == "--mtp-expert-format") mtp_expert_format = next();
     else if (a == "--bf16-weights") bf16_weights = next();
+    else if (a == "--draft-vocab") draft_vocab = next();
+    else if (a == "--prefill-bf16-partials") prefill_bf16_partials = true;
+    else if (a == "--prefill-fold-scales") prefill_fold_scales = true;
+    else if (a == "--prefill-fp8-gemm") prefill_fp8_gemm = true;
+    else if (a == "--expert-gemm") expert_gemm = next();
+    else if (a == "--expert-gemm-prefetch") expert_gemm_prefetch = std::stoi(next());
+    else if (a == "--no-expert-tile-list") expert_tile_list = false;
+    else if (a == "--expert-gemm-pair") expert_gemm_pair = true;
+    else if (a == "--no-ngram-prestage") ngram_prestage = false;
     else if (a == "--prefill") prefill = next();
     else if (a == "--embed-sharding") embed_sharding = next();
     else if (a == "--memory-plan") memory_plan_only = true;
@@ -1398,6 +1447,9 @@ int main(int argc, char** argv) {
     else if (a == "--admission-window") admission_window = std::stoi(next());
     else if (a == "--prefill-budget-tokens") prefill_budget_tokens = std::stoi(next());
     else if (a == "--prefill-idle-budget-tokens") prefill_idle_budget_tokens = std::stoi(next());
+    else if (a == "--prefix-min-tokens") prefix_min_tokens = std::stoi(next());
+    else if (a == "--prefix-head-snapshots") prefix_head_snapshots = true;
+    else if (a == "--no-prefix-head-snapshots") prefix_head_snapshots = false;
     else if (a == "--bulk-pace-gbps") bulk_pace_gbps = std::stod(next());
     else if (a == "--bulk-inflight") bulk_inflight = std::stoi(next());
     else if (a == "--world") world = std::stoi(next());
@@ -1475,7 +1527,8 @@ int main(int argc, char** argv) {
         "eos={} graph={} compact={} mtp={} mtpd={} mss={} msrow={} msbase={} mslam={} msmin={} "
         "msad={} "
         "batchmin={} cand={} "
-        "pcgib={} adm={} win={} pfbudget={} pfidle={} pace={} inflight={} reasoning_in_content={} "
+        "pcgib={} adm={} win={} pfbudget={} pfidle={} pmin={} phead={} pace={} inflight={} "
+        "reasoning_in_content={} "
         "rs={}",
         model_id.empty() ? ckpt : model_id, world, fabric_port, journal_port, max_concurrency,
         kv_capacity, kv_dtype, ngram_table, dense_weights, mtp_expert_format, bf16_weights, fp8_head, prefill,
@@ -1484,6 +1537,7 @@ int main(int argc, char** argv) {
         mtp_schedule_base_ms, mtp_schedule_lambda, mtp_schedule_min_depth,
         mtp_schedule_adapt ? 1 : 0, effective_batch_min_live, sampling_candidates, prefix_cache_gib,
         admission_mode, admission_window, prefill_budget_tokens, prefill_idle_budget_tokens,
+        prefix_min_tokens, prefix_head_snapshots ? 1 : 0,
         bulk_pace_gbps, bulk_inflight, reasoning_in_content ? 1 : 0,
         rope_scaling ? std::format("yarn:{}:{}:{}:{}:{}:{}", rope_scaling->factor,
                                    rope_scaling->original_max_position_embeddings,
@@ -1519,6 +1573,15 @@ int main(int argc, char** argv) {
         ws.fp8_head = fp8_head;
         ws.mtp_expert_format = mtp_expert_format;
         ws.bf16_weights = bf16_weights;
+        ws.draft_vocab = draft_vocab;
+        ws.prefill_bf16_partials = prefill_bf16_partials;
+        ws.prefill_fold_scales = prefill_fold_scales;
+        ws.prefill_fp8_gemm = prefill_fp8_gemm;
+        ws.expert_gemm = expert_gemm;
+        ws.expert_gemm_prefetch = expert_gemm_prefetch;
+        ws.expert_tile_list = expert_tile_list;
+        ws.expert_gemm_pair = expert_gemm_pair;
+        ws.ngram_prestage = ngram_prestage;
         ws.prefill = prefill;
         ws.rope_scaling = rope_scaling;
         ws.embed_sharding = embed_sharding;
@@ -1542,6 +1605,8 @@ int main(int argc, char** argv) {
         ws.admission_window = admission_window;
         ws.prefill_budget_tokens = prefill_budget_tokens;
         ws.prefill_idle_budget_tokens = prefill_idle_budget_tokens;
+        ws.prefix_min_tokens = prefix_min_tokens;
+        ws.prefix_head_snapshots = prefix_head_snapshots;
         ws.bulk_pace_gbps = bulk_pace_gbps;
         ws.bulk_inflight = bulk_inflight;
         ws.rendezvous_timeout_ms = rendezvous_timeout_ms;
@@ -1573,6 +1638,15 @@ int main(int argc, char** argv) {
         fp8_head = ws.fp8_head;
         mtp_expert_format = ws.mtp_expert_format;
         bf16_weights = ws.bf16_weights;
+        draft_vocab = ws.draft_vocab;
+        prefill_bf16_partials = ws.prefill_bf16_partials;
+        prefill_fold_scales = ws.prefill_fold_scales;
+        prefill_fp8_gemm = ws.prefill_fp8_gemm;
+        expert_gemm = ws.expert_gemm;
+        expert_gemm_prefetch = ws.expert_gemm_prefetch;
+        expert_tile_list = ws.expert_tile_list;
+        expert_gemm_pair = ws.expert_gemm_pair;
+        ngram_prestage = ws.ngram_prestage;
         prefill = ws.prefill;
         rope_scaling = ws.rope_scaling;
         embed_sharding = ws.embed_sharding;
@@ -1596,6 +1670,8 @@ int main(int argc, char** argv) {
         admission_window = ws.admission_window;
         prefill_budget_tokens = ws.prefill_budget_tokens;
         prefill_idle_budget_tokens = ws.prefill_idle_budget_tokens;
+        prefix_min_tokens = ws.prefix_min_tokens;
+        prefix_head_snapshots = ws.prefix_head_snapshots;
         bulk_pace_gbps = ws.bulk_pace_gbps;
         bulk_inflight = ws.bulk_inflight;
         rendezvous_timeout_ms = ws.rendezvous_timeout_ms;
@@ -1641,6 +1717,19 @@ int main(int argc, char** argv) {
   // The Qwen n-gram table's residency: set before the plan and the load
   // (both read it; the table's bytes leave the plan under mmap).
   dgpp::QwenLayerStream::set_ngram_table_mmap(ngram_table == "mmap");
+  // The table's shards from another cached snapshot (the AutoRound hybrid
+  // ships none): resolved like --model, set before the family opens the
+  // checkpoint (the loader admits only the table's tensors from it).
+  if (!ngram_table_model.empty()) {
+    std::string err;
+    const std::string dir = dgpp::hf::model_dir(ngram_table_model, &err);
+    if (dir.empty()) {
+      DGPP_LOG_ERROR("engine.ngram_table_model {}: {}", ngram_table_model, err);
+      return 1;
+    }
+    dgpp::QwenLayerStream::set_ngram_table_dir(dir);
+    DGPP_LOG_INFO("n-gram table shards from {} -> {}", ngram_table_model, dir);
+  }
   if (fp8_head != "gemv" && fp8_head != "mma") {
     DGPP_LOG_ERROR("engine.fp8_head (--fp8-head) must be gemv or mma, got '{}'", fp8_head);
     return 1;
@@ -1669,6 +1758,42 @@ int main(int argc, char** argv) {
   // The DeepSeek-V4.1 prefill mode: every model built from here on takes it.
   dgpp::Dsv41Model::set_default_prefill_bounded(prefill == "bounded");
   dgpp::QwenLayerStream::set_dense_weights_fp8(dense_weights == "fp8");
+  // The opt-in prefill levers (2026-09-30): each default off, never
+  // bitwise the default chain; a deployment turns one on in its config.
+  if (prefill_fp8_gemm && dense_weights != "fp8") {
+    DGPP_LOG_ERROR("engine.prefill_fp8_gemm requires engine.dense_weights fp8");
+    return 2;
+  }
+  // The packed expert GEMM's form and companions (engine.expert_*,
+  // engine.ngram_prestage): deployment settings, never environment switches.
+  const int expert_form = dgpp::packq_gemm_form_index(expert_gemm);
+  if (expert_form < 0) {
+    DGPP_LOG_ERROR("engine.expert_gemm must be wide, wide3, wide4, wide4r or narrow, got '{}'", expert_gemm);
+    return 2;
+  }
+  if (expert_gemm_prefetch < 0 || expert_gemm_prefetch > 16) {
+    DGPP_LOG_ERROR("engine.expert_gemm_prefetch must be 0..16, got {}", expert_gemm_prefetch);
+    return 2;
+  }
+  dgpp::packq_gemm_set_form(expert_form);
+  dgpp::packq_gemm_set_prefetch(expert_gemm_prefetch);
+  dgpp::GlmMoeLayer::set_prefill_options(prefill_bf16_partials, prefill_fold_scales, expert_tile_list,
+                                         expert_gemm_pair);
+  dgpp::QwenLayerStream::set_prefill_fp8_gemm(prefill_fp8_gemm);
+  dgpp::QwenLayerStream::set_ngram_prestage(ngram_prestage);
+  if (expert_gemm != "wide" || expert_gemm_prefetch != 3 || !expert_tile_list || expert_gemm_pair || !ngram_prestage)
+    DGPP_LOG_INFO("expert GEMM settings: form={} prefetch={} tile_list={} pair={} ngram_prestage={}", expert_gemm,
+                  expert_gemm_prefetch, expert_tile_list ? 1 : 0, expert_gemm_pair ? 1 : 0, ngram_prestage ? 1 : 0);
+  if (prefill_bf16_partials || prefill_fold_scales || prefill_fp8_gemm)
+    DGPP_LOG_INFO("prefill levers on (not bitwise the default chain): bf16_partials={} fold_scales={} fp8_gemm={}",
+                  prefill_bf16_partials ? 1 : 0, prefill_fold_scales ? 1 : 0, prefill_fp8_gemm ? 1 : 0);
+  if (!draft_vocab.empty()) {
+    std::string err;
+    if (!dgpp::QwenLayerStream::set_draft_vocab(draft_vocab, &err)) {
+      DGPP_LOG_ERROR("engine.draft_vocab {}: {}", draft_vocab, err);
+      return 1;
+    }
+  }
   if (mtp_expert_format != "fp8" && mtp_expert_format != "bf16_fused") {
     DGPP_LOG_ERROR("--mtp-expert-format must be fp8 or bf16_fused, got '{}'", mtp_expert_format);
     return 2;
@@ -1778,6 +1903,10 @@ int main(int argc, char** argv) {
       (prefill_idle_budget_tokens > 0 &&
        (prefill_budget_tokens == 0 || prefill_idle_budget_tokens < prefill_budget_tokens))) {
     DGPP_LOG_ERROR("--prefill-idle-budget-tokens must be 0 or at least the enabled busy budget, at most 1073741824");
+    return 1;
+  }
+  if (prefix_min_tokens < 0 || prefix_min_tokens > (1 << 30)) {
+    DGPP_LOG_ERROR("--prefix-min-tokens must be in [0, 1073741824]");
     return 1;
   }
 
@@ -1998,8 +2127,14 @@ int main(int argc, char** argv) {
           "serve: request context limit {} tokens (the {}-token K/V pool from engine.kv_capacity {}; "
           "this family states no positional ceiling of its own)",
           context_limit, pool_tokens, kv_capacity);
-    const int forward_rows = static_cast<int>(std::min<int64_t>(
-        pool_tokens, family->prefill_chunk_tokens()));
+    // The forward rows: the family's chunk, raised to a configured prefill
+    // budget above it (2026-09-29: the AutoRound hybrid's expert GEMM tiles
+    // pad 38 % of 4096-token chunks' segments and 17 % of 8192's; the
+    // memory plan below sizes the workspaces for whatever is chosen).
+    const int64_t chunk_pref = std::max<int64_t>(
+        {static_cast<int64_t>(family->prefill_chunk_tokens()), static_cast<int64_t>(prefill_budget_tokens),
+         static_cast<int64_t>(prefill_idle_budget_tokens)});
+    const int forward_rows = static_cast<int>(std::min<int64_t>(pool_tokens, chunk_pref));
     // The pre-flight memory check's inputs (see check_memory_plan): the
     // prefix arena at this shape, and the engine's own buffers (the sampler
     // tables per slot, the prompt id buffers per context token, a margin).
@@ -2084,6 +2219,8 @@ int main(int argc, char** argv) {
     knobs.admission.window_tokens = admission_window;
     knobs.admission.prefill_budget_tokens = prefill_budget_tokens;
     knobs.admission.prefill_idle_budget_tokens = prefill_idle_budget_tokens;
+    knobs.admission.prefix_min_tokens = prefix_min_tokens;
+    knobs.admission.prefix_head_snapshots = prefix_head_snapshots;
     knobs.default_max_tokens = default_max_tokens;
     knobs.file_inputs = file_inputs;
     knobs.sampling_defaults = sampling_defaults;

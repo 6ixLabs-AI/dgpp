@@ -15,6 +15,8 @@
 
 #include <cuda_runtime.h>
 
+#include "kernels/bf12_gemv.hpp"
+
 namespace dgpp {
 
 // In place on t [rows, r] bf16: t = silu(t / hc).
@@ -44,6 +46,15 @@ void qwen_gr_combine_dots_bf16(const void* rn, const void* w_inject, float* gate
                                int64_t rows, int hc, int hidden, cudaStream_t stream);
 void qwen_gr_combine_apply_bf16(void* r_state, const float* gates, const void* y,
                                 int64_t rows, int hc, int hidden, cudaStream_t stream);
+// The previous site's combine applied while the next site's group norm
+// reads R (2026-09-29): one launch in place of combine_apply + the norm.
+// R[row, i*H + j] = bf16(R + bf16(y[row, j] * gates[row, i])) in place, then
+// rn = group_rmsnorm(R) over the updated values — the apply is
+// combine_apply_kernel's ops and the norm is group_rmsnorm_kernel's
+// reduction (the same per-thread element order, the same fmaf chain), so
+// both R and rn are bitwise the two-launch chain's.
+void qwen_gr_combine_norm_bf16(void* r_state, const float* gates, const void* y, const void* norm_w,
+                               void* rn, int64_t rows, int hc, int hidden, float eps, cudaStream_t stream);
 
 // The mix's two GEMVs with their producers folded into the staging
 //, each bitwise the two-launch chain it replaces, for the
@@ -73,6 +84,24 @@ void qwen_gr_act_up_bf16(const void* t, int lowrank, int hc, const void* up_w, v
 void qwen_gr_down_inject_bf16(const void* rn, const void* down_w, void* t, int lowrank,
                               const void* w_inject, float* gates, int hc, int hidden,
                               int64_t rows, cudaStream_t stream);
+// The batched rows' group norm staged into the down + inject GEMV
+// (2026-09-29): one block reduction for every (row, group), so Rn (block
+// 0 writes it), t and the gates are bitwise the group norm + down_inject
+// chain — one launch fewer per site. A pending combine of the previous
+// site must have landed on R first (every block reads R).
+void qwen_gr_norm_down_inject_bf16(const void* r, size_t r_stride, const void* norm_w, int hc, int hidden, float eps,
+                                   void* rn, const void* down_w, void* t, int lowrank, const void* w_inject,
+                                   float* gates, int64_t rows, cudaStream_t stream);
+void qwen_gr_norm_down_inject_fp8(const void* r, size_t r_stride, const void* norm_w, int hc, int hidden, float eps,
+                                  void* rn, const uint8_t* down_p, const float* down_s, void* t, int lowrank,
+                                  const void* w_inject, float* gates, int64_t rows, cudaStream_t stream);
+// The same with the down matrix's lossless 12-bit companion
+// (engine.bf16_weights; kernels/bf12_gemv.hpp): the rows through
+// bf12_gemv::row_dots, bitwise the bf16 chain, 0.75 of the down bytes
+// (2026-09-29, world 1 where the site streams from DRAM).
+void qwen_gr_down_inject_bf12(const void* rn, const Bf12Matrix& down, void* t, int lowrank,
+                              const void* w_inject, float* gates, int hc, int hidden,
+                              int64_t rows, cudaStream_t stream);
 // The same three with the down / up matrices in block FP8 (2026-09-10,
 // engine.dense_weights = "fp8"): E4M3 payload [rows, k] + fp32 128 x 128
 // scales, the rows through fp8_gemv::row_dots — the scale GEMM's GEMV
@@ -86,6 +115,13 @@ void qwen_gr_norm_down_fp8(const void* r, size_t r_stride, const void* norm_w, i
                            const void* w_inject = nullptr, float* gates = nullptr);
 void qwen_gr_act_up_fp8(const void* t, int lowrank, int hc, const uint8_t* up_p, const float* up_s,
                         void* logits, int hidden, int64_t rows, cudaStream_t stream);
+// act_up with the mix folded into its epilogue (2026-09-29): x = the
+// act_up + mix_finish chain's output, bitwise, in one launch and without the
+// logits round trip. rn is the site's normalized rows [rows, hc*hidden].
+void qwen_gr_act_up_mix_bf16(const void* t, int lowrank, int hc, const void* up_w, const void* rn, void* x,
+                             int hidden, int64_t rows, cudaStream_t stream);
+void qwen_gr_act_up_mix_fp8(const void* t, int lowrank, int hc, const uint8_t* up_p, const float* up_s,
+                            const void* rn, void* x, int hidden, int64_t rows, cudaStream_t stream);
 void qwen_gr_down_inject_fp8(const void* rn, const uint8_t* down_p, const float* down_s, void* t,
                              int lowrank, const void* w_inject, float* gates, int hc, int hidden,
                              int64_t rows, cudaStream_t stream);

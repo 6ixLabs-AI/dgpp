@@ -331,3 +331,50 @@ code 22.3 → 20.1 (−10 %), math 20.7 → 18.5 (−11 %), JSON 20.5 → 17.4
 (−15 %); sampled prose 24.7 → 25.9 (+5 %). The GLM-4.7 pattern: the second
 draft pays on code, math and JSON (p2 60–84 %) and loses on prose (p2
 26–32 %). Depth 1 stays the default; a code-heavy deployment sets 2.
+
+## The AutoRound int4 hybrid (2026-09-28)
+
+`Saren/Qwen3.8-Flash-Next-W4A16-AutoRound-hybrid-MTP_int4RTN` is Intel's
+AutoRound W4A16 of the BF16 original (routed experts int4, group 128,
+symmetric, 200 tuning iterations, the GPTQ layout) with three CPU passes by
+its author: the lm_head to int8 g128, the 48 backbone layers' GDN / QSA /
+shared-expert projections to block FP8 with F32 scales, and the draft
+layer's 512 experts to int4 g128 RTN. The n-gram table is not in the repo.
+`deploy/cluster_qwen-3.8-flash-next_autoround-int4_w1.example.json` serves
+it on one Spark; the plan and the decisions are in
+`docs/qwen38_autoround_int4_plan.md`, the evidence in
+`benchmarks/results/2026-09-28-qwen-autoround-int4/`.
+
+**Served as packed, as shipped.** The packed-int cores (`packq_gemv.cuh`,
+the slot kernels, the tile GEMM) take a scale format: bf16 per 64 (full
+GLM-5.3) or f16 per 128 (this checkpoint), and the Qwen widths 640 / 2560.
+At load the GPTQ words `[K*bits/32, N]` are transposed into the packed
+core's `[N, K*bits/32]` rows — the same words, the same nibble order, the
+same offset-code semantics — the f16 scales are copied untouched, and the
+`qzeros` are checked against the symmetric constant and never become
+resident. The int8 head goes through the packed GEMV (four-row chunks) and
+the packed tile GEMM with the fp8 head's two row-count modes (`fp8_head`:
+gemv / mma). The shipped block-FP8 side layers load through the same
+reader the GLM FP8 checkpoints use (codes + F32 scales as is): eight of
+them compared bitwise to our own at-load encode of NVIDIA's BF16 originals.
+Everything the checkpoint ships in BF16 — the hyper-connections and mixers,
+routers, the indexer, GDN a/b, the PLE projections, the draft layer's
+q/k/v/o and shared expert, the fc matrices — stays BF16; the at-load fp8
+encoder never touches this checkpoint.
+
+**The table.** `engine.ngram_table_model` names the snapshot whose shards
+hold the table (`Qwen/Qwen3.8-Flash-Next-FP8`, already on every node here,
+or `Saren/Qwen3.8-Flash-Next-ple-table-fp8`, the same shards extracted);
+the loader admits only the `ngram_embedding` tensors from it.
+`download_model.py --config` downloads and syncs it beside the model.
+
+**Gates.** The tiny hybrid fixture (`tests/cuda/qwen_fixture.hpp`,
+`tiny_gptq_config`) runs the forward parity against the pure-Python
+reference (which dequantizes GPTQ exactly), the decode and prefill-head
+gates and the loopback engines (`qwen_gptq_*`, `qwen_engine_gptq`); the
+loader test pins the repack against GPTQ's own dequant. On the real
+checkpoint, `qwen_load_check --streaming` beside the production server
+bound every tensor and loaded three layers plus the draft at 1.31 GiB per
+layer (about 66.6 GiB resident for the whole model). The resident load,
+the serve gates and the throughput campaign against the author's published
+numbers are the next step and need an idle Spark.

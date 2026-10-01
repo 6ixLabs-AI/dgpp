@@ -348,6 +348,8 @@ std::string encode_journal_warm(const dgpp::sched::AdmissionPolicy& policy,
   // its own before serving; a config-less rank 0 writes none.
   if (policy.prefill_budget_tokens > 0) out += ",\"pfbudget\":" + std::to_string(policy.prefill_budget_tokens);
   if (policy.prefill_idle_budget_tokens > 0) out += ",\"pfidle\":" + std::to_string(policy.prefill_idle_budget_tokens);
+  if (policy.prefix_min_tokens > 0) out += ",\"pmin\":" + std::to_string(policy.prefix_min_tokens);
+  if (policy.prefix_head_snapshots) out += ",\"phead\":1";
   if (!config_digest.empty()) {
     out += ",\"cfg\":";
     append_json_string(&out, config_digest);
@@ -373,6 +375,8 @@ std::string encode_journal_settings(const WorldSettings& s) {
   append_json_string(&out, s.admission);
   if (s.prefill_budget_tokens != 0) out += ",\"pfbudget\":" + std::to_string(s.prefill_budget_tokens);
   if (s.prefill_idle_budget_tokens > 0) out += ",\"pfidle\":" + std::to_string(s.prefill_idle_budget_tokens);
+  if (s.prefix_min_tokens > 0) out += ",\"pmin\":" + std::to_string(s.prefix_min_tokens);
+  if (s.prefix_head_snapshots) out += ",\"phead\":1";
   out += std::format(",\"win\":{},\"pace\":{:.17g},\"inflight\":{},\"rdv\":{},\"stats\":{:.17g},\"ric\":{},\"kvdt\":",
       s.admission_window, s.bulk_pace_gbps, s.bulk_inflight, s.rendezvous_timeout_ms,
       s.stats_interval_s, s.reasoning_in_content ? 1 : 0);
@@ -387,6 +391,14 @@ std::string encode_journal_settings(const WorldSettings& s) {
   append_json_string(&out, s.mtp_expert_format);
   out += ",\"bfw\":";
   append_json_string(&out, s.bf16_weights);
+  out += ",\"dv\":";
+  append_json_string(&out, s.draft_vocab);
+  out += std::format(",\"pfb16\":{},\"pffold\":{},\"pffp8\":{}", s.prefill_bf16_partials ? 1 : 0,
+                     s.prefill_fold_scales ? 1 : 0, s.prefill_fp8_gemm ? 1 : 0);
+  out += ",\"xgemm\":";
+  append_json_string(&out, s.expert_gemm);
+  out += std::format(",\"xpf\":{},\"xtl\":{},\"xpair\":{},\"npre\":{}", s.expert_gemm_prefetch,
+                     s.expert_tile_list ? 1 : 0, s.expert_gemm_pair ? 1 : 0, s.ngram_prestage ? 1 : 0);
   out += std::format(",\"compact\":{}", s.compact_batches ? 1 : 0);
   out += ",\"pf\":";
   append_json_string(&out, s.prefill);
@@ -539,6 +551,14 @@ JournalRecord decode_journal_line(std::string_view line) {
         throw std::runtime_error("journal: settings record with a bad idle prefill budget");
       s.prefill_idle_budget_tokens = static_cast<int>(budget->as_int());
     }
+    // The prefix cache's entry policy (2026-09-28): records before it carry
+    // neither key — no floor, no head cut, what such a rank 0 ran.
+    if (const auto* pmin = v.find("pmin")) {
+      if (!pmin->is_number() || pmin->as_int() < 0 || pmin->as_int() > (1 << 30))
+        throw std::runtime_error("journal: settings record with a bad prefix entry floor");
+      s.prefix_min_tokens = static_cast<int>(pmin->as_int());
+    }
+    if (v.find("phead")) s.prefix_head_snapshots = flag("phead");
     s.bulk_pace_gbps = num("pace").as_double();
     s.bulk_inflight = static_cast<int>(num("inflight").as_int());
     s.rendezvous_timeout_ms = static_cast<int>(num("rdv").as_int());
@@ -556,6 +576,18 @@ JournalRecord decode_journal_line(std::string_view line) {
     if (const dgpp::minijson::Value* mtpef = v.find("mtpef")) s.mtp_expert_format = std::string(mtpef->as_string());
     // The bf16 weights' form (2026-09-19): records before it carry none.
     if (const dgpp::minijson::Value* bfw = v.find("bfw")) s.bf16_weights = std::string(bfw->as_string());
+    // The draft vocabulary slice (2026-09-29): records before it carry none.
+    if (const dgpp::minijson::Value* dv = v.find("dv")) s.draft_vocab = std::string(dv->as_string());
+    // The opt-in prefill levers (2026-09-30): records before them carry none (off).
+    if (v.find("pfb16")) s.prefill_bf16_partials = flag("pfb16");
+    if (v.find("pffold")) s.prefill_fold_scales = flag("pffold");
+    if (v.find("pffp8")) s.prefill_fp8_gemm = flag("pffp8");
+    // The expert GEMM's form and companions (2026-09-30): records before them carry the defaults.
+    if (const dgpp::minijson::Value* xg = v.find("xgemm")) s.expert_gemm = std::string(xg->as_string());
+    if (const dgpp::minijson::Value* xpf = v.find("xpf")) s.expert_gemm_prefetch = static_cast<int>(xpf->as_int());
+    if (v.find("xtl")) s.expert_tile_list = flag("xtl");
+    if (v.find("xpair")) s.expert_gemm_pair = flag("xpair");
+    if (v.find("npre")) s.ngram_prestage = flag("npre");
     // Records before 2026-09-14 carry no prefill mode: bounded.
     if (const dgpp::minijson::Value* pf = v.find("pf")) s.prefill = std::string(pf->as_string());
     // Records without the rope ramp key carry none: the plain table
@@ -625,6 +657,16 @@ JournalRecord decode_journal_line(std::string_view line) {
         if (!budget->is_number() || budget->as_int() < 0 || budget->as_int() > (1 << 30))
           throw std::runtime_error("journal: warm record with a bad idle prefill budget");
         rec.admission.prefill_idle_budget_tokens = static_cast<int>(budget->as_int());
+      }
+      if (const auto* pmin = v.find("pmin")) {
+        if (!pmin->is_number() || pmin->as_int() < 0 || pmin->as_int() > (1 << 30))
+          throw std::runtime_error("journal: warm record with a bad prefix entry floor");
+        rec.admission.prefix_min_tokens = static_cast<int>(pmin->as_int());
+      }
+      if (const auto* phead = v.find("phead")) {
+        if (!phead->is_number() || (phead->as_int() != 0 && phead->as_int() != 1))
+          throw std::runtime_error("journal: warm record with a bad head-cut flag");
+        rec.admission.prefix_head_snapshots = phead->as_int() == 1;
       }
     }
     if (const dgpp::minijson::Value* pc = v.find("pc")) {

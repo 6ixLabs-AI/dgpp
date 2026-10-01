@@ -62,7 +62,7 @@ operations to its peers. Every rank checks the operation-stream digest.
 | family | implemented paths | deployment constraints |
 |---|---|---|
 | GLM-5.3-Flash | KDA and DSA attention, mHC, FP8 and hybrid NVFP4 experts, resident loading, graph decode, prefix cache and MTP | The full model needs four Sparks for resident serving. Batched decode has an eight-row limit; MTP depths 2–3 use scalar graphs |
-| Qwen3.8-Flash-Next | GDN, QSA, gated residuals, PLE n-gram embeddings, FP8 and NVFP4 experts, optional FP8 dense projections, graph decode, prefix cache and MTP | FP8 deployment templates use two or four nodes. Single-node NVFP4 serving maps the n-gram table from NVMe. Batched decode supports 64 rows, including sixteen slots at MTP depth 3 with scheduled verification disabled; opt-in fixed-depth compaction reduces wide graphs within their numerical dispatch range, with scalar fallback when no physical family fits. Compaction defaults off; without it deeper MTP uses fitting physical slot prefixes or scalar graphs. Opt-in prefill continuation gives decode a turn between chunks |
+| Qwen3.8-Flash-Next | GDN, QSA, gated residuals, PLE n-gram embeddings, FP8, NVFP4 and AutoRound int4 (GPTQ g128) experts with the int8 g128 head, optional FP8 dense projections, graph decode, prefix cache and MTP | FP8 deployment templates use two or four nodes. Single-node NVFP4 serving maps the n-gram table from NVMe. Batched decode supports 64 rows, including sixteen slots at MTP depth 3 with scheduled verification disabled; opt-in fixed-depth compaction reduces wide graphs within their numerical dispatch range, with scalar fallback when no physical family fits. Compaction defaults off; without it deeper MTP uses fitting physical slot prefixes or scalar graphs. Opt-in prefill continuation gives decode a turn between chunks |
 | GLM-4.7 | Paged GQA, partial RoPE, NVFP4 dense and expert weights, draft-layer requantization, graph decode, prefix cache and MTP | Four-node serving is measured. The engine supports up to 32 batched decode rows, including deeper MTP; the supplied default recipe uses depth 1 |
 | GLM-5.3 (full) | MLA with decoupled RoPE and per-token DSA selection shared across layers, int4/int8 pack-quantized experts and attention, draft-layer requantization, graph decode, prefix cache and MTP | Four nodes at 99.3 GiB of weights per rank (48K bf16 / 96K fp8 latent cache at four slots); served 2026-09-12: T=1 51 ms/step, MTP 68–76 ms/pass at 1.8–2.0 tokens/pass, gsm8k 59/60, HumanEval 40/40. Batched decode up to sixteen rows (eight request slots at MTP depth 1, five at depth 2; the select in row groups of eight); packed experts and attention use tensor-core prefill from 128 rows; shorter prompts retain GEMV to preserve measured C1/MTP behavior |
 | DeepSeek-V4.1-Flash | CED encoder/decoder, CSA2 sliding-window + compressed-KV attention with a two-level indexer, single-pass hyper-connections, Engram n-gram tables mapped from NVMe, the DSpark block draft (five drafts per pass), the MXFP4/FP8 checkpoint as shipped, graph decode, prefix cache and a bounded (SWA-replay) prefill | Four nodes at 72.94 GiB of weights per rank (128K context at two slots); served 2026-09-14: 76 ms/pass at 2.33 tokens/pass (32.5 ms/token), bounded prefill 1.6–2.4 ms/token, gsm8k 60/60, HumanEval 40/40, extract 30/30. `engine.prefill` chooses bounded (the default) or the exact 40-layer parity mode. Prefix caching is whole-block, so prompts shorter than 128 tokens are not cached yet |
@@ -195,7 +195,16 @@ now handles larger prefills with tolerance-based comparison against the
 one-, three- and eight-split references, including model-level dispatch checks. The
 [long-context QSA selector](benchmarks/results/2026-09-21-qwen-qsa-select.md)
 uses exact radix selection above 2048 pools, retaining the score arithmetic,
-tie order and workspace. Grouped Qwen continuation and
+tie order and workspace. QSA scoring storage follows the per-request context
+rather than the shared pool (2026-09-28), and no decode row is staged past the
+positional ceiling. Prefill scoring launches follow the visible history, and
+rows that select every pool bypass scoring and sorting. This shared Qwen path
+has NVFP4 coverage with BF16 and FP8 dense projections; a bounded decode-grid
+experiment was rejected after regressions on wider batches. See the
+[launch and selection validation](benchmarks/results/2026-09-30-qsa-launch-selection.md).
+Group admission is bitwise the prefills alone (2026-09-28:
+cuts only where a snapshot can stand, the prefill head over the mirrored rows).
+Grouped Qwen continuation and
 GLM-Flash row expansion are the next targets in the
 [performance plan](docs/performance_improvement_plan.md#10-next-priorities-after-the-first-delivery).
 

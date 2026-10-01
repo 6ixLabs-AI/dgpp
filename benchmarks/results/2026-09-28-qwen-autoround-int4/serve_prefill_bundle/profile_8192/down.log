@@ -1,0 +1,5 @@
+2026-09-29 20:28:57.707 === Saren/Qwen3.8-Flash-Next-W4A16-AutoRound-hybrid-MTP_int4RTN on 1 node(s) [world] (/home/stephen/.claude/jobs/566ee5c5/tmp/ctx/cluster_qwen_autoround_w1_chunk8192.json): no rank recorded as running; nothing to stop
+2026-09-29 20:28:57.707 === op-stream identity (every rank)
+2026-09-29 20:28:57.707 d41d8cd98f00b204e9800998ecf8427e  /home/stephen/workspace/dgpp-autoround/benchmarks/results/2026-09-28-qwen-autoround-int4/serve_prefill_bundle/profile_8192/world/serve_rank0.ops
+2026-09-29 20:28:57.707 op streams: identical across 1 ranks
+2026-09-29 20:28:57.707 === logs in /home/stephen/workspace/dgpp-autoround/benchmarks/results/2026-09-28-qwen-autoround-int4/serve_prefill_bundle/profile_8192/world

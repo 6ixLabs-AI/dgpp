@@ -642,6 +642,45 @@ DGPP_TEST(qwen_moe_fp8_fused_tail_is_bitwise_the_fp8_chain) {
     require(std::memcmp(act2.data(), act_chain.data(), an * 2) == 0, "fp8 fused tail: act differs from the chain");
     require(std::memcmp(out2.data(), out_chain.data(), on * 2) == 0, "fp8 fused tail: out differs from the chain");
     std::printf("[ OK ] the fp8 fused shared tail is bitwise the fp8 chain at %d rows\n", tokens);
+    // The routed accumulation folded into the down epilogue: per-slot
+    // contributions and weights whose accumulate-kernel sum (fma in slot
+    // order) is `acc` up to fp32 — here computed on the host in that order
+    // and handed to the plain tail, against the routed tail on the slots.
+    {
+      const int K = 5;
+      std::vector<float> contrib(static_cast<size_t>(tokens) * (K + 1) * H), weights(static_cast<size_t>(tokens) * K);
+      for (size_t i = 0; i < contrib.size(); ++i) contrib[i] = 0.001f * static_cast<float>((i * 104729) % 2000) - 1.0f;
+      for (size_t i = 0; i < weights.size(); ++i) weights[i] = 0.1f + 0.05f * static_cast<float>(i % 7);
+      std::vector<float> acc3(on);
+      for (int t = 0; t < tokens; ++t)
+        for (int c = 0; c < H; ++c) {
+          float a = 0.f;
+          for (int j = 0; j < K; ++j)
+            a = std::fmaf(weights[static_cast<size_t>(t) * K + j], contrib[(static_cast<size_t>(t) * (K + 1) + j) * H + c], a);
+          acc3[static_cast<size_t>(t) * H + c] = a;
+        }
+      DevBuf dcontrib(contrib.size() * 4), dweights(weights.size() * 4), dacc3(on * 4), dact3(an * 2), dsw3(static_cast<size_t>(tokens) * 4),
+          dout3(on * 2), dact4(an * 2), dsw4(static_cast<size_t>(tokens) * 4), dout4(on * 2);
+      dcontrib.upload(contrib.data(), contrib.size() * 4);
+      dweights.upload(weights.data(), weights.size() * 4);
+      dacc3.upload(acc3.data(), on * 4);
+      dgpp::qwen_moe_shared_tail_decode_fp8(dx.as<uint16_t>(), static_cast<size_t>(H), dgp.as<uint8_t>(), static_cast<const float*>(dgs.p),
+                                            dupp.as<uint8_t>(), static_cast<const float*>(dus.p), ddp.as<uint8_t>(),
+                                            static_cast<const float*>(dds.p), dg.as<uint16_t>(), dact3.as<uint16_t>(),
+                                            static_cast<float*>(dsw3.p), static_cast<const float*>(dacc3.p), dout3.as<uint16_t>(),
+                                            tokens, H, S, st);
+      dgpp::qwen_moe_shared_tail_decode_routed_fp8(dx.as<uint16_t>(), static_cast<size_t>(H), dgp.as<uint8_t>(), static_cast<const float*>(dgs.p),
+                                                   dupp.as<uint8_t>(), static_cast<const float*>(dus.p), ddp.as<uint8_t>(),
+                                                   static_cast<const float*>(dds.p), dg.as<uint16_t>(), dact4.as<uint16_t>(),
+                                                   static_cast<float*>(dsw4.p), static_cast<const float*>(dcontrib.p),
+                                                   static_cast<const float*>(dweights.p), K, dout4.as<uint16_t>(), tokens, H, S, st);
+      DGPP_CUDA_OK(cudaStreamSynchronize(st));
+      std::vector<uint16_t> out3(on), out4(on);
+      dout3.download(out3.data(), on * 2);
+      dout4.download(out4.data(), on * 2);
+      require(std::memcmp(out3.data(), out4.data(), on * 2) == 0, "fp8 routed tail: out differs from the accumulate + tail chain");
+      std::printf("[ OK ] the fp8 tail with the routed accumulation folded is bitwise the chain at %d rows\n", tokens);
+    }
   }
 }
 

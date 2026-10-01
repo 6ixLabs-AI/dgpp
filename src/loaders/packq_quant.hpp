@@ -78,10 +78,12 @@ inline int packq_code(const uint32_t* words, int64_t cols, int bits, int64_t r, 
 
 // Decodes element (r, c) back to the value the kernels compute (code x
 // scale, exact in fp32): the tests' oracle and the loader's bf16 bridge.
+// scale_fmt selects the group and the scale dtype (kPackedScale*).
 inline float packq_decode(const uint32_t* words, const uint16_t* scales, int64_t cols, int bits,
-                          int64_t r, int64_t c) {
+                          int64_t r, int64_t c, int scale_fmt = kPackedScaleBf16G64) {
+  const int g = packed_scale_group(scale_fmt);
   return static_cast<float>(packq_code(words, cols, bits, r, c)) *
-         bf16_bits_to_float(scales[r * (cols / kPackedGroup) + c / kPackedGroup]);
+         packed_scale_to_float(scales[r * (cols / g) + c / g], scale_fmt);
 }
 
 }  // namespace dgpp
