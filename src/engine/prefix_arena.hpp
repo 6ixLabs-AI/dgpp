@@ -16,6 +16,8 @@
 #include <vector>
 
 #include "common/cuda_check.hpp"
+#include "common/log.hpp"
+#include "engine/pool_exhausted.hpp"
 
 namespace dgpp {
 
@@ -103,8 +105,17 @@ class PrefixArena {
           std::to_string(rows_after) + " past the position)");
     release(slot);
     Timer& t = begin_timer();
-    metas_[static_cast<size_t>(slot)] =
-        model_->session_snapshot_post_row0(req, ptr(slot), spec_row, rows_after);
+    // A full pool skips the snapshot (left unfilled, as when a step accepts
+    // fewer than two rows) instead of failing the engine. The timer stays
+    // unarmed, so nothing is harvested from it.
+    try {
+      metas_[static_cast<size_t>(slot)] =
+          model_->session_snapshot_post_row0(req, ptr(slot), spec_row, rows_after);
+    } catch (const CachePoolExhausted& e) {
+      DGPP_LOG_WARN("prefix cache: hop snapshot at {} skipped for session {}: {}", expected_position, req,
+                    e.what());
+      return;
+    }
     end_timer(t, &snapshot_ms_, &snapshots_);
     filled_[static_cast<size_t>(slot)] = true;
   }

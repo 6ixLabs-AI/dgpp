@@ -49,6 +49,8 @@
 #include "engine/boundary_reducer.hpp"
 #include "engine/decode_outputs.hpp"
 #include "engine/logits_storage.hpp"
+#include "engine/pool_exhausted.hpp"
+#include "common/log.hpp"
 #include "kernels/gemm.hpp"
 #include "kernels/glm_spec.hpp"
 #include "kernels/pick.hpp"
@@ -909,8 +911,13 @@ void SessionModel<D>::prefill_chunk(PrefillCursor& cursor, int64_t budget) {
   }
   for (auto* at = snap; at != nullptr; at = at->next) {
     if (!at->taken && at->position == c1) {
-      *at->meta = session_snapshot(req, at->dst);
-      at->taken = true;
+      try {
+        *at->meta = session_snapshot(req, at->dst);
+        at->taken = true;
+      } catch (const CachePoolExhausted& e) {
+        // Untaken: the scheduler gives the arena slot back (no cache entry).
+        DGPP_LOG_WARN("prefix cache: snapshot at {} skipped for slot {}: {}", c1, req, e.what());
+      }
     }
   }
   cursor.next = c1;
@@ -1273,7 +1280,7 @@ typename SessionModel<D>::SessionSnapshotMeta SessionModel<D>::pin_blocks_at(int
     const int32_t b = pool.acquire_pinned_block();
     if (b < 0) {
       pool.unpin_blocks(meta.full_blocks.data(), n_full);
-      throw std::runtime_error(std::string(what) + ": cache pool exhausted (the partial block)");
+      throw CachePoolExhausted(std::string(what) + ": cache pool exhausted (the partial block)");
     }
     pool.copy_block_contents(row[n_full], b, stream_);
     meta.partial_block = b;
