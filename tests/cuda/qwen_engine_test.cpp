@@ -1299,6 +1299,129 @@ DGPP_TEST(qwen_wide_bf16_dense_real_shards_are_kernel_only) {
   require(rejected, "unaligned wide MTP weights fail before an Lt fallback");
 }
 
+DGPP_TEST(qwen_compact_logits_preserve_cache_concurrency_and_mtp) {
+  struct RestoreModes {
+    bool mapped = dgpp::QwenLayerStream::ngram_table_mmap();
+    bool fp8 = dgpp::QwenLayerStream::dense_weights_fp8();
+    ~RestoreModes() {
+      dgpp::QwenLayerStream::set_ngram_table_mmap(mapped);
+      dgpp::QwenLayerStream::set_dense_weights_fp8(fp8);
+    }
+  } restore;
+  dgpp::QwenLayerStream::set_ngram_table_mmap(true);
+  dgpp::QwenLayerStream::set_dense_weights_fp8(true);
+  const auto cfg = qwenfx::tiny_config();
+  const std::string dir = "qwen_compact_logits_fixture";
+  qwenfx::write_fixture(cfg, dir);
+  const std::vector<int> limits{12, 28, 36, 44};
+  std::vector<std::vector<int64_t>> prompts;
+  for (int i = 0; i < 4; ++i) prompts.push_back(smoke_tokens(cfg, 17 + i * 8, 0xAB00 + i));
+  for (int depth : {1, 2, 3, 4, 5}) {
+    const auto run = [&](bool compact) {
+      auto buses = start_world(1, kPort + 22);
+      require(buses.size() == 1, "compact logits: world-of-one bus");
+      const int rows = 4 * (depth + 1);
+      QwenModel model(cfg, dir, 128, 2048, QwenResidency::Resident, nullptr, 0, 1,
+                      4, true, rows, true, compact);
+      require(model.logits_capacity_rows() == (compact ? rows : 128), "compact decode capacity");
+      uint16_t* scratch = nullptr;
+      DGPP_CUDA_OK(cudaHostAlloc(reinterpret_cast<void**>(&scratch),
+                                 sizeof(uint16_t) * dgpp::kPickScratchElems(1), cudaHostAllocDefault));
+      std::vector<std::vector<int32_t>> result(7);
+      {
+        GraphEngineAdapter<QwenModel> graph(&model, buses[0].get(), 0, 1, scratch,
+            cfg.vocab_size, wait_timeout_ms(), 2, nullptr, nullptr, 0, nullptr, 1, depth, false);
+        std::vector<const std::vector<int64_t>*> inputs;
+        for (const auto& prompt : prompts) inputs.push_back(&prompt);
+        const auto first = graph.prefill_group({0, 1, 2, 3}, inputs);
+        require(first.size() == 4, "grouped prefill returned every slot");
+        for (int i = 0; i < 4; ++i) {
+          result[i].push_back(first[i]);
+          graph.reserve(i, 256);
+        }
+        std::vector<int> active{0, 1, 2, 3}, generation{0, 1, 2, 3};
+        bool reused = false;
+        while (!active.empty()) {
+          const auto tokens = graph.step_batch(active);
+          std::vector<int> remaining;
+          bool reopen = false;
+          for (size_t j = 0; j < active.size(); ++j) {
+            const int slot = active[j], id = generation[slot];
+            auto& transcript = result[id];
+            transcript.insert(transcript.end(), tokens[j].begin(), tokens[j].end());
+            const int limit = id == 4 ? 7 : limits[id];
+            if (transcript.size() >= static_cast<size_t>(limit)) {
+              transcript.resize(limit);
+              graph.close(slot);
+              if (slot == 0 && !reused) reopen = true;
+            } else {
+              remaining.push_back(slot);
+            }
+          }
+          if (reopen) {
+            require(!remaining.empty(), "slot reuse must overlap active peers");
+            generation[0] = 4;
+            result[4].push_back(graph.prefill(0, smoke_tokens(cfg, 13, 0xAC00)));
+            graph.reserve(0, 64);
+            remaining.push_back(0);
+            reused = true;
+          }
+          std::sort(remaining.begin(), remaining.end());
+          active = std::move(remaining);
+        }
+        require(reused, "slot was retired and reused");
+
+        // Keep two peers decoding while the middle slot fills, snapshots and
+        // then reuses the same prefix. Required cuts keep the row shapes fixed.
+        const auto long_prompt = smoke_tokens(cfg, 95, 0xCA00);
+        const std::vector<int64_t> cuts{32, 64};
+        for (const int slot : {0, 3}) {
+          (void)graph.prefill(slot, smoke_tokens(cfg, 11, 0xCB00 + slot));
+          graph.reserve(slot, 256);
+        }
+        for (int round = 0; round < 2; ++round) {
+          dgpp::sched::SchedulerEngine::PrefixPrefill plan;
+          plan.boundaries = &cuts;
+          if (round == 0) {
+            plan.snap_slot = 0;
+            plan.snap_position = 32;
+          } else {
+            plan.attach_slot = 0;
+            plan.attach_position = 32;
+          }
+          graph.begin_prefill(1, long_prompt, 128, 32, plan);
+          int64_t computed = 0;
+          auto& transcript = result[5 + round];
+          while (transcript.empty()) {
+            const auto progress = graph.advance_prefill(1);
+            computed += progress.computed_tokens;
+            if (progress.first_token >= 0) transcript.push_back(progress.first_token);
+            else (void)graph.step_batch({0, 3});
+          }
+          require(computed == (round == 0 ? 95 : 63), "prefix reuse skipped exactly 32 tokens");
+          graph.reserve(1, 128);
+          while (transcript.size() < 20) {
+            const auto tokens = graph.step_batch({0, 1, 3});
+            transcript.insert(transcript.end(), tokens[1].begin(), tokens[1].end());
+          }
+          transcript.resize(20);
+          graph.close(1);
+        }
+        require(result[5] == result[6], "cached and cold fixed-shape transcripts differ");
+        graph.close(0);
+        graph.close(3);
+        graph.prefix_release(0);
+        graph.drain();
+      }
+      DGPP_CUDA_OK(cudaFreeHost(scratch));
+      return result;
+    };
+    require(run(false) == run(true),
+            "compact logits changed graph/cache transcripts at MTP depth " + std::to_string(depth));
+    std::printf("[ .. ] compact/full logits: four slots, cache reuse, retirement and MTP depth %d exact\n", depth);
+  }
+}
+
 int main() {
   // DGPP_TEST_QWEN_GPTQ=1: every case runs the AutoRound hybrid's fixture
   // (tests/cuda/qwen_fixture.hpp), whose dense stack ships as block fp8 —

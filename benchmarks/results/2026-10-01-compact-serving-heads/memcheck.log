@@ -1,0 +1,80 @@
+========= COMPUTE-SANITIZER
+2026-10-01 00:11:24.960 INFO  glm4 loader: rank 0 resident footprint 0.0 GiB; device free 95.4 of 121.6 GiB, host available 115.7 GiB
+2026-10-01 00:11:24.966 INFO  l2 prefetch: on, window budget 12 MiB, boundary rate light, layer rate light
+2026-10-01 00:11:24.972 INFO  glm4 loader: rank 0 resident footprint 0.0 GiB; device free 95.3 of 121.6 GiB, host available 115.7 GiB
+2026-10-01 00:11:24.973 INFO  l2 prefetch: on, window budget 12 MiB, boundary rate light, layer rate light
+2026-10-01 00:11:27.419 INFO  glm_dsa loader: rank 0 resident footprint 0.0 GiB; device free 94.7 of 121.6 GiB, host available 115.1 GiB
+2026-10-01 00:11:27.422 INFO  l2 prefetch: on, window budget 12 MiB, boundary rate light, layer rate light
+2026-10-01 00:11:27.422 INFO  memory ledger: glm_dsa: loader opened — rss 0.96 GiB (anon 0.78, shmem 0.05, file 0.14; locked 0.00); device free 94.73 GiB, node available 115.09 GiB
+2026-10-01 00:11:27.422 INFO  memory ledger: glm_dsa: globals resident — rss 0.96 GiB (anon 0.78, shmem 0.05, file 0.14; locked 0.00); device free 94.73 GiB, node available 115.09 GiB
+2026-10-01 00:11:27.437 INFO  glm_dsa loader: rank 0 resident load complete — released 1 shard mappings (0.0 GiB) and evicted their page cache, freed the 0.00 GiB pinned staging mirror; image: 0 layers restored, 0 captured
+2026-10-01 00:11:27.437 INFO  memory ledger: glm_dsa: layers resident, sources released — rss 0.95 GiB (anon 0.78, shmem 0.04, file 0.14; locked 0.00); device free 94.74 GiB, node available 115.07 GiB
+2026-10-01 00:11:27.444 INFO  memory ledger: glm_dsa: arena, pool and scratch — rss 0.96 GiB (anon 0.78, shmem 0.04, file 0.14; locked 0.00); device free 94.63 GiB, node available 114.96 GiB
+2026-10-01 00:11:27.446 INFO  glm_dsa loader: rank 0 resident footprint 0.0 GiB; device free 94.6 of 121.6 GiB, host available 115.0 GiB
+2026-10-01 00:11:27.448 INFO  l2 prefetch: on, window budget 12 MiB, boundary rate light, layer rate light
+2026-10-01 00:11:27.448 INFO  memory ledger: glm_dsa: loader opened — rss 0.96 GiB (anon 0.78, shmem 0.05, file 0.14; locked 0.00); device free 94.63 GiB, node available 114.96 GiB
+2026-10-01 00:11:27.449 INFO  memory ledger: glm_dsa: globals resident — rss 0.96 GiB (anon 0.78, shmem 0.05, file 0.14; locked 0.00); device free 94.63 GiB, node available 114.96 GiB
+2026-10-01 00:11:27.482 INFO  glm_dsa loader: rank 0 resident load complete — released 1 shard mappings (0.0 GiB) and evicted their page cache, freed the 0.00 GiB pinned staging mirror; image: 0 layers restored, 0 captured
+2026-10-01 00:11:27.482 INFO  memory ledger: glm_dsa: layers resident, sources released — rss 0.96 GiB (anon 0.78, shmem 0.04, file 0.14; locked 0.00); device free 94.61 GiB, node available 114.94 GiB
+2026-10-01 00:11:27.487 INFO  memory ledger: glm_dsa: arena, pool and scratch — rss 0.96 GiB (anon 0.78, shmem 0.04, file 0.14; locked 0.00); device free 94.50 GiB, node available 114.83 GiB
+2026-10-01 00:11:33.199 INFO  mimo loader: 4 checkpoint tensors ignored (the vision / audio encoders, the draft layers past the first)
+2026-10-01 00:11:33.200 INFO  mimo loader: rank 0 resident footprint 0.0 GiB; device free 94.6 of 121.6 GiB, host available 115.0 GiB
+2026-10-01 00:11:33.201 INFO  l2 prefetch: on, window budget 12 MiB, boundary rate light, layer rate light
+2026-10-01 00:11:33.208 INFO  mimo loader: 4 checkpoint tensors ignored (the vision / audio encoders, the draft layers past the first)
+2026-10-01 00:11:33.208 INFO  mimo loader: rank 0 resident footprint 0.0 GiB; device free 94.5 of 121.6 GiB, host available 114.9 GiB
+2026-10-01 00:11:33.210 INFO  l2 prefetch: on, window budget 12 MiB, boundary rate light, layer rate light
+2026-10-01 00:11:36.877 INFO  dsv41 loader: rank 0 resident footprint 0.0 GiB; device free 94.5 of 121.6 GiB, host available 114.9 GiB
+2026-10-01 00:11:36.882 INFO  memory ledger: dsv41: loader opened — rss 1.21 GiB (anon 0.99, shmem 0.05, file 0.17; locked 0.00); device free 94.54 GiB, node available 114.91 GiB
+2026-10-01 00:11:36.882 INFO  dsv41 loader: rank 0 Engram tables mmap'ed from the checkpoint (2 tables, 0.08 GiB mapped, 12 rows per token: 4 heads x 3 n-gram sizes)
+2026-10-01 00:11:36.903 INFO  dsv41 loader: rank 0 resident load complete — released 1 shard mappings (0.0 GiB) and evicted their page cache, freed the 0.01 GiB pinned staging mirror; image: 0 layers restored, 0 captured
+2026-10-01 00:11:36.904 INFO  memory ledger: dsv41: layers resident, sources released — rss 1.20 GiB (anon 0.99, shmem 0.04, file 0.17; locked 0.00); device free 94.54 GiB, node available 114.87 GiB
+2026-10-01 00:11:36.913 INFO  memory ledger: dsv41: pool and scratch — rss 1.21 GiB (anon 0.99, shmem 0.04, file 0.17; locked 0.00); device free 94.40 GiB, node available 114.73 GiB
+2026-10-01 00:11:36.914 INFO  memory ledger: dsv41: model ready — rss 1.21 GiB (anon 0.99, shmem 0.04, file 0.17; locked 0.00); device free 94.39 GiB, node available 114.72 GiB
+2026-10-01 00:11:36.916 INFO  dsv41 loader: rank 0 resident footprint 0.0 GiB; device free 94.4 of 121.6 GiB, host available 114.7 GiB
+2026-10-01 00:11:36.921 INFO  memory ledger: dsv41: loader opened — rss 1.21 GiB (anon 0.99, shmem 0.05, file 0.17; locked 0.00); device free 94.39 GiB, node available 114.72 GiB
+2026-10-01 00:11:36.921 INFO  dsv41 loader: rank 0 Engram tables mmap'ed from the checkpoint (2 tables, 0.08 GiB mapped, 12 rows per token: 4 heads x 3 n-gram sizes)
+2026-10-01 00:11:36.970 INFO  dsv41 loader: rank 0 resident load complete — released 1 shard mappings (0.0 GiB) and evicted their page cache, freed the 0.01 GiB pinned staging mirror; image: 0 layers restored, 0 captured
+2026-10-01 00:11:36.970 INFO  memory ledger: dsv41: layers resident, sources released — rss 1.21 GiB (anon 0.99, shmem 0.04, file 0.17; locked 0.00); device free 94.35 GiB, node available 114.68 GiB
+2026-10-01 00:11:36.978 INFO  memory ledger: dsv41: pool and scratch — rss 1.21 GiB (anon 0.99, shmem 0.04, file 0.17; locked 0.00); device free 94.21 GiB, node available 114.54 GiB
+2026-10-01 00:11:36.980 INFO  memory ledger: dsv41: model ready — rss 1.21 GiB (anon 0.99, shmem 0.05, file 0.17; locked 0.00); device free 94.21 GiB, node available 114.54 GiB
+2026-10-01 00:11:50.092 INFO  dsv41 loader: rank 0 resident footprint 0.0 GiB; device free 94.7 of 121.6 GiB, host available 115.0 GiB
+2026-10-01 00:11:50.096 INFO  memory ledger: dsv41: loader opened — rss 1.22 GiB (anon 0.99, shmem 0.05, file 0.18; locked 0.00); device free 94.65 GiB, node available 114.98 GiB
+2026-10-01 00:11:50.098 INFO  dsv41 loader: rank 0 Engram tables mmap'ed from the checkpoint (2 tables, 0.08 GiB mapped, 12 rows per token: 4 heads x 3 n-gram sizes)
+2026-10-01 00:11:50.147 INFO  dsv41 loader: rank 0 resident load complete — released 1 shard mappings (0.0 GiB) and evicted their page cache, freed the 0.01 GiB pinned staging mirror; image: 0 layers restored, 0 captured
+2026-10-01 00:11:50.147 INFO  memory ledger: dsv41: layers resident, sources released — rss 1.21 GiB (anon 0.99, shmem 0.04, file 0.18; locked 0.00); device free 94.61 GiB, node available 114.94 GiB
+2026-10-01 00:11:50.156 INFO  memory ledger: dsv41: pool and scratch — rss 1.21 GiB (anon 0.99, shmem 0.04, file 0.18; locked 0.00); device free 94.47 GiB, node available 114.80 GiB
+2026-10-01 00:11:50.157 INFO  memory ledger: dsv41: model ready — rss 1.21 GiB (anon 0.99, shmem 0.04, file 0.18; locked 0.00); device free 94.46 GiB, node available 114.79 GiB
+2026-10-01 00:11:50.159 INFO  dsv41 loader: rank 0 resident footprint 0.0 GiB; device free 94.5 of 121.6 GiB, host available 114.8 GiB
+2026-10-01 00:11:50.163 INFO  memory ledger: dsv41: loader opened — rss 1.22 GiB (anon 0.99, shmem 0.05, file 0.18; locked 0.00); device free 94.46 GiB, node available 114.79 GiB
+2026-10-01 00:11:50.164 INFO  dsv41 loader: rank 0 Engram tables mmap'ed from the checkpoint (2 tables, 0.08 GiB mapped, 12 rows per token: 4 heads x 3 n-gram sizes)
+2026-10-01 00:11:50.216 INFO  dsv41 loader: rank 0 resident load complete — released 1 shard mappings (0.0 GiB) and evicted their page cache, freed the 0.01 GiB pinned staging mirror; image: 0 layers restored, 0 captured
+2026-10-01 00:11:50.216 INFO  memory ledger: dsv41: layers resident, sources released — rss 1.21 GiB (anon 0.99, shmem 0.04, file 0.18; locked 0.00); device free 94.42 GiB, node available 114.75 GiB
+2026-10-01 00:11:50.223 INFO  memory ledger: dsv41: pool and scratch — rss 1.21 GiB (anon 0.99, shmem 0.04, file 0.18; locked 0.00); device free 94.28 GiB, node available 114.61 GiB
+2026-10-01 00:11:50.226 INFO  memory ledger: dsv41: model ready — rss 1.21 GiB (anon 0.99, shmem 0.05, file 0.18; locked 0.00); device free 94.27 GiB, node available 114.60 GiB
+2026-10-01 00:12:01.164 INFO  glm loader: rank 0 resident footprint 0.0 GiB; device free 94.6 of 121.6 GiB, host available 115.0 GiB
+2026-10-01 00:12:01.167 INFO  l2 prefetch: on, window budget 12 MiB, boundary rate light, layer rate light
+2026-10-01 00:12:01.184 INFO  glm loader: rank 0 resident load complete — released 1 shard mappings (0.0 GiB) and evicted their page cache; image: 0 layers restored, 0 captured
+2026-10-01 00:12:01.184 INFO  rank 0 boot phases: digest 0.0 s (0.00 GiB hashed), globals 0.0 s, layers 0.0 s
+2026-10-01 00:12:01.186 INFO  glm loader: rank 0 resident footprint 0.0 GiB; device free 94.5 of 121.6 GiB, host available 114.8 GiB
+2026-10-01 00:12:01.189 INFO  l2 prefetch: on, window budget 12 MiB, boundary rate light, layer rate light
+2026-10-01 00:12:01.226 INFO  glm loader: rank 0 resident load complete — released 1 shard mappings (0.0 GiB) and evicted their page cache; image: 0 layers restored, 0 captured
+2026-10-01 00:12:01.226 INFO  rank 0 boot phases: digest 0.0 s (0.00 GiB hashed), globals 0.0 s, layers 0.0 s
+glm4 fixture written: 443 tensors, 8.25 MB payload
+[ .. ] compact_glm4_fixture: 24 rows, FP64 relative L2 full=2.39e-07 compact=5.93e-08, max token logprob delta=3.06e-06, saved=491520 bytes
+[ OK ] compact_head_glm4
+glm_dsa fixture written: 485 tensors, 19.54 MB payload
+[ .. ] compact_glm_dsa_fixture: 24 rows, FP64 relative L2 full=2.47e-07 compact=5.89e-08, max token logprob delta=2.45e-06, saved=491520 bytes
+[ OK ] compact_head_glm_dsa
+mimo fixture written: 201 tensors, 9.63 MB payload
+[ .. ] compact_mimo_fixture: 24 rows, FP64 relative L2 full=2.32e-07 compact=5.71e-08, max token logprob delta=2.9e-06, saved=491520 bytes
+[ OK ] compact_head_mimo
+dsv41 fixture written: 762 tensors, 39.84 MB payload
+[ .. ] compact_dsv41_fixture: 24 rows, FP64 relative L2 full=2.76e-07 compact=2.76e-07, max token logprob delta=4.44e-16, saved=491520 bytes
+[ .. ] compact_dsv41_fixture: 24 rows, FP64 relative L2 full=2.84e-07 compact=2.84e-07, max token logprob delta=4.44e-16, saved=491520 bytes
+[ OK ] compact_head_dsv41
+fixture written: 463 tensors, 23.54 MB payload
+[ .. ] compact_glm_flash_fixture: 23 rows, FP64 relative L2 full=6.43e-08 compact=6.43e-08, max token logprob delta=4.44e-16, saved=95232 bytes
+[ OK ] compact_head_glm_flash
+5 tests, 0 failed
+========= LEAK SUMMARY: 0 bytes leaked in 0 allocations
+========= ERROR SUMMARY: 0 errors

@@ -79,17 +79,21 @@ class Dsv41Model : public SessionModel<Dsv41Model> {
   using SnapshotRequest = Base::SnapshotRequest;
   using RowRun = Base::RowRun;
 
-  Dsv41Model(const Dsv41TextConfig& cfg, const std::string& checkpoint_dir, int max_tokens, int64_t max_cache_tokens,
-             Dsv41Residency residency = Dsv41Residency::Streaming, BoundaryReducer* boundary = nullptr,
-             int tp_rank = 0, int tp_world = 1, int max_requests = 1, bool mtp = false, int decode_rows = 0);
+  Dsv41Model(const Dsv41TextConfig& cfg, const std::string& checkpoint_dir, int max_tokens,
+             int64_t max_cache_tokens, Dsv41Residency residency = Dsv41Residency::Streaming,
+             BoundaryReducer* boundary = nullptr, int tp_rank = 0, int tp_world = 1,
+             int max_requests = 1, bool mtp = false, int decode_rows = 0,
+             bool serving_logits = false);
   ~Dsv41Model();
   Dsv41Model(const Dsv41Model&) = delete;
   Dsv41Model& operator=(const Dsv41Model&) = delete;
 
   using MemoryPlan = dgpp::MemoryPlan;
-  static MemoryPlan plan_memory(const Dsv41TextConfig& cfg, int max_tokens, int64_t max_cache_tokens, int tp_rank = 0,
-                                int tp_world = 1, Dsv41Residency residency = Dsv41Residency::Streaming,
-                                int max_requests = 1, bool mtp = false, int decode_rows = 0);
+  static MemoryPlan plan_memory(const Dsv41TextConfig& cfg, int max_tokens,
+                                int64_t max_cache_tokens, int tp_rank = 0, int tp_world = 1,
+                                Dsv41Residency residency = Dsv41Residency::Streaming,
+                                int max_requests = 1, bool mtp = false, int decode_rows = 0,
+                                bool serving_logits = false);
 
   // The prefill mode (plan §1.8, D8): `exact` runs the forty layers over
   // every prompt row (the parity mode); `bounded` (the production default)
@@ -131,8 +135,8 @@ class Dsv41Model : public SessionModel<Dsv41Model> {
   // aggregate; kDecodeRowsMax bounds it.
   static constexpr int decode_rows_cap() { return 32; }
   // The group prefill (session_prefill_group): a span's longest prompt —
-  // under the bounded prefill one window (the whole span is then its own
-  // replay segment, no tail), else a walk's rows.
+  // each span fits the walk. Bounded prefill packs the spans' final
+  // windows into decoder space before projecting their last rows.
   int64_t prefill_group_span_limit() const { return max_tokens_; }
   static size_t session_snapshot_bytes(const Dsv41TextConfig& cfg, int tp_world, bool mtp);
   using Base::session_snapshot_bytes;

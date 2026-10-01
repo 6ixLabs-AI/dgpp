@@ -85,7 +85,8 @@ class Glm4Model : public SessionModel<Glm4Model> {
   Glm4Model(const Glm4TextConfig& cfg, const std::string& checkpoint_dir, int max_tokens,
             int64_t max_cache_tokens, Glm4Residency residency = Glm4Residency::Streaming,
             BoundaryReducer* boundary = nullptr, int tp_rank = 0, int tp_world = 1,
-            int max_requests = 1, bool mtp = false, int decode_rows = 0);
+            int max_requests = 1, bool mtp = false, int decode_rows = 0,
+            bool serving_logits = false);
   ~Glm4Model();
   Glm4Model(const Glm4Model&) = delete;
   Glm4Model& operator=(const Glm4Model&) = delete;
@@ -96,7 +97,8 @@ class Glm4Model : public SessionModel<Glm4Model> {
   static MemoryPlan plan_memory(const Glm4TextConfig& cfg, int max_tokens, int64_t max_cache_tokens,
                                 int tp_rank = 0, int tp_world = 1,
                                 Glm4Residency residency = Glm4Residency::Streaming,
-                                int max_requests = 1, bool mtp = false, int decode_rows = 0);
+                                int max_requests = 1, bool mtp = false, int decode_rows = 0,
+                                bool serving_logits = false);
 
   // The cold diagnostic forward: one request on slot 0 (which must be
   // closed), fresh state, every row's logits; the slot is closed after.

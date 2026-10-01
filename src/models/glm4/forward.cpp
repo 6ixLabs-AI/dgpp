@@ -36,7 +36,8 @@ T* pinned_alloc(size_t n) {
 
 Glm4Model::Glm4Model(const Glm4TextConfig& cfg, const std::string& checkpoint_dir, int max_tokens,
                      int64_t max_cache_tokens, Glm4Residency residency, BoundaryReducer* boundary,
-                     int tp_rank, int tp_world, int max_requests, bool mtp, int decode_rows)
+                     int tp_rank, int tp_world, int max_requests, bool mtp, int decode_rows,
+                     bool serving_logits)
     : cfg_(cfg),
       loader_(cfg, checkpoint_dir, tp_rank, tp_world, residency,
               tp_world > 1 ? Glm4HeadSharding::VocabSharded : Glm4HeadSharding::Full,
@@ -67,6 +68,7 @@ Glm4Model::Glm4Model(const Glm4TextConfig& cfg, const std::string& checkpoint_di
     sp.boundary = boundary;
     sp.max_requests = max_requests;
     sp.decode_rows = decode_rows;
+    sp.logits_rows = compact_logits_rows(serving_logits, decode_rows, max_requests);
     sp.mtp = mtp;
     sp.vocab_size = cfg_.vocab_size;
     sp.hidden = H;
@@ -138,9 +140,10 @@ int Glm4Model::table_slots() const {
   return loader_.residency() == Glm4Residency::Resident ? cfg_.num_moe_layers() + (mtp_ ? 1 : 0) : 0;
 }
 
-Glm4Model::MemoryPlan Glm4Model::plan_memory(const Glm4TextConfig& cfg, int max_tokens, int64_t max_cache_tokens,
-                                             int tp_rank, int tp_world, Glm4Residency residency, int max_requests,
-                                             bool mtp, int decode_rows) {
+Glm4Model::MemoryPlan Glm4Model::plan_memory(const Glm4TextConfig& cfg, int max_tokens,
+                                             int64_t max_cache_tokens, int tp_rank, int tp_world,
+                                             Glm4Residency residency, int max_requests, bool mtp,
+                                             int decode_rows, bool serving_logits) {
   if (max_tokens <= 0) throw std::invalid_argument("plan_memory: max_tokens must be positive");
   if (max_requests <= 0 || max_requests > kPickMaxRequests)
     throw std::invalid_argument("plan_memory: max_requests must be in [1, kPickMaxRequests]");
@@ -214,7 +217,7 @@ Glm4Model::MemoryPlan Glm4Model::plan_memory(const Glm4TextConfig& cfg, int max_
   {
     size_t core_dev = 0, core_pin = 0;
     session_core_plan_bytes(max_tokens, max_requests, cfg.hidden_size, static_cast<int>(V), mtp,
-                            cfg.hidden_size, &core_dev, &core_pin, rows);
+                            cfg.hidden_size, &core_dev, &core_pin, rows, serving_logits);
     const size_t moe_layers = static_cast<size_t>(cfg.num_moe_layers()) + (mtp ? 1 : 0);
     const size_t K = static_cast<size_t>(cfg.num_experts_per_tok);
     plan.add("activations (session core, residual, block io, route staging)", core_dev + 3 * M * H * 2,
@@ -461,12 +464,15 @@ Glm4Model::Outputs Glm4Model::run_rows(const RowRun& run) {
       out.layer_states.push_back(std::move(snap));
     }
   }
-  // The head on every row: a prefill chunk's last row comes off the same
-  // m=T GEMM the diagnostic forward runs (the prefill == forward bitwise
-  // gate).
+  // Keep hidden rows for MTP; serving projects only each request's last
+  // prefill row. All-row diagnostics and decode keep their full head.
   glm_rmsnorm_bf16(resid_, globals_.final_norm, h_, T, H, cfg_.rms_norm_eps, stream_);
-  gemm_.matmul(h_, globals_.lm_head, logits_, T, lm_vocab_count_, H, DType::BF16, GemmOut::F32,
-               static_cast<size_t>(H), gemm_ws_, gemm_ws_bytes_, stream_);
+  const bool packed_logits = project_head_rows(run, [&](int input_row, int output_row, int rows) {
+    gemm_.matmul(h_ + static_cast<size_t>(input_row) * H, globals_.lm_head,
+                 logits_ + static_cast<size_t>(output_row) * lm_vocab_count_, rows, lm_vocab_count_,
+                 H, DType::BF16, GemmOut::F32, static_cast<size_t>(H), gemm_ws_, gemm_ws_bytes_,
+                 stream_);
+  });
   // The draft block's input: the last rows' POST-final-norm hidden (the
   // model's output hidden state, vLLM's glm4_moe_mtp convention — the
   // draft applies hnorm to it; the pre-norm residual halved the draft's
@@ -480,7 +486,7 @@ Glm4Model::Outputs Glm4Model::run_rows(const RowRun& run) {
     store_draft_hidden(h_ + static_cast<size_t>(T - n) * H, in.req_ids + (T - n), in.pos + (T - n), n);
   }
   if (run.decode) prefetch_.join(stream_);
-  out = finish_run(run, std::move(out));
+  out = finish_run(run, std::move(out), packed_logits);
   if (!run.capture && traces) {
     for (size_t l = 0; l < out.route_ids.size(); ++l) {
       const size_t slot = l * static_cast<size_t>(max_tokens_) * K;
@@ -586,6 +592,8 @@ void Glm4Model::finish_companions() {
 // ---------------------------------------------------------------------------
 void Glm4Model::mtp_run_rows(int req, const int64_t* tokens, int64_t first_pos, int T, bool decode_row,
                              bool capture, int head_rows, int batch_requests) {
+  if (head_rows > logits_capacity_rows_)
+    throw std::invalid_argument("draft head exceeds logits capacity");
   if (!mtp_) throw std::logic_error("mtp_run_rows: MTP is not enabled");
   if (T <= 0 || T > max_tokens_) throw std::invalid_argument("mtp_run_rows: rows");
   gemm_.set_bf12_wide(decode_row);  // the decode batch's alone (kernels/gemm.hpp)

@@ -63,9 +63,10 @@ int Dsv41Model::tail_ordinal(int layer) const { return tail_ord_[static_cast<siz
 // ---------------------------------------------------------------------------
 // Construction.
 // ---------------------------------------------------------------------------
-Dsv41Model::Dsv41Model(const Dsv41TextConfig& cfg, const std::string& checkpoint_dir, int max_tokens,
-                       int64_t max_cache_tokens, Dsv41Residency residency, BoundaryReducer* boundary, int tp_rank,
-                       int tp_world, int max_requests, bool mtp, int decode_rows)
+Dsv41Model::Dsv41Model(const Dsv41TextConfig& cfg, const std::string& checkpoint_dir,
+                       int max_tokens, int64_t max_cache_tokens, Dsv41Residency residency,
+                       BoundaryReducer* boundary, int tp_rank, int tp_world, int max_requests,
+                       bool mtp, int decode_rows, bool serving_logits)
     : cfg_(cfg),
       loader_(cfg, checkpoint_dir, tp_rank, tp_world, residency,
               tp_world > 1 ? Dsv41HeadSharding::VocabSharded : Dsv41HeadSharding::Full,
@@ -121,6 +122,7 @@ Dsv41Model::Dsv41Model(const Dsv41TextConfig& cfg, const std::string& checkpoint
     sp.boundary = boundary;
     sp.max_requests = max_requests;
     sp.decode_rows = decode_rows;
+    sp.logits_rows = compact_logits_rows(serving_logits, decode_rows, max_requests);
     sp.mtp = mtp;
     sp.vocab_size = cfg_.vocab_size;
     sp.hidden = H;
@@ -326,9 +328,10 @@ Dsv41Model::~Dsv41Model() {
 // ---------------------------------------------------------------------------
 // The memory plan.
 // ---------------------------------------------------------------------------
-Dsv41Model::MemoryPlan Dsv41Model::plan_memory(const Dsv41TextConfig& cfg, int max_tokens, int64_t max_cache_tokens,
-                                               int tp_rank, int tp_world, Dsv41Residency residency, int max_requests,
-                                               bool mtp, int decode_rows) {
+Dsv41Model::MemoryPlan Dsv41Model::plan_memory(const Dsv41TextConfig& cfg, int max_tokens,
+                                               int64_t max_cache_tokens, int tp_rank, int tp_world,
+                                               Dsv41Residency residency, int max_requests, bool mtp,
+                                               int decode_rows, bool serving_logits) {
   if (max_tokens <= 0) throw std::invalid_argument("plan_memory: max_tokens must be positive");
   if (mtp && (cfg.num_nextn_predict_layers < 1 || cfg.dspark_target_layer_ids.empty()))
     throw std::invalid_argument("plan_memory: mtp needs the DSpark draft stages and target layers");
@@ -370,8 +373,8 @@ Dsv41Model::MemoryPlan Dsv41Model::plan_memory(const Dsv41TextConfig& cfg, int m
     size_t core_dev = 0, core_pin = 0;
     const size_t targets = cfg.dspark_target_layer_ids.size();
     const int draft_width = mtp ? static_cast<int>(targets) * cfg.hidden_size : cfg.hidden_size;
-    session_core_plan_bytes(max_tokens, max_requests, cfg.hidden_size, static_cast<int>(V), mtp, draft_width, &core_dev,
-                            &core_pin, rows);
+    session_core_plan_bytes(max_tokens, max_requests, cfg.hidden_size, static_cast<int>(V), mtp,
+                            draft_width, &core_dev, &core_pin, rows, serving_logits);
     const size_t K = static_cast<size_t>(cfg.num_experts_per_tok);
     size_t act = core_dev + 2 * M * 4 * H * 2 + 3 * M * H * 2 + M * (4 + 16) * 2 + M * (4 + 16 + 4 + 4 + 4) * 4 +
                  M * 24 * 4;
@@ -585,6 +588,8 @@ void Dsv41Model::graph_prepare() {
 // ---------------------------------------------------------------------------
 void Dsv41Model::mtp_run_rows(int req, const int64_t* tokens, int64_t first_pos, int T, bool decode_row, bool capture,
                               int head_rows, int batch_requests) {
+  if (head_rows > logits_capacity_rows_)
+    throw std::invalid_argument("draft head exceeds logits capacity");
   if (!mtp_) throw std::logic_error("mtp_run_rows: MTP is not enabled");
   if (T <= 0 || T > max_tokens_) throw std::invalid_argument("mtp_run_rows: rows");
   if (!decode_row && head_rows == 0) {
@@ -1120,7 +1125,10 @@ Dsv41Model::Outputs Dsv41Model::run_rows(const RowRun& run) {
       pre_cur_ = seg_pre_;
       pre_nxt_ = pre_a_;
       walk_rows = R;
-      row_off = T - R;
+      // A short final chunk can replay more rows than it contributes.
+      // Keep that segment inside the scratch allocation; publish its tail
+      // at the original prompt-row offset after the head has consumed it.
+      row_off = std::max(0, T - R);
       rows.pos0 = run.pos0 + T - R;
       rows.window_floor = rows.pos0 > call_pos0_ ? rows.pos0 : 0;
       rows.publish = false;
@@ -1177,6 +1185,7 @@ Dsv41Model::Outputs Dsv41Model::run_rows(const RowRun& run) {
       }
     }
   }
+  const bool packed_logits = packed_prefill_logits(run);
   if (head) {
     // The head: the weighted collapse with the last site's pre, the final
     // norm, the lm head on every walked row (bounded: the segment's rows,
@@ -1191,9 +1200,32 @@ Dsv41Model::Outputs Dsv41Model::run_rows(const RowRun& run) {
                                nullptr, mhc_cfg_, walk_rows, stream_);
     csa2_rmsnorm_bf16(collapsed_ + static_cast<size_t>(row_off) * H, H, globals_.final_norm,
                       h_ + static_cast<size_t>(row_off) * H, H, walk_rows, H, cfg_.rms_norm_eps, stream_);
-    gemm_.matmul(h_ + static_cast<size_t>(row_off) * H, globals_.lm_head,
-                 logits_ + static_cast<size_t>(row_off) * lm_vocab_count_, walk_rows, lm_vocab_count_, H, DType::BF16,
-                 GemmOut::F32, static_cast<size_t>(H), gemm_ws_, gemm_ws_bytes_, stream_);
+    if (packed_logits) {
+      project_head_rows(run, [&](int input_row, int output_row, int count) {
+        // Bounded grouped prefill stores hidden rows in decoder space.
+        const int source = group && !dec_row0.empty()
+                               ? dec_row0[output_row] + dec_lens[output_row] - 1
+                           : bounded ? row_off + walk_rows - 1
+                                     : input_row;
+        gemm_.matmul(h_ + static_cast<size_t>(source) * H, globals_.lm_head,
+                     logits_ + static_cast<size_t>(output_row) * lm_vocab_count_, count,
+                     lm_vocab_count_, H, DType::BF16, GemmOut::F32, static_cast<size_t>(H),
+                     gemm_ws_, gemm_ws_bytes_, stream_);
+      });
+    } else {
+      gemm_.matmul(h_ + static_cast<size_t>(row_off) * H, globals_.lm_head,
+                   logits_ + static_cast<size_t>(row_off) * lm_vocab_count_, walk_rows,
+                   lm_vocab_count_, H, DType::BF16, GemmOut::F32, static_cast<size_t>(H), gemm_ws_,
+                   gemm_ws_bytes_, stream_);
+    }
+    if (!group && walk_rows > T) {
+      const size_t src = static_cast<size_t>(walk_rows - 1);
+      const size_t dst = static_cast<size_t>(T - 1);
+      if (!packed_logits)
+        rows_d2d(logits_ + dst * lm_vocab_count_, logits_ + src * lm_vocab_count_, 1,
+                 static_cast<size_t>(lm_vocab_count_) * sizeof(float));
+      rows_d2d(h_ + dst * H, h_ + src * H, 1, static_cast<size_t>(H) * 2);
+    }
     if (group && !dec_row0.empty()) {
       // The packed decoder's last row of each span into the row the
       // session core reads (the span's last prompt row), last span first:
@@ -1203,8 +1235,9 @@ Dsv41Model::Outputs Dsv41Model::run_rows(const RowRun& run) {
         const size_t src = static_cast<size_t>(dec_row0[static_cast<size_t>(s)] + dec_lens[static_cast<size_t>(s)] - 1);
         const size_t dst = static_cast<size_t>(span_row0[static_cast<size_t>(s)] + run.span_lens[s] - 1);
         if (src == dst) continue;
-        rows_d2d(logits_ + dst * lm_vocab_count_, logits_ + src * lm_vocab_count_, 1,
-                 static_cast<size_t>(lm_vocab_count_) * sizeof(float));
+        if (!packed_logits)
+          rows_d2d(logits_ + dst * lm_vocab_count_, logits_ + src * lm_vocab_count_, 1,
+                   static_cast<size_t>(lm_vocab_count_) * sizeof(float));
         rows_d2d(h_ + dst * H, h_ + src * H, 1, static_cast<size_t>(H) * 2);
       }
     }
@@ -1229,7 +1262,12 @@ Dsv41Model::Outputs Dsv41Model::run_rows(const RowRun& run) {
         }
       } else {
         const int n = std::min(walk_rows, max_decode_rows_);
-        store_draft_hidden(main_hidden_ + static_cast<size_t>(walk_rows - n) * W, in.req_ids + (T - n), in.pos + (T - n), n);
+        // Retained rows precede this chunk's metadata. Restage the replay
+        // segment before publishing its MTP hidden window.
+        const int metadata_rows = std::max(T, walk_rows);
+        if (walk_rows > T) stage_prefill_meta(req, rows.pos0, walk_rows);
+        store_draft_hidden(main_hidden_ + static_cast<size_t>(walk_rows - n) * W,
+                           in.req_ids + (metadata_rows - n), in.pos + (metadata_rows - n), n);
       }
       draft_row_ = 0;
     }
@@ -1249,7 +1287,7 @@ Dsv41Model::Outputs Dsv41Model::run_rows(const RowRun& run) {
   // The stream-ordered reducer's verdict for this pass's folds (a failed
   // collective is an error here, not a wrong number read later).
   if (!run.capture && boundary_) boundary_->settle();
-  out = finish_run(run, std::move(out));
+  out = finish_run(run, std::move(out), packed_logits);
   if (!run.capture && traces) {
     for (size_t l = 0; l < out.route_ids.size(); ++l) {
       const size_t slot = l * static_cast<size_t>(max_tokens_) * K;

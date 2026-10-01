@@ -208,6 +208,15 @@ the main stack occupies about 81.77 GiB per rank, and MTP adds about
 checkpoint has a smaller footprint; use the memory plan for its exact
 configuration. Other families have their own residency requirements.
 
+Every serving family allocates FP32 logits for the configured decode and
+MTP verification width, with room for at least one prefill tail per request.
+Prefill packs those tails into the buffer; hidden states retain their original
+layout for MTP and cache handling. Qwen FP8 and packed heads preserve the full
+prefill's dispatch and reduction order. BF16 heads may use a different
+accumulation order, validated against FP64 and teacher-forced probabilities.
+Diagnostic constructors retain full-row storage. See the
+[compact-head validation](benchmarks/results/2026-10-01-compact-serving-heads.md).
+
 Streaming mode loads one layer at a time and rereads the checkpoint on
 each forward pass. It supports diagnostic runs that cannot hold the full
 model. Resident mode uses the same layer builders, with each layer's
@@ -1632,13 +1641,15 @@ previous dispatch, and the BF16 head is unaffected. The
 covers native one- and two-Spark deployments, the YaRN recipe, dispatch
 boundaries, repeated teacher-forced scoring and short prefills.
 
-Plain Qwen prefills with an FP8 head compute only the final vocabulary row.
+Qwen serving prefills compute only each request's final vocabulary row.
 The scale-GEMM launcher selects the kernel using the original chunk length
 before narrowing execution to that row, so GEMV chunks and large tensor-core
-products retain their respective accumulation orders. Streaming-MMA chunks
-inside the decode envelope, BF16 heads, grouped prefills and callers that
-read every row keep the full head. `DGPP_PREFILL_HEAD_ALL_ROWS=1` restores
-the full head for comparison. The [prefill-head record](benchmarks/results/2026-09-24-pr43-prefill-head.md)
+products retain their respective accumulation orders. Grouped prefills pack
+one selected row per request, including inside the decode envelope. BF16 heads
+use single-row projections. All-row diagnostics keep the full head.
+`DGPP_PREFILL_HEAD_ALL_ROWS=1`, set before memory planning and construction,
+restores full storage and projection for comparison. The
+[prefill-head record](benchmarks/results/2026-09-24-pr43-prefill-head.md)
 describes the regression checks across the 128-row dispatch boundary.
 
 *Group admission is bitwise the prefills alone (2026-09-28).* The scheduler

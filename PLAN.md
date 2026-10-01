@@ -144,6 +144,13 @@ regression coverage and validation.
 
 ## Qwen FP8 vocabulary head
 
+Compact serving logits now cover all six model families, including BF16 and
+packed Qwen heads. The implementation keeps decode and MTP verification rows
+and projects only prefill tails. The
+[validation record](benchmarks/results/2026-10-01-compact-serving-heads.md)
+documents memory savings, numerical error, real GLM-4.7 scoring, and the
+unchanged strict cache and speculative-decoding contracts.
+
 The NVFP4 deployment templates now select streaming MMA with
 `engine.fp8_head: "mma"`. Matched real-checkpoint teacher-forced comparisons
 passed on one and two Sparks, including the native eight-row recipe boundaries,

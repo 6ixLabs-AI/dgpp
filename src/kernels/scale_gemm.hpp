@@ -69,12 +69,14 @@ void launch_scale_gemm_bf16(const uint16_t* act, size_t act_row_stride_elems,
 // the dispatch and accumulation order of the full m-row product. Earlier
 // output rows are untouched. Selecting an m=1 GEMV instead is not bitwise
 // equivalent when the full product uses a tensor-core kernel.
+// compact_row >= 0 selects that input row and writes it at output row zero,
+// preserving the full m-row dispatch. Mutually exclusive with last_row_only.
 void launch_scale_gemm_f32(const uint16_t* act, size_t act_row_stride_elems,
                            const uint8_t* w_payload, const float* w_scales,
                            float* out, int m, int n, int k,
                            cudaStream_t stream, size_t out_row_stride_elems = 0,
                            int mma_from_rows = 0, bool last_row_only = false, void* ws = nullptr,
-                           size_t ws_bytes = 0);
+                           size_t ws_bytes = 0, int compact_row = -1);
 
 // The tile kernel regardless of m (the bf16 mma.sync m16n8k16 path the
 // large-m route takes): the reference the grouped tensor-core MoE kernel is

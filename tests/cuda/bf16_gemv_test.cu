@@ -16,6 +16,7 @@
 #include "common/cuda_check.hpp"
 #include "common/dtypes.hpp"
 #include "common/test.hpp"
+#include "kernels/bf12_companions.hpp"
 #include "kernels/bf16_gemv.hpp"
 #include "kernels/gemm.hpp"
 #include "scale_gemm_test_helpers.hpp"
@@ -121,6 +122,50 @@ void check_f32(const Problem& p, const std::vector<float>& got,
 }
 
 }  // namespace
+
+// Compare both implementations with exact operands, rather than making the
+// existing cuBLAS output the definition of accuracy. The output sentinels
+// also catch accidental writes of a full prefill into the compact buffer.
+DGPP_TEST(compact_bf16_head_matches_fp64) {
+  for (int k : {2560, 4096, 5120, 6144, 7168, 8192}) {
+    for (int m : {5, 129, 2048}) {
+      const Problem p = make_problem(m, 257, k, k, 0x4300 + k + m);
+      Device d(p);
+      Problem tail{1, p.n, k, size_t(k), {}, p.weight};
+      tail.act.assign(p.act.end() - k, p.act.end());
+      const auto want = oracle(tail);
+      for (int mode = 0; mode < 3; ++mode) {
+        dgpp::CublasLtGemm gemm;
+        gemm.set_decode_rows(4);
+        gemm.set_decode_mma(mode == 1);
+        dgpp::Bf12Companions packed;
+        if (mode == 2) require(packed.pack(d.w, p.n, k, gemm, nullptr), "BF12 oracle coverage");
+        // Wide prefill uses cuBLASLt; compact uses the family's lowering.
+        const auto full = run_f32(gemm, p, d);
+        auto* out = static_cast<float*>(d.out);
+        std::fill(out, out + p.n + 2, -12345.f);
+        gemm.matmul(d.act + size_t(m - 1) * k, d.w, out + 1, 1, p.n, k, dgpp::DType::BF16,
+                    dgpp::GemmOut::F32, k, nullptr, 0, nullptr);
+        DGPP_CUDA_OK(cudaDeviceSynchronize());
+        require(out[0] == -12345.f && out[p.n + 1] == -12345.f, "compact head output bounds");
+        double norm = 0, ef = 0, ec = 0;
+        for (int v = 0; v < p.n; ++v) {
+          norm += want[v] * want[v];
+          ef += std::pow(full[size_t(m - 1) * p.n + v] - want[v], 2);
+          ec += std::pow(out[1 + v] - want[v], 2);
+          require(std::isfinite(out[1 + v]), "finite compact head output");
+        }
+        const double lf = std::sqrt(ef / norm), lc = std::sqrt(ec / norm);
+        // A long FP32 dot has a length-dependent accumulation error. Keep
+        // both below 2e-5 and prohibit degradation beyond 1e-6 absolute
+        // relative L2 when changing the selected-row implementation.
+        require(lf < 2e-5 && lc < 2e-5 && lc <= lf + 1e-6, "compact/full head FP64 relative L2");
+        std::printf("[ .. ] head k=%d m=%d mode=%d FP64 L2 full=%.3g compact=%.3g\n", k, m, mode,
+                    lf, lc);
+      }
+    }
+  }
+}
 
 DGPP_TEST(bf16_gemv_real_shapes_match_oracle) {
   dgpp::CublasLtGemm gemm;

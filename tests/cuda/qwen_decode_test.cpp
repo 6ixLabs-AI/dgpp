@@ -153,8 +153,9 @@ int audit(QwenModel& ref, const std::vector<int64_t>& prompt, const Transcript& 
   return soft;
 }
 
-// The prefill head must match the diagnostic full head across the GEMV/dense
-// transition. A one-row GEMV substitution fails this gate for long prompts.
+// FP8/packed heads retain the full product arithmetic. BF16 heads may
+// reassociate, but hidden states and every subsequent fixed-token decode
+// must remain exact; the isolated BF16 head is also checked against FP64.
 int run_prefill_head(const std::string& dir) {
   const QwenTextConfig cfg = QwenTextConfig::from_json_file((fs::path(dir) / "config.json").string());
   const bool old_fp8 = dgpp::QwenLayerStream::dense_weights_fp8();
@@ -169,12 +170,26 @@ int run_prefill_head(const std::string& dir) {
       if (!fp8 && mma) continue;
       // Capacity must exceed the longest prompt after alignment: 257 would
       // round the prefill chunk to 256 and compare two walks with one.
-      QwenModel model(cfg, dir, 512, 512, QwenResidency::Resident, nullptr, 0, 1, 1, false, 16, mma);
+      QwenModel model(cfg, dir, 4096, 8192, QwenResidency::Resident, nullptr, 0, 1, 2, false, 16, mma);
+      QwenModel compact(cfg, dir, 4096, 8192, QwenResidency::Resident, nullptr, 0, 1, 2, false, 16, mma, true);
+      const char* all = std::getenv("DGPP_PREFILL_HEAD_ALL_ROWS");
+      const bool packed = !(all && all[0] == '1');
+      require(compact.logits_capacity_rows() == (packed ? 16 : 4096), "compact head capacity");
+      const auto plan_full = QwenModel::plan_memory(cfg, 4096, 8192, 0, 1, QwenResidency::Resident, 2, false, 16);
+      const auto plan_compact = QwenModel::plan_memory(cfg, 4096, 8192, 0, 1, QwenResidency::Resident, 2, false, 16, true);
       const int vocab = model.lm_vocab_count();
-      for (const int length : {1, 4, 5, 8, 9, 16, 17, 127, 128, 129, 257}) {
+      require(plan_full.total_bytes() - plan_compact.total_bytes() ==
+              (packed ? size_t{4096 - 16} * vocab * sizeof(float) : 0), "compact head memory plan");
+      for (const int length : {1, 4, 5, 8, 9, 16, 17, 127, 128, 129, 257, 1024, 4096}) {
         const auto prompt = smoke_tokens(cfg, length, 0x4300 + length);
         const auto full = model.forward(prompt);
         const auto prefill = model.session_prefill(0, prompt);
+        const auto selected = compact.session_prefill(0, prompt);
+        const auto cmp = compare_row(selected.logits.data(), prefill.logits.data(), vocab);
+        require(fp8 ? bitwise(selected.logits, prefill.logits) : cmp.l2 < 1e-5,
+                "compact prefill head exceeded rounding budget");
+        require(selected.final_hidden_bits == prefill.final_hidden_bits, "compact prefill changed hidden state");
+        compact.session_close(0);
         require(bitwise(prefill.logits, std::vector<float>(full.logits.end() - vocab, full.logits.end())),
                 "prefill head differs from full head: T=" + std::to_string(length) +
                     " fp8=" + std::to_string(fp8) + " mma=" + std::to_string(mma));
@@ -183,9 +198,30 @@ int run_prefill_head(const std::string& dir) {
                 "prefill head comparison received different hidden states");
         model.session_close(0);
       }
+      for (const int length : {1, 8, 17, 129, 257}) {
+        const auto a = smoke_tokens(cfg, length, 0xAB00 + length);
+        const auto b = smoke_tokens(cfg, length + 1, 0xCD00 + length);
+        const auto full = model.session_prefill_group({0, 1}, {&a, &b});
+        const auto selected = compact.session_prefill_group({0, 1}, {&a, &b});
+        for (int slot = 0; slot < 2; ++slot) {
+          const auto cmp =
+              compare_row(selected[slot].logits.data(), full[slot].logits.data(), vocab);
+          require(fp8 ? bitwise(full[slot].logits, selected[slot].logits) : cmp.l2 < 1e-5,
+                  "compact grouped head exceeded rounding budget");
+          require(full[slot].final_hidden_bits == selected[slot].final_hidden_bits, "compact grouped head hidden state");
+          int64_t token = argmax(full[slot].logits.data(), vocab);
+          for (int step = 0; step < 4; ++step) {
+            const auto f = model.session_step(slot, token), c = compact.session_step(slot, token);
+            require(bitwise(f.logits, c.logits), "decode after compact grouped prefill changed logits");
+            token = argmax(f.logits.data(), vocab);
+          }
+          model.session_close(slot);
+          compact.session_close(slot);
+        }
+      }
     }
   }
-  std::printf("[ OK ] BF16/FP8 prefill heads match full forwards through 257 rows\n");
+  std::printf("[ OK ] BF16/FP8 compact and full prefill heads match through 4096 rows, groups and decode\n");
   return 0;
 }
 

@@ -1,0 +1,25 @@
+{
+  "health": {
+    "status": "ok",
+    "model": "HawkBearPig/GLM-5.3-Flash-NVFP4-FP8"
+  },
+  "engine_failed": false,
+  "completion_usage": {
+    "prompt_tokens": 11,
+    "completion_tokens": 16,
+    "total_tokens": 27,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    },
+    "completion_tokens_details": {
+      "reasoning_tokens": 0
+    }
+  },
+  "configuration_matches": true,
+  "binary_sha256": {
+    "rank0": "03e80be61a1bca715f28944cdcbd52a899438a7b719197155d101e09381db8b8",
+    "rank1": "03e80be61a1bca715f28944cdcbd52a899438a7b719197155d101e09381db8b8",
+    "rank2": "03e80be61a1bca715f28944cdcbd52a899438a7b719197155d101e09381db8b8",
+    "rank3": "03e80be61a1bca715f28944cdcbd52a899438a7b719197155d101e09381db8b8"
+  }
+}

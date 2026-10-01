@@ -1331,13 +1331,10 @@ GlmDiagnosticModel::Outputs GlmDiagnosticModel::session_run_rows(
   const float eps = cfg_.rms_norm_eps;
   const bool batched = batch_requests > 0;
 
-  // The head runs on every row of a prefill chunk although greedy reads
-  // only the last: a last-row head would come off the m=1 GEMV while the
-  // re-forward reference's comes off the m=T GEMM, and the prefill ==
-  // re-forward bitwise gate (glm_tp_test) is worth more than the ~6 ms
-  // and 300 MB a 2048-row head costs per chunk.
-  if (!gemm_.ensure_plan(T, lm_vocab_count_, H, DType::BF16, GemmOut::F32,
-                         H))
+  // Prefill projects at most four selected rows per launch; decode uses
+  // its complete verify batch. Prepare only a shape this walk can execute.
+  const int planned_head_rows = decode_row ? T : std::min(4, std::max(1, group_num_spans_));
+  if (!gemm_.ensure_plan(planned_head_rows, lm_vocab_count_, H, DType::BF16, GemmOut::F32, H))
     throw std::runtime_error("session: lm head GEMM plan unavailable");
 
   // The decode rows' token ids ride the PINNED, device-mapped member
@@ -1786,6 +1783,8 @@ GlmDiagnosticModel::Outputs GlmDiagnosticModel::session_run_rows(
       if (group_num_spans_ > 0) row0 += group_span_lens_[r];
     }
   }
+  if (head_rows > logits_capacity_rows_)
+    throw std::invalid_argument("session: output exceeds logits capacity");
   glm_rmsnorm_bf16(collapsed_, globals_.final_norm, normed_, head_rows, H, eps,
                    stream_);
   if (decode_row) {

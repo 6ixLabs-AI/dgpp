@@ -15,6 +15,8 @@
 // ones (reported; the folds reassociate, so a near tie may flip a late
 // token — the first tokens must agree). Ports 29908 (plain), 29909 (MTP),
 // 29911 (depth 2), 29913 (the scheduled depth).
+// Graph models use the compact serving allocation; eager references retain
+// full heads. Cache, batching and speculative contracts keep their strict gates.
 #include <algorithm>
 #include <cmath>
 #include <condition_variable>
@@ -222,7 +224,9 @@ void rank_work(int r, const MimoTextConfig& cfg, const std::string& dir, const s
   try {
     BusBoundaryReducer reducer(*bus, wait_timeout_ms());
     MimoModel eager(cfg, dir, kMaxTokens, kCache, MimoResidency::Resident, &reducer, r, kWorld, kSlots);
-    MimoModel graph(cfg, dir, kMaxTokens, kCache, MimoResidency::Resident, &reducer, r, kWorld, kSlots);
+    MimoModel graph(
+        cfg, dir, kMaxTokens, kCache, MimoResidency::Resident, &reducer, r, kWorld, kSlots,
+        /*mtp=*/false, /*decode_rows=*/0, dgpp::LatentFormat::kBf16, /*serving_logits=*/true);
     DGPP_CUDA_OK(cudaHostAlloc(reinterpret_cast<void**>(&scratch),
                                sizeof(uint16_t) * dgpp::kPickScratchElems(kWorld), cudaHostAllocDefault));
     arrive_once();
@@ -297,7 +301,9 @@ void rank_work_mtp(int r, const MimoTextConfig& cfg, const std::string& dir, con
   try {
     BusBoundaryReducer reducer(*bus, wait_timeout_ms());
     MimoModel eager(cfg, dir, kMaxTokens, kCache, MimoResidency::Resident, &reducer, r, kWorld, kSlots);
-    MimoModel mtp(cfg, dir, kMaxTokens, kCache, MimoResidency::Resident, &reducer, r, kWorld, kSlots, /*mtp=*/true);
+    MimoModel mtp(
+        cfg, dir, kMaxTokens, kCache, MimoResidency::Resident, &reducer, r, kWorld, kSlots,
+        /*mtp=*/true, /*decode_rows=*/0, dgpp::LatentFormat::kBf16, /*serving_logits=*/true);
     DGPP_CUDA_OK(cudaHostAlloc(reinterpret_cast<void**>(&scratch),
                                sizeof(uint16_t) * dgpp::kPickScratchElems(kWorld), cudaHostAllocDefault));
     arrive_once();
@@ -369,8 +375,9 @@ void rank_work_mtp_depth2(int r, const MimoTextConfig& cfg, const std::string& d
     MimoModel eager(cfg, dir, kMaxTokens, kCache, MimoResidency::Resident, &reducer, r, kWorld, kSlots);
     // The decode-row ceiling of the depth-2 shape: kSlots x 3 rows = 9.
     MimoModel mtp(cfg, dir, kMaxTokens, kCache, MimoResidency::Resident, &reducer, r, kWorld,
-                  kSlots, /*mtp=*/true,
-                  /*decode_rows=*/kSlots * (depth + 1));
+                  kSlots,
+                  /*mtp=*/true, /*decode_rows=*/kSlots * (depth + 1), dgpp::LatentFormat::kBf16,
+                  /*serving_logits=*/true);
     require(mtp.max_decode_rows() == kSlots * (depth + 1),
             "the model takes the runtime decode-row ceiling");
     DGPP_CUDA_OK(cudaHostAlloc(reinterpret_cast<void**>(&scratch),
@@ -462,8 +469,10 @@ void rank_work_sched(int r, const MimoTextConfig& cfg, const std::string& dir, c
   try {
     BusBoundaryReducer reducer(*bus, wait_timeout_ms());
     MimoModel eager(cfg, dir, kMaxTokens, kCache, MimoResidency::Resident, &reducer, r, kWorld, kSlots);
-    MimoModel mtp(cfg, dir, kMaxTokens, kCache, MimoResidency::Resident, &reducer, r, kWorld, kSlots, /*mtp=*/true,
-                  /*decode_rows=*/kSlots * 3);
+    MimoModel mtp(cfg, dir, kMaxTokens, kCache, MimoResidency::Resident, &reducer, r, kWorld,
+                  kSlots,
+                  /*mtp=*/true, /*decode_rows=*/kSlots * 3, dgpp::LatentFormat::kBf16,
+                  /*serving_logits=*/true);
     DGPP_CUDA_OK(cudaHostAlloc(reinterpret_cast<void**>(&scratch),
                                sizeof(uint16_t) * dgpp::kPickScratchElems(kWorld), cudaHostAllocDefault));
     DGPP_CUDA_OK(cudaHostAlloc(reinterpret_cast<void**>(&prefix_scratch),

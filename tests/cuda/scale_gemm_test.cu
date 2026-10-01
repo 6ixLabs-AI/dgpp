@@ -299,6 +299,20 @@ DGPP_TEST(scale_gemm_last_row_preserves_full_product_bits_and_output_bounds) {
           equal &= std::memcmp(full + offset, last + offset, p.n * sizeof(float)) == 0;
           for (size_t i = 0; i < m * out_stride; ++i)
             if (i < offset || i >= offset + p.n) untouched &= last[i] == sentinel;
+          // Compact selection uses a genuinely one-row allocation, including
+          // padding sentinels. Memcheck catches any original-offset write.
+          float* compact = nullptr;
+          DGPP_CUDA_OK(cudaMallocManaged(&compact, out_stride * sizeof(float)));
+          for (const int selected : {0, m / 2, m - 1}) {
+            std::fill(compact, compact + out_stride, sentinel);
+            dgpp::launch_scale_gemm_f32(act, act_stride, w, scales, compact, m, p.n, k,
+                                        nullptr, out_stride, mma_from, false, ws, capacity, selected);
+            DGPP_CUDA_OK(cudaDeviceSynchronize());
+            equal &= std::memcmp(full + static_cast<size_t>(selected) * out_stride,
+                                 compact, p.n * sizeof(float)) == 0;
+            for (size_t i = p.n; i < out_stride; ++i) untouched &= compact[i] == sentinel;
+          }
+          DGPP_CUDA_OK(cudaFree(compact));
         }
       }
       DGPP_CUDA_OK(cudaFree(act));

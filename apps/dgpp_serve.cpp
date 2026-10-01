@@ -333,8 +333,8 @@ struct GlmFamily final : ServeFamily {
     return dgpp::GlmDiagnosticModel::plan_memory(
         cfg, forward_rows, context, fabric ? rank : 0, fabric ? world_ : 1,
         fabric ? dgpp::GlmResidency::Resident : dgpp::GlmResidency::Streaming,
-        fabric ? dgpp::GlmHeadSharding::VocabSharded : dgpp::GlmHeadSharding::Full, slots, fabric && mtp,
-        kv_format);
+        fabric ? dgpp::GlmHeadSharding::VocabSharded : dgpp::GlmHeadSharding::Full, slots,
+        fabric && mtp, kv_format, /*serving_logits=*/true);
   }
   size_t snapshot_bytes(int world_, bool mtp) const override {
     return dgpp::GlmDiagnosticModel::session_snapshot_bytes(cfg, world_, mtp);
@@ -344,8 +344,8 @@ struct GlmFamily final : ServeFamily {
     model = std::make_unique<dgpp::GlmDiagnosticModel>(
         cfg, ckpt, forward_rows, pool_tokens, reducer, fabric ? rank : 0, fabric ? world_ : 1,
         fabric ? dgpp::GlmResidency::Resident : dgpp::GlmResidency::Streaming,
-        fabric ? dgpp::GlmHeadSharding::VocabSharded : dgpp::GlmHeadSharding::Full, slots, fabric && mtp,
-        kv_format);
+        fabric ? dgpp::GlmHeadSharding::VocabSharded : dgpp::GlmHeadSharding::Full, slots,
+        fabric && mtp, kv_format, /*serving_logits=*/true);
   }
   void destroy_model() override { model.reset(); }
   size_t model_snapshot_bytes() const override { return model ? model->session_snapshot_bytes() : 0; }
@@ -440,7 +440,7 @@ struct QwenFamily final : ServeFamily {
                         bool mtp, int decode_rows) const override {
     return dgpp::QwenModel::plan_memory(cfg, forward_rows, context, fabric ? rank : 0, fabric ? world_ : 1,
                                         fabric ? dgpp::QwenResidency::Resident : dgpp::QwenResidency::Streaming,
-                                        slots, fabric && mtp, decode_rows);
+                                        slots, fabric && mtp, decode_rows, /*serving_logits=*/true);
   }
   size_t snapshot_bytes(int world_, bool mtp) const override {
     return dgpp::QwenModel::session_snapshot_bytes(cfg, world_, mtp);
@@ -453,7 +453,7 @@ struct QwenFamily final : ServeFamily {
     model = std::make_unique<dgpp::QwenModel>(
         cfg, ckpt, forward_rows, pool_tokens,
         fabric ? dgpp::QwenResidency::Resident : dgpp::QwenResidency::Streaming, reducer,
-        fabric ? rank : 0, fabric ? world_ : 1, slots, fabric && mtp, decode_rows, fp8_head_mma);
+        fabric ? rank : 0, fabric ? world_ : 1, slots, fabric && mtp, decode_rows, fp8_head_mma, /*serving_logits=*/true);
   }
   void destroy_model() override { model.reset(); }
   size_t model_snapshot_bytes() const override { return model ? model->session_snapshot_bytes() : 0; }
@@ -504,9 +504,10 @@ struct Glm4Family final : ServeFamily {
   }
   dgpp::MemoryPlan plan(int forward_rows, int64_t context, int rank, int world_, bool fabric, int slots,
                         bool mtp, int decode_rows) const override {
-    return dgpp::Glm4Model::plan_memory(cfg, forward_rows, context, fabric ? rank : 0, fabric ? world_ : 1,
-                                        fabric ? dgpp::Glm4Residency::Resident : dgpp::Glm4Residency::Streaming,
-                                        slots, fabric && mtp, decode_rows);
+    return dgpp::Glm4Model::plan_memory(
+        cfg, forward_rows, context, fabric ? rank : 0, fabric ? world_ : 1,
+        fabric ? dgpp::Glm4Residency::Resident : dgpp::Glm4Residency::Streaming, slots,
+        fabric && mtp, decode_rows, /*serving_logits=*/true);
   }
   size_t snapshot_bytes(int world_, bool mtp) const override {
     return dgpp::Glm4Model::session_snapshot_bytes(cfg, world_, mtp);
@@ -516,8 +517,9 @@ struct Glm4Family final : ServeFamily {
     dgpp::Glm4LayerStream::set_resident_image_dir(dgpp::GlmLayerStream::resident_image_dir());
     model = std::make_unique<dgpp::Glm4Model>(
         cfg, ckpt, forward_rows, pool_tokens,
-        fabric ? dgpp::Glm4Residency::Resident : dgpp::Glm4Residency::Streaming, reducer, fabric ? rank : 0,
-        fabric ? world_ : 1, slots, fabric && mtp, decode_rows);
+        fabric ? dgpp::Glm4Residency::Resident : dgpp::Glm4Residency::Streaming, reducer,
+        fabric ? rank : 0, fabric ? world_ : 1, slots, fabric && mtp, decode_rows,
+        /*serving_logits=*/true);
   }
   void destroy_model() override { model.reset(); }
   size_t model_snapshot_bytes() const override { return model ? model->session_snapshot_bytes() : 0; }
@@ -574,9 +576,10 @@ struct GlmDsaFamily final : ServeFamily {
   }
   dgpp::MemoryPlan plan(int forward_rows, int64_t context, int rank, int world_, bool fabric, int slots,
                         bool mtp, int decode_rows) const override {
-    return dgpp::GlmDsaModel::plan_memory(cfg, forward_rows, context, fabric ? rank : 0, fabric ? world_ : 1,
-                                          fabric ? dgpp::GlmDsaResidency::Resident : dgpp::GlmDsaResidency::Streaming,
-                                          slots, fabric && mtp, decode_rows, kv_format);
+    return dgpp::GlmDsaModel::plan_memory(
+        cfg, forward_rows, context, fabric ? rank : 0, fabric ? world_ : 1,
+        fabric ? dgpp::GlmDsaResidency::Resident : dgpp::GlmDsaResidency::Streaming, slots,
+        fabric && mtp, decode_rows, kv_format, /*serving_logits=*/true);
   }
   size_t snapshot_bytes(int world_, bool mtp) const override {
     return dgpp::GlmDsaModel::session_snapshot_bytes(cfg, world_, mtp);
@@ -586,8 +589,9 @@ struct GlmDsaFamily final : ServeFamily {
     dgpp::GlmDsaLayerStream::set_resident_image_dir(dgpp::GlmLayerStream::resident_image_dir());
     model = std::make_unique<dgpp::GlmDsaModel>(
         cfg, ckpt, forward_rows, pool_tokens,
-        fabric ? dgpp::GlmDsaResidency::Resident : dgpp::GlmDsaResidency::Streaming, reducer, fabric ? rank : 0,
-        fabric ? world_ : 1, slots, fabric && mtp, decode_rows, kv_format);
+        fabric ? dgpp::GlmDsaResidency::Resident : dgpp::GlmDsaResidency::Streaming, reducer,
+        fabric ? rank : 0, fabric ? world_ : 1, slots, fabric && mtp, decode_rows, kv_format,
+        /*serving_logits=*/true);
   }
   void destroy_model() override { model.reset(); }
   size_t model_snapshot_bytes() const override { return model ? model->session_snapshot_bytes() : 0; }
@@ -649,9 +653,10 @@ struct Dsv41Family final : ServeFamily {
   }
   dgpp::MemoryPlan plan(int forward_rows, int64_t context, int rank, int world_, bool fabric, int slots,
                         bool mtp, int decode_rows) const override {
-    return dgpp::Dsv41Model::plan_memory(cfg, forward_rows, context, fabric ? rank : 0, fabric ? world_ : 1,
-                                         fabric ? dgpp::Dsv41Residency::Resident : dgpp::Dsv41Residency::Streaming,
-                                         slots, fabric && mtp, decode_rows);
+    return dgpp::Dsv41Model::plan_memory(
+        cfg, forward_rows, context, fabric ? rank : 0, fabric ? world_ : 1,
+        fabric ? dgpp::Dsv41Residency::Resident : dgpp::Dsv41Residency::Streaming, slots,
+        fabric && mtp, decode_rows, /*serving_logits=*/true);
   }
   size_t snapshot_bytes(int world_, bool mtp) const override {
     return dgpp::Dsv41Model::session_snapshot_bytes(cfg, world_, mtp);
@@ -661,8 +666,9 @@ struct Dsv41Family final : ServeFamily {
     dgpp::Dsv41LayerStream::set_resident_image_dir(dgpp::GlmLayerStream::resident_image_dir());
     model = std::make_unique<dgpp::Dsv41Model>(
         cfg, ckpt, forward_rows, pool_tokens,
-        fabric ? dgpp::Dsv41Residency::Resident : dgpp::Dsv41Residency::Streaming, reducer, fabric ? rank : 0,
-        fabric ? world_ : 1, slots, fabric && mtp, decode_rows);
+        fabric ? dgpp::Dsv41Residency::Resident : dgpp::Dsv41Residency::Streaming, reducer,
+        fabric ? rank : 0, fabric ? world_ : 1, slots, fabric && mtp, decode_rows,
+        /*serving_logits=*/true);
   }
   void destroy_model() override { model.reset(); }
   size_t model_snapshot_bytes() const override { return model ? model->session_snapshot_bytes() : 0; }
@@ -722,9 +728,10 @@ struct MimoFamily final : ServeFamily {
   }
   dgpp::MemoryPlan plan(int forward_rows, int64_t context, int rank, int world_, bool fabric, int slots,
                         bool mtp, int decode_rows) const override {
-    return dgpp::MimoModel::plan_memory(cfg, forward_rows, context, fabric ? rank : 0, fabric ? world_ : 1,
-                                        fabric ? dgpp::MimoResidency::Resident : dgpp::MimoResidency::Streaming,
-                                        slots, fabric && mtp, decode_rows, kv_format);
+    return dgpp::MimoModel::plan_memory(
+        cfg, forward_rows, context, fabric ? rank : 0, fabric ? world_ : 1,
+        fabric ? dgpp::MimoResidency::Resident : dgpp::MimoResidency::Streaming, slots,
+        fabric && mtp, decode_rows, kv_format, /*serving_logits=*/true);
   }
   size_t snapshot_bytes(int world_, bool mtp) const override {
     return dgpp::MimoModel::session_snapshot_bytes(cfg, world_, mtp);
@@ -734,8 +741,9 @@ struct MimoFamily final : ServeFamily {
     dgpp::MimoLayerStream::set_resident_image_dir(dgpp::GlmLayerStream::resident_image_dir());
     model = std::make_unique<dgpp::MimoModel>(
         cfg, ckpt, forward_rows, pool_tokens,
-        fabric ? dgpp::MimoResidency::Resident : dgpp::MimoResidency::Streaming, reducer, fabric ? rank : 0,
-        fabric ? world_ : 1, slots, fabric && mtp, decode_rows, kv_format);
+        fabric ? dgpp::MimoResidency::Resident : dgpp::MimoResidency::Streaming, reducer,
+        fabric ? rank : 0, fabric ? world_ : 1, slots, fabric && mtp, decode_rows, kv_format,
+        /*serving_logits=*/true);
   }
   void destroy_model() override { model.reset(); }
   size_t model_snapshot_bytes() const override { return model ? model->session_snapshot_bytes() : 0; }

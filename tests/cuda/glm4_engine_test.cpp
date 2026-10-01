@@ -11,6 +11,8 @@
 // kernels are the eager kernels); the world-2 eager transcripts follow the
 // world-1 ones (reported; the folds reassociate, so a near tie may flip a
 // late token — the first tokens must agree).
+// Graph models use the compact serving allocation; eager references retain
+// full heads. Cache, batching and speculative contracts keep their strict gates.
 #include <algorithm>
 #include <cmath>
 #include <condition_variable>
@@ -218,7 +220,9 @@ void rank_work(int r, const Glm4TextConfig& cfg, const std::string& dir, const s
   try {
     BusBoundaryReducer reducer(*bus, wait_timeout_ms());
     Glm4Model eager(cfg, dir, kMaxTokens, kCache, Glm4Residency::Resident, &reducer, r, kWorld, kSlots);
-    Glm4Model graph(cfg, dir, kMaxTokens, kCache, Glm4Residency::Resident, &reducer, r, kWorld, kSlots);
+    Glm4Model graph(cfg, dir, kMaxTokens, kCache, Glm4Residency::Resident, &reducer, r, kWorld,
+                    kSlots,
+                    /*mtp=*/false, /*decode_rows=*/0, /*serving_logits=*/true);
     DGPP_CUDA_OK(cudaHostAlloc(reinterpret_cast<void**>(&scratch),
                                sizeof(uint16_t) * dgpp::kPickScratchElems(kWorld), cudaHostAllocDefault));
     arrive_once();
@@ -293,7 +297,9 @@ void rank_work_mtp(int r, const Glm4TextConfig& cfg, const std::string& dir, con
   try {
     BusBoundaryReducer reducer(*bus, wait_timeout_ms());
     Glm4Model eager(cfg, dir, kMaxTokens, kCache, Glm4Residency::Resident, &reducer, r, kWorld, kSlots);
-    Glm4Model mtp(cfg, dir, kMaxTokens, kCache, Glm4Residency::Resident, &reducer, r, kWorld, kSlots, /*mtp=*/true);
+    Glm4Model mtp(cfg, dir, kMaxTokens, kCache, Glm4Residency::Resident, &reducer, r, kWorld,
+                  kSlots,
+                  /*mtp=*/true, /*decode_rows=*/0, /*serving_logits=*/true);
     DGPP_CUDA_OK(cudaHostAlloc(reinterpret_cast<void**>(&scratch),
                                sizeof(uint16_t) * dgpp::kPickScratchElems(kWorld), cudaHostAllocDefault));
     arrive_once();
@@ -363,8 +369,9 @@ void rank_work_mtp_depth2(int r, const Glm4TextConfig& cfg, const std::string& d
     BusBoundaryReducer reducer(*bus, wait_timeout_ms());
     Glm4Model eager(cfg, dir, kMaxTokens, kCache, Glm4Residency::Resident, &reducer, r, kWorld, kSlots);
     // The decode-row ceiling of the depth-2 shape: kSlots x 3 rows = 9.
-    Glm4Model mtp(cfg, dir, kMaxTokens, kCache, Glm4Residency::Resident, &reducer, r, kWorld, kSlots, /*mtp=*/true,
-                  /*decode_rows=*/kSlots * 3);
+    Glm4Model mtp(cfg, dir, kMaxTokens, kCache, Glm4Residency::Resident, &reducer, r, kWorld,
+                  kSlots,
+                  /*mtp=*/true, /*decode_rows=*/kSlots * 3, /*serving_logits=*/true);
     require(mtp.max_decode_rows() == kSlots * 3, "the model takes the runtime decode-row ceiling");
     DGPP_CUDA_OK(cudaHostAlloc(reinterpret_cast<void**>(&scratch),
                                sizeof(uint16_t) * dgpp::kPickScratchElems(kWorld), cudaHostAllocDefault));
@@ -453,8 +460,9 @@ void rank_work_sched(int r, const Glm4TextConfig& cfg, const std::string& dir, c
   try {
     BusBoundaryReducer reducer(*bus, wait_timeout_ms());
     Glm4Model eager(cfg, dir, kMaxTokens, kCache, Glm4Residency::Resident, &reducer, r, kWorld, kSlots);
-    Glm4Model mtp(cfg, dir, kMaxTokens, kCache, Glm4Residency::Resident, &reducer, r, kWorld, kSlots, /*mtp=*/true,
-                  /*decode_rows=*/kSlots * 3);
+    Glm4Model mtp(cfg, dir, kMaxTokens, kCache, Glm4Residency::Resident, &reducer, r, kWorld,
+                  kSlots,
+                  /*mtp=*/true, /*decode_rows=*/kSlots * 3, /*serving_logits=*/true);
     DGPP_CUDA_OK(cudaHostAlloc(reinterpret_cast<void**>(&scratch),
                                sizeof(uint16_t) * dgpp::kPickScratchElems(kWorld), cudaHostAllocDefault));
     DGPP_CUDA_OK(cudaHostAlloc(reinterpret_cast<void**>(&prefix_scratch),

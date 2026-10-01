@@ -168,3 +168,38 @@ one:
   the cost of one fallback. The extra diagnostic gather is
   intentionally outside the production path, so these runs are not throughput
   measurements.
+
+## Compact serving heads
+
+`compact_head_test` compares full and compact storage on all BF16-headed
+families. It evaluates both projections against an FP64 dot product over
+the same BF16 weights and hidden state. It also exercises nonuniform grouped
+prompts, prefix restore, MTP drafts, and fixed-token continuation; hidden and
+continuation checks remain exact. `bf16_gemv_test`'s
+`compact_bf16_head_matches_fp64` covers long head dimensions, GEMV, MMA and
+lossless BF12 companions with output-buffer sentinels. Qwen's prefill tests
+retain bitwise gates for FP8 and packed heads and use a numerical budget for
+BF16; the engine tests exercise compact allocation through captured decode.
+
+`serving_head_check` scores real serving prefill tails at lengths
+1/4/8/17/64/129/257/1024. Supply the same text, model, rank count and settings
+to both runs. The text needs more than 1024 tokens. The probe prints the
+normalized hidden-state digest for each scored row, alongside the local
+vocabulary scores consumed by the existing logprob analyzer:
+
+```bash
+scripts/fabric_run.sh --app build-ci/serving_head_check --fetch-logs \
+    --stage-file benchmarks/teacher_text_hard.txt --log-dir /tmp/head-full -- \
+    --model nvidia/GLM-4.7-NVFP4 \
+    --teacher-file benchmarks/teacher_text_hard.txt --full --trials 256
+# Repeat with --log-dir /tmp/head-compact and --compact.
+python3 scripts/fabric_logprob.py /tmp/head-compact /tmp/head-full --prefill \
+    --max-mean-nll-delta 0.0001 --big-delta 0.001 --max-big-delta-rate 0
+```
+
+Require identical `[head_hidden]` records across modes and ranks. The tighter
+head-only logprob thresholds above isolate accumulation rounding: this change
+does not alter the attention, expert routing, or cached hidden states. The
+probe uses resident weights, BF16 KV, and Qwen FP8 dense weights; it evaluates
+head behavior rather than a complete task benchmark. Its aggregate time
+includes lazy weight loading and is not a steady-state throughput benchmark.
