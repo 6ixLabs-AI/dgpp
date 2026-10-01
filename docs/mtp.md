@@ -86,21 +86,25 @@ The lane's exit criterion (performance plan §7) is to beat the best
 native-MTP configuration; until it does, the MTP recipe remains the
 default.
 
-### Proposal rule: per-slot top-1, not the selector walk
+### Proposal rule: per-slot top-1 over a full walk pass
 
-Each mask slot's own top-1 proposes its draft. The checkpoint's
-low-rank pairwise selector walk (`DGPP_DFLASH2_WALK=1` restores it)
-is implemented exactly — formula, kernel and walk cross-checked
-against the vLLM reference down to NumPy — but verifies only
-1.1–1.35 tok/pass on this stack against 2.5–6.1 for the per-slot
-top-1s on the same block, head and top-K (12-prompt greedy battery,
-vLLM itself reports ~4.1 on its serving recipe). The block, head,
-top-K and walk each check out individually, and transcripts are
-identical across proposal rules, so the gap is isolated to the
-trained selector's picks on these prompts: its pairwise edges
-systematically outrank the top-1 unification the target then
-rejects. The walk stays available for parity work; the vLLM-side
-cross-check (its selector table on the same prefixes) is open.
+Each mask slot's own top-1 proposes its draft; the block forward, head
+and top-K run first, then the reference chained selector walk runs and
+its picks are replaced by the per-slot top-1s
+(`DGPP_DFLASH2_WALK=1` keeps the walk's own picks). This ordering is
+load-bearing, not incidental: skipping the walk pass collapses
+acceptance to ~1.0 tok/pass on every prompt tried, through a coupling
+mechanism still open (the walk writes only its own buffers, yet its
+absence deterministically changes the next verify's verdicts —
+suspected GEMM/state coupling, under investigation). Measured on the
+shipped form: 2.5–6.1 tok/pass at 22–45 tok/s against MTP depth-2's
+2.3–2.8 on the 12-prompt greedy battery (3.4–6.1 on chat prompts,
+2.5–5.1 on raw completions), and above vLLM-raw's 2.68. The block,
+head, top-K and walk each check out individually (formula, kernel and
+NumPy cross-checks; transcripts identical across proposal rules), so
+the walk's own picks underperforming here is isolated to the trained
+selector's pairwise edges on these prompts; the vLLM-side cross-check
+(its selector table on the same prefixes) is open.
 
 ### Measured acceptance (2026-10-01, greedy, 12-prompt battery)
 
