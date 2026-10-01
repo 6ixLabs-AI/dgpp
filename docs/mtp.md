@@ -128,11 +128,16 @@ slots — four at the family's 32-row ceiling; `serve` sizes the batch to
 `max_concurrency x 8` clamped to it, and wider occupancy round-robins
 two physical ticks. Drafts stay per-slot (the block forward is a few
 percent of the target step). The single-slot case takes the scalar
-path, so C1 keeps the scalar kernel sequence bit-for-bit; multi-slot
-greedy transcripts may show the same batched-kernel near-tie class the
-graph engine shows against eager. Drafting under load was the flat
-~8 t/s at c4 against the graph-MTP line's 37 — the batched pass targets
-that gap; serving confirmation against the MTP c4 figure is pending.
+path, so C1 keeps the scalar kernel sequence bit-for-bit (12/12
+transcripts identical to the pre-batch build); multi-slot greedy
+transcripts may show the same batched-kernel near-tie class the
+graph engine shows against eager. Measured 2026-10-01 on the same
+short-prompt harness (greedy, max_tokens 128, 4-slot configs):
+dflash aggregate tg 25.7 / 41.3 / 52.4 at c1/c2/c4 against MTP
+depth-2's 14.4 / 32.6 / 47.3 — the flat ~8 t/s c4 line is gone, and
+the per-step cost is ~160 ms at c1 vs ~250 ms for a 4-slot batch
+(one sweep instead of four). Per-request acceptance holds under
+batching (4.5–5.7 tok/pass at c4).
 
 ## Recorded GLM-5.3 result
 

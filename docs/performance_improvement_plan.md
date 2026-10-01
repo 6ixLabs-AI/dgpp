@@ -439,10 +439,11 @@ vLLM cross-check shows the reference picks the same drafts here
 ones (our block outputs differ somewhere top-1 doesn't see).
 Transcripts match plain modulo single near-tie flips from
 width-dependent GEMM numerics (T=8 verify vs T=1 steps). Concurrency
-(2026-10-01): the throughput bench's flat ~8 t/s at c4 (against vLLM
-dflash's 65 and graph-MTP's 37) is the C1-only step loop; the batched
-verify pass above removes that serialization. A serving confirmation
-of the batched line against the MTP c4 figure is pending.
+(2026-10-01): the batched speculative pass (one physical verify for
+every arriving slot, `floor(decode_rows/8)` slots per pass) replaces
+the flat ~8 t/s c4 line — same short-prompt harness gives dflash
+25.7/41.3/52.4 agg tg at c1/c2/c4 vs MTP depth-2's 14.4/32.6/47.3,
+with C1 transcripts 12/12 identical to the pre-batch build.
 
 ## 8. P1 experiments / P3 implementation: remaining single-stream wins
 

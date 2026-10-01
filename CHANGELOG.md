@@ -12,9 +12,12 @@ The history by milestone. The dated engineering record in
   bases; `step_batch`, a `floor(decode_rows/8)`-slot batch capacity, and
   `serve` sizing the fixed batch to `max_concurrency x 8` clamped to the
   family cap). C1 keeps the scalar kernel sequence bit-for-bit (a
-  single-slot batch takes the scalar path); drafting under load, which
-  sat flat at ~8 t/s at c4 against graph-MTP's 37, rides the graph era's
-  batched decode kernels from here.
+  single-slot batch takes the scalar path — 12/12 transcripts identical
+  to the pre-batch build); on the short-prompt harness the batched line
+  gives 25.7/41.3/52.4 agg tg at c1/c2/c4 against MTP depth-2's
+  14.4/32.6/47.3. Drafting under load, which sat flat at ~8 t/s at c4
+  against graph-MTP's 37, rides the graph era's batched decode kernels
+  from here.
 - **The DFlash2 block drafter on the Qwen3.5-family native engine**
   (2026-10-01, plan §7): `engine.dflash_model` (or `--dflash-model`) serves
   `z-lab/Qwen3.8-27B-DFlash2` — five bidirectional draft layers fed by
