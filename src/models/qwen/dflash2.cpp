@@ -88,8 +88,6 @@ struct Plan {
   size_t reserve_bytes = 0;
 };
 
-size_t align_up(size_t n) { return (n + 255) & ~size_t{255}; }
-
 // One bf16 tensor: existence, dtype and shape checked; copied H2D verbatim.
 void upload_bf16(const SafetensorsFile& f, const std::string& name,
                  const std::vector<int64_t>& shape, void* dst, cudaStream_t stream) {
@@ -220,10 +218,16 @@ void DFlash2Config::validate_against(const Qwen35TextConfig& target) const {
 DFlash2Weights::~DFlash2Weights() { cudaFree(arena); }
 
 size_t dflash2_weights_bytes(const DFlash2Config& cfg) {
+  // Element offsets with 128-element (256-byte) alignment — the same bump
+  // the loader uses, so this is exactly the arena's byte size.
   const size_t H = cfg.hidden_size, I = cfg.intermediate_size, HD = cfg.head_dim;
   const size_t QW = cfg.q_row(), KW = cfg.kv_row(), G = cfg.conv_groups(), T = cfg.conv_taps;
   size_t total = 0;
-  const auto bump = [&](size_t elems) { total = align_up(total + elems * 2); };
+  const auto bump = [&](size_t elems) {
+    const size_t o = total;
+    total = (total + elems + 127) & ~size_t{127};
+    return o;
+  };
   for (int l = 0; l < cfg.num_hidden_layers; ++l) {
     bump(H); bump(H);
     bump(static_cast<size_t>(QW + 2 * KW) * H);
@@ -236,7 +240,7 @@ size_t dflash2_weights_bytes(const DFlash2Config& cfg) {
   bump(static_cast<size_t>(cfg.vocab_size) * cfg.selector_rank);
   bump(static_cast<size_t>(cfg.vocab_size) * cfg.selector_rank);
   bump(static_cast<size_t>(cfg.selector_rank) * H);
-  return total;
+  return total * 2;
 }
 
 DFlash2Weights load_dflash2_weights(const DFlash2Config& cfg, const std::string& dir,
@@ -303,7 +307,8 @@ DFlash2Weights load_dflash2_weights(const DFlash2Config& cfg, const std::string&
       throw std::runtime_error("DFlash2 candidate_selector.hidden_projection shape");
   }
 
-  // The arena layout.
+  // The arena layout: element offsets (uint16_t) with 128-element
+  // (256-byte) alignment — the same bump dflash2_weights_bytes uses.
   struct Off {
     size_t input_norm, post_norm, qkv, o, qn, kn, gate, up, down;
     size_t acb, ack, mcb, mck;
@@ -312,7 +317,7 @@ DFlash2Weights load_dflash2_weights(const DFlash2Config& cfg, const std::string&
   size_t total = 0;
   const auto bump = [&](size_t elems) {
     const size_t o = total;
-    total = align_up(total + elems * 2);
+    total = (total + elems + 127) & ~size_t{127};
     return o;
   };
   for (int l = 0; l < L; ++l) {
@@ -339,8 +344,8 @@ DFlash2Weights load_dflash2_weights(const DFlash2Config& cfg, const std::string&
   const size_t g_hp = bump(static_cast<size_t>(cfg.selector_rank) * H);
 
   DFlash2Weights w;
-  DGPP_CUDA_OK(cudaMalloc(&w.arena, total));
-  w.bytes = total;
+  DGPP_CUDA_OK(cudaMalloc(&w.arena, total * 2));
+  w.bytes = total * 2;
   auto* base = static_cast<uint16_t*>(w.arena);
   const auto dev = [&](size_t off_elems) { return base + off_elems; };
 

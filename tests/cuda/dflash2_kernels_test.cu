@@ -174,7 +174,10 @@ DGPP_TEST(dflash2_topk_picks_the_sorted_candidates) {
 
 DGPP_TEST(dflash2_selector_walks_the_reference_scores) {
   cudaStream_t s = test_stream();
-  const int steps = 4, k = 4, rank = 16, vocab = 97;
+  // Production shapes (the released checkpoint's selector): k=16, rank=256.
+  // A smaller shape runs first as a fast path through the same code.
+  for (const auto [steps, k, rank, vocab] :
+       {std::tuple{2, 4, 16, 97}, std::tuple{7, 16, 256, 1009}}) {
   const int32_t anchor = 5;
   auto pred = random_bf16_normal(31, static_cast<int64_t>(vocab) * rank, 0.5f);
   auto succ = random_bf16_normal(32, static_cast<int64_t>(vocab) * rank, 0.5f);
@@ -224,6 +227,7 @@ DGPP_TEST(dflash2_selector_walks_the_reference_scores) {
                 ", best score " + std::to_string(best) + ")");
     prev = besti;
   }
+  }  // shape cases
 }
 
 // ---- the block attention --------------------------------------------------------
