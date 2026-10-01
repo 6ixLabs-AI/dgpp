@@ -1,0 +1,27 @@
+{
+  "format": "scrubbed-diagnostics-not-replayable",
+  "capture": "2026-09-28T03:03:15Z",
+  "files": {
+    "serve_r0.log": {
+      "bytes": 7312474,
+      "lines": 40774,
+      "sha256": "138ee5be12a03ce70b6bf0aee2de64f976c903d25b92b655912fa8aaceccbb13"
+    },
+    "serve_rank0.ops": {
+      "bytes": 25674011,
+      "lines": 557380,
+      "sha256": "498d3ceae89f5d0912e84261b335e46c93027fe9f0c46e9ec71d6cc378d334b1"
+    }
+  },
+  "redaction_counts": {
+    "ops_X": 96342,
+    "generated_token_ids_removed": 453676,
+    "ops_T": 453676,
+    "ops_R": 7362,
+    "startup_lines_preserved": 93,
+    "log_lines_preserved": 40770,
+    "first_token_ids_removed": 7361,
+    "log_lines_omitted": 4,
+    "pseudonymized_request_ids": 7362
+  }
+}
