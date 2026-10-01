@@ -12,6 +12,7 @@
 //
 // Allocate pick buffers before decoding. Allocating device-related memory
 // inside a pick can synchronize with another rank's spinning collective.
+#include <algorithm>
 #include <cstdint>
 #include <functional>
 #include <memory>

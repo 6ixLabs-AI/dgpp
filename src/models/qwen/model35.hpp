@@ -204,8 +204,9 @@ class Qwen35Model : public SessionModel<Qwen35Model> {
   // positions (rejected verify rows land too and are masked by position —
   // the plane needs no rollback, the same overwrite protocol as the MTP
   // plane). dflash2_draft then runs the block: [bonus, mask x drafts]
-  // through the five bidirectional layers over the plane context, and the
-  // selector's greedy walk proposes the `drafts()` following tokens.
+  // through the five bidirectional layers over the plane context; each
+  // mask slot's own top-1 proposes the `drafts()` following tokens
+  // (DGPP_DFLASH2_WALK=1 restores the reference chained selector walk).
   bool dflash2_enabled() const { return dflash2_; }
   int dflash2_drafts() const { return dflash2_ ? dfcfg_.drafts() : 0; }
   // False without a draft (pool exhausted / context bound): the caller

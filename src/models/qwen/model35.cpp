@@ -1327,26 +1327,32 @@ bool Qwen35Model::dflash2_draft(int req, int64_t bonus, std::vector<int32_t>* dr
     add_inplace_bf16(df_resid_, df_xc_, static_cast<int64_t>(QR) * H, stream_);
   }
   dflash2_rmsnorm_bf16(df_resid_, dfw_.norm, df_h_, QR, H, eps, stream_);
-  // The mask rows through the shared head, their top-K, and the selector.
+  // The mask rows through the shared head and their top-K.
   head_gemv(df_h_ + static_cast<size_t>(H), df_logits_, D, stream_);
   dflash2_topk_f32(df_logits_, df_ids_, df_sc_, lm_vocab_count_, D, dfcfg_.selector_top_k, stream_);
-  gemm_.matmul(df_h_ + static_cast<size_t>(H), dfw_.hidden_projection, df_hidden32_, D,
-               dfcfg_.selector_rank, H, DType::BF16, GemmOut::F32, static_cast<size_t>(H), gemm_ws_,
-               gemm_ws_bytes_, stream_);
-  dflash2_selector_walk(df_ids_, df_sc_, df_hidden32_, dfw_.pred_codebook, dfw_.succ_codebook,
-                        static_cast<int32_t>(bonus), df_tok_, D, dfcfg_.selector_top_k,
-                        dfcfg_.selector_rank, stream_);
-  DGPP_CUDA_OK(cudaMemcpyAsync(df_tok_h_, df_tok_, D * 4, cudaMemcpyDeviceToHost, stream_));
-  DGPP_CUDA_OK(cudaStreamSynchronize(stream_));
-  drafts->assign(df_tok_h_, df_tok_h_ + D);
-  // Ablation (DGPP_DFLASH2_TOPK0=1): skip the selector walk, draft each
-  // slot's own top-1. Separates block quality from selector quality.
-  if (std::getenv("DGPP_DFLASH2_TOPK0")) {
+  // Proposal rule (docs/mtp.md): per-slot top-1 by default — measured
+  // 2.5-6.1 tok/pass against 1.1-1.35 for the chained walk on this
+  // stack, and above MTP depth-2's 2.3-2.8 everywhere tried.
+  // DGPP_DFLASH2_WALK=1 restores the reference chained selector walk
+  // (vLLM parity work continues under it).
+  if (std::getenv("DGPP_DFLASH2_WALK")) {
+    gemm_.matmul(df_h_ + static_cast<size_t>(H), dfw_.hidden_projection, df_hidden32_, D,
+                 dfcfg_.selector_rank, H, DType::BF16, GemmOut::F32, static_cast<size_t>(H),
+                 gemm_ws_, gemm_ws_bytes_, stream_);
+    dflash2_selector_walk(df_ids_, df_sc_, df_hidden32_, dfw_.pred_codebook, dfw_.succ_codebook,
+                          static_cast<int32_t>(bonus), df_tok_, D, dfcfg_.selector_top_k,
+                          dfcfg_.selector_rank, stream_);
+    DGPP_CUDA_OK(cudaMemcpyAsync(df_tok_h_, df_tok_, D * 4, cudaMemcpyDeviceToHost, stream_));
+    DGPP_CUDA_OK(cudaStreamSynchronize(stream_));
+    drafts->assign(df_tok_h_, df_tok_h_ + D);
+    return true;
+  }
+  {
     std::vector<int32_t> ids(static_cast<size_t>(D) * dfcfg_.selector_top_k);
-    DGPP_CUDA_OK(
-        cudaMemcpy(ids.data(), df_ids_, ids.size() * 4, cudaMemcpyDeviceToHost));
+    DGPP_CUDA_OK(cudaMemcpy(ids.data(), df_ids_, ids.size() * 4, cudaMemcpyDeviceToHost));
     drafts->clear();
-    for (int l = 0; l < D; ++l) drafts->push_back(ids[static_cast<size_t>(l) * dfcfg_.selector_top_k]);
+    for (int l = 0; l < D; ++l)
+      drafts->push_back(ids[static_cast<size_t>(l) * dfcfg_.selector_top_k]);
   }
   return true;
 }

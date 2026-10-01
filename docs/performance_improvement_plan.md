@@ -413,25 +413,27 @@ methods of `Qwen35Model`, `DFlash2Speculator`): the drafter loads
 independently with its weights and planes in the memory plan, taps
 capture through the five `fc` slices with fp32 accumulation, the five
 draft layers run bidirectional sliding-window attention over pool
-planes with the 2-tap dynamic grouped convs, the selector walks the
-rank-256 pairwise scores greedily, and acceptance is the greedy
-verify/rollback of eight rows (`kSpecRows`/`kSpecMaxDrafts` generalized
-6/5 → 8/7; the DSpark block is unchanged). Eager greedy C1 only: the
-graph engine refuses capture with a drafter loaded, batching and
-sampled verification (the selector's conditional proposal) are open.
-The GLM-Flash lane (step 2's mHC-tap capture) is untouched.
+planes with the 2-tap dynamic grouped convs, per-slot top-1 proposals
+verify 2.5–6.1 tok/pass against MTP depth-2's 2.3–2.8 (the reference
+chained selector walk is implemented exactly and kept behind
+`DGPP_DFLASH2_WALK`, but verifies only ~1.2 here — see mtp.md), and
+acceptance is the greedy verify/rollback of eight rows
+(`kSpecRows`/`kSpecMaxDrafts` generalized 6/5 → 8/7; the DSpark block
+is unchanged). Eager greedy C1 only: the graph engine refuses capture
+with a drafter loaded, batching and sampled verification (the
+selector's conditional proposal) are open. The GLM-Flash lane (step
+2's mHC-tap capture) is untouched.
 
 Measured 2026-10-01 (Qwen3.8-27B-FP8, greedy, 12-prompt battery,
-max_tokens 128): the faithful walk verifies 1.1–1.35 tok/pass against
-MTP depth-2's 2.3–2.82, while the block's raw per-slot top-1 verifies
-3.4–6.1 tok/pass — so the draft stack is proven (block/head/top-K
-exact, transcripts identical across proposal rules) and the gap is
-isolated to the trained selector's picks on these prompts. Exit is
-still open: either a vLLM cross-check shows the reference picks the
-same drafts here (head-domain behavior, proposal rule to revisit), or
-it picks better ones (our block outputs differ somewhere top-1
-doesn't see). Transcripts match plain modulo single near-tie flips
-from width-dependent GEMM numerics (T=8 verify vs T=1 steps).
+max_tokens 128): the block's per-slot top-1 proposals verify 2.5–6.1
+tok/pass against MTP depth-2's 2.3–2.82 — the exit gate, met on every
+prompt tried. The reference chained selector walk (implemented exactly,
+kept behind `DGPP_DFLASH2_WALK`) verifies only ~1.2 here; either a
+vLLM cross-check shows the reference picks the same drafts here
+(head-domain behavior, proposal rule to revisit), or it picks better
+ones (our block outputs differ somewhere top-1 doesn't see).
+Transcripts match plain modulo single near-tie flips from
+width-dependent GEMM numerics (T=8 verify vs T=1 steps).
 
 ## 8. P1 experiments / P3 implementation: remaining single-stream wins
 

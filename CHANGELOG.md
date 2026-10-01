@@ -17,8 +17,12 @@ The history by milestone. The dated engineering record in
   cache's lookahead and the greedy verify/rollback, so transcripts stay
   exact; the recipe is eager world-1 (`decode_graph` off) and the graph
   engine refuses capture with a drafter loaded. Kernel references in
-  `dflash2_kernels_test`, the config gates in `unit_tests`; the exit
-  comparison against the best MTP depth is open
+  `dflash2_kernels_test`, the config gates in `unit_tests`; the 12-prompt
+  greedy battery verifies 2.5–6.1 tok/pass per-slot top-1 (the shipped
+  proposal rule) against MTP depth-2's 2.3–2.82 — the exit gate, met on
+  every prompt tried. The reference chained selector walk is implemented
+  exactly but kept behind `DGPP_DFLASH2_WALK`: it verifies only ~1.2
+  here, an open parity question documented in mtp.md
   (`deploy/cluster_qwen3.8-27b-fp8_w1_dflash2.example.json`).
 
 - **Serve Qwen3.8-27B-FP8 on the native engine, with MTP**
