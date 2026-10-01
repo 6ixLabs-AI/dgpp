@@ -370,10 +370,34 @@ class DFlash2Speculator {
     return commit(fed, winners, 0);
   }
 
-  // The verify's fed tokens for the pending step: [next_, drafts...].
-  std::vector<int64_t> fed_rows() const {
+  // Confidence-scheduled verify depth (mirrors GreedySpeculator): the
+  // block always drafts its full width, but only the first
+  // `policy(drafts_)` drafts are fed to the verify — the rest are
+  // recomputed next step. Throughput only: a draft commits iff it equals
+  // the target's argmax at that position, and an unverified draft is
+  // decoded plainly next step, so the transcript is exact at every
+  // per-step depth. null (the default) verifies the whole block. The
+  // policy returns the number of drafts to verify, clamped to [0, depth].
+  // (Experimental lever for long-context work, where each tail row scores
+  // the full KV for a shrinking acceptance: DGPP_DFLASH2_DEPTH caps it —
+  // see EagerEngine's dflash wiring.)
+  void set_depth_policy(std::function<int(const std::vector<int32_t>&)> p) {
+    depth_policy_ = std::move(p);
+  }
+  int last_verify_depth() const { return last_verify_depth_; }
+
+  // The verify's fed tokens for the pending step: [next_, drafts...]
+  // (depth-capped when a policy is set).
+  std::vector<int64_t> fed_rows() {
+    int k = static_cast<int>(drafts_.size());
+    if (depth_policy_) {
+      k = depth_policy_(drafts_);
+      if (k < 0) k = 0;
+      if (k > static_cast<int>(drafts_.size())) k = static_cast<int>(drafts_.size());
+    }
+    last_verify_depth_ = k;
     std::vector<int64_t> fed{next_};
-    for (int32_t d : drafts_) fed.push_back(d);
+    for (int i = 0; i < k; ++i) fed.push_back(drafts_[static_cast<size_t>(i)]);
     return fed;
   }
 
@@ -384,21 +408,34 @@ class DFlash2Speculator {
   std::vector<int32_t> commit(const std::vector<int64_t>& fed,
                               const std::vector<int32_t>& winners,
                               int snapshot_base) {
+    std::vector<int32_t> committed = commit_verify(fed, winners, snapshot_base);
+    redraft();
+    return committed;
+  }
+
+  // The batch driver's halves: judge/rollback/recount without redrafting
+  // (the engine batches redrafts across slots), then the redraft itself.
+  std::vector<int32_t> commit_verify(const std::vector<int64_t>& fed,
+                                      const std::vector<int32_t>& winners,
+                                      int snapshot_base) {
     const int T = static_cast<int>(fed.size());
     const SpecVerdict v = judge_verify(fed, winners);
     if (T > 1) model_.session_rollback(req_, v.accepted, T, snapshot_base);
     ++steps_;
     accepted_drafts_ += v.accepted - 1;
-    // The scheduler's MTP group, per draft position (sched MtpAcceptance).
-    for (int p = 0; p < static_cast<int>(drafts_.size()); ++p) {
+    // The scheduler's MTP group, per draft position (sched MtpAcceptance):
+    // only verified positions count (a depth-capped fed leaves the tail
+    // for the next step).
+    for (int p = 0; p < T - 1; ++p) {
       ++attempts_[p & 7];
       if (p < v.accepted - 1) ++accepts_[p & 7];
     }
     next_ = v.next;
     drafts_.clear();
-    model_.dflash2_draft(req_, next_, &drafts_);
     return v.committed;
   }
+  void redraft() { model_.dflash2_draft(req_, next_, &drafts_); }
+  void set_drafts(std::vector<int32_t> d) { drafts_ = std::move(d); }
 
   int32_t next() const { return next_; }
   const std::vector<int32_t>& drafts() const { return drafts_; }
@@ -417,6 +454,8 @@ class DFlash2Speculator {
   int accepted_drafts_ = 0;
   uint64_t attempts_[8] = {};
   uint64_t accepts_[8] = {};
+  std::function<int(const std::vector<int32_t>&)> depth_policy_;
+  int last_verify_depth_ = 0;
 };
 
 }  // namespace dgpp

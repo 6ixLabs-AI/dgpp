@@ -768,6 +768,7 @@ add_executable(unit_tests
   tests/unit/qwen35_config_test.cpp
   tests/unit/qwen35_binding_test.cpp
   tests/unit/qwen_dflash2_config_test.cpp
+  tests/unit/dflash2_speculator_test.cpp
   tests/unit/qwen_rope_scaling_test.cpp
   tests/unit/glm4_config_test.cpp
   tests/unit/glm4_binding_test.cpp

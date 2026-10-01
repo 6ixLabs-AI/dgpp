@@ -18,6 +18,13 @@ The history by milestone. The dated engineering record in
   14.4/32.6/47.3. Drafting under load, which sat flat at ~8 t/s at c4
   against graph-MTP's 37, rides the graph era's batched decode kernels
   from here.
+- **DFlash2 long-context levers (opt-in, serving validation pending)**
+  (2026-10-01): `DGPP_DFLASH2_DRAFT_BATCH=1` stacks the redrafts into one
+  block forward per step (row-wise GEMMs/norms/convs over S*8 rows;
+  per-slot attention/head/walk at row offsets); `DGPP_DFLASH2_DEPTH=k`
+  caps the verify width (exact transcripts). Host speculator halves
+  covered by `dflash2_speculator_test` (294/294 with unit_tests); the
+  device batch path is build-checked only.
 - **The DFlash2 block drafter on the Qwen3.5-family native engine**
   (2026-10-01, plan §7): `engine.dflash_model` (or `--dflash-model`) serves
   `z-lab/Qwen3.8-27B-DFlash2` — five bidirectional draft layers fed by

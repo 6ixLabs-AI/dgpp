@@ -443,7 +443,10 @@ width-dependent GEMM numerics (T=8 verify vs T=1 steps). Concurrency
 every arriving slot, `floor(decode_rows/8)` slots per pass) replaces
 the flat ~8 t/s c4 line — same short-prompt harness gives dflash
 25.7/41.3/52.4 agg tg at c1/c2/c4 vs MTP depth-2's 14.4/32.6/47.3,
-with C1 transcripts 12/12 identical to the pre-batch build.
+with C1 transcripts 12/12 identical to the pre-batch build. Open
+long-context follow-ups (both opt-in, default-off, serving validation
+pending): `DGPP_DFLASH2_DRAFT_BATCH=1` for one stacked redraft forward
+per step, `DGPP_DFLASH2_DEPTH=k` for a capped verify width.
 
 ## 8. P1 experiments / P3 implementation: remaining single-stream wins
 

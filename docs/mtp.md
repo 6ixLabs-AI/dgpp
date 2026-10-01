@@ -139,6 +139,32 @@ the per-step cost is ~160 ms at c1 vs ~250 ms for a 4-slot batch
 (one sweep instead of four). Per-request acceptance holds under
 batching (4.5–5.7 tok/pass at c4).
 
+### Long-context follow-ups: batched redrafts, verify-depth cap
+
+The throughput bench (long-context thinking work) still trails MTP at
+c4 (15.3 vs 37 at d0) while short prompts lead — the deficit is
+per-step cost at 4–8K context, not acceptance. Two levers, both
+opt-in and default-off (the shipped path is untouched):
+
+- `DGPP_DFLASH2_DRAFT_BATCH=1` batches the redrafts: one stacked block
+  forward per step (`Qwen35Model::dflash2_draft_batch` — row-wise
+  GEMMs/norms/convs over S*8 rows in a single launch each, so the
+  draft weights are read once; the grouped conv kernel was already
+  block-boundary aware; KV appends, sliding-window attention, head,
+  top-K and the selector walk stay per-slot at row offsets, the same
+  calls as the scalar path). The engine splits each slot's commit into
+  judge (`commit_verify`) and redraft, then assigns the batch result
+  (`set_drafts`); a single spec slot keeps the scalar redraft.
+- `DGPP_DFLASH2_DEPTH=k` verifies only the first k drafts per step
+  (exact transcripts — unverified drafts re-draft next step, the same
+  hook `GreedySpeculator` carries). Each tail row scores the full KV
+  for a shrinking acceptance, so at long context fewer rows per
+  accepted token can win back throughput.
+
+Both need serving validation (host unit tests cover the speculator
+halves in `dflash2_speculator_test`; the device batch path is
+build-checked only — the GPU was under the user's bench).
+
 ## Recorded GLM-5.3 result
 
 On 2026-09-03 at TP=4, greedy depth-1 MTP accepted 88.7% of drafts on the

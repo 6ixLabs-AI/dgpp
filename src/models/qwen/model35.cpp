@@ -420,36 +420,42 @@ Qwen35Model::Qwen35Model(const Qwen35TextConfig& cfg, const std::string& checkpo
     }
     // Feature path at run rows; the block forward at query_rows rows (the
     // main scratch's gate/up buffers serve the draft MLPs at 8 rows).
+    // The stacked draft batch (dflash2_draft_batch) widens the row-wise
+    // scratch to df_batch_ slots: one verify batch's worth at the row
+    // ceiling. The per-slot calls (attention, head, top-K, walk) run at
+    // row offsets inside the same buffers.
     const int CR = df_rows_cap();
     const int QR = dfcfg_.query_rows();
     const int D = QR - 1;  // mask rows = drafts
+    df_batch_ = std::max(1, max_decode_rows_ / QR);
+    const int BR = df_batch_ * QR, BD = df_batch_ * D;
     DGPP_CUDA_OK(cudaMalloc(&df_acc_, M * H * 4));
     DGPP_CUDA_OK(cudaMalloc(&df_t32_, M * H * 4));
     DGPP_CUDA_OK(cudaMalloc(&df_norm_, static_cast<size_t>(CR) * H * 2));
     DGPP_CUDA_OK(cudaMalloc(&df_kv_, static_cast<size_t>(CR) * 2 * dfcfg_.kv_row() * 2));
-    DGPP_CUDA_OK(cudaMalloc(&df_resid_, QR * H * 2));
-    DGPP_CUDA_OK(cudaMalloc(&df_x_, QR * H * 2));
-    DGPP_CUDA_OK(cudaMalloc(&df_xc_, QR * H * 2));
-    DGPP_CUDA_OK(cudaMalloc(&df_qkv_, static_cast<size_t>(QR) * (dfcfg_.q_row() + 2 * dfcfg_.kv_row()) * 2));
-    DGPP_CUDA_OK(cudaMalloc(&df_q_, static_cast<size_t>(QR) * dfcfg_.q_row() * 2));
-    DGPP_CUDA_OK(cudaMalloc(&df_attn_, static_cast<size_t>(QR) * dfcfg_.q_row() * 2));
-    DGPP_CUDA_OK(cudaMalloc(&df_o_, QR * H * 2));
-    DGPP_CUDA_OK(cudaMalloc(&df_mlp_, static_cast<size_t>(QR) * dfcfg_.intermediate_size * 2));
-    DGPP_CUDA_OK(cudaMalloc(&df_gate_, static_cast<size_t>(QR) * dfcfg_.intermediate_size * 2));
-    DGPP_CUDA_OK(cudaMalloc(&df_up_, static_cast<size_t>(QR) * dfcfg_.intermediate_size * 2));
+    DGPP_CUDA_OK(cudaMalloc(&df_resid_, static_cast<size_t>(BR) * H * 2));
+    DGPP_CUDA_OK(cudaMalloc(&df_x_, static_cast<size_t>(BR) * H * 2));
+    DGPP_CUDA_OK(cudaMalloc(&df_xc_, static_cast<size_t>(BR) * H * 2));
+    DGPP_CUDA_OK(cudaMalloc(&df_qkv_, static_cast<size_t>(BR) * (dfcfg_.q_row() + 2 * dfcfg_.kv_row()) * 2));
+    DGPP_CUDA_OK(cudaMalloc(&df_q_, static_cast<size_t>(BR) * dfcfg_.q_row() * 2));
+    DGPP_CUDA_OK(cudaMalloc(&df_attn_, static_cast<size_t>(BR) * dfcfg_.q_row() * 2));
+    DGPP_CUDA_OK(cudaMalloc(&df_o_, static_cast<size_t>(BR) * H * 2));
+    DGPP_CUDA_OK(cudaMalloc(&df_mlp_, static_cast<size_t>(BR) * dfcfg_.intermediate_size * 2));
+    DGPP_CUDA_OK(cudaMalloc(&df_gate_, static_cast<size_t>(BR) * dfcfg_.intermediate_size * 2));
+    DGPP_CUDA_OK(cudaMalloc(&df_up_, static_cast<size_t>(BR) * dfcfg_.intermediate_size * 2));
     DGPP_CUDA_OK(cudaMalloc(&df_zero_, QR * 4));
     DGPP_CUDA_OK(cudaMemsetAsync(df_zero_, 0, QR * 4, stream_));
-    DGPP_CUDA_OK(cudaMalloc(&df_delta_, static_cast<size_t>(QR) * 2 * dfcfg_.conv_taps * dfcfg_.conv_groups() * 2));
-    DGPP_CUDA_OK(cudaMalloc(&df_h_, QR * H * 2));
-    DGPP_CUDA_OK(cudaMalloc(&df_logits_, static_cast<size_t>(D) * lm_vocab_count_ * 4));
-    DGPP_CUDA_OK(cudaMalloc(&df_hidden32_, static_cast<size_t>(D) * dfcfg_.selector_rank * 4));
-    DGPP_CUDA_OK(cudaMalloc(&df_ids_, static_cast<size_t>(D) * dfcfg_.selector_top_k * 4));
-    DGPP_CUDA_OK(cudaMalloc(&df_sc_, static_cast<size_t>(D) * dfcfg_.selector_top_k * 4));
-    DGPP_CUDA_OK(cudaMalloc(&df_tok_, D * 4));
-    DGPP_CUDA_OK(cudaMalloc(&df_pos_, QR * 8));
-    DGPP_CUDA_OK(cudaMalloc(&df_tokens_, QR * 8));
-    DGPP_CUDA_OK(cudaMallocHost(&df_tok_h_, D * 4));
-    DGPP_CUDA_OK(cudaMallocHost(&df_io64_h_, 2 * QR * 8));
+    DGPP_CUDA_OK(cudaMalloc(&df_delta_, static_cast<size_t>(BR) * 2 * dfcfg_.conv_taps * dfcfg_.conv_groups() * 2));
+    DGPP_CUDA_OK(cudaMalloc(&df_h_, static_cast<size_t>(BR) * H * 2));
+    DGPP_CUDA_OK(cudaMalloc(&df_logits_, static_cast<size_t>(BD) * lm_vocab_count_ * 4));
+    DGPP_CUDA_OK(cudaMalloc(&df_hidden32_, static_cast<size_t>(BD) * dfcfg_.selector_rank * 4));
+    DGPP_CUDA_OK(cudaMalloc(&df_ids_, static_cast<size_t>(BD) * dfcfg_.selector_top_k * 4));
+    DGPP_CUDA_OK(cudaMalloc(&df_sc_, static_cast<size_t>(BD) * dfcfg_.selector_top_k * 4));
+    DGPP_CUDA_OK(cudaMalloc(&df_tok_, static_cast<size_t>(BD) * 4));
+    DGPP_CUDA_OK(cudaMalloc(&df_pos_, static_cast<size_t>(BR) * 8));
+    DGPP_CUDA_OK(cudaMalloc(&df_tokens_, static_cast<size_t>(BR) * 8));
+    DGPP_CUDA_OK(cudaMallocHost(&df_tok_h_, static_cast<size_t>(BD) * 4));
+    DGPP_CUDA_OK(cudaMallocHost(&df_io64_h_, static_cast<size_t>(2) * BR * 8));
     DGPP_CUDA_OK(cudaStreamSynchronize(stream_));
   }
   DGPP_CUDA_OK(cudaMalloc(&gdn_rec_base_, static_cast<size_t>(max_requests) * num_gdn_ * rec_elems_ * 4));
@@ -797,7 +803,6 @@ MemoryPlan Qwen35Model::plan_memory(const Qwen35TextConfig& cfg, int max_tokens,
     dfcfg = std::make_unique<DFlash2Config>(DFlash2Config::from_json_file(dflash2_dir + "/config.json"));
     dfcfg->validate_against(cfg);
   }
-  (void)decode_rows;
   const LoaderHeadSharding head = LoaderHeadSharding::Full;
   const int64_t cache_tokens =
       ((std::max<int64_t>(max_cache_tokens, max_tokens) + kv_block_tokens_static() - 1) /
@@ -889,6 +894,11 @@ MemoryPlan Qwen35Model::plan_memory(const Qwen35TextConfig& cfg, int max_tokens,
   if (dfcfg) {
     plan.add("dflash2 drafter weights", dflash2_weights_bytes(*dfcfg));
     const size_t QR = static_cast<size_t>(dfcfg->query_rows());
+    // The stacked draft batch (dflash2_draft_batch): one verify batch's
+    // slots per forward — max_decode_rows_ is max(decode_rows,
+    // max_requests) floored at kDecodeRows, over QR rows per slot.
+    const size_t BW =
+        std::max<size_t>(1, static_cast<size_t>(std::max({kDecodeRows, decode_rows, max_requests})) / QR);
     const size_t CR = static_cast<size_t>(Qwen35Model::df_rows_cap());
     const size_t dI = static_cast<size_t>(dfcfg->intermediate_size);
     const size_t dQW = static_cast<size_t>(dfcfg->q_row()), dKV = static_cast<size_t>(dfcfg->kv_row());
@@ -896,13 +906,13 @@ MemoryPlan Qwen35Model::plan_memory(const Qwen35TextConfig& cfg, int max_tokens,
              2 * M * H * 4 + CR * H * 2 + CR * 2 * dKV * 2 +
                  dfcfg->head_dim / 2 * 4);  // acc + tap F32, norm/kv scratch, rope table
     plan.add("dflash2 block scratch",
-             QR * (6 * H * 2 + (dQW + 2 * dKV) * 2 + dQW * 2 + 2 * dI * 2 +
+             BW * QR * (6 * H * 2 + (dQW + 2 * dKV) * 2 + dQW * 2 + 2 * dI * 2 +
                    2 * dfcfg->conv_taps * dfcfg->conv_groups() * 2));
     plan.add("dflash2 candidate buffers",
-             static_cast<size_t>(dfcfg->drafts()) *
+             BW * static_cast<size_t>(dfcfg->drafts()) *
                  (static_cast<size_t>(cfg.vocab_size) * 4 + dfcfg->selector_rank * 4 +
                   dfcfg->selector_top_k * (4 + 4)) +
-                 QR * 16 + dfcfg->drafts() * 4);
+                 BW * QR * 16 + BW * dfcfg->drafts() * 4);
   }
   // GDN recurrent + conv state per request slot, plus the verify's
   // per-row snapshots the speculative rollback reads.
@@ -1355,6 +1365,160 @@ bool Qwen35Model::dflash2_draft(int req, int64_t bonus, std::vector<int32_t>* dr
       drafts->push_back(ids[static_cast<size_t>(l) * dfcfg_.selector_top_k]);
   }
   return true;
+}
+
+// The batched redraft: the S slots' [bonus, mask x D] blocks stacked into
+// one R = S*QR forward. Every row-wise op (embed, norms, GEMMs, the 2-tap
+// convs — whose kernel is block-boundary aware via r % block_rows — RoPE
+// with the stacked positions) runs over all R rows at once, so the draft
+// weights are read once, not S times; the KV appends, the sliding-window
+// attention, the head, top-K and selector walk stay per-slot at row
+// offsets (the same calls as the scalar path, bitwise identical). A slot
+// that fails admission (context bound / pool exhausted) gets empty drafts,
+// the scalar failure rule.
+void Qwen35Model::dflash2_draft_batch(const std::vector<int>& reqs,
+                                      const std::vector<int64_t>& bonuses,
+                                      std::vector<std::vector<int32_t>>* drafts) {
+  if (!dflash2_) throw std::logic_error("dflash2_draft_batch: no drafter loaded");
+  if (reqs.empty()) throw std::invalid_argument("dflash2_draft_batch: no requests");
+  if (reqs.size() != bonuses.size() || drafts == nullptr)
+    throw std::invalid_argument("dflash2_draft_batch: reqs/bonuses/drafts shape");
+  const int S = static_cast<int>(reqs.size());
+  if (S > df_batch_)
+    throw std::invalid_argument("dflash2_draft_batch: batch exceeds the stacked scratch");
+  const int H = cfg_.hidden_size;
+  const int QR = dfcfg_.query_rows(), D = dfcfg_.drafts();
+  const int L = dfcfg_.num_hidden_layers, QW = dfcfg_.q_row(), KV = dfcfg_.kv_row();
+  const int KVH = dfcfg_.num_key_value_heads, HD = dfcfg_.head_dim, NH = dfcfg_.num_attention_heads;
+  const int G = dfcfg_.conv_groups(), TAPS = dfcfg_.conv_taps;
+  const int I = dfcfg_.intermediate_size;
+  const float eps = dfcfg_.rms_norm_eps;
+  const int64_t V = lm_vocab_count_;
+  const int topk = dfcfg_.selector_top_k, rank = dfcfg_.selector_rank;
+  drafts->assign(static_cast<size_t>(S), {});
+  // Admission first (no shared state touched): positions and block growth
+  // per slot, compacting out the failures.
+  std::vector<int> idx;
+  idx.reserve(static_cast<size_t>(S));
+  std::vector<int64_t> poss(static_cast<size_t>(S), -1);
+  for (int s = 0; s < S; ++s) {
+    const int req = reqs[static_cast<size_t>(s)];
+    const int64_t pos = session_position(req);
+    if (pos < 0 || pos + QR > max_context()) continue;
+    if (!pool_.ensure_request_blocks(req, pos + QR, stream_)) continue;
+    poss[static_cast<size_t>(s)] = pos;
+    idx.push_back(s);
+  }
+  const int NS = static_cast<int>(idx.size());
+  if (NS == 0) return;
+  const int R = NS * QR;
+  const int32_t* tables = pool_.blocks().device_tables();
+  const int bpr = static_cast<int>(pool_.total_blocks());
+  const int bt = kv_block_tokens_static();
+  const size_t qkv_stride = static_cast<size_t>(QW) + 2 * KV;
+  // Row inputs: each stacked block [bonus, mask x D] at its slot's positions.
+  for (int k = 0; k < NS; ++k) {
+    const int s = idx[static_cast<size_t>(k)];
+    const int64_t pos = poss[static_cast<size_t>(s)];
+    for (int j = 0; j < QR; ++j) {
+      df_io64_h_[static_cast<size_t>(k) * QR + j] = pos + j;
+      df_io64_h_[static_cast<size_t>(df_batch_) * QR + static_cast<size_t>(k) * QR + j] =
+          j == 0 ? bonuses[static_cast<size_t>(s)] : dfcfg_.mask_token_id;
+    }
+  }
+  DGPP_CUDA_OK(cudaMemcpyAsync(df_pos_, df_io64_h_, static_cast<size_t>(R) * 8, cudaMemcpyHostToDevice,
+                               stream_));
+  DGPP_CUDA_OK(cudaMemcpyAsync(df_tokens_, df_io64_h_ + static_cast<size_t>(df_batch_) * QR,
+                               static_cast<size_t>(R) * 8, cudaMemcpyHostToDevice, stream_));
+  embed_gather_bf16(globals_.embed, df_tokens_, df_resid_, R, H, stream_);
+
+  qwen_configure_gemm_rows(gemm_, R, true);
+  const float scale = 1.0f / std::sqrt(static_cast<float>(HD));
+  for (int l = 0; l < L; ++l) {
+    const DFlash2LayerWeights& w = dfw_.layers[l];
+    dflash2_rmsnorm_bf16(df_resid_, w.input_norm, df_x_, R, H, eps, stream_);
+    gemm_.matmul(df_x_, w.attn_conv_kp, df_delta_, R, 2 * TAPS * G, H, DType::BF16, GemmOut::BF16,
+                 static_cast<size_t>(H), gemm_ws_, gemm_ws_bytes_, stream_);
+    dflash2_grouped_conv_bf16(df_x_, df_delta_, w.attn_conv_base, df_xc_, R, QR, H, TAPS,
+                              dfcfg_.conv_group_size, 2 * TAPS * G, stream_);
+    gemm_.matmul(df_xc_, w.qkv, df_qkv_, R, static_cast<int>(qkv_stride), H, DType::BF16,
+                 GemmOut::BF16, static_cast<size_t>(H), gemm_ws_, gemm_ws_bytes_, stream_);
+    dflash2_norm_rope_bf16(df_qkv_, qkv_stride, w.q_norm, df_pos_, df_inv_freq_, df_q_, QW, R, NH, HD,
+                           eps, stream_);
+    dflash2_norm_rope_bf16(df_qkv_ + QW, qkv_stride, w.k_norm, df_pos_, df_inv_freq_, df_qkv_ + QW,
+                           qkv_stride, R, KVH, HD, eps, stream_);
+    const QwenFullAttnCache plane = pool_.view(num_full_ + l);
+    for (int k = 0; k < NS; ++k) {
+      const int s = idx[static_cast<size_t>(k)];
+      const int req = reqs[static_cast<size_t>(s)];
+      const int64_t pos = poss[static_cast<size_t>(s)];
+      const size_t ro = static_cast<size_t>(k) * QR;
+      const uint16_t* krow = df_qkv_ + ro * qkv_stride + QW;
+      qsa_kv_append(krow, qkv_stride, krow + KV, qkv_stride, df_zero_, df_pos_ + ro, QR,
+                    tables + static_cast<size_t>(req) * pool_.total_blocks(), 1, bt, KVH, HD,
+                    plane.k_cache, plane.v_cache, stream_);
+      dflash2_block_attn(df_q_ + ro * QW, QW, plane.k_cache, plane.v_cache,
+                         tables + static_cast<size_t>(req) * pool_.total_blocks(), bt, bpr, pos - 1,
+                         pos, pos + QR - 1, dfcfg_.sliding_window, df_pos_ + ro, QR, NH, KVH, HD,
+                         scale, df_attn_ + ro * QW, stream_);
+    }
+    gemm_.matmul(df_attn_, w.o, df_o_, R, H, QW, DType::BF16, GemmOut::BF16, QW, gemm_ws_,
+                 gemm_ws_bytes_, stream_);
+    dflash2_grouped_conv_bf16(df_o_, df_delta_ + TAPS * G, w.attn_conv_base + static_cast<size_t>(TAPS) * H,
+                              df_xc_, R, QR, H, TAPS, dfcfg_.conv_group_size, 2 * TAPS * G, stream_);
+    dflash2_add_rmsnorm_bf16(df_resid_, df_xc_, w.post_norm, df_x_, R, H, eps, stream_);
+    gemm_.matmul(df_x_, w.mlp_conv_kp, df_delta_, R, 2 * TAPS * G, H, DType::BF16, GemmOut::BF16,
+                 static_cast<size_t>(H), gemm_ws_, gemm_ws_bytes_, stream_);
+    dflash2_grouped_conv_bf16(df_x_, df_delta_, w.mlp_conv_base, df_xc_, R, QR, H, TAPS,
+                              dfcfg_.conv_group_size, 2 * TAPS * G, stream_);
+    gemm_.matmul(df_xc_, w.gate, df_gate_, R, I, H, DType::BF16, GemmOut::BF16,
+                 static_cast<size_t>(H), gemm_ws_, gemm_ws_bytes_, stream_);
+    gemm_.matmul(df_xc_, w.up, df_up_, R, I, H, DType::BF16, GemmOut::BF16, static_cast<size_t>(H),
+                 gemm_ws_, gemm_ws_bytes_, stream_);
+    swiglu_limit_bf16(df_gate_, df_up_, df_mlp_, static_cast<int64_t>(R) * I, INFINITY, stream_);
+    gemm_.matmul(df_mlp_, w.down, df_o_, R, H, I, DType::BF16, GemmOut::BF16,
+                 static_cast<size_t>(I), gemm_ws_, gemm_ws_bytes_, stream_);
+    dflash2_grouped_conv_bf16(df_o_, df_delta_ + TAPS * G, w.mlp_conv_base + static_cast<size_t>(TAPS) * H,
+                              df_xc_, R, QR, H, TAPS, dfcfg_.conv_group_size, 2 * TAPS * G, stream_);
+    add_inplace_bf16(df_resid_, df_xc_, static_cast<int64_t>(R) * H, stream_);
+  }
+  dflash2_rmsnorm_bf16(df_resid_, dfw_.norm, df_h_, R, H, eps, stream_);
+  // The mask rows through the shared head and their top-K, per slot at row
+  // offsets (the scalar calls, S times).
+  for (int k = 0; k < NS; ++k) {
+    const size_t ro = static_cast<size_t>(k) * QR;
+    const size_t co = static_cast<size_t>(k) * D;
+    head_gemv(df_h_ + (ro + 1) * H, df_logits_ + co * V, D, stream_);
+    dflash2_topk_f32(df_logits_ + co * V, df_ids_ + co * topk, df_sc_ + co * topk, V, D, topk,
+                     stream_);
+    gemm_.matmul(df_h_ + (ro + 1) * H, dfw_.hidden_projection, df_hidden32_ + co * rank, D, rank,
+                 H, DType::BF16, GemmOut::F32, static_cast<size_t>(H), gemm_ws_, gemm_ws_bytes_,
+                 stream_);
+    dflash2_selector_walk(df_ids_ + co * topk, df_sc_ + co * topk, df_hidden32_ + co * rank,
+                          dfw_.pred_codebook, dfw_.succ_codebook,
+                          static_cast<int32_t>(bonuses[static_cast<size_t>(idx[static_cast<size_t>(k)])]),
+                          df_tok_ + co, D, topk, rank, stream_);
+  }
+  DGPP_CUDA_OK(cudaMemcpyAsync(df_tok_h_, df_tok_, static_cast<size_t>(NS) * D * 4,
+                               cudaMemcpyDeviceToHost, stream_));
+  DGPP_CUDA_OK(cudaStreamSynchronize(stream_));
+  const bool walk = std::getenv("DGPP_DFLASH2_WALK") != nullptr;
+  if (walk) {
+    for (int k = 0; k < NS; ++k)
+      (*drafts)[static_cast<size_t>(idx[static_cast<size_t>(k)])].assign(
+          df_tok_h_ + static_cast<size_t>(k) * D, df_tok_h_ + static_cast<size_t>(k + 1) * D);
+    return;
+  }
+  {
+    std::vector<int32_t> ids(static_cast<size_t>(NS) * D * topk);
+    DGPP_CUDA_OK(cudaMemcpy(ids.data(), df_ids_, ids.size() * 4, cudaMemcpyDeviceToHost));
+    for (int k = 0; k < NS; ++k) {
+      std::vector<int32_t>& out = (*drafts)[static_cast<size_t>(idx[static_cast<size_t>(k)])];
+      out.clear();
+      for (int r = 0; r < D; ++r)
+        out.push_back(ids[(static_cast<size_t>(k) * D + r) * topk]);
+    }
+  }
 }
 
 }  // namespace dgpp

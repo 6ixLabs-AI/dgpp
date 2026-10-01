@@ -14,6 +14,7 @@
 // inside a pick can synchronize with another rank's spinning collective.
 #include <algorithm>
 #include <cstdint>
+#include <cstdlib>
 #include <functional>
 #include <memory>
 #include <stdexcept>
@@ -302,6 +303,15 @@ class EagerEngineAdapter : public sched::SchedulerEngine {
       std::vector<int> offs;
       auto outs = model_->session_verify_batch(reqs, feds, &offs);
       std::vector<std::vector<int32_t>> out(reqs.size());
+      // Batched redrafts (DGPP_DFLASH2_DRAFT_BATCH=1): one stacked block
+      // forward for every spec slot instead of one per slot. Otherwise
+      // each slot redrafts alone (the shipped behavior).
+      std::vector<size_t> batch_idx;
+      if (dflash_draft_batch()) {
+        for (size_t i = 0; i < reqs.size(); ++i)
+          if (is_spec[i]) batch_idx.push_back(i);
+      }
+      const bool use_batch = batch_idx.size() >= 2;
       for (size_t i = 0; i < reqs.size(); ++i) {
         SlotState& s = state_.at(static_cast<size_t>(reqs[i]));
         int64_t& pending = pending_.at(static_cast<size_t>(reqs[i]));
@@ -309,7 +319,11 @@ class EagerEngineAdapter : public sched::SchedulerEngine {
           auto& sp = spec_.at(static_cast<size_t>(reqs[i]));
           const int T = static_cast<int>(feds[i].size());
           const std::vector<int32_t> winners = rows_pick()(local_row_maxes(outs[i], T));
-          out[i] = sp->commit(feds[i], winners, offs[i]);
+          if (use_batch) {
+            out[i] = sp->commit_verify(feds[i], winners, offs[i]);
+          } else {
+            out[i] = sp->commit(feds[i], winners, offs[i]);
+          }
           pending = sp->next();
           for (int32_t t : out[i]) s.context.push_back(t);
           s.context.push_back(static_cast<int32_t>(pending));
@@ -319,6 +333,23 @@ class EagerEngineAdapter : public sched::SchedulerEngine {
           pending = next;
           out[i] = {next};
         }
+      }
+      if (use_batch) {
+        std::vector<int> breqs;
+        std::vector<int64_t> bonuses;
+        breqs.reserve(batch_idx.size());
+        bonuses.reserve(batch_idx.size());
+        for (size_t i : batch_idx) {
+          breqs.push_back(reqs[i]);
+          bonuses.push_back(spec_.at(static_cast<size_t>(reqs[i]))->next());
+        }
+        std::vector<std::vector<int32_t>> bdrafts;
+        model_->dflash2_draft_batch(breqs, bonuses, &bdrafts);
+        for (size_t k = 0; k < batch_idx.size(); ++k)
+          spec_.at(static_cast<size_t>(reqs[batch_idx[k]]))->set_drafts(std::move(bdrafts[k]));
+      } else {
+        for (size_t i : batch_idx)
+          spec_.at(static_cast<size_t>(reqs[i]))->redraft();
       }
       return out;
     } else {
@@ -477,9 +508,41 @@ class EagerEngineAdapter : public sched::SchedulerEngine {
     if (!(plain_greedy && fits)) return {};
     if (!sp) {
       sp = std::make_unique<DFlash2Speculator<Model>>(*model_, req, rows_pick());
+      // Experimental verify-depth cap (long-context throughput work):
+      // DGPP_DFLASH2_DEPTH=k verifies only the first k drafts per step
+      // (exact transcripts — unverified drafts re-draft next step).
+      // Unset (the default) verifies the whole block.
+      const int depth_cap = dflash_depth_cap();
+      if (depth_cap >= 0) {
+        const int D = model_->dflash2_drafts();
+        int k = depth_cap < D ? depth_cap : D;
+        sp->set_depth_policy([k](const std::vector<int32_t>& d) {
+          const int n = static_cast<int>(d.size());
+          return k < n ? k : n;
+        });
+      }
       sp->start(static_cast<int32_t>(pending_.at(static_cast<size_t>(req))));
     }
     return sp->fed_rows();
+  }
+
+  // Cached env gates for the dflash throughput work (both default off,
+  // so the shipped path is untouched unless the operator opts in).
+  static int dflash_depth_cap() {
+    static const int v = [] {
+      const char* e = std::getenv("DGPP_DFLASH2_DEPTH");
+      if (!e || !*e) return -1;
+      const int k = std::atoi(e);
+      return k < 0 ? -1 : k;
+    }();
+    return v;
+  }
+  static bool dflash_draft_batch() {
+    static const bool v = [] {
+      const char* e = std::getenv("DGPP_DFLASH2_DRAFT_BATCH");
+      return e && *e && *e != '0';
+    }();
+    return v;
   }
 
   template <class S>

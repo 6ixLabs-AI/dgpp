@@ -212,6 +212,18 @@ class Qwen35Model : public SessionModel<Qwen35Model> {
   // False without a draft (pool exhausted / context bound): the caller
   // runs the step without speculation.
   bool dflash2_draft(int req, int64_t bonus, std::vector<int32_t>* drafts);
+  // The batched redraft: one stacked block forward for every slot (row-wise
+  // GEMMs/norms/convs over S*query_rows rows; the KV appends, sliding-window
+  // attention, head, top-K and selector walk stay per-slot at row offsets).
+  // drafts[i] is slot i's proposals, empty when that slot has no draft
+  // (the same per-slot failure rule as the scalar call). Empty input is
+  // an error; a single slot takes the scalar path in the caller.
+  void dflash2_draft_batch(const std::vector<int>& reqs,
+                           const std::vector<int64_t>& bonuses,
+                           std::vector<std::vector<int32_t>>* drafts);
+  // The stacked draft batch width (slots per block forward): the verify
+  // batch's slot count at the row ceiling.
+  int dflash2_batch_slots() const { return df_batch_; }
 
  private:
   void build_layer_objects(const Qwen35LayerResident& r);
@@ -329,6 +341,7 @@ class Qwen35Model : public SessionModel<Qwen35Model> {
   int64_t* df_pos_ = nullptr;     // [query_rows] device
   int64_t* df_tokens_ = nullptr;  // [query_rows] device
   int64_t* df_io64_h_ = nullptr;  // pinned: query_rows positions then tokens
+  int df_batch_ = 1;  // the stacked draft batch width (slots per forward)
   static constexpr int df_rows_cap() { return 2048; }
   // Model-owned GDN state: [max_requests][num_gdn][elems], plus the
   // verify's per-row snapshots ([max_decode_rows][num_gdn][elems]) the
