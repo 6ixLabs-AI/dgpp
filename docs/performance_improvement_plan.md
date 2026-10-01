@@ -443,15 +443,19 @@ width-dependent GEMM numerics (T=8 verify vs T=1 steps). Concurrency
 every arriving slot, `floor(decode_rows/8)` slots per pass) replaces
 the flat ~8 t/s c4 line — same short-prompt harness gives dflash
 25.7/41.3/52.4 agg tg at c1/c2/c4 vs MTP depth-2's 14.4/32.6/47.3,
-with C1 transcripts 12/12 identical to the pre-batch build. Open
-long-context follow-ups (both opt-in, default-off, serving validation
-pending): `DGPP_DFLASH2_DRAFT_BATCH=1` for one stacked redraft forward
-per step, `DGPP_DFLASH2_DEPTH=k` for a capped verify width. Measured
-2026-10-01: batch +5–9% at c4 with no errors; depth-5 keeps τ 4.0
-(80% window use) and is throughput-neutral vs depth-7 — the bench's
-traffic is ~3/4 plain (grammar/tool-constrained), so the rest of its
-gap to graph-MTP is the eager plain path (`decode_graph=false`),
-i.e. batched graphs, not the drafter.
+with C1 transcripts 12/12 identical to the pre-batch build. The
+stacked redraft is default-on (opt out with
+`DGPP_DFLASH2_DRAFT_BATCH=0`); `DGPP_DFLASH2_DEPTH=k` stays opt-in.
+Measured 2026-10-01: batch +5–9% at c4 with no errors; depth-5 keeps
+τ 4.0 (80% window use). Headline correction the same day: the
+throughput bench's traffic was *sampled* (benchy omits temperature;
+the server inherits temp=1.0 from generation_config), so greedy-only
+spec never engaged on either lane — all older throughput numbers are
+sampled-plain decode, graphs vs eager. With `temperature=0` forced,
+dflash throughput jumps +60–190% and wins every c1/c2 cell vs
+graphed MTP (τ 4.5 vs ~2.5), ceding only c4, where graphs scale
+linearly. The remaining lane is batched graph capture with a drafter
+loaded. See mtp.md "temperature trap" and "fair fight".
 
 ## 8. P1 experiments / P3 implementation: remaining single-stream wins
 

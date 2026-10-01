@@ -177,15 +177,43 @@ waste 40% vs 50% (`...17-57-38...md`); throughput: identical to
 depth-7 within noise (`...18-18-05...md`).
 
 The depth neutrality is explained, not a lever failure: of 117
-requests in that server's log, 87 ran plain (~1.0 tok/pass —
-grammar/tool-constrained agentic steps never enter speculation) and
-only 30 engaged spec (mean 3.86 tok/pass). Three quarters of the
-throughput bench never touches the drafter, so no spec-side lever
-moves its headline number much. The remaining gap to graph-MTP there
-(15.7 vs 37 at d0 c4) sits mostly in the plain path: the dflash
-config forces `decode_graph=false`, so its plain steps are eager
+requests in that server's log, 87 ran plain (~1.0 tok/pass) and
+only 30 engaged spec (mean 3.86 tok/pass) — and the trace below
+shows why: the bench's traffic was sampled, not greedy. Where
+speculation never engages, no spec-side lever moves the headline
+number. The remaining gap to graph-MTP there (15.7 vs 37 at d0 c4)
+sits mostly in the plain path: the dflash config forces
+`decode_graph=false`, so its plain steps are eager
 while MTP's are graphed. Closing that gap means batched graphs with
 a drafter loaded (plan §7 step 4), not further draft tuning.
+
+### The temperature trap (2026-10-01): the bench was sampled all along
+
+`DGPP_DFLASH2_TRACE` showed every bench slot-step ineligible with
+`temp=1` — yet benchy sends no temperature field. Root cause: the
+server's sampling defaults come from the checkpoint's
+`generation_config.json` (DESIGN §10 — Qwen3.8-27B-FP8 declares
+`temperature: 1.0, top_k: 20, top_p: 0.95, do_sample: true`), so any
+request omitting temperature runs *sampled* — and greedy-only
+speculation (MTP and dflash alike) never engages. All pre-2026-10-01
+throughput numbers on both lanes are sampled-plain decode (graphs vs
+eager), not spec numbers; vLLM's lead there is sampled-*spec* vs
+no-spec, not drafter quality. The harness fix:
+`--benchy-args "--extra-body temperature=0"` (benchy wants
+`key=value`, not JSON). With greedy engaged, dflash throughput jumps
++60–190% per cell (`...19-26-43...md`): d0 20.1/31.8/25.1,
+d4096 21.9/21.9/17.6, d8192 17.9/17.3/13.1 at c1/c2/c4.
+
+### Fair fight, both greedy (2026-10-01): dflash wins c1/c2, graphs win c4
+
+MTP depth-2 graphed at temp 0 (`...19-37-12...md`): d0
+13.1/25.5/35.7, d4096 13.2/20.0/23.3, d8192 12.1/15.3/15.4. Against
+the table above: dflash's higher acceptance (τ 4.5 vs ~2.5) wins
+every c1/c2 cell with fewer passes, while MTP's graphed steps scale
+linearly and take every c4 cell. The crossover is the whole story:
+acceptance favors the block drafter, per-step machinery favors
+graphs — i.e. batched graph capture with a drafter loaded is the
+remaining lane, exactly as §7 step 4 orders it.
 
 ## Recorded GLM-5.3 result
 
