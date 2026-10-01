@@ -242,6 +242,33 @@ residual run-to-run wobble is the pre-existing sticky GEMM dispatch,
 not the graph). Default off; the padded layout costs one extra
 8-row block of GEMM work per padded slot.
 
+### 8K profile (2026-10-02): the step is GEMV, and the draft pays 4x
+
+`DGPP_DFLASH2_PHASES=1` splits the batched step into fed / verify /
+commit / draft wall times (rolling 25-step average). At 8.3K prompt +
+128 decode, 4 slots, steady state: **466 ms/pass = verify 195 ms +
+draft 260 ms + host ~11 ms** (fed 4.2, commit 6.8) — and the graph is
+exactly neutral here (466.4 vs 465.0 ms eager): at this length the
+~600 launches are amortized, so the graph's value is short-context
+and low-occupancy, not long-context.
+
+The nsys kernel sum for one 258 ms step window: 400 launches of the
+8-row bf16 MMA GEMV take **210 ms (83% of the GPU time)** — the
+weight-stream GEMMs of both the 48-layer target and the 5-layer
+drafter, chunked at 8 rows over the 32 stacked rows, so **each layer's
+weights are read 4x per pass**. The draft's 260 ms phase is mostly
+that re-reading (5 layers x 2.9B x 4 chunk reads), which is exactly
+the cost MTP does not pay (its drafter is one layer) — and it is the
+whole of the same-workload c4 gap at 8K: MTP graphed 14.8 / 12.8 /
+7.8 agg tg at c4/c2/c1 against dflash's 12.9 / 13.2 / 12.1 (dflash
+wins c1, MTP wins c4, c2 ties). Secondary items in the window: the
+target's F32 lm head (one 5.2 ms launch per step) and ~14 ms of
+cutlass Lt GEMM; attention itself is ~1.4 ms. The structural lever is
+therefore not attention or the graph — it is running the stacked
+verify/draft rows in fewer, wider GEMM launches (one 32-row read of
+each weight instead of four 8-row reads), which attacks the draft's
+share directly.
+
 ## Recorded GLM-5.3 result
 
 On 2026-09-03 at TP=4, greedy depth-1 MTP accepted 88.7% of drafts on the

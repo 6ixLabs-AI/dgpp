@@ -13,6 +13,7 @@
 // Allocate pick buffers before decoding. Allocating device-related memory
 // inside a pick can synchronize with another rank's spinning collective.
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <functional>
@@ -287,6 +288,13 @@ class EagerEngineAdapter : public sched::SchedulerEngine {
       const int graph_level = dflash_verify_graph();
       if (!model_->dflash2_enabled() || reqs.size() < (graph_level >= 2 ? size_t{1} : size_t{2}))
         return SchedulerEngine::step_batch(reqs);
+      const bool ph = dflash_phases();
+      const auto ns_now = [] {
+        return std::chrono::duration_cast<std::chrono::nanoseconds>(
+                   std::chrono::steady_clock::now().time_since_epoch())
+                    .count();
+      };
+      const long long ph0 = ph ? ns_now() : 0;
       std::vector<std::vector<int64_t>> feds(reqs.size());
       std::vector<char> is_spec(reqs.size(), 0);
       for (size_t i = 0; i < reqs.size(); ++i) {
@@ -302,6 +310,7 @@ class EagerEngineAdapter : public sched::SchedulerEngine {
           feds[i].push_back(pending_.at(static_cast<size_t>(reqs[i])));
         }
       }
+      const long long ph1 = ph ? ns_now() : 0;
       std::vector<int> offs;
       // The verify, per DGPP_DFLASH2_VERIFY_GRAPH level: 0 packed eager
       // (shipped); 1 multi-slot batches replay a captured static verify;
@@ -319,6 +328,7 @@ class EagerEngineAdapter : public sched::SchedulerEngine {
                       ? model_->session_verify_batch_graph(reqs, feds, &offs)
                       : padded ? model_->session_verify_batch_padded(reqs, feds, &offs)
                                : model_->session_verify_batch(reqs, feds, &offs);
+      const long long ph2 = ph ? ns_now() : 0;
       std::vector<std::vector<int32_t>> out(reqs.size());
       // Batched redrafts (DGPP_DFLASH2_DRAFT_BATCH=1): one stacked block
       // forward for every spec slot instead of one per slot. Otherwise
@@ -351,6 +361,7 @@ class EagerEngineAdapter : public sched::SchedulerEngine {
           out[i] = {next};
         }
       }
+      const long long ph3 = ph ? ns_now() : 0;
       if (use_batch) {
         std::vector<int> breqs;
         std::vector<int64_t> bonuses;
@@ -367,6 +378,25 @@ class EagerEngineAdapter : public sched::SchedulerEngine {
       } else {
         for (size_t i : batch_idx)
           spec_.at(static_cast<size_t>(reqs[i]))->redraft();
+      }
+      if (ph) {
+        const long long ph4 = ns_now();
+        PhaseAcc& a = dfph_acc();
+        a.fed_ns += ph1 - ph0;
+        a.verify_ns += ph2 - ph1;
+        a.commit_ns += ph3 - ph2;
+        a.draft_ns += ph4 - ph3;
+        a.total_ns += ph4 - ph0;
+        ++a.steps;
+        if (a.steps % 25 == 0) {
+          const int n = a.steps;
+          DGPP_LOG_INFO("dflash phases ({} steps): fed {:.1f} us, verify {:.2f} ms, "
+                        "commit {:.1f} us, draft {:.2f} ms, total {:.2f} ms/pass; "
+                        "slots this step {}",
+                        n, a.fed_ns * 1e-3 / n, a.verify_ns * 1e-6 / n,
+                        a.commit_ns * 1e-3 / n, a.draft_ns * 1e-6 / n,
+                        a.total_ns * 1e-6 / n, static_cast<int>(reqs.size()));
+        }
       }
       return out;
     } else {
@@ -602,6 +632,24 @@ class EagerEngineAdapter : public sched::SchedulerEngine {
       return e && *e && *e != '0';
     }();
     return v;
+  }
+  // DGPP_DFLASH2_PHASES=1: accumulate step_batch's phase wall times and
+  // log a rolling average every 25 steps (the 8K profiling split:
+  // fed / verify / commit / draft per pass).
+  static bool dflash_phases() {
+    static const bool v = [] {
+      const char* e = std::getenv("DGPP_DFLASH2_PHASES");
+      return e && *e && *e != '0';
+    }();
+    return v;
+  }
+  struct PhaseAcc {
+    long long verify_ns = 0, draft_ns = 0, commit_ns = 0, fed_ns = 0, total_ns = 0;
+    int steps = 0;
+  };
+  static PhaseAcc& dfph_acc() {
+    static PhaseAcc a;
+    return a;
   }
 
   template <class S>

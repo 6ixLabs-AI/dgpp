@@ -462,6 +462,17 @@ graph the fastest path (35.9–36.1 vs 35.0–35.4 agg tg at c4 on the
 short-prompt harness; see mtp.md "batched graph capture with a
 drafter loaded").
 
+The 8K step profile (`DGPP_DFLASH2_PHASES=1` + nsys, 2026-10-02):
+466 ms/pass at c4 = verify 195 + draft 260 + host ~11; the graph is
+neutral at length (launches amortized), so the c4 gap to MTP there
+(12.9 vs 14.8 same-workload agg tg; dflash still wins c1, 12.1 vs
+7.8) sits in the draft block, which the kernel sum attributes to
+weight re-reading — 400 eight-row MMA GEMV launches take 83% of the
+step's GPU time, the 32 stacked rows chunking each layer's weights
+into four 8-row reads (target and drafter alike). The next lever is
+wide-row GEMM dispatch for the stacked verify/draft (one 32-row
+weight read instead of four), not attention or further graph work.
+
 ## 8. P1 experiments / P3 implementation: remaining single-stream wins
 
 - **Qwen TP2 NVFP4 with a resident n-gram table:** first validate a recipe

@@ -22,9 +22,13 @@ The history by milestone. The dated engineering record in
   fastest path: 35.9–36.1 vs 35.0–35.4 agg tg at c4, 35.9–39.0 vs
   35.9–36.1 at c2). C1 stays bit-exact (12/12 transcripts); c2/c4
   match the eager batch's documented near-tie class (graph-vs-eager
-  7–8/12 like eager-vs-eager 8/12). Default off; the drafted verify is
-  otherwise unchanged (drafts, judge, rollback and redrafts stay eager
-  between replays).
+  7–8/12 like eager-vs-eager 8/12). The 8K step profile
+  (`DGPP_DFLASH2_PHASES=1` splits fed/verify/commit/draft per pass):
+  the graph is neutral at length and 83% of a step's GPU time is the
+  8-row-chunked MMA GEMVs of target and drafter — the next lever is
+  wide-row GEMM dispatch, not the graph. Default off; the drafted
+  verify is otherwise unchanged (drafts, judge, rollback and redrafts
+  stay eager between replays).
 - **The DFlash2 speculative pass batches across slots** (2026-10-01):
   every arriving slot's verify rows ride one physical target pass
   (`session_verify_batch`'s slot-major staging and per-slot rollback
