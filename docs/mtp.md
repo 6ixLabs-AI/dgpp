@@ -118,6 +118,22 @@ inherent to width-dependent GEMM numerics (T=8 verify vs T=1 steps,
 the same class the graph engine already shows against eager); all
 flips observed were single-token cascades.
 
+### Concurrency: the batched speculative pass
+
+Every arriving slot's verify rows ride one physical target pass
+(`SessionModel::session_verify_batch`, slot-major staging with per-slot
+snapshot/rollback bases, riding the graph era's batched decode kernels;
+`EagerEngine::step_batch`). One pass covers `floor(decode_rows / 8)`
+slots — four at the family's 32-row ceiling; `serve` sizes the batch to
+`max_concurrency x 8` clamped to it, and wider occupancy round-robins
+two physical ticks. Drafts stay per-slot (the block forward is a few
+percent of the target step). The single-slot case takes the scalar
+path, so C1 keeps the scalar kernel sequence bit-for-bit; multi-slot
+greedy transcripts may show the same batched-kernel near-tie class the
+graph engine shows against eager. Drafting under load was the flat
+~8 t/s at c4 against the graph-MTP line's 37 — the batched pass targets
+that gap; serving confirmation against the MTP c4 figure is pending.
+
 ## Recorded GLM-5.3 result
 
 On 2026-09-03 at TP=4, greedy depth-1 MTP accepted 88.7% of drafts on the

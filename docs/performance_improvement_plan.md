@@ -419,9 +419,14 @@ chained selector walk is implemented exactly and kept behind
 `DGPP_DFLASH2_WALK`, but verifies only ~1.2 here — see mtp.md), and
 acceptance is the greedy verify/rollback of eight rows
 (`kSpecRows`/`kSpecMaxDrafts` generalized 6/5 → 8/7; the DSpark block
-is unchanged). Eager greedy C1 only: the graph engine refuses capture
-with a drafter loaded, batching and sampled verification (the
-selector's conditional proposal) are open. The GLM-Flash lane (step
+is unchanged). Eager greedy: the graph engine refuses capture with a
+drafter loaded. The batched pass landed 2026-10-01: one physical target
+verify covers every arriving slot (`SessionModel::session_verify_batch`,
+slot-major rows and rollback bases; `EagerEngine::step_batch` caps the
+batch to `floor(decode_rows/8)` slots — four at the 32-row ceiling, the
+plan's K7 arithmetic — and a single-slot batch keeps the scalar kernel
+sequence bit-for-bit). Drafts stay per-slot. Sampled verification (the
+selector's conditional proposal) is open. The GLM-Flash lane (step
 2's mHC-tap capture) is untouched.
 
 Measured 2026-10-01 (Qwen3.8-27B-FP8, greedy, 12-prompt battery,
@@ -433,7 +438,11 @@ vLLM cross-check shows the reference picks the same drafts here
 (head-domain behavior, proposal rule to revisit), or it picks better
 ones (our block outputs differ somewhere top-1 doesn't see).
 Transcripts match plain modulo single near-tie flips from
-width-dependent GEMM numerics (T=8 verify vs T=1 steps).
+width-dependent GEMM numerics (T=8 verify vs T=1 steps). Concurrency
+(2026-10-01): the throughput bench's flat ~8 t/s at c4 (against vLLM
+dflash's 65 and graph-MTP's 37) is the C1-only step loop; the batched
+verify pass above removes that serialization. A serving confirmation
+of the batched line against the MTP c4 figure is pending.
 
 ## 8. P1 experiments / P3 implementation: remaining single-stream wins
 

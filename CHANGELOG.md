@@ -6,6 +6,15 @@ The history by milestone. The dated engineering record in
 
 ## Unreleased
 
+- **The DFlash2 speculative pass batches across slots** (2026-10-01):
+  every arriving slot's verify rows ride one physical target pass
+  (`session_verify_batch`'s slot-major staging and per-slot rollback
+  bases; `step_batch`, a `floor(decode_rows/8)`-slot batch capacity, and
+  `serve` sizing the fixed batch to `max_concurrency x 8` clamped to the
+  family cap). C1 keeps the scalar kernel sequence bit-for-bit (a
+  single-slot batch takes the scalar path); drafting under load, which
+  sat flat at ~8 t/s at c4 against graph-MTP's 37, rides the graph era's
+  batched decode kernels from here.
 - **The DFlash2 block drafter on the Qwen3.5-family native engine**
   (2026-10-01, plan §7): `engine.dflash_model` (or `--dflash-model`) serves
   `z-lab/Qwen3.8-27B-DFlash2` — five bidirectional draft layers fed by
