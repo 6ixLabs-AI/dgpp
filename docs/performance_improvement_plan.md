@@ -419,10 +419,19 @@ verify/rollback of eight rows (`kSpecRows`/`kSpecMaxDrafts` generalized
 6/5 → 8/7; the DSpark block is unchanged). Eager greedy C1 only: the
 graph engine refuses capture with a drafter loaded, batching and
 sampled verification (the selector's conditional proposal) are open.
-The GLM-Flash lane (step 2's mHC-tap capture) is untouched. Exit is
-measured, not yet claimed: the GSM8K/C1 comparisons against
-`cluster_qwen3.8-27b-fp8-mtp_w1.example.json`'s best depth are
-outstanding.
+The GLM-Flash lane (step 2's mHC-tap capture) is untouched.
+
+Measured 2026-10-01 (Qwen3.8-27B-FP8, greedy, 12-prompt battery,
+max_tokens 128): the faithful walk verifies 1.1–1.35 tok/pass against
+MTP depth-2's 2.3–2.82, while the block's raw per-slot top-1 verifies
+3.4–6.1 tok/pass — so the draft stack is proven (block/head/top-K
+exact, transcripts identical across proposal rules) and the gap is
+isolated to the trained selector's picks on these prompts. Exit is
+still open: either a vLLM cross-check shows the reference picks the
+same drafts here (head-domain behavior, proposal rule to revisit), or
+it picks better ones (our block outputs differ somewhere top-1
+doesn't see). Transcripts match plain modulo single near-tie flips
+from width-dependent GEMM numerics (T=8 verify vs T=1 steps).
 
 ## 8. P1 experiments / P3 implementation: remaining single-stream wins
 

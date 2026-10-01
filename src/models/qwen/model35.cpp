@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <stdexcept>
 #include <vector>
@@ -1338,6 +1339,15 @@ bool Qwen35Model::dflash2_draft(int req, int64_t bonus, std::vector<int32_t>* dr
   DGPP_CUDA_OK(cudaMemcpyAsync(df_tok_h_, df_tok_, D * 4, cudaMemcpyDeviceToHost, stream_));
   DGPP_CUDA_OK(cudaStreamSynchronize(stream_));
   drafts->assign(df_tok_h_, df_tok_h_ + D);
+  // Ablation (DGPP_DFLASH2_TOPK0=1): skip the selector walk, draft each
+  // slot's own top-1. Separates block quality from selector quality.
+  if (std::getenv("DGPP_DFLASH2_TOPK0")) {
+    std::vector<int32_t> ids(static_cast<size_t>(D) * dfcfg_.selector_top_k);
+    DGPP_CUDA_OK(
+        cudaMemcpy(ids.data(), df_ids_, ids.size() * 4, cudaMemcpyDeviceToHost));
+    drafts->clear();
+    for (int l = 0; l < D; ++l) drafts->push_back(ids[static_cast<size_t>(l) * dfcfg_.selector_top_k]);
+  }
   return true;
 }
 

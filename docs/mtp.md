@@ -87,6 +87,22 @@ The lane's exit criterion (performance plan §7) is to beat the best
 native-MTP configuration; until it does, the MTP recipe remains the
 default.
 
+### Measured acceptance (2026-10-01, greedy, 12-prompt battery)
+
+On Qwen3.8-27B-FP8, max_tokens 128, one stream: native MTP depth 2
+verifies 2.3–2.8 tok/pass; the faithful DFlash2 selector walk verifies
+1.1–1.35 tok/pass on every prompt; the block's raw per-slot top-1
+(`DGPP_DFLASH2_TOPK0=1`, a diagnostic ablation that skips the selector
+walk) verifies 3.4–6.1 tok/pass at 30–45 tok/s. The block, head, top-K
+and walk each match the vLLM reference (formula, kernel and NumPy
+cross-checks; transcripts identical across proposal rules), so the
+selector gap is in the trained head's domain behavior on these
+prompts, not the implementation — a vLLM-side cross-check on the same
+prompts is still open. Transcripts match the plain path except for
+single near-tie flips inherent to width-dependent GEMM numerics (T=8
+verify vs T=1 steps, the same class the graph engine already shows
+against eager); all flips observed were single-token cascades.
+
 ## Recorded GLM-5.3 result
 
 On 2026-09-03 at TP=4, greedy depth-1 MTP accepted 88.7% of drafts on the
