@@ -360,7 +360,7 @@ behavior rather than treating it as a generic small autoregressive model.
 The released `z-lab/Qwen3.8-27B-DFlash2` checkpoint is target-matched to
 Qwen/Qwen3.8-27B — its config names that base model — and is served by
 the native engine today
-(`deploy/cluster_qwen3.8-27b-fp8-dflash2_w1.example.json`,
+(`deploy/cluster_qwen3.8-27b-fp8_w1_dflash2.example.json`,
 [mtp.md](mtp.md#the-dflash2-block-drafter-qwen35-family)). No
 target-matched drafter is established for Qwen3.8-Flash-Next or, from
 the [DeepSpec released checkpoint table](https://github.com/deepseek-ai/DeepSpec#released-checkpoints),

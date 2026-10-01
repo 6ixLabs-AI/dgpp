@@ -77,7 +77,7 @@ the existing protocol.
 Serve it with the drafter checkpoint in `engine.dflash_model` (or
 `--dflash-model DIR_OR_ID`) and `engine.mtp` / `engine.decode_graph`
 off — the drafter is the eager world-1 path (see
-`deploy/cluster_qwen3.8-27b-fp8-dflash2_w1.example.json`;
+`deploy/cluster_qwen3.8-27b-fp8_w1_dflash2.example.json`;
 `--no-dflash` runs the same recipe plain). Acceptance
 is the ordinary greedy verify: the eight fed rows (pending token +
 drafts) run through the target, the accepted prefix commits and the

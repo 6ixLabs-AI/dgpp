@@ -19,7 +19,7 @@ The history by milestone. The dated engineering record in
   engine refuses capture with a drafter loaded. Kernel references in
   `dflash2_kernels_test`, the config gates in `unit_tests`; the exit
   comparison against the best MTP depth is open
-  (`deploy/cluster_qwen3.8-27b-fp8-dflash2_w1.example.json`).
+  (`deploy/cluster_qwen3.8-27b-fp8_w1_dflash2.example.json`).
 
 - **Serve Qwen3.8-27B-FP8 on the native engine, with MTP**
   (2026-10-01): a new family, `qwen3_5` — the 27B dense model, 64 layers
