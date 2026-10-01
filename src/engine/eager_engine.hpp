@@ -251,24 +251,16 @@ class EagerEngineAdapter : public sched::SchedulerEngine {
     SlotState& s = state_.at(static_cast<size_t>(req));
     if constexpr (requires { model_->dflash2_enabled(); }) {
       if (model_->dflash2_enabled()) {
-        auto& sp = spec_.at(static_cast<size_t>(req));
-        const bool plain_greedy = s.params.temperature <= 0.0f && !s.report_logprobs &&
-                                  s.bias.empty() && !s.grammar &&
-                                  s.params.repetition_penalty == 1.0f &&
-                                  s.params.frequency_penalty == 0.0f &&
-                                  s.params.presence_penalty == 0.0f;
         // Keep a live speculation only while the slot stays plain greedy and
         // one full block of verify rows fits the context; anything else
         // runs the exact plain step (and retries later).
-        const bool fits = model_->session_position(req) + 1 + model_->dflash2_drafts() <=
-                          model_->max_context();
-        if (sp && (!plain_greedy || !fits)) retire_spec(sp);
-        if (plain_greedy && fits) {
-          if (!sp) {
-            sp = std::make_unique<DFlash2Speculator<Model>>(*model_, req, rows_pick());
-            sp->start(static_cast<int32_t>(pending));
-          }
-          std::vector<int32_t> committed = sp->step();
+        const std::vector<int64_t> fed = dflash_fed(req);
+        if (!fed.empty()) {
+          auto& sp = spec_.at(static_cast<size_t>(req));
+          const int T = static_cast<int>(fed.size());
+          const auto out = model_->session_verify(req, fed);
+          const std::vector<int32_t> winners = rows_pick()(local_row_maxes(out, T));
+          std::vector<int32_t> committed = sp->commit(fed, winners, 0);
           pending = sp->next();
           for (int32_t t : committed) s.context.push_back(t);
           s.context.push_back(static_cast<int32_t>(pending));
@@ -280,6 +272,75 @@ class EagerEngineAdapter : public sched::SchedulerEngine {
     s.context.push_back(next);
     pending = next;
     return {next};
+  }
+  // The batched speculative pass (plan §7's concurrency gate): every
+  // arriving slot's verify rows ride ONE physical target pass (slot-major,
+  // <= max_decode_rows() rows). Drafts stay per-slot — the block is a few
+  // % of the target's step. Per-slot decisions, rollbacks, publishes and
+  // the eligibility rule are exactly the scalar step()'s; a single-slot
+  // batch takes the scalar path, so a C1 transcript keeps the scalar
+  // kernel sequence bit-for-bit.
+  std::vector<std::vector<int32_t>> step_batch(const std::vector<int>& reqs) override {
+    if constexpr (requires { model_->dflash2_enabled(); }) {
+      if (!model_->dflash2_enabled() || reqs.size() < 2)
+        return SchedulerEngine::step_batch(reqs);
+      std::vector<std::vector<int64_t>> feds(reqs.size());
+      std::vector<char> is_spec(reqs.size(), 0);
+      for (size_t i = 0; i < reqs.size(); ++i) {
+        if (pending_.at(static_cast<size_t>(reqs[i])) < 0)
+          throw std::logic_error("generation step on a slot without a pending "
+                                 "token");
+        feds[i] = dflash_fed(reqs[i]);
+        if (!feds[i].empty()) {
+          is_spec[i] = 1;
+        } else {
+          // Ineligible slot: feeds its pending token, decided through the
+          // sampler closure like the scalar plain step.
+          feds[i].push_back(pending_.at(static_cast<size_t>(reqs[i])));
+        }
+      }
+      std::vector<int> offs;
+      auto outs = model_->session_verify_batch(reqs, feds, &offs);
+      std::vector<std::vector<int32_t>> out(reqs.size());
+      for (size_t i = 0; i < reqs.size(); ++i) {
+        SlotState& s = state_.at(static_cast<size_t>(reqs[i]));
+        int64_t& pending = pending_.at(static_cast<size_t>(reqs[i]));
+        if (is_spec[i]) {
+          auto& sp = spec_.at(static_cast<size_t>(reqs[i]));
+          const int T = static_cast<int>(feds[i].size());
+          const std::vector<int32_t> winners = rows_pick()(local_row_maxes(outs[i], T));
+          out[i] = sp->commit(feds[i], winners, offs[i]);
+          pending = sp->next();
+          for (int32_t t : out[i]) s.context.push_back(t);
+          s.context.push_back(static_cast<int32_t>(pending));
+        } else {
+          const int32_t next = decide(s, outs[i]);
+          s.context.push_back(next);
+          pending = next;
+          out[i] = {next};
+        }
+      }
+      return out;
+    } else {
+      return SchedulerEngine::step_batch(reqs);
+    }
+  }
+  // One physical pass advances every arriving spec slot; the row budget
+  // (max_decode_rows verify rows, a full block per spec slot) bounds it.
+  int decode_batch_capacity() const override {
+    if constexpr (requires { model_->dflash2_enabled(); model_->max_decode_rows(); })
+      if (model_->dflash2_enabled()) {
+        const int cap = model_->max_decode_rows() / kSpecRows;
+        return cap < 1 ? 1 : (cap > slots_ ? slots_ : cap);
+      }
+    return 1;
+  }
+  // A spec step writes up to a full block of positions (the scheduler's
+  // reservation window grows accordingly); plain engines keep 1.
+  int max_tokens_per_step() const override {
+    if constexpr (requires { model_->dflash2_enabled(); })
+      if (model_->dflash2_enabled()) return kSpecRows;
+    return 1;
   }
   // The logit bias (OpenAI's logit_bias, 2026-09-06): a dense row per slot
   // over [0, this rank's slice end) — the sampler closure adds it after the
@@ -396,6 +457,30 @@ class EagerEngineAdapter : public sched::SchedulerEngine {
   // The drafter's per-position acceptance counters, engine-wide: retired
   // drivers fold in here, live ones read on top (the MTP stats group).
   uint64_t spec_att_[8] = {}, spec_acc_[8] = {};
+
+  // The eligibility rule of step()'s spec branch, shared with step_batch:
+  // the slot's verify-fed rows when it rides speculation this step (plain
+  // greedy, one full block fits the context; the speculator is created and
+  // started as needed), empty when it runs the exact plain step instead
+  // (retiring any live speculation, retried next step).
+  std::vector<int64_t> dflash_fed(int req) {
+    SlotState& s = state_.at(static_cast<size_t>(req));
+    auto& sp = spec_.at(static_cast<size_t>(req));
+    const bool plain_greedy = s.params.temperature <= 0.0f && !s.report_logprobs &&
+                              s.bias.empty() && !s.grammar &&
+                              s.params.repetition_penalty == 1.0f &&
+                              s.params.frequency_penalty == 0.0f &&
+                              s.params.presence_penalty == 0.0f;
+    const bool fits = model_->session_position(req) + 1 + model_->dflash2_drafts() <=
+                      model_->max_context();
+    if (sp && (!plain_greedy || !fits)) retire_spec(sp);
+    if (!(plain_greedy && fits)) return {};
+    if (!sp) {
+      sp = std::make_unique<DFlash2Speculator<Model>>(*model_, req, rows_pick());
+      sp->start(static_cast<int32_t>(pending_.at(static_cast<size_t>(req))));
+    }
+    return sp->fed_rows();
+  }
 
   template <class S>
   void retire_spec(S& sp) {

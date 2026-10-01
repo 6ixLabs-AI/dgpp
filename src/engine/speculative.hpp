@@ -363,13 +363,30 @@ class DFlash2Speculator {
   }
 
   std::vector<int32_t> step() {
-    std::vector<int64_t> fed{next_};
-    for (int32_t d : drafts_) fed.push_back(d);
+    const std::vector<int64_t> fed = fed_rows();
     const int T = static_cast<int>(fed.size());
     const auto out = model_.session_verify(req_, fed);
     const std::vector<int32_t> winners = pick_rows_(local_row_maxes(out, T));
+    return commit(fed, winners, 0);
+  }
+
+  // The verify's fed tokens for the pending step: [next_, drafts...].
+  std::vector<int64_t> fed_rows() const {
+    std::vector<int64_t> fed{next_};
+    for (int32_t d : drafts_) fed.push_back(d);
+    return fed;
+  }
+
+  // The batch driver's half: this slot's rows were verified inside a
+  // shared pass (its snapshot rows start at `snapshot_base`). Judges the
+  // verdict, rolls back, recounts, and re-drafts — byte-identical to the
+  // scalar step()'s tail.
+  std::vector<int32_t> commit(const std::vector<int64_t>& fed,
+                              const std::vector<int32_t>& winners,
+                              int snapshot_base) {
+    const int T = static_cast<int>(fed.size());
     const SpecVerdict v = judge_verify(fed, winners);
-    if (T > 1) model_.session_rollback(req_, v.accepted, T);
+    if (T > 1) model_.session_rollback(req_, v.accepted, T, snapshot_base);
     ++steps_;
     accepted_drafts_ += v.accepted - 1;
     // The scheduler's MTP group, per draft position (sched MtpAcceptance).

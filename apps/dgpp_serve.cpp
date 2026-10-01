@@ -2103,10 +2103,17 @@ int main(int argc, char** argv) {
     // GLM-5.3 up to 16. Fitting batch families remain available when
     // a deeper configuration exceeds the full-batch ceiling.
     // Reject configurations whose depth-1 batch already exceeds the cap.
-    const int graph_rows_per_request = mtp ? 1 + mtp_depth : 1;
+    // The DFlash2 eager path verifies a full block per slot per step: the
+    // fixed batch must hold max_concurrency blocks (the engine's batched
+    // speculative pass caps itself to what the rows allow).
+    const int graph_rows_per_request = !dflash_dir.empty()
+                                           ? dgpp::kSpecRows
+                                           : (mtp ? 1 + mtp_depth : 1);
     int decode_rows = std::max(dgpp::kDecodeRows, max_concurrency * graph_rows_per_request);
-    if (decode_graph && decode_rows > family->decode_rows_cap()) {
-      if (mtp_depth > 1 && max_concurrency * 2 <= family->decode_rows_cap()) {
+    if (decode_rows > family->decode_rows_cap()) {
+      if (!decode_graph) {
+        decode_rows = family->decode_rows_cap();  // eager: a narrower spec batch
+      } else if (mtp_depth > 1 && max_concurrency * 2 <= family->decode_rows_cap()) {
         DGPP_LOG_INFO(
             "serve: {} slots x {} rows exceed the {} family's {}-row decode ceiling; "
             "depth {} uses fitting batch families where supported, otherwise scalar graphs",
