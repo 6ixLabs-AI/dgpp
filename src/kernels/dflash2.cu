@@ -56,11 +56,12 @@ __global__ void grouped_conv_kernel(const uint16_t* __restrict__ x, const uint16
   const bool has_prev = (r % block_rows) >= 1;
   const uint16_t* xp = x + (r - 1) * hidden;  // in-bounds wherever has_prev (row 0 of a block never reads it)
   const uint16_t* dr = delta + r * delta_row_stride;
+  const int groups = hidden / group_size;  // one delta per (tap, group): tap 1 starts at dr[groups]
   for (int c = threadIdx.x; c < hidden; c += blockDim.x) {
     const int g = c / group_size;
     float acc = (bf16_bits_to_float(base[c]) + bf16_bits_to_float(dr[g])) * bf16_bits_to_float(xr[c]);
     if (has_prev)
-      acc += (bf16_bits_to_float(base[hidden + c]) + bf16_bits_to_float(dr[group_size + g])) *
+      acc += (bf16_bits_to_float(base[hidden + c]) + bf16_bits_to_float(dr[groups + g])) *
              bf16_bits_to_float(xp[c]);
     out[r * hidden + c] = float_to_bf16_bits(acc);
   }

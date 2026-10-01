@@ -43,7 +43,10 @@ std::vector<float> to_f(const std::vector<uint16_t>& x) {
 
 DGPP_TEST(dflash2_grouped_conv_matches_the_reference) {
   cudaStream_t s = test_stream();
-  const int rows = 16, block_rows = 8, hidden = 64, groups = 4, G = hidden / groups;  // group 16
+  // group_size (channels per group) != groups per tap: hidden 64 in
+  // groups of 4 -> 16 groups; tap 1 starts at dr[16], not dr[4]. A test
+  // with group_size == groups passes either way and proves nothing.
+  const int rows = 16, block_rows = 8, hidden = 64, group_size = 4, G = hidden / group_size;
   auto xr = random_bf16_normal(11, static_cast<int64_t>(rows) * hidden, 1.0f);
   auto base = random_bf16_normal(12, 2ull * 2 * hidden, 0.5f);      // [sides][taps][hidden]
   auto delta = random_bf16_normal(13, static_cast<int64_t>(rows) * 2 * 2 * G, 0.2f);  // [rows][sides][taps][G]
@@ -54,7 +57,7 @@ DGPP_TEST(dflash2_grouped_conv_matches_the_reference) {
     db.upload(base.data(), base.size() * 2);
     dd.upload(delta.data(), delta.size() * 2);
     dgpp::dflash2_grouped_conv_bf16(cb16(dx), cb16(dd) + side * 2 * G, cb16(db) + side * 2 * hidden,
-                                    b16(dy), rows, block_rows, hidden, 2, 16, ds, s);
+                                    b16(dy), rows, block_rows, hidden, 2, group_size, ds, s);
     DGPP_CUDA_OK(cudaStreamSynchronize(s));
     std::vector<uint16_t> y(xr.size());
     dy.download(y.data(), y.size() * 2);
@@ -63,7 +66,7 @@ DGPP_TEST(dflash2_grouped_conv_matches_the_reference) {
     std::vector<uint16_t> want(xr.size());
     for (int r = 0; r < rows; ++r)
       for (int c = 0; c < hidden; ++c) {
-        const int g = c / 16;
+        const int g = c / group_size;
         float acc = (bf[side * 2 * hidden + c] + df[(static_cast<int64_t>(r) * ds + side * 2 * G + g)]) *
                     xf[static_cast<int64_t>(r) * hidden + c];
         if ((r % block_rows) >= 1)
