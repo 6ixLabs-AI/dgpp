@@ -511,13 +511,10 @@ class EagerEngineAdapter : public sched::SchedulerEngine {
       // slot-step): the engagement split that sizes every spec-side
       // investment. Default off: zero behavior change.
       if (dflash_trace()) {
-        const char* why = !fits ? "context-fit"
-            : s.params.temperature > 0.0f ? "temperature"
-            : s.report_logprobs ? "logprobs"
-            : !s.bias.empty() ? "logit-bias"
-            : s.grammar ? "grammar"
-            : "penalties";
-        logf(LogLevel::Info, "dflash: slot {} runs plain ({})", req, why);
+        logf(LogLevel::Info, "dflash: slot {} runs plain (temp={} logprobs={} bias={} grammar={} reppen={} freqpen={} prespen={})",
+             req, s.params.temperature, s.report_logprobs ? 1 : 0, s.bias.empty() ? 0 : 1,
+             s.grammar ? 1 : 0, s.params.repetition_penalty, s.params.frequency_penalty,
+             s.params.presence_penalty);
       }
       return {};
     }
