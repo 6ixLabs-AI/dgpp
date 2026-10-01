@@ -96,7 +96,7 @@ class MimoModel : public SessionModel<MimoModel> {
             int64_t max_cache_tokens, MimoResidency residency = MimoResidency::Streaming,
             BoundaryReducer* boundary = nullptr, int tp_rank = 0, int tp_world = 1,
             int max_requests = 1, bool mtp = false, int decode_rows = 0,
-            LatentFormat kv_format = LatentFormat::kBf16);
+            LatentFormat kv_format = LatentFormat::kBf16, bool serving_logits = false);
   ~MimoModel();
   MimoModel(const MimoModel&) = delete;
   MimoModel& operator=(const MimoModel&) = delete;
@@ -108,7 +108,8 @@ class MimoModel : public SessionModel<MimoModel> {
                                 int tp_rank = 0, int tp_world = 1,
                                 MimoResidency residency = MimoResidency::Streaming,
                                 int max_requests = 1, bool mtp = false, int decode_rows = 0,
-                                LatentFormat kv_format = LatentFormat::kBf16);
+                                LatentFormat kv_format = LatentFormat::kBf16,
+                                bool serving_logits = false);
 
   // The cold diagnostic forward: one request on slot 0 (which must be
   // closed), fresh state, every row's logits; the slot is closed after.

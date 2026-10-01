@@ -48,6 +48,7 @@
 #include "common/prefill_progress.hpp"
 #include "engine/boundary_reducer.hpp"
 #include "engine/decode_outputs.hpp"
+#include "engine/logits_storage.hpp"
 #include "kernels/gemm.hpp"
 #include "kernels/glm_spec.hpp"
 #include "kernels/pick.hpp"
@@ -385,6 +386,28 @@ class SessionModel : public PrefillReporting {
   // its results (the tail mirrors, the host copies).
   RowInputs begin_run(const RowRun& run);
   Outputs finish_run(const RowRun& run, Outputs&& out, bool packed_logits = false);
+  // The family projects each selected input row into consecutive logits rows.
+  // Hidden states remain in place for MTP and the host output mirrors.
+  bool packed_prefill_logits(const RowRun& run) const {
+    return compact_logits_ && !run.decode && !run.all_rows;
+  }
+  template <class Project>
+  bool project_head_rows(const RowRun& run, Project&& project) {
+    const bool packed = packed_prefill_logits(run);
+    if (!packed) {
+      if (run.T > logits_capacity_rows_)
+        throw std::invalid_argument(
+            "session head: use full diagnostic storage for all-row outputs");
+      project(0, 0, run.T);
+      return false;
+    }
+    int end = 0;
+    for (int s = 0; s < std::max(1, run.num_spans); ++s) {
+      end += run.num_spans > 0 ? run.span_lens[s] : run.T;
+      project(end - 1, s, 1);
+    }
+    return true;
+  }
   std::vector<int64_t> prefill_cuts(int64_t start, int64_t end, const std::vector<int64_t>& boundaries) const;
   Outputs session_prefill_chunks(int req, const int64_t* ids, int64_t start, int64_t count,
                                  const std::vector<int64_t>& boundaries, SnapshotRequest* snap);
@@ -452,6 +475,7 @@ class SessionModel : public PrefillReporting {
   int max_decode_rows_ = kDecodeRows;  // the fixed batch's row ceiling (SessionParams::decode_rows)
 
   // The head's outputs: fp32 logits [M, vocab slice], the final hidden [M, H].
+  bool compact_logits_ = false;
   int logits_capacity_rows_ = 0;
   float* logits_ = nullptr;
   uint16_t* h_ = nullptr;
@@ -529,7 +553,8 @@ void SessionModel<D>::init_session(const SessionParams& p) {
   max_decode_rows_ = std::max({kDecodeRows, p.decode_rows, max_requests_});
   if (p.logits_rows < 0 || (p.logits_rows > 0 && p.logits_rows < max_decode_rows_))
     throw std::invalid_argument("session model: compact logits must hold every decode row");
-  logits_capacity_rows_ = p.logits_rows > 0 ? p.logits_rows : max_tokens_;
+  compact_logits_ = p.logits_rows > 0;
+  logits_capacity_rows_ = compact_logits_ ? p.logits_rows : max_tokens_;
   mtp_ = p.mtp;
   vocab_size_ = p.vocab_size;
   hidden_ = p.hidden;
@@ -586,13 +611,18 @@ void SessionModel<D>::init_session(const SessionParams& p) {
 // tokens, the rows' metadata, the head's outputs and the draft window.
 // `decode_rows`: the fixed batch's row ceiling (SessionParams::decode_rows;
 // floored the same way).
-inline void session_core_plan_bytes(int max_tokens, int max_requests, int hidden, int lm_vocab_count, bool mtp,
-                                    int draft_width, size_t* device, size_t* pinned, int decode_rows = kDecodeRows) {
+inline void session_core_plan_bytes(int max_tokens, int max_requests, int hidden,
+                                    int lm_vocab_count, bool mtp, int draft_width, size_t* device,
+                                    size_t* pinned, int decode_rows = kDecodeRows,
+                                    bool serving_logits = false) {
   const size_t M = static_cast<size_t>(max_tokens), R = static_cast<size_t>(max_requests);
   const size_t rows = static_cast<size_t>(std::max({kDecodeRows, decode_rows, max_requests}));
   const size_t token_rows = std::max(M, rows + R * static_cast<size_t>(kSpecRows));
   const size_t H = static_cast<size_t>(hidden), V = static_cast<size_t>(lm_vocab_count);
-  size_t dev = R * 8 + token_rows * 8 + M * 12 + 8 + rows * (4 + 8 + 8) + M * V * 4 + M * H * 2;
+  const size_t logits_rows =
+      serving_logits_capacity(max_tokens, serving_logits, decode_rows, max_requests);
+  size_t dev =
+      R * 8 + token_rows * 8 + M * 12 + 8 + rows * (4 + 8 + 8) + logits_rows * V * 4 + M * H * 2;
   size_t pin = R * 8 + token_rows * 8 + rows * (4 + 8 + 8) + rows * V * 4 + rows * H * 2;
   if (mtp) {
     dev += R * 8 * 2 + R * rows * static_cast<size_t>(draft_width) * 2;
@@ -684,6 +714,8 @@ typename SessionModel<D>::RowInputs SessionModel<D>::begin_run(const RowRun& run
   const int T = run.T;
   if (T <= 0) throw std::invalid_argument("run_rows: empty row batch");
   if (T > max_tokens_) throw std::invalid_argument("run_rows: rows exceed max_tokens");
+  if ((run.decode || run.all_rows) && T > logits_capacity_rows_)
+    throw std::invalid_argument("run_rows: use full diagnostic storage for all-row outputs");
   RowInputs in;
   in.batched = run.batch_requests > 0;
   in.num_requests = in.batched ? run.batch_requests : (run.num_spans > 0 ? run.num_spans : 1);

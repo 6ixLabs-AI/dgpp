@@ -1,0 +1,6 @@
+Passing engine results from the focused CTest run; the later family rerun is in deepseek-family-tests.log.
+1/7 Test #114: glm_dsa_engine_test ..............   Passed    5.08 sec
+2/7 Test #117: glm4_engine_test .................   Passed    3.42 sec
+3/7 Test #120: mimo_engine_test .................   Passed    3.90 sec
+4/7 Test #124: dsv41_engine_test ................   Passed    7.81 sec
+5/7 Test #126: qwen_engine_test .................   Passed   18.83 sec

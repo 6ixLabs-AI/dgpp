@@ -98,15 +98,13 @@ class GlmDiagnosticModel : public PrefillReporting {
   // KV FORMAT: `kv_format` is the DSA latent cache's storage
   // format (kernels/latent_format.hpp) — bf16 (default, every parity
   // gate's format), fp8 or fp4; the index cache stays fp8 regardless.
-  GlmDiagnosticModel(const GlmTextConfig& cfg,
-                     const std::string& checkpoint_dir, int max_tokens,
-                     int64_t max_cache_tokens,
-                     GlmBoundaryReducer* boundary = nullptr, int tp_rank = 0,
-                     int tp_world = 1,
+  GlmDiagnosticModel(const GlmTextConfig& cfg, const std::string& checkpoint_dir, int max_tokens,
+                     int64_t max_cache_tokens, GlmBoundaryReducer* boundary = nullptr,
+                     int tp_rank = 0, int tp_world = 1,
                      GlmResidency residency = GlmResidency::Streaming,
-                     GlmHeadSharding head = GlmHeadSharding::Full,
-                     int max_requests = 1, bool mtp = false,
-                     LatentFormat kv_format = LatentFormat::kBf16);
+                     GlmHeadSharding head = GlmHeadSharding::Full, int max_requests = 1,
+                     bool mtp = false, LatentFormat kv_format = LatentFormat::kBf16,
+                     bool serving_logits = false);
 
   // ---- the memory plan ----------------------------------------
   // Every byte the constructor (and its layer objects) will allocate for a
@@ -119,13 +117,12 @@ class GlmDiagnosticModel : public PrefillReporting {
   // may ask for more for the head at a large row count) and the CUDA
   // context, the bus and the prefix arena are the caller's to add.
   using MemoryPlan = dgpp::MemoryPlan;  // engine/memory_plan.hpp (shared with the Qwen model)
-  static MemoryPlan plan_memory(const GlmTextConfig& cfg, int max_tokens,
-                                int64_t max_cache_tokens, int tp_rank = 0,
-                                int tp_world = 1,
+  static MemoryPlan plan_memory(const GlmTextConfig& cfg, int max_tokens, int64_t max_cache_tokens,
+                                int tp_rank = 0, int tp_world = 1,
                                 GlmResidency residency = GlmResidency::Streaming,
-                                GlmHeadSharding head = GlmHeadSharding::Full,
-                                int max_requests = 1, bool mtp = false,
-                                LatentFormat kv_format = LatentFormat::kBf16);
+                                GlmHeadSharding head = GlmHeadSharding::Full, int max_requests = 1,
+                                bool mtp = false, LatentFormat kv_format = LatentFormat::kBf16,
+                                bool serving_logits = false);
   ~GlmDiagnosticModel();
   GlmDiagnosticModel(const GlmDiagnosticModel&) = delete;
   GlmDiagnosticModel& operator=(const GlmDiagnosticModel&) = delete;
@@ -690,6 +687,7 @@ class GlmDiagnosticModel : public PrefillReporting {
   const GlmTextConfig& config() const { return cfg_; }
   // The row bound of one forward (activations are sized to it).
   int max_tokens() const { return max_tokens_; }
+  int logits_capacity_rows() const { return logits_capacity_rows_; }
   // The context bound: the highest token count a session may reach — the
   // DSA pool's slots (a prompt plus its answer must fit), or the larger of
   // the two constructor bounds without DSA layers.
@@ -1070,6 +1068,7 @@ class GlmDiagnosticModel : public PrefillReporting {
   uint16_t* dense_g_ = nullptr;                // [T, dense_inter]
   uint16_t* dense_u_ = nullptr;
   uint16_t* dense_act_ = nullptr;
+  int logits_capacity_rows_ = 0;
   float* logits_ = nullptr;                    // [T, vocab] fp32
 };
 

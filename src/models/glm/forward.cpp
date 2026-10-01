@@ -9,6 +9,7 @@
 #include "common/cuda_check.hpp"
 #include "common/dtypes.hpp"
 #include "common/log.hpp"
+#include "engine/logits_storage.hpp"
 #include "kernels/bf12_companions.hpp"
 #include "kernels/glm_mhc_launch.hpp"
 #include "kernels/glm_moe_launch.hpp"
@@ -83,16 +84,12 @@ Cfg with_tp(Cfg c, int world) {
 
 }  // namespace
 
-GlmDiagnosticModel::GlmDiagnosticModel(const GlmTextConfig& cfg,
-                                        const std::string& checkpoint_dir,
-                                        int max_tokens,
-                                        int64_t max_cache_tokens,
-                                        GlmBoundaryReducer* boundary,
-                                        int tp_rank, int tp_world,
-                                        GlmResidency residency,
-                                        GlmHeadSharding head,
-                                        int max_requests, bool mtp,
-                                        LatentFormat kv_format)
+GlmDiagnosticModel::GlmDiagnosticModel(const GlmTextConfig& cfg, const std::string& checkpoint_dir,
+                                       int max_tokens, int64_t max_cache_tokens,
+                                       GlmBoundaryReducer* boundary, int tp_rank, int tp_world,
+                                       GlmResidency residency, GlmHeadSharding head,
+                                       int max_requests, bool mtp, LatentFormat kv_format,
+                                       bool serving_logits)
     : cfg_(cfg),
       kda_cfg_(with_tp(cfg.kda_config(), tp_world)),
       dsa_cfg_(with_tp(cfg.dsa_config(), tp_world)),
@@ -379,8 +376,10 @@ GlmDiagnosticModel::GlmDiagnosticModel(const GlmTextConfig& cfg,
     dense_u_ = static_cast<uint16_t*>(alloc_device(T * I * 2));
     dense_act_ = static_cast<uint16_t*>(alloc_device(T * I * 2));
   }
+  logits_capacity_rows_ =
+      serving_logits_capacity(max_tokens_, serving_logits, kDecodeRows, max_requests);
   logits_ = static_cast<float*>(
-      alloc_device(T * lm_vocab_count_ * sizeof(float)));
+      alloc_device(static_cast<size_t>(logits_capacity_rows_) * lm_vocab_count_ * sizeof(float)));
   DGPP_CUDA_OK(cudaHostAlloc(
       reinterpret_cast<void**>(&h_tail_logits_),
       static_cast<size_t>(kDecodeRows) * lm_vocab_count_ * sizeof(float),
@@ -454,9 +453,9 @@ void GlmDiagnosticModel::finish_companions() {
 }
 
 GlmDiagnosticModel::MemoryPlan GlmDiagnosticModel::plan_memory(
-    const GlmTextConfig& cfg, int max_tokens, int64_t max_cache_tokens,
-    int tp_rank, int tp_world, GlmResidency residency, GlmHeadSharding head,
-    int max_requests, bool mtp, LatentFormat kv_format) {
+    const GlmTextConfig& cfg, int max_tokens, int64_t max_cache_tokens, int tp_rank, int tp_world,
+    GlmResidency residency, GlmHeadSharding head, int max_requests, bool mtp,
+    LatentFormat kv_format, bool serving_logits) {
   if (max_tokens <= 0)
     throw std::invalid_argument("plan_memory: max_tokens must be positive");
   if (max_requests <= 0)
@@ -583,7 +582,9 @@ GlmDiagnosticModel::MemoryPlan GlmDiagnosticModel::plan_memory(
     act += 3 * (T * H * 2);                               // collapsed_, normed_, sub_out_
     if (cfg.first_k_dense_replace > 0)
       act += 3 * (T * static_cast<size_t>(cfg.intermediate_size) * 2);
-    act += T * V * 4;                                     // logits_
+    act += static_cast<size_t>(
+               serving_logits_capacity(max_tokens, serving_logits, kDecodeRows, max_requests)) *
+           V * 4;
     act += R * 8 * 3 + static_cast<size_t>(kDecodeRows) * (4 + 8 + 8);
     plan.add("activations (per-forward rows)", act,
              static_cast<size_t>(kDecodeRows) * V * 4 +
@@ -834,6 +835,8 @@ GlmDiagnosticModel::Outputs GlmDiagnosticModel::run_stack(
   if (T <= 0) throw std::invalid_argument("forward: empty token batch");
   if (T > max_tokens_)
     throw std::invalid_argument("forward: tokens exceed max_tokens");
+  if (T > logits_capacity_rows_)
+    throw std::invalid_argument("forward: use full diagnostic logits storage for all-row outputs");
   for (int64_t id : token_ids)
     if (id < 0 || id >= cfg_.vocab_size)
       throw std::invalid_argument("forward: token id out of range");

@@ -6,6 +6,16 @@ The history by milestone. The dated engineering record in
 
 ## Unreleased
 
+- **Compact serving logits across all model families**: extend PR #67's
+  bounded Qwen head storage to BF16 and packed Qwen heads, GLM-4.7,
+  GLM-5.3, GLM-5.3-Flash, DeepSeek-V4.1 and MiMo. Serving stores only the
+  decode capacity and projects each prefill request's final row; diagnostic
+  full-row outputs remain available. BF16 head reassociation is checked
+  against FP64 and teacher-forced scores, with strict cache, MTP and decode
+  checks. Memory plans account for the smaller allocation.
+- Fix out-of-bounds head and draft-window writes when bounded DeepSeek
+  prefill ends with a chunk shorter than its retained replay window.
+
 - **Engine behavior is set by the deployment config, not the environment**
   (2026-09-30): the switches this campaign had added as environment
   variables are `engine.*` keys — `expert_gemm` (`wide` | `wide3` | `wide4` |

@@ -1895,3 +1895,21 @@ target_link_libraries(mimo_native_mtp_test PRIVATE dgpp_models_mimo_layers dgpp_
 dgpp_set_common(mimo_native_mtp_test)
 add_test(NAME mimo_native_mtp_test COMMAND mimo_native_mtp_test)
 set_tests_properties(mimo_native_mtp_test PROPERTIES LABELS "gpu" RUN_SERIAL TRUE)
+
+# Compact serving heads: allocation, FP64 oracle, groups, cache and drafts.
+add_executable(compact_head_test tests/cuda/compact_head_test.cpp tests/cuda/glm_tp_fixture.cpp)
+target_include_directories(compact_head_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(compact_head_test PRIVATE dgpp_models_glm_loader dgpp_models_glm4_layers
+  dgpp_models_glm_dsa_layers dgpp_models_mimo_layers dgpp_models_dsv41_layers CUDA::cudart Threads::Threads)
+dgpp_set_common(compact_head_test)
+add_test(NAME compact_head_test COMMAND compact_head_test)
+add_test(NAME compact_head_all_rows COMMAND ${CMAKE_COMMAND} -E env DGPP_PREFILL_HEAD_ALL_ROWS=1 $<TARGET_FILE:compact_head_test>)
+set_tests_properties(compact_head_test compact_head_all_rows PROPERTIES LABELS "gpu" RUN_SERIAL TRUE)
+
+if(TARGET dgpp_bus)
+  add_executable(serving_head_check apps/serving_head_check.cpp)
+  target_link_libraries(serving_head_check PRIVATE dgpp_models_glm_loader dgpp_models_glm4_layers
+    dgpp_models_glm_dsa_layers dgpp_models_mimo_layers dgpp_models_dsv41_layers dgpp_models_qwen_layers
+    dgpp_bus dgpp_text CUDA::cudart Threads::Threads)
+  dgpp_set_common(serving_head_check)
+endif()

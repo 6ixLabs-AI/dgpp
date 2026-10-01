@@ -154,6 +154,10 @@ record the modes measured for each deployment.
   and [MTP acceptance counters](docs/openai-compatibility.md#speculative-decoding-counters).
   Startup checks the memory plan before allocation. Cache capacity is configurable,
   with BF16, FP8 or FP4 latent storage for GLM-5.3.
+  All families size serving logits for decode and MTP verification, projecting
+  only prefill tails. At a 2048-row prefill budget this saves about 301 MiB per
+  rank for GLM-5.3-Flash on four nodes; see the
+  [numerical validation](benchmarks/results/2026-10-01-compact-serving-heads.md).
 
 ## Accuracy and correctness
 
@@ -163,15 +167,17 @@ tokens run after run, across ranks (every admission is journaled from the
 head and every tick's operation stream is digest-checked on every peer),
 and with speculative decoding on or off (greedy MTP produces plain decode's
 tokens; sampled MTP preserves the target distribution). Performance work
-holds that line. A faster kernel ships only when its test proves it
-bit-identical to the chain it replaces — the packed int4/int8 tensor-core
-prefill, the 12-bit BF16 weight form, the bit-plane vocabulary head and the
-n-gram prestage all reproduce the previous outputs exactly — and a
-weight-format lever is admitted only when it is lossless.
+holds the cache, rank and speculative-decoding contracts exact. Representation
+changes such as the packed int4/int8 tensor-core prefill, the 12-bit BF16
+weight form, the bit-plane vocabulary head and the n-gram prestage have
+bitwise regression gates. Accumulation-order changes, including compact BF16
+prefill heads, use [numerical accuracy checks](docs/numerics.md) and matched
+teacher-forced scoring; benign rounding differences need not reproduce the
+previous build's bits. Weight storage changes must preserve the source values.
 
-Some speed is only available by changing the arithmetic: quantizing
-activations to FP8 for the tensor cores, summing expert partials in bf16,
-folding scales into the weight values. dgpp supports those levers, but
+Reduced-precision levers include quantizing activations to FP8 for the tensor
+cores, summing expert partials in bf16, and folding scales into the weight
+values. dgpp supports those levers, but
 never silently. Each is an explicit `engine.*` key, off by default, that a
 deployment turns on in its own configuration; every rank runs the same
 setting (the config digest carries it) and the startup log names it. Each

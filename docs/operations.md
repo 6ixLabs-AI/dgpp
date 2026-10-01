@@ -132,13 +132,22 @@ The setting is distributed by rank 0 and included in the configuration digest,
 so peers use the same dispatch. It changes floating-point accumulation order.
 Use `--fp8-head gemv` to restore the previous head path. When restoring BF16
 dense weights, pass `--dense-weights checkpoint --fp8-head gemv` together.
-Plain FP8 prefills compute only their last vocabulary row, retaining the
-kernel selected for the original chunk length. For a full-head comparison,
-set `DGPP_PREFILL_HEAD_ALL_ROWS=1` in each rank process before startup.
-BF16 heads, grouped prefills and streaming-MMA chunks within the decode
-envelope continue to compute every row.
-The earlier [throughput measurement and limits](../benchmarks/results/2026-09-20-qwen-fp8-head-e2e.md)
-remain historical evidence.
+Serving allocates FP32 vocabulary logits for the decode/verify capacity,
+with a floor of eight rows, across Qwen, GLM-4.7, GLM-5.3, GLM-5.3-Flash,
+DeepSeek-V4.1 and MiMo. Prefill projects the final row of each request into
+that buffer. Hidden states retain their original layout for cache snapshots
+and MTP. For a vocabulary shard of `V` entries, a prefill capacity `T` and
+decode capacity `D`, this saves `(T - D) * V * 4` device bytes per rank.
+
+Qwen FP8 and packed heads keep the full product's kernel selection and
+accumulation order. BF16 heads use the existing small-row projection, which
+can change FP32 rounding. Acceptance uses an FP64 oracle and teacher-forced
+quality checks; cache, draft, and fixed-token decode checks remain strict.
+GLM-5.3-Flash already selected prefill tails, so its change is storage only.
+Diagnostic constructors keep full storage by default. For an A/B fallback,
+set `DGPP_PREFILL_HEAD_ALL_ROWS=1` in every rank before memory planning and
+startup; Flash retains its existing selected-row projection.
+See [numerical validation](numerics.md) for the serving-head probe.
 
 Qwen NVFP4 expert prefills default to W4A4 when the checkpoint supplies
 calibrated activation scales. Set `DGPP_MOE_W4A4=0` in every rank process

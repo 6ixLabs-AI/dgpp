@@ -1,0 +1,304 @@
+{
+  "requests": [
+    {
+      "request": 0,
+      "usage": {
+        "prompt_tokens": 916,
+        "completion_tokens": 32,
+        "total_tokens": 948,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0
+        }
+      },
+      "finish_reason": "length"
+    },
+    {
+      "request": 1,
+      "usage": {
+        "prompt_tokens": 1116,
+        "completion_tokens": 32,
+        "total_tokens": 1148,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0
+        }
+      },
+      "finish_reason": "length"
+    },
+    {
+      "request": 2,
+      "usage": {
+        "prompt_tokens": 1316,
+        "completion_tokens": 32,
+        "total_tokens": 1348,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0
+        }
+      },
+      "finish_reason": "length"
+    },
+    {
+      "request": 3,
+      "usage": {
+        "prompt_tokens": 1516,
+        "completion_tokens": 32,
+        "total_tokens": 1548,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0
+        }
+      },
+      "finish_reason": "length"
+    }
+  ],
+  "metrics_before": {
+    "scheduler": {
+      "active": 0,
+      "queued": 0,
+      "terminal": 12,
+      "records": 0,
+      "record_tokens": 0,
+      "pool_blocks_total": 6144,
+      "pool_blocks_in_use": 19,
+      "prefilling": 0,
+      "tokens_generated": 290,
+      "snapshot_age_ms": 0.642774,
+      "prompts_prefilled": 12,
+      "prompt_tokens": 4506,
+      "prompt_tokens_computed": 2354,
+      "decode_steps": 164,
+      "decode_rows": 172,
+      "decode_batch": {
+        "last_slots": 1,
+        "last_active": 1,
+        "last_rows_per_request": 2,
+        "replays": 164,
+        "rows": 344,
+        "padded_rows": 0,
+        "replays_by_slots": {
+          "1": 156,
+          "2": 8,
+          "3": 0,
+          "4": 0,
+          "5": 0,
+          "6": 0,
+          "7": 0,
+          "8": 0,
+          "9": 0,
+          "10": 0,
+          "11": 0,
+          "12": 0,
+          "13": 0,
+          "14": 0,
+          "15": 0,
+          "16": 0
+        }
+      },
+      "spec_decode": {
+        "depth": 1,
+        "num_drafts_total": 172,
+        "num_draft_tokens_total": 172,
+        "num_accepted_tokens_total": 112,
+        "num_draft_tokens_per_pos_total": [
+          172
+        ],
+        "num_accepted_tokens_per_pos_total": [
+          112
+        ]
+      },
+      "prefill_ms": 2422.8,
+      "prefill_request_ms": 2745.8,
+      "step_ms": 5318.2
+    },
+    "service": {
+      "requests_total": 10,
+      "requests_shed": 0,
+      "pending_admissions": 0,
+      "pending_cancellations": 0,
+      "requests_cancelled": 0,
+      "requests_shed_pool": 0,
+      "requests_failed": 0,
+      "engine_failed": false,
+      "reservations_grown": 0,
+      "admission": {
+        "mode": "full",
+        "window": 256,
+        "prefill_budget_tokens": 256,
+        "prefill_idle_budget_tokens": 2048
+      },
+      "tokens_out": 290,
+      "rejects_bad": 2,
+      "tool_calls_out": 0
+    },
+    "prefix_cache": {
+      "enabled": true,
+      "slots": 232,
+      "min_tokens": 1024,
+      "head_cuts": true,
+      "entries": 2,
+      "hits": 1,
+      "misses": 11,
+      "tokens_saved": 2152,
+      "snapshots": 1,
+      "head_snapshots": 0,
+      "close_entries": 1,
+      "rolling_snapshots": 48,
+      "hop_snapshots": 30,
+      "evictions": 0,
+      "duplicates": 1,
+      "skipped_no_block": 0,
+      "skipped_no_slot": 0,
+      "skipped_image_bytes": 0,
+      "image_bytes": 0,
+      "blocks_pinned": 35,
+      "snapshot_bytes": 36937728,
+      "arena_snapshots": 49,
+      "snapshot_ms_avg": 0.497,
+      "arena_attaches": 1,
+      "attach_ms_avg": 0.541,
+      "ttft_hit_count": 1,
+      "ttft_hit_ms_avg": 57.429,
+      "ttft_miss_count": 11,
+      "ttft_miss_ms_avg": 247.717,
+      "key": "tok:700b4469fc43f23b tpl:e823b72c4bff24e7 ckpt:17b8d4d83e33e836e9549d7e1a8d25b5117203c1"
+    },
+    "prefill": {
+      "requests": [],
+      "prompt_tokens": 0,
+      "processed_tokens": 0,
+      "cached_tokens": 0,
+      "computed_tokens": 0,
+      "remaining_tokens": 0
+    }
+  },
+  "metrics_after": {
+    "scheduler": {
+      "active": 0,
+      "queued": 0,
+      "terminal": 16,
+      "records": 0,
+      "record_tokens": 0,
+      "pool_blocks_total": 6144,
+      "pool_blocks_in_use": 52,
+      "prefilling": 0,
+      "tokens_generated": 418,
+      "snapshot_age_ms": 3.94754,
+      "prompts_prefilled": 16,
+      "prompt_tokens": 9370,
+      "prompt_tokens_computed": 7218,
+      "decode_steps": 194,
+      "decode_rows": 249,
+      "decode_batch": {
+        "last_slots": 4,
+        "last_active": 2,
+        "last_rows_per_request": 2,
+        "replays": 194,
+        "rows": 540,
+        "padded_rows": 42,
+        "replays_by_slots": {
+          "1": 156,
+          "2": 18,
+          "3": 2,
+          "4": 18,
+          "5": 0,
+          "6": 0,
+          "7": 0,
+          "8": 0,
+          "9": 0,
+          "10": 0,
+          "11": 0,
+          "12": 0,
+          "13": 0,
+          "14": 0,
+          "15": 0,
+          "16": 0
+        }
+      },
+      "spec_decode": {
+        "depth": 1,
+        "num_drafts_total": 249,
+        "num_draft_tokens_total": 249,
+        "num_accepted_tokens_total": 162,
+        "num_draft_tokens_per_pos_total": [
+          249
+        ],
+        "num_accepted_tokens_per_pos_total": [
+          162
+        ]
+      },
+      "prefill_ms": 6993.9,
+      "prefill_request_ms": 11876.9,
+      "step_ms": 6865.8
+    },
+    "service": {
+      "requests_total": 14,
+      "requests_shed": 0,
+      "pending_admissions": 0,
+      "pending_cancellations": 0,
+      "requests_cancelled": 0,
+      "requests_shed_pool": 0,
+      "requests_failed": 0,
+      "engine_failed": false,
+      "reservations_grown": 0,
+      "admission": {
+        "mode": "full",
+        "window": 256,
+        "prefill_budget_tokens": 256,
+        "prefill_idle_budget_tokens": 2048
+      },
+      "tokens_out": 418,
+      "rejects_bad": 2,
+      "tool_calls_out": 0
+    },
+    "prefix_cache": {
+      "enabled": true,
+      "slots": 232,
+      "min_tokens": 1024,
+      "head_cuts": true,
+      "entries": 5,
+      "hits": 1,
+      "misses": 15,
+      "tokens_saved": 2152,
+      "snapshots": 1,
+      "head_snapshots": 0,
+      "close_entries": 4,
+      "rolling_snapshots": 72,
+      "hop_snapshots": 36,
+      "evictions": 0,
+      "duplicates": 1,
+      "skipped_no_block": 0,
+      "skipped_no_slot": 0,
+      "skipped_image_bytes": 0,
+      "image_bytes": 0,
+      "blocks_pinned": 68,
+      "snapshot_bytes": 36937728,
+      "arena_snapshots": 73,
+      "snapshot_ms_avg": 0.505,
+      "arena_attaches": 1,
+      "attach_ms_avg": 0.541,
+      "ttft_hit_count": 1,
+      "ttft_hit_ms_avg": 57.429,
+      "ttft_miss_count": 15,
+      "ttft_miss_ms_avg": 970.083,
+      "key": "tok:700b4469fc43f23b tpl:e823b72c4bff24e7 ckpt:17b8d4d83e33e836e9549d7e1a8d25b5117203c1"
+    },
+    "prefill": {
+      "requests": [],
+      "prompt_tokens": 0,
+      "processed_tokens": 0,
+      "cached_tokens": 0,
+      "computed_tokens": 0,
+      "remaining_tokens": 0
+    }
+  }
+}

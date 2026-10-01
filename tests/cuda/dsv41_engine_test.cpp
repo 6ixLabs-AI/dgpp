@@ -14,6 +14,8 @@
 // same gather); the world-2 eager transcripts follow the world-1 ones
 // (reported; the folds reassociate, so a near tie may flip a late token —
 // the first tokens must agree).
+// Graph models use the compact serving allocation; eager references retain
+// full heads. Cache, batching and speculative contracts keep their strict gates.
 #include <algorithm>
 #include <cmath>
 #include <condition_variable>
@@ -258,7 +260,9 @@ void rank_work(int r, const Dsv41TextConfig& cfg, const std::string& dir, const 
   try {
     BusBoundaryReducer reducer(*bus, wait_timeout_ms());
     Dsv41Model eager(cfg, dir, kMaxTokens, kCache, Dsv41Residency::Resident, &reducer, r, kWorld, kSlots);
-    Dsv41Model graph(cfg, dir, kMaxTokens, kCache, Dsv41Residency::Resident, &reducer, r, kWorld, kSlots);
+    Dsv41Model graph(cfg, dir, kMaxTokens, kCache, Dsv41Residency::Resident, &reducer, r, kWorld,
+                     kSlots,
+                     /*mtp=*/false, /*decode_rows=*/0, /*serving_logits=*/true);
     DGPP_CUDA_OK(cudaHostAlloc(reinterpret_cast<void**>(&scratch),
                                sizeof(uint16_t) * dgpp::kPickScratchElems(kWorld), cudaHostAllocDefault));
     arrive_once();
@@ -373,8 +377,9 @@ void rank_work_mtp(int r, const Dsv41TextConfig& cfg, const std::string& dir, co
     // Two slots x (1 + depth) rows fit the family's 16-row decode cap.
     const int decode_rows = 2 * (1 + depth);
     Dsv41Model eager(cfg, dir, kMaxTokens, kCache, Dsv41Residency::Resident, &reducer, r, kWorld, kSlots);
-    Dsv41Model mtp(cfg, dir, kMaxTokens, kCache, Dsv41Residency::Resident, &reducer, r, kWorld, kSlots, /*mtp=*/true,
-                   decode_rows);
+    Dsv41Model mtp(cfg, dir, kMaxTokens, kCache, Dsv41Residency::Resident, &reducer, r, kWorld,
+                   kSlots,
+                   /*mtp=*/true, decode_rows, /*serving_logits=*/true);
     DGPP_CUDA_OK(cudaHostAlloc(reinterpret_cast<void**>(&scratch),
                                sizeof(uint16_t) * dgpp::kPickScratchElems(kWorld), cudaHostAllocDefault));
     arrive_once();
@@ -472,8 +477,9 @@ void rank_work_sched(int r, const Dsv41TextConfig& cfg, const std::string& dir, 
     const int sched_slots = 2;
     const int decode_rows = sched_slots * (1 + depth);
     Dsv41Model eager(cfg, dir, kMaxTokens, kCache, Dsv41Residency::Resident, &reducer, r, kWorld, kSlots);
-    Dsv41Model mtp(cfg, dir, kMaxTokens, kCache, Dsv41Residency::Resident, &reducer, r, kWorld, sched_slots,
-                   /*mtp=*/true, decode_rows);
+    Dsv41Model mtp(cfg, dir, kMaxTokens, kCache, Dsv41Residency::Resident, &reducer, r, kWorld,
+                   sched_slots,
+                   /*mtp=*/true, decode_rows, /*serving_logits=*/true);
     DGPP_CUDA_OK(cudaHostAlloc(reinterpret_cast<void**>(&scratch),
                                sizeof(uint16_t) * dgpp::kPickScratchElems(kWorld), cudaHostAllocDefault));
     arrive_once();
@@ -599,8 +605,9 @@ void rank_work_wide(int r, const Dsv41TextConfig& cfg, const std::string& dir,
     // kernel and diverge at near-ties.
     Dsv41Model eager(cfg, dir, kMaxTokens, cache, Dsv41Residency::Resident, &reducer, r, kWorld, slots, /*mtp=*/false,
                      decode_rows);
-    Dsv41Model mtp(cfg, dir, kMaxTokens, cache, Dsv41Residency::Resident, &reducer, r, kWorld, slots, /*mtp=*/true,
-                   decode_rows);
+    Dsv41Model mtp(cfg, dir, kMaxTokens, cache, Dsv41Residency::Resident, &reducer, r, kWorld,
+                   slots,
+                   /*mtp=*/true, decode_rows, /*serving_logits=*/true);
     require(mtp.max_decode_rows() == decode_rows, "the model takes the 30-row decode batch");
     DGPP_CUDA_OK(cudaHostAlloc(reinterpret_cast<void**>(&scratch),
                                sizeof(uint16_t) * dgpp::kPickScratchElems(kWorld), cudaHostAllocDefault));

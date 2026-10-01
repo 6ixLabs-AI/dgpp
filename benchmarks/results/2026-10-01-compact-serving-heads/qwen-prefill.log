@@ -1,0 +1,12 @@
+Test project /tmp/dgpp-compact-heads/build-review
+    Start 23: qwen_prefill_head
+1/2 Test #23: qwen_prefill_head ................   Passed    3.05 sec
+    Start 24: qwen_prefill_head_all_rows
+2/2 Test #24: qwen_prefill_head_all_rows .......   Passed    3.01 sec
+
+100% tests passed, 0 tests failed out of 2
+
+Label Time Summary:
+gpu    =   6.06 sec*proc (2 tests)
+
+Total Test time (real) =   6.06 sec

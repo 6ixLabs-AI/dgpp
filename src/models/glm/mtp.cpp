@@ -47,6 +47,8 @@ void GlmDiagnosticModel::mtp_run_rows(int req, int64_t first_pos, int T,
                                       bool decode_row, bool capture_mode,
                                       int head_rows, int batch_requests) {
   if (!mtp_) throw std::logic_error("mtp_run_rows: MTP is not enabled");
+  if (head_rows > logits_capacity_rows_)
+    throw std::invalid_argument("mtp_run_rows: output exceeds logits capacity");
   if (head_rows != 1 && head_rows != T)
     throw std::invalid_argument("mtp_run_rows: head_rows must be 1 or T");
   const int H = cfg_.hidden_size;

@@ -1,0 +1,514 @@
+[prefill_tf] rank 3 step 0: target 3283 argmax 147914 lmax 3.70224643 lse 10.6437339143 target_logit nan
+[head_hidden] rank 3 step 0: 19e6ffe08e963aa9 length 1
+[prefill_tf] rank 3 step 1: target 902 argmax 129374 lmax 8.14063263 lse 11.8878068252 target_logit nan
+[head_hidden] rank 3 step 1: 565509bc1bb14c44 length 4
+[prefill_tf] rank 3 step 2: target 15070 argmax 151351 lmax 5.07701063 lse 10.4443786043 target_logit nan
+[head_hidden] rank 3 step 2: 3881965770ffa006 length 8
+[prefill_tf] rank 3 step 3: target 892 argmax 129411 lmax 8.18653393 lse 10.4337290856 target_logit nan
+[head_hidden] rank 3 step 3: 7fae35334b8f378d length 17
+[prefill_tf] rank 3 step 4: target 922 argmax 136851 lmax 6.85026407 lse 10.847181959 target_logit nan
+[head_hidden] rank 3 step 4: 0811d07a22a1af5a length 64
+[prefill_tf] rank 3 step 5: target 3838 argmax 131495 lmax 9.28250504 lse 10.4860482832 target_logit nan
+[head_hidden] rank 3 step 5: 3ee30bc7322f8414 length 129
+[prefill_tf] rank 3 step 6: target 26311 argmax 120258 lmax 5.56944323 lse 10.4004359071 target_logit nan
+[head_hidden] rank 3 step 6: 0b88a0d8b4c8afc8 length 257
+[prefill_tf] rank 3 step 7: target 358 argmax 128939 lmax 9.25507832 lse 11.1889881755 target_logit nan
+[head_hidden] rank 3 step 7: e33557137eb78c2c length 1024
+[prefill_tf] rank 3 step 8: target 31052 argmax 147914 lmax 3.59275937 lse 10.7296908574 target_logit nan
+[head_hidden] rank 3 step 8: 7be56ad4ca5dd177 length 1
+[prefill_tf] rank 3 step 9: target 198 argmax 138403 lmax 5.99701405 lse 10.2523990689 target_logit nan
+[head_hidden] rank 3 step 9: 1d220120407756b0 length 4
+[prefill_tf] rank 3 step 10: target 5112 argmax 119686 lmax 9.79167271 lse 11.3716932872 target_logit nan
+[head_hidden] rank 3 step 10: dee4a7bdd322b041 length 8
+[prefill_tf] rank 3 step 11: target 8907 argmax 135436 lmax 6.89518499 lse 10.9580549228 target_logit nan
+[head_hidden] rank 3 step 11: 4b2c6c7c24da6ac3 length 17
+[prefill_tf] rank 3 step 12: target 5702 argmax 143589 lmax 13.9209385 lse 14.0259144334 target_logit nan
+[head_hidden] rank 3 step 12: 1307b6ca4aafd7b2 length 64
+[prefill_tf] rank 3 step 13: target 16804 argmax 116265 lmax 7.34543514 lse 10.8893018618 target_logit nan
+[head_hidden] rank 3 step 13: 0345bc15589d06b3 length 129
+[prefill_tf] rank 3 step 14: target 1045 argmax 122399 lmax 13.1357203 lse 13.6603377327 target_logit nan
+[head_hidden] rank 3 step 14: 8ef637c8d6a690dd length 257
+[prefill_tf] rank 3 step 15: target 9315 argmax 148549 lmax 5.86205721 lse 10.3191269808 target_logit nan
+[head_hidden] rank 3 step 15: 083f5a8a64d5a0f1 length 1024
+[prefill_tf] rank 3 step 16: target 198 argmax 147914 lmax 3.63502765 lse 10.5138383155 target_logit nan
+[head_hidden] rank 3 step 16: b7b5d3698e900e78 length 1
+[prefill_tf] rank 3 step 17: target 44706 argmax 130170 lmax 9.69185925 lse 11.6012345608 target_logit nan
+[head_hidden] rank 3 step 17: 3d6e41e5ff8131d1 length 4
+[prefill_tf] rank 3 step 18: target 2669 argmax 131059 lmax 9.32721615 lse 11.3421512941 target_logit nan
+[head_hidden] rank 3 step 18: 423e0afac3be64cc length 8
+[prefill_tf] rank 3 step 19: target 63 argmax 115937 lmax 6.22611189 lse 10.7593702367 target_logit nan
+[head_hidden] rank 3 step 19: b7a60db8cf7dbb5f length 17
+[prefill_tf] rank 3 step 20: target 879 argmax 151329 lmax 10.1715288 lse 11.2270795627 target_logit nan
+[head_hidden] rank 3 step 20: 661cd80c0f9f413e length 64
+[prefill_tf] rank 3 step 21: target 11 argmax 151329 lmax 5.4667654 lse 9.04564784794 target_logit nan
+[head_hidden] rank 3 step 21: 8e805d68c3c95728 length 129
+[prefill_tf] rank 3 step 22: target 279 argmax 151329 lmax 8.44771671 lse 10.1732594438 target_logit nan
+[head_hidden] rank 3 step 22: 8d8435fe118dd77e length 257
+[prefill_tf] rank 3 step 23: target 6032 argmax 130767 lmax 15.427907 lse 15.5466134757 target_logit nan
+[head_hidden] rank 3 step 23: 5209709348ff08ff length 1024
+[prefill_tf] rank 3 step 24: target 21 argmax 147914 lmax 3.50879312 lse 10.6889972912 target_logit nan
+[head_hidden] rank 3 step 24: ce61ede7455df716 length 1
+[prefill_tf] rank 3 step 25: target 11 argmax 149474 lmax 5.53062344 lse 10.2515012395 target_logit nan
+[head_hidden] rank 3 step 25: 7f1369c203595fbc length 4
+[prefill_tf] rank 3 step 26: target 315 argmax 131808 lmax 7.45881557 lse 11.0315156057 target_logit nan
+[head_hidden] rank 3 step 26: 69026e7e04b106bf length 8
+[prefill_tf] rank 3 step 27: target 320 argmax 128278 lmax 5.84947491 lse 10.6300997115 target_logit nan
+[head_hidden] rank 3 step 27: 7dcb24b56b5c2c15 length 17
+[prefill_tf] rank 3 step 28: target 21698 argmax 125298 lmax 8.04247856 lse 10.5816842157 target_logit nan
+[head_hidden] rank 3 step 28: 44fa368c788f7f30 length 64
+[prefill_tf] rank 3 step 29: target 3697 argmax 147870 lmax 9.74513912 lse 11.2002499514 target_logit nan
+[head_hidden] rank 3 step 29: 6c880cd44b0df74f length 129
+[prefill_tf] rank 3 step 30: target 879 argmax 136511 lmax 8.52624607 lse 10.2603117899 target_logit nan
+[head_hidden] rank 3 step 30: 677e907a4660481d length 257
+[prefill_tf] rank 3 step 31: target 2581 argmax 126503 lmax 6.44298029 lse 10.5454039682 target_logit nan
+[head_hidden] rank 3 step 31: 75bb9a5a00f49514 length 1024
+[prefill_tf] rank 3 step 32: target 323 argmax 147914 lmax 3.5192399 lse 10.4509823208 target_logit nan
+[head_hidden] rank 3 step 32: 85588b51f5edef10 length 1
+[prefill_tf] rank 3 step 33: target 21053 argmax 131648 lmax 7.7787118 lse 11.2048972997 target_logit nan
+[head_hidden] rank 3 step 33: f22ceeb12f475711 length 4
+[prefill_tf] rank 3 step 34: target 17 argmax 115937 lmax 7.66385841 lse 10.4414369963 target_logit nan
+[head_hidden] rank 3 step 34: 6cc7ba61faf9534e length 8
+[prefill_tf] rank 3 step 35: target 566 argmax 137938 lmax 8.37280655 lse 9.91033807543 target_logit nan
+[head_hidden] rank 3 step 35: 4201dac9177a9eac length 17
+[prefill_tf] rank 3 step 36: target 315 argmax 139961 lmax 8.21909046 lse 10.4307170227 target_logit nan
+[head_hidden] rank 3 step 36: 92a1136aa350437c length 64
+[prefill_tf] rank 3 step 37: target 60378 argmax 123353 lmax 6.15452337 lse 10.6091662506 target_logit nan
+[head_hidden] rank 3 step 37: 1b21e947c3da11aa length 129
+[prefill_tf] rank 3 step 38: target 419 argmax 124166 lmax 9.07416916 lse 10.7734473804 target_logit nan
+[head_hidden] rank 3 step 38: 28068c4fc3c29a01 length 257
+[prefill_tf] rank 3 step 39: target 49772 argmax 139050 lmax 6.54616785 lse 10.2105768093 target_logit nan
+[head_hidden] rank 3 step 39: 868776ad1d490e24 length 1024
+[prefill_tf] rank 3 step 40: target 323 argmax 147914 lmax 3.5192399 lse 10.4509823208 target_logit nan
+[head_hidden] rank 3 step 40: 85588b51f5edef10 length 1
+[prefill_tf] rank 3 step 41: target 892 argmax 131808 lmax 7.35913467 lse 10.7712018634 target_logit nan
+[head_hidden] rank 3 step 41: dddf6d36959f167c length 4
+[prefill_tf] rank 3 step 42: target 437 argmax 115925 lmax 11.2255754 lse 12.2296811321 target_logit nan
+[head_hidden] rank 3 step 42: ca3c991818f48443 length 8
+[prefill_tf] rank 3 step 43: target 2879 argmax 127660 lmax 7.33500719 lse 10.5767326249 target_logit nan
+[head_hidden] rank 3 step 43: 3fca6e7903c74b74 length 17
+[prefill_tf] rank 3 step 44: target 488 argmax 139050 lmax 10.3039055 lse 10.9354072929 target_logit nan
+[head_hidden] rank 3 step 44: 3647bae66a3ec318 length 64
+[prefill_tf] rank 3 step 45: target 311 argmax 136820 lmax 10.4184866 lse 11.1811070894 target_logit nan
+[head_hidden] rank 3 step 45: 48f49308db10a261 length 129
+[prefill_tf] rank 3 step 46: target 1506 argmax 119030 lmax 6.17539978 lse 10.3944967996 target_logit nan
+[head_hidden] rank 3 step 46: d72b6a1c72768893 length 257
+[prefill_tf] rank 3 step 47: target 48615 argmax 136125 lmax 10.5397167 lse 11.8946610218 target_logit nan
+[head_hidden] rank 3 step 47: 6c5705b0a6226236 length 1024
+[prefill_tf] rank 3 step 48: target 678 argmax 147914 lmax 3.57518959 lse 10.6537024151 target_logit nan
+[head_hidden] rank 3 step 48: df5042b39f3c195a length 1
+[prefill_tf] rank 3 step 49: target 99317 argmax 115937 lmax 14.0568161 lse 15.1248003471 target_logit nan
+[head_hidden] rank 3 step 49: 0eebce6db518268e length 4
+[prefill_tf] rank 3 step 50: target 10782 argmax 115937 lmax 9.05084515 lse 11.1371325801 target_logit nan
+[head_hidden] rank 3 step 50: f6403d8705334052 length 8
+[prefill_tf] rank 3 step 51: target 304 argmax 115541 lmax 7.35156107 lse 10.7076209627 target_logit nan
+[head_hidden] rank 3 step 51: c8b3a7f9002ae42e length 17
+[prefill_tf] rank 3 step 52: target 75344 argmax 122248 lmax 5.9953084 lse 10.844494489 target_logit nan
+[head_hidden] rank 3 step 52: dad3dfe160fb3385 length 64
+[prefill_tf] rank 3 step 53: target 8231 argmax 145369 lmax 15.7199049 lse 16.515353517 target_logit nan
+[head_hidden] rank 3 step 53: ffddb13e296d9abb length 129
+[prefill_tf] rank 3 step 54: target 817 argmax 116265 lmax 7.77780819 lse 10.7693985961 target_logit nan
+[head_hidden] rank 3 step 54: 7c7b0d7b061b923c length 257
+[prefill_tf] rank 3 step 55: target 17 argmax 116265 lmax 16.6067219 lse 17.1361372994 target_logit nan
+[head_hidden] rank 3 step 55: 7bd6a2b7542ca9b3 length 1024
+[prefill_tf] rank 3 step 56: target 3039 argmax 147914 lmax 3.65960073 lse 10.6093386215 target_logit nan
+[head_hidden] rank 3 step 56: 420bd4e90e84c20c length 1
+[prefill_tf] rank 3 step 57: target 26 argmax 113707 lmax 5.92497683 lse 10.5156548295 target_logit nan
+[head_hidden] rank 3 step 57: 60df6edffa4631db length 4
+[prefill_tf] rank 3 step 58: target 1787 argmax 144106 lmax 7.57449293 lse 10.7309987594 target_logit nan
+[head_hidden] rank 3 step 58: e726b390823ab9e7 length 8
+[prefill_tf] rank 3 step 59: target 16 argmax 120625 lmax 7.88653564 lse 11.2070510297 target_logit nan
+[head_hidden] rank 3 step 59: 663bba9f68549c02 length 17
+[prefill_tf] rank 3 step 60: target 13 argmax 142798 lmax 9.37103367 lse 11.6956463125 target_logit nan
+[head_hidden] rank 3 step 60: f8ea295e8a808481 length 64
+[prefill_tf] rank 3 step 61: target 825 argmax 139050 lmax 7.36602259 lse 10.3674461739 target_logit nan
+[head_hidden] rank 3 step 61: 5534d774e3f2c174 length 129
+[prefill_tf] rank 3 step 62: target 7781 argmax 145962 lmax 13.3479748 lse 14.3784438098 target_logit nan
+[head_hidden] rank 3 step 62: f8439d9f48d50e44 length 257
+[prefill_tf] rank 3 step 63: target 67515 argmax 150137 lmax 16.2286625 lse 16.2565112853 target_logit nan
+[head_hidden] rank 3 step 63: c5f14bc9eea6c096 length 1024
+[prefill_tf] rank 3 step 64: target 25340 argmax 147914 lmax 3.7977829 lse 10.6251918138 target_logit nan
+[head_hidden] rank 3 step 64: 38c8b4ceca01b0c8 length 1
+[prefill_tf] rank 3 step 65: target 267 argmax 130661 lmax 6.79594278 lse 10.382899295 target_logit nan
+[head_hidden] rank 3 step 65: a25a1846623fce2f length 4
+[prefill_tf] rank 3 step 66: target 13 argmax 133348 lmax 7.75879002 lse 10.5910438768 target_logit nan
+[head_hidden] rank 3 step 66: 09e1aafca63d70b6 length 8
+[prefill_tf] rank 3 step 67: target 12 argmax 151202 lmax 6.65593863 lse 10.200194153 target_logit nan
+[head_hidden] rank 3 step 67: e44f3f00bc93f229 length 17
+[prefill_tf] rank 3 step 68: target 11 argmax 144542 lmax 5.45547438 lse 10.5496687216 target_logit nan
+[head_hidden] rank 3 step 68: bbe76527216da6a8 length 64
+[prefill_tf] rank 3 step 69: target 628 argmax 144923 lmax 20.2217045 lse 20.2219181098 target_logit nan
+[head_hidden] rank 3 step 69: 8ce9caa4ec15b172 length 129
+[prefill_tf] rank 3 step 70: target 432 argmax 150238 lmax 10.6868248 lse 11.3117433812 target_logit nan
+[head_hidden] rank 3 step 70: fb304d7e83b29f3d length 257
+[prefill_tf] rank 3 step 71: target 198 argmax 126935 lmax 6.20329618 lse 9.8592916767 target_logit nan
+[head_hidden] rank 3 step 71: eee09b965bd4c841 length 1024
+[prefill_tf] rank 3 step 72: target 10835 argmax 147914 lmax 3.83486366 lse 10.6024252393 target_logit nan
+[head_hidden] rank 3 step 72: d4cc365ef523b822 length 1
+[prefill_tf] rank 3 step 73: target 566 argmax 149474 lmax 6.18128681 lse 10.7800677485 target_logit nan
+[head_hidden] rank 3 step 73: 54abb0b4b8472ae9 length 4
+[prefill_tf] rank 3 step 74: target 12220 argmax 147344 lmax 9.85010624 lse 11.2834748113 target_logit nan
+[head_hidden] rank 3 step 74: ba8223c31209f6ca length 8
+[prefill_tf] rank 3 step 75: target 50117 argmax 134334 lmax 11.6647348 lse 12.5215779089 target_logit nan
+[head_hidden] rank 3 step 75: eb4b68d853aa8e8b length 17
+[prefill_tf] rank 3 step 76: target 10516 argmax 128902 lmax 9.19805241 lse 11.196236614 target_logit nan
+[head_hidden] rank 3 step 76: aa63676804234580 length 64
+[prefill_tf] rank 3 step 77: target 7040 argmax 141188 lmax 4.74409819 lse 10.5151999575 target_logit nan
+[head_hidden] rank 3 step 77: c927c91744b255ac length 129
+[prefill_tf] rank 3 step 78: target 304 argmax 118488 lmax 8.53004837 lse 11.2733041009 target_logit nan
+[head_hidden] rank 3 step 78: 0287eb8a89a353fb length 257
+[prefill_tf] rank 3 step 79: target 47583 argmax 150698 lmax 12.3358488 lse 13.0091977295 target_logit nan
+[head_hidden] rank 3 step 79: 18280ac31618cea4 length 1024
+[prefill_tf] rank 3 step 80: target 11641 argmax 147914 lmax 3.57034183 lse 10.4524612037 target_logit nan
+[head_hidden] rank 3 step 80: f2cd33ba923726e2 length 1
+[prefill_tf] rank 3 step 81: target 782 argmax 140170 lmax 5.92532539 lse 9.58585032483 target_logit nan
+[head_hidden] rank 3 step 81: 68552d3f192929d8 length 4
+[prefill_tf] rank 3 step 82: target 23866 argmax 119477 lmax 6.46465731 lse 10.5789348841 target_logit nan
+[head_hidden] rank 3 step 82: 5999c426f912384c length 8
+[prefill_tf] rank 3 step 83: target 3730 argmax 122934 lmax 5.85282707 lse 10.3645218705 target_logit nan
+[head_hidden] rank 3 step 83: ef6c37bb0acd1ebf length 17
+[prefill_tf] rank 3 step 84: target 198 argmax 124166 lmax 8.06494999 lse 10.3591274283 target_logit nan
+[head_hidden] rank 3 step 84: 7c3f0f5b6365297f length 64
+[prefill_tf] rank 3 step 85: target 13955 argmax 115718 lmax 8.34611225 lse 10.950880657 target_logit nan
+[head_hidden] rank 3 step 85: 9fc4eb04437321a2 length 129
+[prefill_tf] rank 3 step 86: target 7347 argmax 136565 lmax 8.56768227 lse 10.9737522475 target_logit nan
+[head_hidden] rank 3 step 86: d2b22f92742a2b27 length 257
+[prefill_tf] rank 3 step 87: target 5454 argmax 148931 lmax 8.91589355 lse 11.2718580552 target_logit nan
+[head_hidden] rank 3 step 87: 314bfb2da922d9ca length 1024
+[prefill_tf] rank 3 step 88: target 1990 argmax 147914 lmax 3.78276157 lse 10.5228348888 target_logit nan
+[head_hidden] rank 3 step 88: 31b0ba8db523b06e length 1
+[prefill_tf] rank 3 step 89: target 438 argmax 144207 lmax 6.9992013 lse 11.2519861971 target_logit nan
+[head_hidden] rank 3 step 89: 880fbaeecafb44bb length 4
+[prefill_tf] rank 3 step 90: target 2251 argmax 124166 lmax 6.19276381 lse 9.9074075725 target_logit nan
+[head_hidden] rank 3 step 90: 6495f1516dd40346 length 8
+[prefill_tf] rank 3 step 91: target 311 argmax 122392 lmax 7.63140297 lse 11.1773996305 target_logit nan
+[head_hidden] rank 3 step 91: 13c419a8d301e45c length 17
+[prefill_tf] rank 3 step 92: target 8224 argmax 139337 lmax 8.36683083 lse 10.8542536112 target_logit nan
+[head_hidden] rank 3 step 92: cd985544efe552c8 length 64
+[prefill_tf] rank 3 step 93: target 3198 argmax 133322 lmax 12.2547941 lse 12.6618305462 target_logit nan
+[head_hidden] rank 3 step 93: 9fd636f77cb46dd8 length 129
+[prefill_tf] rank 3 step 94: target 2308 argmax 151351 lmax 8.10451126 lse 10.6756845944 target_logit nan
+[head_hidden] rank 3 step 94: adc2062f11b08537 length 257
+[prefill_tf] rank 3 step 95: target 10333 argmax 149656 lmax 10.1822071 lse 11.5653061013 target_logit nan
+[head_hidden] rank 3 step 95: 083e49e3df6cfa28 length 1024
+[prefill_tf] rank 3 step 96: target 40 argmax 147914 lmax 3.63753033 lse 10.6256254171 target_logit nan
+[head_hidden] rank 3 step 96: d28f37392019bcd7 length 1
+[prefill_tf] rank 3 step 97: target 1084 argmax 147790 lmax 5.42213345 lse 10.7292936369 target_logit nan
+[head_hidden] rank 3 step 97: 93f1982ce78d9dab length 4
+[prefill_tf] rank 3 step 98: target 350 argmax 133113 lmax 5.63599777 lse 10.8099181297 target_logit nan
+[head_hidden] rank 3 step 98: 039fc75cf38850f8 length 8
+[prefill_tf] rank 3 step 99: target 19759 argmax 124166 lmax 5.78770304 lse 10.3278570276 target_logit nan
+[head_hidden] rank 3 step 99: a77b6678f5642593 length 17
+[prefill_tf] rank 3 step 100: target 686 argmax 128114 lmax 10.7649441 lse 11.3891335914 target_logit nan
+[head_hidden] rank 3 step 100: 52f3de3b946e4914 length 64
+[prefill_tf] rank 3 step 101: target 3070 argmax 137089 lmax 5.49599457 lse 10.2622648865 target_logit nan
+[head_hidden] rank 3 step 101: 1389fe9734c2ee6f length 129
+[prefill_tf] rank 3 step 102: target 6993 argmax 139184 lmax 14.118062 lse 14.8558767484 target_logit nan
+[head_hidden] rank 3 step 102: a5d42662b4391463 length 257
+[prefill_tf] rank 3 step 103: target 32559 argmax 151329 lmax 9.80162144 lse 10.9614377397 target_logit nan
+[head_hidden] rank 3 step 103: b764b6c26adbd160 length 1024
+[prefill_tf] rank 3 step 104: target 264 argmax 147914 lmax 3.77498579 lse 10.6268195286 target_logit nan
+[head_hidden] rank 3 step 104: a7809d9f8d3a228a length 1
+[prefill_tf] rank 3 step 105: target 480 argmax 138318 lmax 7.81362677 lse 11.3246786756 target_logit nan
+[head_hidden] rank 3 step 105: 7da778c46a6029cf length 4
+[prefill_tf] rank 3 step 106: target 1142 argmax 132584 lmax 6.53587008 lse 10.7330475574 target_logit nan
+[head_hidden] rank 3 step 106: e4b308549a64bbcc length 8
+[prefill_tf] rank 3 step 107: target 12 argmax 146015 lmax 6.5959444 lse 10.3006193264 target_logit nan
+[head_hidden] rank 3 step 107: 08765c80e2fafd87 length 17
+[prefill_tf] rank 3 step 108: target 374 argmax 121660 lmax 8.46157646 lse 10.8680374818 target_logit nan
+[head_hidden] rank 3 step 108: e6a88dda8e995f8c length 64
+[prefill_tf] rank 3 step 109: target 126293 argmax 119621 lmax 20.6565895 lse 21.0467075596 target_logit 11.9219494
+[head_hidden] rank 3 step 109: d1a20f91e8b14213 length 129
+[prefill_tf] rank 3 step 110: target 847 argmax 132364 lmax 11.0037727 lse 12.1281315083 target_logit nan
+[head_hidden] rank 3 step 110: 830d368ce164cf45 length 257
+[prefill_tf] rank 3 step 111: target 760 argmax 139050 lmax 8.20932865 lse 9.77658520794 target_logit nan
+[head_hidden] rank 3 step 111: b5316894dac90630 length 1024
+[prefill_tf] rank 3 step 112: target 702 argmax 147914 lmax 3.59388733 lse 10.7324468515 target_logit nan
+[head_hidden] rank 3 step 112: f799b2695f08c705 length 1
+[prefill_tf] rank 3 step 113: target 264 argmax 129791 lmax 5.9100914 lse 10.6020076111 target_logit nan
+[head_hidden] rank 3 step 113: 034d6d8ff9ff1beb length 4
+[prefill_tf] rank 3 step 114: target 77158 argmax 124036 lmax 9.09195042 lse 11.3595233539 target_logit nan
+[head_hidden] rank 3 step 114: d3cc2f24ae0b3b59 length 8
+[prefill_tf] rank 3 step 115: target 432 argmax 150238 lmax 9.10461903 lse 10.1853255834 target_logit nan
+[head_hidden] rank 3 step 115: 3e017baa50f43caf length 17
+[prefill_tf] rank 3 step 116: target 806 argmax 123087 lmax 9.51107025 lse 10.4660514526 target_logit nan
+[head_hidden] rank 3 step 116: 5aa179e40b821b8b length 64
+[prefill_tf] rank 3 step 117: target 30610 argmax 129954 lmax 12.6052284 lse 13.406464073 target_logit nan
+[head_hidden] rank 3 step 117: 997b1528f50f188b length 129
+[prefill_tf] rank 3 step 118: target 44863 argmax 121760 lmax 15.79881 lse 16.1721631233 target_logit nan
+[head_hidden] rank 3 step 118: 4183a56579d6236a length 257
+[prefill_tf] rank 3 step 119: target 285 argmax 130164 lmax 14.7843685 lse 15.1255772616 target_logit nan
+[head_hidden] rank 3 step 119: a0424dda952033f5 length 1024
+[prefill_tf] rank 3 step 120: target 518 argmax 147914 lmax 3.77434516 lse 10.6764656804 target_logit nan
+[head_hidden] rank 3 step 120: 9942595c2be1d461 length 1
+[prefill_tf] rank 3 step 121: target 405 argmax 137285 lmax 5.26767635 lse 10.6369698553 target_logit nan
+[head_hidden] rank 3 step 121: 56c186cb8a294d8b length 4
+[prefill_tf] rank 3 step 122: target 11499 argmax 135901 lmax 6.63128185 lse 10.7960401329 target_logit nan
+[head_hidden] rank 3 step 122: 5b60e603b3dbe4c2 length 8
+[prefill_tf] rank 3 step 123: target 8569 argmax 129195 lmax 11.4238443 lse 11.8436146147 target_logit nan
+[head_hidden] rank 3 step 123: d3e9fbee3b80e047 length 17
+[prefill_tf] rank 3 step 124: target 9762 argmax 126871 lmax 14.0489674 lse 14.2797172917 target_logit nan
+[head_hidden] rank 3 step 124: a800a9df5c1d39a8 length 64
+[prefill_tf] rank 3 step 125: target 11 argmax 137503 lmax 8.60040283 lse 10.7499163107 target_logit nan
+[head_hidden] rank 3 step 125: 37c8d393f362b721 length 129
+[prefill_tf] rank 3 step 126: target 13 argmax 114942 lmax 7.30681849 lse 10.106204886 target_logit nan
+[head_hidden] rank 3 step 126: 843327f68b5aefc5 length 257
+[prefill_tf] rank 3 step 127: target 279 argmax 122783 lmax 6.85570765 lse 10.600581647 target_logit nan
+[head_hidden] rank 3 step 127: 7fdb8af0a1a88633 length 1024
+[prefill_tf] rank 3 step 128: target 280 argmax 147914 lmax 3.52978945 lse 10.5924344636 target_logit nan
+[head_hidden] rank 3 step 128: ed60ec44285fd8b1 length 1
+[prefill_tf] rank 3 step 129: target 5863 argmax 147687 lmax 9.86314678 lse 10.9248983753 target_logit nan
+[head_hidden] rank 3 step 129: e1d5fb4e5f34cfd9 length 4
+[prefill_tf] rank 3 step 130: target 3468 argmax 134128 lmax 6.36942863 lse 10.6973294001 target_logit nan
+[head_hidden] rank 3 step 130: 3100a88d8f2d8d83 length 8
+[prefill_tf] rank 3 step 131: target 421 argmax 134112 lmax 7.59437752 lse 11.0509637005 target_logit nan
+[head_hidden] rank 3 step 131: 601547460a07f0ca length 17
+[prefill_tf] rank 3 step 132: target 1959 argmax 139050 lmax 6.80396938 lse 10.4462708023 target_logit nan
+[head_hidden] rank 3 step 132: d0de7950c0e18afa length 64
+[prefill_tf] rank 3 step 133: target 6668 argmax 124166 lmax 10.2782278 lse 10.9604068648 target_logit nan
+[head_hidden] rank 3 step 133: 58792de058145592 length 129
+[prefill_tf] rank 3 step 134: target 220 argmax 117995 lmax 5.56228352 lse 10.0424295909 target_logit nan
+[head_hidden] rank 3 step 134: f1c54e42b59ee95a length 257
+[prefill_tf] rank 3 step 135: target 2879 argmax 120341 lmax 6.51315594 lse 10.1895789658 target_logit nan
+[head_hidden] rank 3 step 135: 3c1971adc04a627d length 1024
+[prefill_tf] rank 3 step 136: target 272 argmax 147914 lmax 3.71904659 lse 10.6617334063 target_logit nan
+[head_hidden] rank 3 step 136: 46c5deb70af1d284 length 1
+[prefill_tf] rank 3 step 137: target 264 argmax 121123 lmax 4.92043829 lse 10.8720497276 target_logit nan
+[head_hidden] rank 3 step 137: d8230ce4fdc04f6b length 4
+[prefill_tf] rank 3 step 138: target 6172 argmax 136399 lmax 7.1786108 lse 10.8048384385 target_logit nan
+[head_hidden] rank 3 step 138: bb0cf2e5e3816ac9 length 8
+[prefill_tf] rank 3 step 139: target 8038 argmax 126415 lmax 7.71602201 lse 10.222390369 target_logit nan
+[head_hidden] rank 3 step 139: d7eca8a6a1d07558 length 17
+[prefill_tf] rank 3 step 140: target 1697 argmax 135187 lmax 9.19911957 lse 11.1946737188 target_logit nan
+[head_hidden] rank 3 step 140: e35a0939b48bf9d6 length 64
+[prefill_tf] rank 3 step 141: target 358 argmax 131790 lmax 8.46511841 lse 10.5246044063 target_logit nan
+[head_hidden] rank 3 step 141: 2c6ab018245c6bde length 129
+[prefill_tf] rank 3 step 142: target 45273 argmax 122468 lmax 7.11917305 lse 11.0112470278 target_logit nan
+[head_hidden] rank 3 step 142: aa0aad8b1ed7f836 length 257
+[prefill_tf] rank 3 step 143: target 13905 argmax 119327 lmax 6.85174274 lse 10.5597658419 target_logit nan
+[head_hidden] rank 3 step 143: 905d110b113bc97b length 1024
+[prefill_tf] rank 3 step 144: target 44498 argmax 147914 lmax 3.60421801 lse 10.6675878639 target_logit nan
+[head_hidden] rank 3 step 144: 3246130b465c6283 length 1
+[prefill_tf] rank 3 step 145: target 518 argmax 116487 lmax 7.08909655 lse 11.0519614213 target_logit nan
+[head_hidden] rank 3 step 145: ea15350f7d68e8b9 length 4
+[prefill_tf] rank 3 step 146: target 525 argmax 124974 lmax 4.2877202 lse 10.6200654868 target_logit nan
+[head_hidden] rank 3 step 146: 0e26bc70b9c391c5 length 8
+[prefill_tf] rank 3 step 147: target 3593 argmax 132756 lmax 7.80272436 lse 10.1182354064 target_logit nan
+[head_hidden] rank 3 step 147: 5e63b1a37aea8a50 length 17
+[prefill_tf] rank 3 step 148: target 33 argmax 121819 lmax 7.12752104 lse 9.65907141676 target_logit nan
+[head_hidden] rank 3 step 148: c8f7d85b3522f229 length 64
+[prefill_tf] rank 3 step 149: target 320 argmax 137503 lmax 7.7425456 lse 10.8703297086 target_logit nan
+[head_hidden] rank 3 step 149: 520c7a44d1c03543 length 129
+[prefill_tf] rank 3 step 150: target 432 argmax 130376 lmax 12.398778 lse 12.6573808165 target_logit nan
+[head_hidden] rank 3 step 150: 9453fcaef089fe81 length 257
+[prefill_tf] rank 3 step 151: target 49695 argmax 121230 lmax 8.47255611 lse 10.6439278563 target_logit nan
+[head_hidden] rank 3 step 151: 47bc7d2d7b8500b1 length 1024
+[prefill_tf] rank 3 step 152: target 12 argmax 147914 lmax 3.59518623 lse 10.6484519324 target_logit nan
+[head_hidden] rank 3 step 152: f3e02236db740dea length 1
+[prefill_tf] rank 3 step 153: target 1730 argmax 132555 lmax 5.78128958 lse 10.9390280403 target_logit nan
+[head_hidden] rank 3 step 153: a0c59b21198e0fa3 length 4
+[prefill_tf] rank 3 step 154: target 432 argmax 150238 lmax 8.53317833 lse 9.9950118143 target_logit nan
+[head_hidden] rank 3 step 154: 64c7e8e4096d181a length 8
+[prefill_tf] rank 3 step 155: target 17 argmax 115760 lmax 13.6342936 lse 16.4637061743 target_logit nan
+[head_hidden] rank 3 step 155: 29fa7556dc5d4163 length 17
+[prefill_tf] rank 3 step 156: target 1959 argmax 124512 lmax 5.92437506 lse 10.1260648341 target_logit nan
+[head_hidden] rank 3 step 156: 5319ebc888e54528 length 64
+[prefill_tf] rank 3 step 157: target 11 argmax 134112 lmax 10.647109 lse 11.5251569819 target_logit nan
+[head_hidden] rank 3 step 157: c8f5d96f7e41e59f length 129
+[prefill_tf] rank 3 step 158: target 17996 argmax 143808 lmax 15.7909698 lse 16.0410925997 target_logit nan
+[head_hidden] rank 3 step 158: f33d222be2b4c82c length 257
+[prefill_tf] rank 3 step 159: target 832 argmax 133016 lmax 11.7317257 lse 12.4011099145 target_logit nan
+[head_hidden] rank 3 step 159: 4f438684f7d6298f length 1024
+[prefill_tf] rank 3 step 160: target 4599 argmax 147914 lmax 3.50879312 lse 10.6889972912 target_logit nan
+[head_hidden] rank 3 step 160: ce61ede7455df716 length 1
+[prefill_tf] rank 3 step 161: target 279 argmax 146348 lmax 5.45761967 lse 10.4244787856 target_logit nan
+[head_hidden] rank 3 step 161: 4aa4954b32b4db9f length 4
+[prefill_tf] rank 3 step 162: target 28748 argmax 134137 lmax 8.2439127 lse 10.7557230747 target_logit nan
+[head_hidden] rank 3 step 162: 3c85e9b688b8753e length 8
+[prefill_tf] rank 3 step 163: target 806 argmax 123420 lmax 8.03218079 lse 10.1024619191 target_logit nan
+[head_hidden] rank 3 step 163: 0d497d69578e43ab length 17
+[prefill_tf] rank 3 step 164: target 3166 argmax 143749 lmax 7.22691059 lse 10.5770963174 target_logit nan
+[head_hidden] rank 3 step 164: c597f739bb7c25cd length 64
+[prefill_tf] rank 3 step 165: target 279 argmax 118257 lmax 8.80289268 lse 10.6192981694 target_logit nan
+[head_hidden] rank 3 step 165: 6311fe65ac94d562 length 129
+[prefill_tf] rank 3 step 166: target 374 argmax 135816 lmax 10.7093687 lse 11.7990587731 target_logit nan
+[head_hidden] rank 3 step 166: 953389391e0a6473 length 257
+[prefill_tf] rank 3 step 167: target 304 argmax 142159 lmax 10.3621807 lse 11.5555395097 target_logit nan
+[head_hidden] rank 3 step 167: e5f9dc332f729978 length 1024
+[prefill_tf] rank 3 step 168: target 8710 argmax 147914 lmax 3.5192399 lse 10.4509823208 target_logit nan
+[head_hidden] rank 3 step 168: 85588b51f5edef10 length 1
+[prefill_tf] rank 3 step 169: target 20 argmax 123985 lmax 8.25626183 lse 11.6773674658 target_logit nan
+[head_hidden] rank 3 step 169: 90843d8c998ff9c1 length 4
+[prefill_tf] rank 3 step 170: target 315 argmax 127652 lmax 5.02153873 lse 9.29035096733 target_logit nan
+[head_hidden] rank 3 step 170: aaf8611ef3fb01a0 length 8
+[prefill_tf] rank 3 step 171: target 279 argmax 129222 lmax 8.07157898 lse 9.65553528903 target_logit nan
+[head_hidden] rank 3 step 171: 92154b32a480a139 length 17
+[prefill_tf] rank 3 step 172: target 3795 argmax 130870 lmax 6.96040058 lse 10.6359245158 target_logit nan
+[head_hidden] rank 3 step 172: 22400cae1ac9d39c length 64
+[prefill_tf] rank 3 step 173: target 279 argmax 116427 lmax 6.68334913 lse 10.3447002456 target_logit nan
+[head_hidden] rank 3 step 173: 09fe5f5ba4e3ba60 length 129
+[prefill_tf] rank 3 step 174: target 55101 argmax 116037 lmax 7.48206091 lse 10.7356219886 target_logit nan
+[head_hidden] rank 3 step 174: a6ed2d3f25ab95b5 length 257
+[prefill_tf] rank 3 step 175: target 76 argmax 143086 lmax 15.5465727 lse 16.0140201217 target_logit nan
+[head_hidden] rank 3 step 175: 44374e3fe0d9a8af length 1024
+[prefill_tf] rank 3 step 176: target 323 argmax 147914 lmax 3.87735176 lse 10.6084904427 target_logit nan
+[head_hidden] rank 3 step 176: 797353474eb8b788 length 1
+[prefill_tf] rank 3 step 177: target 13905 argmax 123361 lmax 6.18771362 lse 10.4173624971 target_logit nan
+[head_hidden] rank 3 step 177: 4d12de58eec6fceb length 4
+[prefill_tf] rank 3 step 178: target 3753 argmax 134831 lmax 12.466013 lse 12.6450419255 target_logit nan
+[head_hidden] rank 3 step 178: 34bac5c347225082 length 8
+[prefill_tf] rank 3 step 179: target 1526 argmax 148917 lmax 6.27713585 lse 10.7670523448 target_logit nan
+[head_hidden] rank 3 step 179: b1764087e0e17667 length 17
+[prefill_tf] rank 3 step 180: target 13 argmax 139050 lmax 6.79921961 lse 9.97220750876 target_logit nan
+[head_hidden] rank 3 step 180: 7239e3b5ebf78677 length 64
+[prefill_tf] rank 3 step 181: target 2041 argmax 114722 lmax 10.1320257 lse 11.4515796599 target_logit nan
+[head_hidden] rank 3 step 181: fa427f159c0521ec length 129
+[prefill_tf] rank 3 step 182: target 13 argmax 139050 lmax 15.3954258 lse 15.4706890907 target_logit nan
+[head_hidden] rank 3 step 182: 1968715ddc12c752 length 257
+[prefill_tf] rank 3 step 183: target 26346 argmax 125918 lmax 6.79848671 lse 10.8304289224 target_logit nan
+[head_hidden] rank 3 step 183: e0d441c9a46d973b length 1024
+[prefill_tf] rank 3 step 184: target 13021 argmax 147914 lmax 3.73263955 lse 10.7023693354 target_logit nan
+[head_hidden] rank 3 step 184: 6554b45c180f7db2 length 1
+[prefill_tf] rank 3 step 185: target 198 argmax 147087 lmax 6.68812752 lse 10.817569922 target_logit nan
+[head_hidden] rank 3 step 185: 8088c5c77d0ac2bc length 4
+[prefill_tf] rank 3 step 186: target 5454 argmax 133483 lmax 6.89403915 lse 10.5434917978 target_logit nan
+[head_hidden] rank 3 step 186: 8970c304e442b631 length 8
+[prefill_tf] rank 3 step 187: target 109295 argmax 116265 lmax 11.9126663 lse 12.4585134973 target_logit nan
+[head_hidden] rank 3 step 187: 26abbd1a171ca1c8 length 17
+[prefill_tf] rank 3 step 188: target 16609 argmax 122538 lmax 5.38475847 lse 9.90069342705 target_logit nan
+[head_hidden] rank 3 step 188: 63f6564557c5e2e3 length 64
+[prefill_tf] rank 3 step 189: target 2073 argmax 117786 lmax 6.77306557 lse 10.1572763261 target_logit nan
+[head_hidden] rank 3 step 189: 93dfe50507644895 length 129
+[prefill_tf] rank 3 step 190: target 69119 argmax 151329 lmax 10.948576 lse 11.8941024177 target_logit nan
+[head_hidden] rank 3 step 190: a2c9ca2813046a93 length 257
+[prefill_tf] rank 3 step 191: target 86491 argmax 151329 lmax 11.3669558 lse 12.0636546673 target_logit nan
+[head_hidden] rank 3 step 191: a68e2d28c8c68547 length 1024
+[prefill_tf] rank 3 step 192: target 6605 argmax 147914 lmax 3.71841502 lse 10.685171028 target_logit nan
+[head_hidden] rank 3 step 192: c3384234dcbf22c1 length 1
+[prefill_tf] rank 3 step 193: target 315 argmax 143317 lmax 7.37179089 lse 10.6551267672 target_logit nan
+[head_hidden] rank 3 step 193: acdbd8169d1b3097 length 4
+[prefill_tf] rank 3 step 194: target 14387 argmax 118609 lmax 5.29238749 lse 10.431231502 target_logit nan
+[head_hidden] rank 3 step 194: 6fb51e1f94fbc835 length 8
+[prefill_tf] rank 3 step 195: target 7077 argmax 142159 lmax 7.89175415 lse 10.610347211 target_logit nan
+[head_hidden] rank 3 step 195: e5c9d5f5e29a88ff length 17
+[prefill_tf] rank 3 step 196: target 7077 argmax 136646 lmax 6.50165176 lse 9.76184159182 target_logit nan
+[head_hidden] rank 3 step 196: c362a343d2dd86b1 length 64
+[prefill_tf] rank 3 step 197: target 3795 argmax 134596 lmax 7.74613523 lse 10.7530592567 target_logit nan
+[head_hidden] rank 3 step 197: f5fa69c2d8648549 length 129
+[prefill_tf] rank 3 step 198: target 10163 argmax 115775 lmax 7.66169691 lse 10.677443959 target_logit nan
+[head_hidden] rank 3 step 198: 7876280d2f7c8154 length 257
+[prefill_tf] rank 3 step 199: target 2221 argmax 114286 lmax 5.74453068 lse 9.99678432647 target_logit nan
+[head_hidden] rank 3 step 199: ac6c61b61840f6e6 length 1024
+[prefill_tf] rank 3 step 200: target 3600 argmax 147914 lmax 3.61521149 lse 10.6002877545 target_logit nan
+[head_hidden] rank 3 step 200: 4d9aa9a839ff7acb length 1
+[prefill_tf] rank 3 step 201: target 379 argmax 148268 lmax 8.86194897 lse 11.1478865888 target_logit nan
+[head_hidden] rank 3 step 201: d88d19d7799dc92c length 4
+[prefill_tf] rank 3 step 202: target 14 argmax 119220 lmax 7.72374582 lse 10.2367550231 target_logit nan
+[head_hidden] rank 3 step 202: 4d3b9532865861f8 length 8
+[prefill_tf] rank 3 step 203: target 17212 argmax 116108 lmax 10.979598 lse 11.6406986715 target_logit nan
+[head_hidden] rank 3 step 203: da051eb3fcbe1e0c length 17
+[prefill_tf] rank 3 step 204: target 279 argmax 115829 lmax 6.74332094 lse 10.4755411127 target_logit nan
+[head_hidden] rank 3 step 204: 674dcb7621e70436 length 64
+[prefill_tf] rank 3 step 205: target 1091 argmax 132219 lmax 13.0847206 lse 13.1999089816 target_logit nan
+[head_hidden] rank 3 step 205: 1b85405d7ba0038f length 129
+[prefill_tf] rank 3 step 206: target 448 argmax 127688 lmax 10.8872108 lse 12.0371155986 target_logit nan
+[head_hidden] rank 3 step 206: 566448aa3477b44b length 257
+[prefill_tf] rank 3 step 207: target 8472 argmax 120191 lmax 5.90737581 lse 10.3689539623 target_logit nan
+[head_hidden] rank 3 step 207: 2893b5c483d94e68 length 1024
+[prefill_tf] rank 3 step 208: target 220 argmax 147914 lmax 3.33898401 lse 10.7227382113 target_logit nan
+[head_hidden] rank 3 step 208: 6d8946ecbe5066ce length 1
+[prefill_tf] rank 3 step 209: target 2073 argmax 115775 lmax 6.42730951 lse 10.1088704428 target_logit nan
+[head_hidden] rank 3 step 209: 3c058aa431a9cc0f length 4
+[prefill_tf] rank 3 step 210: target 69252 argmax 133505 lmax 10.2244654 lse 12.0688351359 target_logit nan
+[head_hidden] rank 3 step 210: 058f4b2efca9a996 length 8
+[prefill_tf] rank 3 step 211: target 11 argmax 137344 lmax 5.81484222 lse 9.96553173935 target_logit nan
+[head_hidden] rank 3 step 211: 852f744b97d6e7fe length 17
+[prefill_tf] rank 3 step 212: target 54750 argmax 129323 lmax 8.83788872 lse 10.7986245383 target_logit nan
+[head_hidden] rank 3 step 212: 7549c325bed7903e length 64
+[prefill_tf] rank 3 step 213: target 279 argmax 150123 lmax 8.97773933 lse 10.8270074302 target_logit nan
+[head_hidden] rank 3 step 213: 3a1a7fef8d86df35 length 129
+[prefill_tf] rank 3 step 214: target 9245 argmax 118926 lmax 6.45021868 lse 9.88793562985 target_logit nan
+[head_hidden] rank 3 step 214: b1522e71d7a48fa8 length 257
+[prefill_tf] rank 3 step 215: target 697 argmax 118568 lmax 14.4065781 lse 14.6675269929 target_logit nan
+[head_hidden] rank 3 step 215: 39a124b670e95d02 length 1024
+[prefill_tf] rank 3 step 216: target 11 argmax 147914 lmax 3.62870026 lse 10.6792375704 target_logit nan
+[head_hidden] rank 3 step 216: 3047add47ad8e5eb length 1
+[prefill_tf] rank 3 step 217: target 323 argmax 127527 lmax 7.28956413 lse 11.1021906898 target_logit nan
+[head_hidden] rank 3 step 217: 940a5df45f92ad36 length 4
+[prefill_tf] rank 3 step 218: target 702 argmax 147653 lmax 7.005229 lse 10.9070827749 target_logit nan
+[head_hidden] rank 3 step 218: 8003201f4bdf7110 length 8
+[prefill_tf] rank 3 step 219: target 220 argmax 115937 lmax 9.01197529 lse 10.520803419 target_logit nan
+[head_hidden] rank 3 step 219: 14abbb3db4803fe9 length 17
+[prefill_tf] rank 3 step 220: target 566 argmax 137938 lmax 8.75039577 lse 10.0620214061 target_logit nan
+[head_hidden] rank 3 step 220: e232f595cd10c809 length 64
+[prefill_tf] rank 3 step 221: target 760 argmax 139050 lmax 6.77168274 lse 10.0388573079 target_logit nan
+[head_hidden] rank 3 step 221: 78ac723fb9ad9c55 length 129
+[prefill_tf] rank 3 step 222: target 16609 argmax 115937 lmax 7.53852892 lse 10.127015065 target_logit nan
+[head_hidden] rank 3 step 222: ca9442b7f9a1c190 length 257
+[prefill_tf] rank 3 step 223: target 4452 argmax 130507 lmax 6.48394585 lse 10.309110971 target_logit nan
+[head_hidden] rank 3 step 223: 3ebb6e5125eb302f length 1024
+[prefill_tf] rank 3 step 224: target 22137 argmax 147914 lmax 3.69661283 lse 10.7210756777 target_logit nan
+[head_hidden] rank 3 step 224: 4f15736c070261dc length 1
+[prefill_tf] rank 3 step 225: target 82 argmax 124215 lmax 12.1024675 lse 12.3660112996 target_logit nan
+[head_hidden] rank 3 step 225: 78387ebdc853e50a length 4
+[prefill_tf] rank 3 step 226: target 752 argmax 147558 lmax 6.58694983 lse 10.6466343395 target_logit nan
+[head_hidden] rank 3 step 226: e7f21985272833df length 8
+[prefill_tf] rank 3 step 227: target 71116 argmax 134852 lmax 6.27604914 lse 10.4569248196 target_logit nan
+[head_hidden] rank 3 step 227: f0e9ca349862bfcd length 17
+[prefill_tf] rank 3 step 228: target 264 argmax 127757 lmax 8.58252048 lse 11.1653389078 target_logit nan
+[head_hidden] rank 3 step 228: 03793034b504e3c0 length 64
+[prefill_tf] rank 3 step 229: target 429 argmax 127102 lmax 8.01221275 lse 10.7306942289 target_logit nan
+[head_hidden] rank 3 step 229: 63c9ee14630eae8c length 129
+[prefill_tf] rank 3 step 230: target 8568 argmax 136851 lmax 7.12712336 lse 10.4278694567 target_logit nan
+[head_hidden] rank 3 step 230: a7de81e12a88d4d4 length 257
+[prefill_tf] rank 3 step 231: target 26272 argmax 151349 lmax 10.88871 lse 11.9233072317 target_logit nan
+[head_hidden] rank 3 step 231: b648a3ef87a1be14 length 1024
+[prefill_tf] rank 3 step 232: target 11 argmax 147914 lmax 3.80895996 lse 10.6682614367 target_logit nan
+[head_hidden] rank 3 step 232: 26a1075c1b029c24 length 1
+[prefill_tf] rank 3 step 233: target 21698 argmax 143410 lmax 5.11027765 lse 10.6641887042 target_logit nan
+[head_hidden] rank 3 step 233: 4750a4814a4b3c8d length 4
+[prefill_tf] rank 3 step 234: target 50804 argmax 128243 lmax 8.99505043 lse 11.2250361619 target_logit nan
+[head_hidden] rank 3 step 234: ccf0aa841b7b526c length 8
+[prefill_tf] rank 3 step 235: target 785 argmax 115937 lmax 10.8545179 lse 11.5116557018 target_logit nan
+[head_hidden] rank 3 step 235: ea888bc0af99883f length 17
+[prefill_tf] rank 3 step 236: target 17 argmax 115937 lmax 10.1220598 lse 11.4235130732 target_logit nan
+[head_hidden] rank 3 step 236: eb0c81048e205e1d length 64
+[prefill_tf] rank 3 step 237: target 11 argmax 147677 lmax 6.53795481 lse 10.6716413526 target_logit nan
+[head_hidden] rank 3 step 237: b1ff5051ae437181 length 129
+[prefill_tf] rank 3 step 238: target 825 argmax 121887 lmax 9.86364079 lse 11.4802637448 target_logit nan
+[head_hidden] rank 3 step 238: 7ba899d9b37546f3 length 257
+[prefill_tf] rank 3 step 239: target 12515 argmax 148415 lmax 8.53548717 lse 11.0090594217 target_logit nan
+[head_hidden] rank 3 step 239: f20a6de3f3f6cb4d length 1024
+[prefill_tf] rank 3 step 240: target 6738 argmax 147914 lmax 3.79779458 lse 10.6766662313 target_logit nan
+[head_hidden] rank 3 step 240: f832002ec159ff95 length 1
+[prefill_tf] rank 3 step 241: target 6006 argmax 115937 lmax 6.1680994 lse 10.4781255652 target_logit nan
+[head_hidden] rank 3 step 241: 98e876143b6d5f6e length 4
+[prefill_tf] rank 3 step 242: target 1815 argmax 127281 lmax 5.91944599 lse 10.4270481759 target_logit nan
+[head_hidden] rank 3 step 242: 097c327fc4634d66 length 8
+[prefill_tf] rank 3 step 243: target 773 argmax 149024 lmax 9.8582983 lse 10.8495758518 target_logit nan
+[head_hidden] rank 3 step 243: 4282a8aa6c16d168 length 17
+[prefill_tf] rank 3 step 244: target 8314 argmax 132785 lmax 16.0875149 lse 16.6628717811 target_logit nan
+[head_hidden] rank 3 step 244: c88bb0c2a153a3d2 length 64
+[prefill_tf] rank 3 step 245: target 3624 argmax 139050 lmax 8.60617161 lse 10.8883667721 target_logit nan
+[head_hidden] rank 3 step 245: bbc5a21814664761 length 129
+[prefill_tf] rank 3 step 246: target 5098 argmax 148747 lmax 18.6962185 lse 18.8392999791 target_logit nan
+[head_hidden] rank 3 step 246: 3649a8859690a964 length 257
+[prefill_tf] rank 3 step 247: target 4588 argmax 132912 lmax 13.4101744 lse 13.776119372 target_logit nan
+[head_hidden] rank 3 step 247: b6771a91df4dbbc3 length 1024
+[prefill_tf] rank 3 step 248: target 21543 argmax 147914 lmax 3.69955587 lse 10.6920296701 target_logit nan
+[head_hidden] rank 3 step 248: 2e2d6096ea3565ca length 1
+[prefill_tf] rank 3 step 249: target 21871 argmax 131709 lmax 9.08498764 lse 11.3011337153 target_logit nan
+[head_hidden] rank 3 step 249: c5476e7740984961 length 4
+[prefill_tf] rank 3 step 250: target 18 argmax 117642 lmax 8.78804111 lse 10.9981446939 target_logit nan
+[head_hidden] rank 3 step 250: 665d670c8c0385ae length 8
+[prefill_tf] rank 3 step 251: target 382 argmax 134112 lmax 11.3963184 lse 11.7591116199 target_logit nan
+[head_hidden] rank 3 step 251: b0257d8909297d12 length 17
+[prefill_tf] rank 3 step 252: target 438 argmax 133051 lmax 9.10568047 lse 10.8494148111 target_logit nan
+[head_hidden] rank 3 step 252: c464edf24775492a length 64
+[prefill_tf] rank 3 step 253: target 2073 argmax 117786 lmax 8.20904446 lse 10.9593911844 target_logit nan
+[head_hidden] rank 3 step 253: 663b0f6756c81cad length 129
+[prefill_tf] rank 3 step 254: target 3283 argmax 142218 lmax 12.3576994 lse 12.9281992936 target_logit nan
+[head_hidden] rank 3 step 254: 1e40e5471c628832 length 257
+[prefill_tf] rank 3 step 255: target 17 argmax 116265 lmax 14.7723007 lse 15.2242171603 target_logit nan
+[head_hidden] rank 3 step 255: 906147e730c5fd9b length 1024
+[prefill_tf_end] rank 3 world 4 positions 256
+[head_time] rank 3 seconds 377.910726 capacity 1024

@@ -124,7 +124,7 @@ class QwenModel : public SessionModel<QwenModel> {
   // verify rows per request; engine/decode_outputs.hpp); 0 = kDecodeRows.
   // fp8_head_mma: opt in to streaming MMA within that decode envelope,
   // including short prefill. Bitwise parity needs matching settings/capacity.
-  // serving_logits bounds FP8 head storage to decode rows and packs selected
+  // serving_logits bounds head storage to decode rows and packs selected
   // prefill outputs. Leave false for all-row diagnostic forwards.
   QwenModel(const QwenTextConfig& cfg, const std::string& checkpoint_dir, int max_tokens,
             int64_t max_cache_tokens, QwenResidency residency = QwenResidency::Streaming,
@@ -235,7 +235,6 @@ class QwenModel : public SessionModel<QwenModel> {
 
  private:
   const bool fp8_head_mma_;
-  const bool compact_logits_;
   static constexpr int kBlockTokens = 64;
   static constexpr int kPrefillChunkTokens = 4096;
 

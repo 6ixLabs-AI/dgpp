@@ -1,0 +1,14 @@
+{
+  "positions": 256,
+  "ranks": 4,
+  "hidden_matches": 1024,
+  "full_mean_nll": 4.121231286329619,
+  "compact_mean_nll": 4.121234412672931,
+  "mean_nll_delta": 3.126343311614377e-06,
+  "mean_abs_logprob_delta": 6.257813867267814e-06,
+  "max_abs_logprob_delta": 5.9884163190915274e-05,
+  "argmax_changes": 0,
+  "top1_hits_full": 112,
+  "top1_hits_compact": 112,
+  "teacher_sha256": "843d50b6ab62e48aa9e6fdd3c1929c412105be524ed9765c6928000dfd64df49"
+}

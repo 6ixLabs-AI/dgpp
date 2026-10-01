@@ -99,7 +99,7 @@ class GlmDsaModel : public SessionModel<GlmDsaModel> {
               int64_t max_cache_tokens, GlmDsaResidency residency = GlmDsaResidency::Streaming,
               BoundaryReducer* boundary = nullptr, int tp_rank = 0, int tp_world = 1,
               int max_requests = 1, bool mtp = false, int decode_rows = 0,
-              LatentFormat latent_format = LatentFormat::kBf16);
+              LatentFormat latent_format = LatentFormat::kBf16, bool serving_logits = false);
   ~GlmDsaModel();
   GlmDsaModel(const GlmDsaModel&) = delete;
   GlmDsaModel& operator=(const GlmDsaModel&) = delete;
@@ -107,11 +107,12 @@ class GlmDsaModel : public SessionModel<GlmDsaModel> {
   // Every byte the constructor (and its layer objects) will allocate for
   // a shape, from the same formulas BEFORE anything is allocated.
   using MemoryPlan = dgpp::MemoryPlan;
-  static MemoryPlan plan_memory(const GlmDsaTextConfig& cfg, int max_tokens, int64_t max_cache_tokens,
-                                int tp_rank = 0, int tp_world = 1,
+  static MemoryPlan plan_memory(const GlmDsaTextConfig& cfg, int max_tokens,
+                                int64_t max_cache_tokens, int tp_rank = 0, int tp_world = 1,
                                 GlmDsaResidency residency = GlmDsaResidency::Streaming,
                                 int max_requests = 1, bool mtp = false, int decode_rows = 0,
-                                LatentFormat latent_format = LatentFormat::kBf16);
+                                LatentFormat latent_format = LatentFormat::kBf16,
+                                bool serving_logits = false);
 
   // The cold diagnostic forward: one request on slot 0 (which must be
   // closed), fresh state, every row's logits; the slot is closed after.

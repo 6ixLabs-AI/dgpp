@@ -1,0 +1,82 @@
+Internal ctest changing into directory: /tmp/dgpp-compact-heads/build-review
+Test project /tmp/dgpp-compact-heads/build-review
+      Start   3: qwen_w4a4_plan_default
+      Start   4: qwen_w4a4_plan_mode_0
+      Start   5: qwen_w4a4_plan_mode_1
+      Start  29: unit_tests
+ 1/27 Test   #4: qwen_w4a4_plan_mode_0 ............   Passed    0.09 sec
+      Start  30: qwen_yarn_fixture_test
+ 2/27 Test   #5: qwen_w4a4_plan_mode_1 ............   Passed    0.10 sec
+      Start  43: http_server_test
+ 3/27 Test  #30: qwen_yarn_fixture_test ...........   Passed    0.01 sec
+      Start  44: serve_test
+ 4/27 Test   #3: qwen_w4a4_plan_default ...........   Passed    0.11 sec
+      Start  45: fabric_serve_test
+ 5/27 Test  #45: fabric_serve_test ................   Passed    2.91 sec
+      Start  46: scheduler_test
+ 6/27 Test  #46: scheduler_test ...................   Passed    0.01 sec
+      Start  47: shutdown_watchdog_test
+ 7/27 Test  #47: shutdown_watchdog_test ...........   Passed    0.20 sec
+      Start  48: engine_watchdog_test
+ 8/27 Test  #43: http_server_test .................   Passed    6.22 sec
+      Start  50: unit
+ 9/27 Test  #48: engine_watchdog_test .............   Passed    5.03 sec
+      Start  51: checkpoint_audit_test
+10/27 Test  #51: checkpoint_audit_test ............   Passed    0.06 sec
+      Start  52: route_trace_test
+11/27 Test  #52: route_trace_test .................   Passed    0.11 sec
+      Start  53: sampling_profile_test
+12/27 Test  #53: sampling_profile_test ............   Passed    0.06 sec
+      Start  54: site_env_test
+13/27 Test  #29: unit_tests .......................   Passed   10.06 sec
+      Start  55: script_reports_test
+14/27 Test  #54: site_env_test ....................   Passed    1.92 sec
+      Start  56: portability_test
+15/27 Test  #56: portability_test .................***Failed    0.30 sec
+.............F.....
+======================================================================
+FAIL: test_scripts_index_and_setup_document_links (__main__.PortabilityTest.test_scripts_index_and_setup_document_links)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/tmp/dgpp-compact-heads/tests/python/portability_test.py", line 185, in test_scripts_index_and_setup_document_links
+    self.assertTrue(destination.exists(), f"broken link in {name}: {target}")
+AssertionError: False is not true : broken link in README.md: benchmarks/results/2026-10-01-compact-serving-heads.md
+
+----------------------------------------------------------------------
+Ran 19 tests in 0.237s
+
+FAILED (failures=1)
+
+      Start  57: timed_load_test
+16/27 Test  #55: script_reports_test ..............   Passed    0.82 sec
+      Start  58: qwen_yarn_release_check_test
+17/27 Test  #58: qwen_yarn_release_check_test .....   Passed    0.12 sec
+      Start  59: qwen_head_compare_test
+18/27 Test  #57: timed_load_test ..................   Passed    0.82 sec
+      Start  60: spark_cross_test
+19/27 Test  #60: spark_cross_test .................   Passed    0.97 sec
+      Start  61: setup_tools_test
+20/27 Test  #59: qwen_head_compare_test ...........   Passed    1.55 sec
+      Start  62: bootstrap_test
+21/27 Test  #62: bootstrap_test ...................   Passed    0.14 sec
+      Start  63: launcher_test
+22/27 Test  #61: setup_tools_test .................   Passed    2.61 sec
+      Start  64: serve_startup_test
+23/27 Test  #50: unit .............................   Passed    9.05 sec
+      Start 173: roster_selftest
+24/27 Test #173: roster_selftest ..................   Passed    0.05 sec
+25/27 Test  #64: serve_startup_test ...............   Passed    3.07 sec
+26/27 Test  #63: launcher_test ....................   Passed    9.71 sec
+27/27 Test  #44: serve_test .......................   Passed  158.86 sec
+
+96% tests passed, 1 tests failed out of 27
+
+Label Time Summary:
+host      = 214.95 sec*proc (27 tests)
+python    =  22.26 sec*proc (14 tests)
+
+Total Test time (real) = 158.96 sec
+
+The following tests FAILED:
+	 56 - portability_test (Failed)
+Errors while running CTest

@@ -59,7 +59,8 @@ std::vector<int> MimoModel::pool_kv_heads(const MimoTextConfig& cfg, const MimoL
 
 MimoModel::MimoModel(const MimoTextConfig& cfg, const std::string& checkpoint_dir, int max_tokens,
                      int64_t max_cache_tokens, MimoResidency residency, BoundaryReducer* boundary,
-                     int tp_rank, int tp_world, int max_requests, bool mtp, int decode_rows, LatentFormat kv_format)
+                     int tp_rank, int tp_world, int max_requests, bool mtp, int decode_rows,
+                     LatentFormat kv_format, bool serving_logits)
     : cfg_(cfg),
       loader_(cfg, checkpoint_dir, tp_rank, tp_world, residency,
               tp_world > 1 ? MimoHeadSharding::VocabSharded : MimoHeadSharding::Full,
@@ -96,6 +97,7 @@ MimoModel::MimoModel(const MimoTextConfig& cfg, const std::string& checkpoint_di
     sp.boundary = boundary;
     sp.max_requests = max_requests;
     sp.decode_rows = decode_rows;
+    sp.logits_rows = compact_logits_rows(serving_logits, decode_rows, max_requests);
     sp.mtp = mtp;
     sp.vocab_size = cfg_.vocab_size;
     sp.hidden = H;
@@ -211,9 +213,11 @@ int MimoModel::table_slots() const {
   return loader_.residency() == MimoResidency::Resident ? cfg_.num_moe_layers() : 0;
 }
 
-MimoModel::MemoryPlan MimoModel::plan_memory(const MimoTextConfig& cfg, int max_tokens, int64_t max_cache_tokens,
-                                             int tp_rank, int tp_world, MimoResidency residency, int max_requests,
-                                             bool mtp, int decode_rows, LatentFormat kv_format) {
+MimoModel::MemoryPlan MimoModel::plan_memory(const MimoTextConfig& cfg, int max_tokens,
+                                             int64_t max_cache_tokens, int tp_rank, int tp_world,
+                                             MimoResidency residency, int max_requests, bool mtp,
+                                             int decode_rows, LatentFormat kv_format,
+                                             bool serving_logits) {
   if (max_tokens <= 0) throw std::invalid_argument("plan_memory: max_tokens must be positive");
   if (max_requests <= 0 || max_requests > kPickMaxRequests)
     throw std::invalid_argument("plan_memory: max_requests must be in [1, kPickMaxRequests]");
@@ -285,7 +289,7 @@ MimoModel::MemoryPlan MimoModel::plan_memory(const MimoTextConfig& cfg, int max_
   {
     size_t core_dev = 0, core_pin = 0;
     session_core_plan_bytes(max_tokens, max_requests, cfg.hidden_size, static_cast<int>(V), mtp,
-                            cfg.hidden_size, &core_dev, &core_pin, rows);
+                            cfg.hidden_size, &core_dev, &core_pin, rows, serving_logits);
     const size_t moe_layers = static_cast<size_t>(cfg.num_moe_layers());
     const size_t K = static_cast<size_t>(cfg.num_experts_per_tok);
     const size_t E = static_cast<size_t>(cfg.n_routed_experts);
@@ -594,17 +598,20 @@ MimoModel::Outputs MimoModel::run_rows(const RowRun& run) {
     }
   }
   // Normalize every row: MTP consumes the complete hidden-state chunk.
-  // By default the head retains the diagnostic forward's m=T shape.
+  // Diagnostic storage retains the full m=T head shape by default.
   add_rmsnorm_bf16(resid_, pending, globals_.final_norm, h_, T, H, cfg_.rms_norm_eps, stream_);
-  // Keep all hidden rows for MTP, but project only the row consumed by a
-  // scalar serving prefill. Diagnostics, grouped prefill and verification
-  // retain every row and the common finish_run output layout is unchanged.
-  const int head_first =
-      prefill_last_head_ && !run.decode && !run.all_rows && run.num_spans == 0 ? T - 1 : 0;
-  gemm_.matmul(h_ + static_cast<size_t>(head_first) * H, globals_.lm_head,
-               logits_ + static_cast<size_t>(head_first) * lm_vocab_count_, T - head_first,
-               lm_vocab_count_, H, DType::BF16, GemmOut::F32, static_cast<size_t>(H), gemm_ws_,
-               gemm_ws_bytes_, stream_);
+  // The legacy diagnostic opt-in can select a scalar prefill tail without
+  // compact storage. Serving also packs grouped prefill tails.
+  const int legacy_first = !packed_prefill_logits(run) && prefill_last_head_ && !run.decode &&
+                                   !run.all_rows && run.num_spans == 0
+                               ? T - 1
+                               : 0;
+  const bool packed_logits = project_head_rows(run, [&](int input_row, int output_row, int rows) {
+    gemm_.matmul(h_ + static_cast<size_t>(input_row + legacy_first) * H, globals_.lm_head,
+                 logits_ + static_cast<size_t>(output_row + legacy_first) * lm_vocab_count_,
+                 rows - legacy_first, lm_vocab_count_, H, DType::BF16, GemmOut::F32,
+                 static_cast<size_t>(H), gemm_ws_, gemm_ws_bytes_, stream_);
+  });
   // The draft block's input: the last rows' POST-final-norm hidden (the
   // model's output hidden state, vLLM's mimo_v2_mtp convention — the draft
   // applies hnorm to it) into the slots' windows by position (the last
@@ -617,7 +624,7 @@ MimoModel::Outputs MimoModel::run_rows(const RowRun& run) {
     store_draft_hidden(h_ + static_cast<size_t>(T - n) * H, in.req_ids + (T - n), in.pos + (T - n), n);
   }
   if (run.decode) prefetch_.join(stream_);
-  out = finish_run(run, std::move(out));
+  out = finish_run(run, std::move(out), packed_logits);
   if (!run.capture && traces) {
     for (size_t l = 0; l < out.route_ids.size(); ++l) {
       const size_t slot = l * static_cast<size_t>(max_tokens_) * K;
@@ -720,6 +727,8 @@ void MimoModel::finish_companions() {
 // ---------------------------------------------------------------------------
 void MimoModel::mtp_run_rows(int req, const int64_t* tokens, int64_t first_pos, int T, bool decode_row,
                              bool capture, int head_rows, int batch_requests) {
+  if (head_rows > logits_capacity_rows_)
+    throw std::invalid_argument("draft head exceeds logits capacity");
   if (!mtp_) throw std::logic_error("mtp_run_rows: MTP is not enabled");
   if (native_mtp()) {
     native_mtp_rows(req, tokens, first_pos, T, decode_row, capture, head_rows);
@@ -824,6 +833,8 @@ void MimoModel::read_draft_snapshot(int req, const uint8_t* src) {
 }
 void MimoModel::native_mtp_rows(int req, const int64_t* tokens, int64_t first_pos, int T,
                                 bool decode, bool capture, int head_rows) {
+  if (head_rows > logits_capacity_rows_)
+    throw std::invalid_argument("draft head exceeds logits capacity");
   if (T <= 0 || T > max_tokens_ || head_rows < 0 || head_rows > T)
     throw std::invalid_argument("native MTP rows");
   gemm_.set_bf12_wide(decode);

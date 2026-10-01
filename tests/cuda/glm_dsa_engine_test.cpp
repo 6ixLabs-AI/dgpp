@@ -12,6 +12,8 @@
 // kernels are the eager kernels); the world-2 eager transcripts follow the
 // world-1 ones (reported; the folds reassociate, so a near tie may flip a
 // late token — the first tokens must agree).
+// Graph models use the compact serving allocation; eager references retain
+// full heads. Cache, batching and speculative contracts keep their strict gates.
 #include <algorithm>
 #include <cmath>
 #include <condition_variable>
@@ -219,7 +221,9 @@ void rank_work(int r, const GlmDsaTextConfig& cfg, const std::string& dir, const
   try {
     BusBoundaryReducer reducer(*bus, wait_timeout_ms());
     GlmDsaModel eager(cfg, dir, kMaxTokens, kCache, GlmDsaResidency::Resident, &reducer, r, kWorld, kSlots);
-    GlmDsaModel graph(cfg, dir, kMaxTokens, kCache, GlmDsaResidency::Resident, &reducer, r, kWorld, kSlots);
+    GlmDsaModel graph(
+        cfg, dir, kMaxTokens, kCache, GlmDsaResidency::Resident, &reducer, r, kWorld, kSlots,
+        /*mtp=*/false, /*decode_rows=*/0, dgpp::LatentFormat::kBf16, /*serving_logits=*/true);
     DGPP_CUDA_OK(cudaHostAlloc(reinterpret_cast<void**>(&scratch),
                                sizeof(uint16_t) * dgpp::kPickScratchElems(kWorld), cudaHostAllocDefault));
     arrive_once();
@@ -294,7 +298,9 @@ void rank_work_mtp(int r, const GlmDsaTextConfig& cfg, const std::string& dir, c
   try {
     BusBoundaryReducer reducer(*bus, wait_timeout_ms());
     GlmDsaModel eager(cfg, dir, kMaxTokens, kCache, GlmDsaResidency::Resident, &reducer, r, kWorld, kSlots);
-    GlmDsaModel mtp(cfg, dir, kMaxTokens, kCache, GlmDsaResidency::Resident, &reducer, r, kWorld, kSlots, /*mtp=*/true);
+    GlmDsaModel mtp(
+        cfg, dir, kMaxTokens, kCache, GlmDsaResidency::Resident, &reducer, r, kWorld, kSlots,
+        /*mtp=*/true, /*decode_rows=*/0, dgpp::LatentFormat::kBf16, /*serving_logits=*/true);
     DGPP_CUDA_OK(cudaHostAlloc(reinterpret_cast<void**>(&scratch),
                                sizeof(uint16_t) * dgpp::kPickScratchElems(kWorld), cudaHostAllocDefault));
     arrive_once();
@@ -388,8 +394,9 @@ void rank_work_wide(int r, const GlmDsaTextConfig& cfg, const std::string& dir,
     BusBoundaryReducer reducer(*bus, wait_timeout_ms());
     GlmDsaModel eager(cfg, dir, kMaxTokens, kWideCache, GlmDsaResidency::Resident, &reducer, r, kWorld, slots,
                       /*mtp=*/false, decode_rows);
-    GlmDsaModel mtp(cfg, dir, kMaxTokens, kWideCache, GlmDsaResidency::Resident, &reducer, r, kWorld, slots,
-                    /*mtp=*/true, decode_rows);
+    GlmDsaModel mtp(cfg, dir, kMaxTokens, kWideCache, GlmDsaResidency::Resident, &reducer, r,
+                    kWorld, slots,
+                    /*mtp=*/true, decode_rows, dgpp::LatentFormat::kBf16, /*serving_logits=*/true);
     require(mtp.max_decode_rows() == std::max(8, decode_rows), "the slots make the batch");
     if (std::getenv("DGPP_WIDE_PREFILL_PROBE")) {
       for (int i = 0; i < slots; ++i) {
@@ -532,8 +539,10 @@ void rank_work_mtp_depth2(int r, const GlmDsaTextConfig& cfg, const std::string&
     GlmDsaModel eager(cfg, dir, kMaxTokens, kCache, GlmDsaResidency::Resident, &reducer, r, kWorld, kSlots);
     // The decode-row ceiling of the depth-2 shape: kDepth2Slots x 3 rows = 6
     // (the model's cap is 8, plan D9).
-    GlmDsaModel mtp(cfg, dir, kMaxTokens, kCache, GlmDsaResidency::Resident, &reducer, r, kWorld, kDepth2Slots,
-                    /*mtp=*/true, /*decode_rows=*/kDepth2Slots * 3);
+    GlmDsaModel mtp(cfg, dir, kMaxTokens, kCache, GlmDsaResidency::Resident, &reducer, r, kWorld,
+                    kDepth2Slots,
+                    /*mtp=*/true, /*decode_rows=*/kDepth2Slots * 3, dgpp::LatentFormat::kBf16,
+                    /*serving_logits=*/true);
     require(mtp.max_decode_rows() == 8, "the model floors the decode rows at eight (the batch's cap)");
     DGPP_CUDA_OK(cudaHostAlloc(reinterpret_cast<void**>(&scratch),
                                sizeof(uint16_t) * dgpp::kPickScratchElems(kWorld), cudaHostAllocDefault));

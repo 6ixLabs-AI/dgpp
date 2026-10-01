@@ -47,13 +47,6 @@ void d2d(void* dst, const void* src, size_t bytes, cudaStream_t stream) {
   DGPP_CUDA_OK(cudaMemcpyAsync(dst, src, bytes, cudaMemcpyDeviceToDevice, stream));
 }
 
-// Compact storage is an explicit serving opt-in for the FP8 head. The
-// diagnostic all-row override and BF16/cuBLAS path retain their full buffers.
-bool compact_serving_logits(bool serving) {
-  const char* all = std::getenv("DGPP_PREFILL_HEAD_ALL_ROWS");
-  return serving && QwenLayerStream::dense_weights_fp8() && !(all && all[0] == '1');
-}
-
 }  // namespace
 
 QwenModel::QwenModel(const QwenTextConfig& cfg, const std::string& checkpoint_dir, int max_tokens,
@@ -61,7 +54,6 @@ QwenModel::QwenModel(const QwenTextConfig& cfg, const std::string& checkpoint_di
                      int tp_rank, int tp_world, int max_requests, bool mtp, int decode_rows,
                      bool fp8_head_mma, bool serving_logits)
     : fp8_head_mma_(fp8_head_mma),
-      compact_logits_(compact_serving_logits(serving_logits)),
       cfg_(cfg),
       loader_(cfg, checkpoint_dir, tp_rank, tp_world, residency,
               tp_world > 1 ? QwenHeadSharding::VocabSharded : QwenHeadSharding::Full,
@@ -92,7 +84,7 @@ QwenModel::QwenModel(const QwenTextConfig& cfg, const std::string& checkpoint_di
     sp.boundary = boundary;
     sp.max_requests = max_requests;
     sp.decode_rows = decode_rows;
-    if (compact_logits_) sp.logits_rows = std::max({kDecodeRows, decode_rows, max_requests});
+    sp.logits_rows = compact_logits_rows(serving_logits, decode_rows, max_requests);
     sp.mtp = mtp;
     sp.vocab_size = cfg_.vocab_size;
     sp.hidden = H;
@@ -350,7 +342,8 @@ QwenModel::MemoryPlan QwenModel::plan_memory(const QwenTextConfig& cfg, int max_
     plan.add("kv cache pool (K/V bf16, compressed index keys, rings)", QwenKvPool::cache_bytes(shape));
   }
   // Activations and the token rows.
-  const size_t logits_rows = compact_serving_logits(serving_logits) ? rows : M;
+  const size_t logits_rows =
+      serving_logits_capacity(max_tokens, serving_logits, decode_rows, max_requests);
   const size_t token_rows = std::max(M, rows + R * static_cast<size_t>(kSpecRows));
   plan.add("activations (hyper state, rows, head)",
            token_rows * 8 + M * 12 + 8 + M * W * 2 + 3 * M * H * 2 + logits_rows * V * 4 + rows * 64,
@@ -578,9 +571,15 @@ void QwenModel::lm_head_logits(const uint16_t* hidden, int rows, cudaStream_t st
                           static_cast<size_t>(lm_vocab_count_),
                           fp8_head_mma_ && rows <= max_decode_rows_ ? dense_gemv_rows() + 1 : 0,
                           last_row_only, nullptr, 0, compact_row);
-  else
-    gemm_.matmul(hidden, globals_.lm_head, logits_, rows, lm_vocab_count_, H, DType::BF16, GemmOut::F32,
+  else {
+    const bool selected = last_row_only || compact_row >= 0;
+    const int input_row = compact_row >= 0 ? compact_row : rows - 1;
+    gemm_.matmul(selected ? hidden + static_cast<size_t>(input_row) * H : hidden, globals_.lm_head,
+                 logits_ + static_cast<size_t>(output_row + (last_row_only ? input_row : 0)) *
+                               lm_vocab_count_,
+                 selected ? 1 : rows, lm_vocab_count_, H, DType::BF16, GemmOut::F32,
                  static_cast<size_t>(H), gemm_ws_, gemm_ws_bytes_, stream);
+  }
 }
 
 // The head dump (DGPP_QWEN_HEAD_DUMP): a memcpy node per head call into a
@@ -1170,11 +1169,10 @@ QwenModel::Outputs QwenModel::run_rows(const RowRun& run) {
                              (globals_.lm_head_fp8.payload != nullptr || globals_.lm_head_packed.packed != nullptr) &&
                              !mma_envelope && !head_all_rows;
   head_req_ = req;
-  const bool packed_logits = compact_logits_ && T > logits_capacity_rows_;
+  const bool packed_logits = packed_prefill_logits(run);
   if (packed_logits) {
-    // T exceeds the decode envelope, so each selected row keeps the same
-    // GEMV/dense-MMA dispatch as the original full prefill head. Grouped
-    // prefill packs one selected row per span; hidden rows stay in place.
+    // FP8 and packed heads preserve the full product's dispatch. BF16
+    // heads use a single-row projection; hidden rows stay in place for MTP.
     if (run.decode || run.all_rows) throw std::logic_error("Qwen compact head: invalid row run");
     int end = 0;
     for (int s = 0; s < std::max(1, run.num_spans); ++s) {
