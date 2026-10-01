@@ -284,7 +284,8 @@ class EagerEngineAdapter : public sched::SchedulerEngine {
   // kernel sequence bit-for-bit.
   std::vector<std::vector<int32_t>> step_batch(const std::vector<int>& reqs) override {
     if constexpr (requires { model_->dflash2_enabled(); }) {
-      if (!model_->dflash2_enabled() || reqs.size() < 2)
+      const int graph_level = dflash_verify_graph();
+      if (!model_->dflash2_enabled() || reqs.size() < (graph_level >= 2 ? size_t{1} : size_t{2}))
         return SchedulerEngine::step_batch(reqs);
       std::vector<std::vector<int64_t>> feds(reqs.size());
       std::vector<char> is_spec(reqs.size(), 0);
@@ -302,7 +303,22 @@ class EagerEngineAdapter : public sched::SchedulerEngine {
         }
       }
       std::vector<int> offs;
-      auto outs = model_->session_verify_batch(reqs, feds, &offs);
+      // The verify, per DGPP_DFLASH2_VERIFY_GRAPH level: 0 packed eager
+      // (shipped); 1 multi-slot batches replay a captured static verify;
+      // 2 lone slots too; 3 the bisection control — the same static
+      // padded staging executed eagerly. Drafts, judge, rollback and
+      // redrafts are unchanged around it; any capture breakage falls back
+      // to the eager batch inside the model call. BATCH_EAGER forces the
+      // packed eager batch at any level.
+      const bool padded = !dflash_batch_eager() && graph_level == 3 &&
+                          model_->dflash_graph_verify_available();
+      const bool want_graph = !dflash_batch_eager() && !padded &&
+                              (graph_level >= 2 || reqs.size() >= 2) &&
+                              model_->dflash_graph_verify_available();
+      auto outs = want_graph
+                      ? model_->session_verify_batch_graph(reqs, feds, &offs)
+                      : padded ? model_->session_verify_batch_padded(reqs, feds, &offs)
+                               : model_->session_verify_batch(reqs, feds, &offs);
       std::vector<std::vector<int32_t>> out(reqs.size());
       // Batched redrafts (DGPP_DFLASH2_DRAFT_BATCH=1): one stacked block
       // forward for every spec slot instead of one per slot. Otherwise
@@ -563,6 +579,26 @@ class EagerEngineAdapter : public sched::SchedulerEngine {
   static bool dflash_trace() {
     static const bool v = [] {
       const char* e = std::getenv("DGPP_DFLASH2_TRACE");
+      return e && *e && *e != '0';
+    }();
+    return v;
+  }
+  static int dflash_verify_graph() {
+    // 0: eager everywhere (shipped). 1: multi-slot batches replay the
+    // captured verify. 2: lone slots too (their own 8-row capture — the
+    // capture-mechanism control: no padding involved at all).
+    static const int v = [] {
+      const char* e = std::getenv("DGPP_DFLASH2_VERIFY_GRAPH");
+      if (!e || !*e || *e == '0') return 0;
+      return std::atoi(e);
+    }();
+    return v;
+  }
+  static bool dflash_batch_eager() {
+    // Force the eager batch inside the graph method (the 3-way bisection:
+    // scalar vs eager-batch vs captured-batch on identical staging).
+    static const bool v = [] {
+      const char* e = std::getenv("DGPP_DFLASH2_BATCH_EAGER");
       return e && *e && *e != '0';
     }();
     return v;

@@ -6,6 +6,25 @@ The history by milestone. The dated engineering record in
 
 ## Unreleased
 
+- **The DFlash2 verify rides a captured CUDA graph** (2026-10-02):
+  `DGPP_DFLASH2_VERIFY_GRAPH=1` replays the multi-slot verify batch as
+  one static 8/16/32-row graph (`session_verify_batch_graph`, keyed per
+  row size; `=2` adds the lone slot's 8-row capture, `=3` runs the same
+  static padded staging eagerly as the bisection control). Every slot's
+  fed rows are padded to a full 8-row block; the kernels are
+  row-independent for compute and skip position -1 for every state
+  write, so real rows read back the eager batch's. One capture bug:
+  the drafter's context-K/V feed (`dflash2_store_features`) was gated
+  `!run.capture`, so a replay starved the draft planes of the verify
+  rows' context and acceptance decayed within a request (the c4 graph
+  sat at 1.3–1.6 tok/pass against the eager batch's 4.5–6; feeding the
+  planes inside the graph restored 4.2–4.9 and made the graph the
+  fastest path: 35.9–36.1 vs 35.0–35.4 agg tg at c4, 35.9–39.0 vs
+  35.9–36.1 at c2). C1 stays bit-exact (12/12 transcripts); c2/c4
+  match the eager batch's documented near-tie class (graph-vs-eager
+  7–8/12 like eager-vs-eager 8/12). Default off; the drafted verify is
+  otherwise unchanged (drafts, judge, rollback and redrafts stay eager
+  between replays).
 - **The DFlash2 speculative pass batches across slots** (2026-10-01):
   every arriving slot's verify rows ride one physical target pass
   (`session_verify_batch`'s slot-major staging and per-slot rollback

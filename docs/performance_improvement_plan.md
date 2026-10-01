@@ -419,8 +419,7 @@ chained selector walk is implemented exactly and kept behind
 `DGPP_DFLASH2_WALK`, but verifies only ~1.2 here — see mtp.md), and
 acceptance is the greedy verify/rollback of eight rows
 (`kSpecRows`/`kSpecMaxDrafts` generalized 6/5 → 8/7; the DSpark block
-is unchanged). Eager greedy: the graph engine refuses capture with a
-drafter loaded. The batched pass landed 2026-10-01: one physical target
+is unchanged). The batched pass landed 2026-10-01: one physical target
 verify covers every arriving slot (`SessionModel::session_verify_batch`,
 slot-major rows and rollback bases; `EagerEngine::step_batch` caps the
 batch to `floor(decode_rows/8)` slots — four at the 32-row ceiling, the
@@ -454,8 +453,14 @@ spec never engaged on either lane — all older throughput numbers are
 sampled-plain decode, graphs vs eager. With `temperature=0` forced,
 dflash throughput jumps +60–190% and wins every c1/c2 cell vs
 graphed MTP (τ 4.5 vs ~2.5), ceding only c4, where graphs scale
-linearly. The remaining lane is batched graph capture with a drafter
-loaded. See mtp.md "temperature trap" and "fair fight".
+linearly. That lane closed 2026-10-02: `DGPP_DFLASH2_VERIFY_GRAPH=1`
+replays the batched verify as one static 8/16/32-row graph (the
+slots' fed rows padded to full 8-row blocks; the drafter's context
+K/V feed is a recorded node — first capture attempt starved the
+planes and decayed acceptance), with the C1 capture bit-exact and the
+graph the fastest path (35.9–36.1 vs 35.0–35.4 agg tg at c4 on the
+short-prompt harness; see mtp.md "batched graph capture with a
+drafter loaded").
 
 ## 8. P1 experiments / P3 implementation: remaining single-stream wins
 

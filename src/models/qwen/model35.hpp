@@ -20,6 +20,7 @@
 
 #include <cuda_runtime.h>
 
+#include "core/graph.hpp"
 #include "engine/paged_blocks.hpp"
 #include "engine/session_model.hpp"
 #include "kernels/gemm.hpp"
@@ -140,7 +141,10 @@ class Qwen35Model : public SessionModel<Qwen35Model> {
   using Base = SessionModel<Qwen35Model>;
   // `dflash2_dir` (a directory holding the drafter's config.json + shards)
   // replaces the MTP draft with the DFlash2 block drafter: mutually
-  // exclusive with `mtp`, eager-path only (graph capture refuses).
+  // exclusive with `mtp`. The target verify captures (the static
+  // padded-8-row-block graph, session_verify_batch_graph); only the
+  // block draft itself stays eager (its top-K selection roundtrips to
+  // the host), running between replays.
   Qwen35Model(const Qwen35TextConfig& cfg, const std::string& checkpoint_dir, int max_tokens,
               int64_t max_cache_tokens, LoaderResidency residency, BoundaryReducer* boundary, int rank,
               int world, int max_requests, int decode_rows, bool mtp = false,
@@ -224,8 +228,35 @@ class Qwen35Model : public SessionModel<Qwen35Model> {
   // The stacked draft batch width (slots per block forward): the verify
   // batch's slot count at the row ceiling.
   int dflash2_batch_slots() const { return df_batch_; }
+  // The captured verify (batched graph capture with a drafter loaded):
+  // one static replay per row size — 8 rows for a lone slot, 16 for two,
+  // 32 (4 x 8) otherwise. Every slot is padded to a full 8-row block;
+  // kernels are row-independent for compute and skip position -1 for every
+  // state write (kv appends, GDN recurrence, snapshots), so real rows read
+  // back bitwise the eager batch's. Drafts, judge, rollback and redrafts
+  // stay eager between replays. Falls back to the eager batch when the row
+  // ceiling is below the needed size or a capture breaks (then the engine
+  // retries eager every step).
+  bool dflash_graph_verify_available() const {
+    return dflash2_ && max_decode_rows() >= query_block_rows();
+  }
+  std::vector<Outputs> session_verify_batch_graph(
+      const std::vector<int>& reqs, const std::vector<std::vector<int64_t>>& feds,
+      std::vector<int>* offsets = nullptr);
+  // The bisection control for the captured verify: the same static padded
+  // 8-row-block staging, executed eagerly (no capture) — isolates the
+  // padding rows from the capture mechanism.
+  std::vector<Outputs> session_verify_batch_padded(
+      const std::vector<int>& reqs, const std::vector<std::vector<int64_t>>& feds,
+      std::vector<int>* offsets = nullptr);
+  static constexpr int query_block_rows() { return 8; }
 
  private:
+  // The shared static padded staging of the two padded verify variants
+  // (validate, grow blocks, stage the 8-row blocks, upload, RowRun).
+  RowRun df_stage_padded(const std::vector<int>& reqs,
+                         const std::vector<std::vector<int64_t>>& feds,
+                         int* slots_out, std::vector<int>* offs_out);
   void build_layer_objects(const Qwen35LayerResident& r);
   void dense_mlp(const uint16_t* x, uint16_t* out, int tokens, const Qwen35DenseMlpResident& m,
                  cudaStream_t stream, int layer, bool resume = false);
@@ -342,6 +373,13 @@ class Qwen35Model : public SessionModel<Qwen35Model> {
   int64_t* df_tokens_ = nullptr;  // [query_rows] device
   int64_t* df_io64_h_ = nullptr;  // pinned: query_rows positions then tokens
   int df_batch_ = 1;  // the stacked draft batch width (slots per forward)
+  // The captured verify's replay state (one static 32-row graph): the
+  // pool tables pointer the capture baked in (a mismatch means the pool
+  // grew — drop and recapture), and the breakage latch (a failed capture
+  // retries eager every step instead of throwing the server over).
+  GraphCache df_verify_graph_;
+  const int32_t* df_verify_tables_ = nullptr;
+  bool df_verify_broken_ = false;
   static constexpr int df_rows_cap() { return 2048; }
   // Model-owned GDN state: [max_requests][num_gdn][elems], plus the
   // verify's per-row snapshots ([max_decode_rows][num_gdn][elems]) the

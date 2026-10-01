@@ -215,6 +215,33 @@ acceptance favors the block drafter, per-step machinery favors
 graphs — i.e. batched graph capture with a drafter loaded is the
 remaining lane, exactly as §7 step 4 orders it.
 
+### Batched graph capture with a drafter loaded (2026-10-02)
+
+§7 step 4 landed: `DGPP_DFLASH2_VERIFY_GRAPH=1` replays the batched
+verify as a captured CUDA graph. One static replay per row size —
+8 rows for a lone slot (`=2` extends capture to it; its op stream is
+the scalar C1 step, so its transcripts stay bit-exact, 12/12), 16
+for two slots, 32 otherwise. Every slot's fed rows are padded to a
+full 8-row block; the kernels are row-independent for compute and
+skip position -1 for every state write (KV appends, GDN recurrence,
+snapshots), which the padded-eager control (`=3`, same staging, no
+capture) proves: it matches the eager batch exactly. Drafts, judge,
+rollback and redrafts stay eager between replays; any capture
+breakage latches the eager batch for the life of the server.
+
+The one capture bug found while validating: the drafter's context
+K/V feed (`dflash2_store_features`) was gated `!run.capture`, so a
+replay skipped the planes' feed of the verify rows and acceptance
+decayed within a request (c4: 1.3–1.6 tok/pass, p1 6–31% against the
+eager batch's 4.5–6, p1 79–100%). The feed is a recorded node now;
+the graph is the fastest path: 35.9–36.1 vs 35.0–35.4 agg tg at c4
+and 35.9–39.0 vs 35.9–36.1 at c2 (short-prompt harness, 4x64
+batches). c2/c4 graph-vs-eager transcripts sit in the same near-tie
+class as eager-vs-eager (7–8/12 on the mixed-12 harness — the
+residual run-to-run wobble is the pre-existing sticky GEMM dispatch,
+not the graph). Default off; the padded layout costs one extra
+8-row block of GEMM work per padded slot.
+
 ## Recorded GLM-5.3 result
 
 On 2026-09-03 at TP=4, greedy depth-1 MTP accepted 88.7% of drafts on the

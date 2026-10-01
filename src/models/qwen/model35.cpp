@@ -17,6 +17,7 @@
 
 #include "common/cuda_check.hpp"
 #include "common/dtypes.hpp"
+#include "common/log.hpp"
 #include "kernels/add_rmsnorm.hpp"
 #include "kernels/dflash2.hpp"
 #include "kernels/fp8_blockwise_dense.hpp"
@@ -1105,8 +1106,9 @@ Qwen35Model::Outputs Qwen35Model::run_rows(const RowRun& run) {
   const int T = run.T, req = run.req;
   if (run.capture && loader_.residency() != LoaderResidency::Resident)
     throw std::logic_error("run_rows: a capture needs a resident stack");
-  if (dflash2_ && run.capture)
-    throw std::logic_error("run_rows: the DFlash2 drafter is eager-only (no graph capture)");
+  // The DFlash2 target verify captures (the batched verify graph); only
+  // the block draft itself stays eager (its host roundtrips) and is never
+  // called under capture.
   const int H = cfg_.hidden_size;
   const float eps = cfg_.rms_norm_eps;
   const RowInputs in = begin_run(run);
@@ -1229,8 +1231,13 @@ Qwen35Model::Outputs Qwen35Model::run_rows(const RowRun& run) {
   }
   // Every run's rows become the drafter's context K/V at their positions
   // (rejected verify rows included: they land past the committed end and
-  // the next draft's position mask hides them — no rollback).
-  if (dflash2_ && !run.capture) dflash2_store_features(T, d_req, d_pos);
+  // the next draft's position mask hides them — no rollback). Inside a
+  // captured verify this is a recorded node, NOT a skip: the eager
+  // redrafts between replays read the planes, so a replay that omitted
+  // the feed would draft over stale context (2026-10-02: the c4 graph's
+  // acceptance decay was exactly this — the capture kept the verify
+  // exact but starved the drafter).
+  if (dflash2_) dflash2_store_features(T, d_req, d_pos);
   out = finish_run(run, std::move(out));
   return out;
 }
@@ -1518,6 +1525,170 @@ void Qwen35Model::dflash2_draft_batch(const std::vector<int>& reqs,
       for (int r = 0; r < D; ++r)
         out.push_back(ids[(static_cast<size_t>(k) * D + r) * topk]);
     }
+  }
+}
+
+// The static padded layout both padded variants stage: every slot's fed rows
+// at [s*8, s*8+T), the block's tail rows position -1 (every state-writing
+// kernel skips them; their compute-only results are never read back).
+// Validates, grows blocks, uploads and returns the RowRun (capture=false;
+// the caller flips it). Throws on any validation failure.
+Qwen35Model::RowRun Qwen35Model::df_stage_padded(
+    const std::vector<int>& reqs, const std::vector<std::vector<int64_t>>& feds,
+    int* slots_out, std::vector<int>* offs_out) {
+  const int kBlock = query_block_rows();
+  if (reqs.empty() || reqs.size() > 4)
+    throw std::invalid_argument("df_stage_padded: slot count");
+  if (reqs.size() != feds.size())
+    throw std::invalid_argument("df_stage_padded: reqs/feds shape");
+  const int S = static_cast<int>(reqs.size());
+  // One static shape per slot count: 8 rows for a lone slot (no padding at
+  // all — the capture-mechanism control), 16 for two, 32 otherwise.
+  const int slots = S == 1 ? 1 : (S == 2 ? 2 : 4);
+  const int kRows = slots * kBlock;
+  if (kRows > max_decode_rows_)
+    throw std::invalid_argument("df_stage_padded: rows exceed the decode batch ceiling");
+  const int req0 = reqs[0];
+  // Validate + grow blocks BEFORE staging (host work, pre-capture).
+  for (int s = 0; s < S; ++s) {
+    const int req = reqs[static_cast<size_t>(s)];
+    check_req(req, "df_stage_padded");
+    const auto& ids = feds[static_cast<size_t>(s)];
+    const int T = static_cast<int>(ids.size());
+    if (T < 1 || T > kSpecRows)
+      throw std::invalid_argument("df_stage_padded: row count");
+    const int64_t pos = session_pos_[static_cast<size_t>(req)];
+    if (pos <= 0) throw std::invalid_argument("df_stage_padded: no open session");
+    for (int64_t id : ids)
+      if (id < 0 || id >= vocab_size_) throw std::invalid_argument("df_stage_padded: token id");
+    if (pos + T > max_context_) throw std::invalid_argument("df_stage_padded: context bound");
+    if (!pool_.ensure_request_blocks(req, pos + T, stream_))
+      throw std::runtime_error("df_stage_padded: cache pool exhausted");
+  }
+  std::vector<int> offs(static_cast<size_t>(S));
+  for (int s = 0; s < slots; ++s) {
+    const bool live = s < S;
+    const int req = live ? reqs[static_cast<size_t>(s)] : req0;
+    const int T = live ? static_cast<int>(feds[static_cast<size_t>(s)].size()) : 0;
+    const int64_t pos = live ? session_pos_[static_cast<size_t>(req)] : 0;
+    if (live) offs[static_cast<size_t>(s)] = s * kBlock;
+    for (int r = 0; r < kBlock; ++r) {
+      const int row = s * kBlock + r;
+      if (r < T) {
+        h_req_ids_[row] = req;
+        h_step_pos_[row] = pos + r;
+        h_token_[row] = feds[static_cast<size_t>(s)][static_cast<size_t>(r)];
+      } else {
+        h_req_ids_[row] = req0;
+        h_step_pos_[row] = -1;
+        h_token_[row] = 0;
+      }
+    }
+    h_req_spans_[2 * s] = s * kBlock;
+    h_req_spans_[2 * s + 1] = kBlock;
+  }
+  decode_rows_ = kRows;
+  glm_upload_i64(h_token_, d_tokens_, kRows, stream_);
+  glm_upload_i32(h_req_ids_, d_req_ids_, kRows, stream_);
+  glm_upload_i64(h_step_pos_, d_step_pos_, kRows, stream_);
+  glm_upload_i32(h_req_spans_, d_req_spans_, 2 * slots, stream_);
+  if (slots_out) *slots_out = slots;
+  if (offs_out) *offs_out = std::move(offs);
+  RowRun run;
+  run.req = req0;
+  run.T = kRows;
+  run.pos0 = session_pos_[static_cast<size_t>(req0)];
+  run.decode = true;
+  run.all_rows = true;
+  run.snapshots = true;
+  // A lone slot takes the exact scalar op stream (no batch flag, no spans
+  // read): bitwise the eager C1 step. Batches need the span form.
+  run.batch_requests = slots == 1 ? 0 : slots;
+  return run;
+}
+
+std::vector<Qwen35Model::Outputs> Qwen35Model::session_verify_batch_padded(
+    const std::vector<int>& reqs, const std::vector<std::vector<int64_t>>& feds,
+    std::vector<int>* offsets) {
+  // The bisection control: padded static staging, eager execution.
+  try {
+    int slots = 0;
+    std::vector<int> offs;
+    RowRun run = df_stage_padded(reqs, feds, &slots, &offs);
+    Outputs out = run_rows(run);  // eager: finish_run materializes all rows
+    const int S = static_cast<int>(reqs.size());
+    if (offsets) *offsets = offs;
+    std::vector<Outputs> outs(static_cast<size_t>(S));
+    for (int s = 0; s < S; ++s) {
+      const int T = static_cast<int>(feds[static_cast<size_t>(s)].size());
+      const int block = query_block_rows();
+      Outputs& o = outs[static_cast<size_t>(s)];
+      const size_t base = static_cast<size_t>(s) * block;
+      o.logits.assign(out.logits.begin() + base * lm_vocab_count_,
+                      out.logits.begin() + (base + T) * lm_vocab_count_);
+      o.lm_vocab_begin = out.lm_vocab_begin;
+      o.lm_vocab_count = out.lm_vocab_count;
+      o.final_hidden_bits.assign(out.final_hidden_bits.begin() + base * hidden_,
+                                 out.final_hidden_bits.begin() + (base + T) * hidden_);
+      session_pos_[static_cast<size_t>(reqs[static_cast<size_t>(s)])] += T;
+      push_position(reqs[static_cast<size_t>(s)]);
+    }
+    return outs;
+  } catch (const std::exception& e) {
+    DGPP_LOG_ERROR("dflash padded verify failed, plain batch: {}", e.what());
+    return session_verify_batch(reqs, feds, offsets);
+  }
+}
+
+std::vector<Qwen35Model::Outputs> Qwen35Model::session_verify_batch_graph(
+    const std::vector<int>& reqs, const std::vector<std::vector<int64_t>>& feds,
+    std::vector<int>* offsets) {
+  // Not our shape (or a broken capture latched): the exact eager batch.
+  if (!dflash_graph_verify_available() || df_verify_broken_)
+    return session_verify_batch(reqs, feds, offsets);
+  try {
+    int slots = 0;
+    std::vector<int> offs;
+    RowRun run = df_stage_padded(reqs, feds, &slots, &offs);
+    // A grown pool moves the tables pointer the capture baked in: drop
+    // the stale graphs and recapture below (rare; admission windows).
+    const int32_t* tables = pool_.blocks().device_tables();
+    if (df_verify_tables_ != nullptr && df_verify_tables_ != tables) df_verify_graph_.clear();
+    run.capture = true;
+    const uint64_t key = 0xdf1a5e0u + static_cast<uint64_t>(run.T);
+    const char* label = run.T == 8 ? "dflash-verify-8" : run.T == 16 ? "dflash-verify-16"
+                                                                    : "dflash-verify-32";
+    df_verify_graph_.replay_or_capture(key, label, stream_,
+                                       [&](cudaStream_t) { (void)run_rows(run); });
+    df_verify_tables_ = tables;
+    DGPP_CUDA_OK(cudaStreamSynchronize(stream_));  // tail mirrors are in-graph D2H nodes
+    const int S = static_cast<int>(reqs.size());
+    if (offsets) *offsets = offs;
+    std::vector<Outputs> outs(static_cast<size_t>(S));
+    for (int s = 0; s < S; ++s) {
+      const int T = static_cast<int>(feds[static_cast<size_t>(s)].size());
+      Outputs& o = outs[static_cast<size_t>(s)];
+      const size_t base = static_cast<size_t>(s) * query_block_rows();
+      o.logits.assign(h_tail_logits_ + base * lm_vocab_count_,
+                      h_tail_logits_ + (base + T) * lm_vocab_count_);
+      o.lm_vocab_begin = lm_vocab_begin_;
+      o.lm_vocab_count = lm_vocab_count_;
+      o.final_hidden_bits.assign(h_tail_hidden_ + base * hidden_,
+                                 h_tail_hidden_ + (base + T) * hidden_);
+      session_pos_[static_cast<size_t>(reqs[static_cast<size_t>(s)])] += T;
+      push_position(reqs[static_cast<size_t>(s)]);
+    }
+    return outs;
+  } catch (const std::exception& e) {
+    // A broken capture must never take the server down: drop the graph,
+    // drain any latched stream error, and serve this step eager (latched:
+    // the engine retries eager every step from here).
+    df_verify_broken_ = true;
+    df_verify_graph_.clear();
+    (void)cudaStreamSynchronize(stream_);
+    (void)cudaGetLastError();
+    DGPP_LOG_ERROR("dflash verify graph broken, eager fallback: {}", e.what());
+    return session_verify_batch(reqs, feds, offsets);
   }
 }
 
