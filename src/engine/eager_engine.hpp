@@ -23,6 +23,7 @@
 #include <vector>
 
 #include "common/dtypes.hpp"
+#include "common/log.hpp"
 #include "engine/decode_outputs.hpp"
 #include "engine/image_prefill.hpp"
 #include "engine/prefix_arena.hpp"
@@ -505,7 +506,21 @@ class EagerEngineAdapter : public sched::SchedulerEngine {
     const bool fits = model_->session_position(req) + 1 + model_->dflash2_drafts() <=
                       model_->max_context();
     if (sp && (!plain_greedy || !fits)) retire_spec(sp);
-    if (!(plain_greedy && fits)) return {};
+    if (!(plain_greedy && fits)) {
+      // DGPP_DFLASH2_TRACE=1 logs why a slot runs plain (one line per
+      // slot-step): the engagement split that sizes every spec-side
+      // investment. Default off: zero behavior change.
+      if (dflash_trace()) {
+        const char* why = !fits ? "context-fit"
+            : s.params.temperature > 0.0f ? "temperature"
+            : s.report_logprobs ? "logprobs"
+            : !s.bias.empty() ? "logit-bias"
+            : s.grammar ? "grammar"
+            : "penalties";
+        logf(LogLevel::Info, "dflash: slot {} runs plain ({})", req, why);
+      }
+      return {};
+    }
     if (!sp) {
       sp = std::make_unique<DFlash2Speculator<Model>>(*model_, req, rows_pick());
       // Experimental verify-depth cap (long-context throughput work):
@@ -538,8 +553,19 @@ class EagerEngineAdapter : public sched::SchedulerEngine {
     return v;
   }
   static bool dflash_draft_batch() {
+    // Batched redrafts (one stacked forward per step): default ON —
+    // validated +5–9% at c4 with no errors, C1-identical by construction
+    // (a single spec slot keeps the scalar redraft). DGPP_DFLASH2_DRAFT_BATCH=0
+    // opts out to the per-slot redrafts.
     static const bool v = [] {
       const char* e = std::getenv("DGPP_DFLASH2_DRAFT_BATCH");
+      return !(e && *e == '0');
+    }();
+    return v;
+  }
+  static bool dflash_trace() {
+    static const bool v = [] {
+      const char* e = std::getenv("DGPP_DFLASH2_TRACE");
       return e && *e && *e != '0';
     }();
     return v;
