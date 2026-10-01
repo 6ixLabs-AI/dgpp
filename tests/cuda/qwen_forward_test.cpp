@@ -237,8 +237,8 @@ int run_plan_check() {  // The memory plan's context line under the rope knob (e
 
 int run_w4a4_plan_check() {
   const char* mode = std::getenv("DGPP_MOE_W4A4");
-  const bool enabled = mode == nullptr || mode[0] != '0';
   const bool forced = mode != nullptr && mode[0] == '1';
+  const bool enabled = forced;  // opt-in only (issue #68): a calibrated scale never turns W4A4 on
   auto cfg = qwenfx::tiny_nvfp4_config();
   const auto workspace = [&](const QwenTextConfig& c, int tokens, int world) {
     const auto plan = QwenModel::plan_memory(c, tokens, 512, 0, world,
@@ -258,7 +258,7 @@ int run_w4a4_plan_check() {
   auto moe = dgpp::QwenMoeLayer::routed_config(2560, 320, 256, 10, true);
   require(
       dgpp::GlmMoeLayer::w4a4_scratch_bytes(moe, 2048, true) == (enabled ? size_t{29573120} : 0),
-      "production Qwen chunks reserve 28.2 MiB for W4A4");
+      "production Qwen chunks reserve 28.2 MiB for W4A4 only when opted in");
   require(dgpp::GlmMoeLayer::w4a4_scratch_bytes(moe, 2048) == (forced ? size_t{29573120} : 0),
           "uncalibrated NVFP4 reserves workspace only when forced");
   moe.n_shared_experts = 1;

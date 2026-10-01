@@ -1,0 +1,19 @@
+Internal ctest changing into directory: /home/stephen/workspace/dgpp/build-release
+Test project /home/stephen/workspace/dgpp/build-release
+    Start 3: qwen_w4a4_plan_default
+1/5 Test #3: qwen_w4a4_plan_default ...........   Passed    0.08 sec
+    Start 4: qwen_w4a4_plan_mode_0
+2/5 Test #4: qwen_w4a4_plan_mode_0 ............   Passed    0.07 sec
+    Start 5: qwen_w4a4_plan_mode_1
+3/5 Test #5: qwen_w4a4_plan_mode_1 ............   Passed    0.06 sec
+    Start 6: qwen_w4a4_plan_mode_empty
+4/5 Test #6: qwen_w4a4_plan_mode_empty ........   Passed    0.07 sec
+    Start 7: qwen_w4a4_plan_mode_invalid
+5/5 Test #7: qwen_w4a4_plan_mode_invalid ......   Passed    0.07 sec
+
+100% tests passed, 0 tests failed out of 5
+
+Label Time Summary:
+host    =   0.35 sec*proc (5 tests)
+
+Total Test time (real) =   0.36 sec

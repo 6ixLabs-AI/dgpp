@@ -1,0 +1,62 @@
+Preset CMake variables:
+
+  CMAKE_BUILD_TYPE="Release"
+  CMAKE_CUDA_FLAGS_RELEASE="-O3 -DNDEBUG -Xcompiler=-g0"
+  CMAKE_CXX_FLAGS_RELEASE="-O3 -DNDEBUG -g0"
+  CMAKE_EXE_LINKER_FLAGS_RELEASE="-s"
+  CMAKE_EXPORT_COMPILE_COMMANDS="ON"
+  DGPP_BUILD_BENCHMARKS="OFF"
+  DGPP_SANITIZE=""
+
+-- Could NOT find BZip2 (missing: BZIP2_LIBRARIES BZIP2_INCLUDE_DIR)
+-- Could NOT find Readline (missing: READLINE_INCLUDE_DIR READLINE_LIBRARY)
+-- Could NOT find Editline (missing: EDITLINE_INCLUDE_DIR EDITLINE_LIBRARY)
+--
+--
+-- PCRE2-10.45 configuration summary:
+--
+--   Install prefix .................... : /usr/local
+--   C compiler ........................ : /usr/bin/cc
+--   C compiler flags .................. : -O3 -DNDEBUG
+--
+--   Build type ........................ : Release
+--   Build 8 bit PCRE2 library ......... : ON
+--   Build 16 bit PCRE2 library ........ : OFF
+--   Build 32 bit PCRE2 library ........ : OFF
+--   Include debugging code ............ : IfDebugBuild
+--   Enable JIT compiling support ...... : OFF
+--   Use SELinux allocator in JIT ...... : OFF
+--   Enable Unicode support ............ : ON
+--   Newline char/sequence ............. : LF
+--   \R matches only ANYCRLF ........... : OFF
+--   \C is disabled .................... : OFF
+--   EBCDIC coding ..................... : OFF
+--   EBCDIC coding with NL=0x25 ........ : OFF
+--   Rebuild char tables ............... : OFF
+--   Internal link size ................ : 2
+--   Maximum variable lookbehind ....... : 255
+--   Parentheses nest limit ............ : 250
+--   Heap limit ........................ : 20000000
+--   Match limit ....................... : 10000000
+--   Match depth limit ................. : MATCH_LIMIT
+--   Build shared libs ................. : OFF
+--   Build static libs ................. : ON
+--      with PIC enabled ............... : ON
+--   Build pcre2grep ................... : OFF
+--   Enable JIT in pcre2grep ........... : ON
+--   Enable callouts in pcre2grep ...... : ON
+--   Enable callout fork in pcre2grep .. : ON
+--   Buffer size for pcre2grep ......... : 20480
+--   Build tests (implies pcre2test .... : OFF
+--                and pcre2grep)
+--   Link pcre2grep with libz .......... : ON
+--   Link pcre2grep with libbz2 ........ : Library not found
+--   Link pcre2test with libeditline ... : Library not found
+--   Link pcre2test with libreadline ... : Library not found
+--   Support Valgrind .................. : OFF
+--   Use %zu and %td ................... : AUTO
+--
+-- clang-format not found; format targets are unavailable
+-- Configuring done (0.2s)
+-- Generating done (0.1s)
+-- Build files have been written to: /home/stephen/workspace/dgpp/build-release

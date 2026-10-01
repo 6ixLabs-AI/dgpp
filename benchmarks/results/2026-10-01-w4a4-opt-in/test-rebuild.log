@@ -1,0 +1,16 @@
+[  0%] Built target dgpp_device_ranges
+[  3%] Built target dgpp_rope_scaling
+[  7%] Built target dgpp_core
+[ 30%] Built target pcre2-8-static
+[ 34%] Built target dgpp_loaders
+[ 42%] Built target dgpp_text
+[ 80%] Built target dgpp_kernels
+[ 84%] Built target dgpp_models_kda
+[ 88%] Built target dgpp_models_dsa
+[ 88%] Built target dgpp_sched
+[ 92%] Built target dgpp_models_glm
+[ 92%] Built target dgpp_models_moe
+[100%] Built target dgpp_models_glm_loader
+[100%] Building CUDA object CMakeFiles/glm_moe_test.dir/tests/cuda/glm_moe_test.cu.o
+[100%] Linking CXX executable glm_moe_test
+[100%] Built target glm_moe_test

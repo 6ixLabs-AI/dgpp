@@ -431,6 +431,16 @@ foreach(_mode IN ITEMS 0 1)
     DGPP_MOE_W4A4=${_mode} DGPP_MOE_W4A4_MIN_ROWS=256
     $<TARGET_FILE:qwen_forward_test> --w4a4-plan-check)
 endforeach()
+foreach(_mode IN ITEMS empty invalid)
+  if(_mode STREQUAL "empty")
+    set(_w4a4_value "")
+  else()
+    set(_w4a4_value "invalid")
+  endif()
+  add_test(NAME qwen_w4a4_plan_mode_${_mode} COMMAND ${CMAKE_COMMAND} -E env
+    DGPP_MOE_W4A4=${_w4a4_value} DGPP_MOE_W4A4_MIN_ROWS=256
+    $<TARGET_FILE:qwen_forward_test> --w4a4-plan-check)
+endforeach()
 add_test(NAME qwen_forward_smoke COMMAND qwen_forward_test --smoke ${QWEN_FORWARD_FIXTURE})
 set_tests_properties(qwen_forward_smoke PROPERTIES DEPENDS qwen_forward_fixture)
 add_test(NAME qwen_qsa_prefill
@@ -1618,11 +1628,26 @@ dgpp_set_common(glm_moe_test)
 add_test(NAME glm_moe_test COMMAND glm_moe_test)
 set_tests_properties(glm_moe_test PROPERTIES SKIP_RETURN_CODE 2)
 add_test(NAME moe_w4a4_layer_test COMMAND ${CMAKE_COMMAND} -E env
-  --unset=DGPP_MOE_W4A4 --unset=DGPP_MOE_W4A4_F32_DOWN --unset=DGPP_MOE_W4A4_DYNAMIC
+  DGPP_MOE_W4A4=1 --unset=DGPP_MOE_W4A4_F32_DOWN --unset=DGPP_MOE_W4A4_DYNAMIC
   DGPP_MOE_W4A4_MIN_ROWS=256 DGPP_MOE_SWIGLU_QUANT=1
   DGPP_TEST_FILTER=moe_w4a4_host_and_device_segmentation_match_both_output_formats
   $<TARGET_FILE:glm_moe_test>)
 set_tests_properties(moe_w4a4_layer_test PROPERTIES SKIP_RETURN_CODE 2)
+foreach(_mode IN ITEMS default 0 1)
+  if(_mode STREQUAL "default")
+    set(_w4a4_setting --unset=DGPP_MOE_W4A4)
+  else()
+    set(_w4a4_setting DGPP_MOE_W4A4=${_mode})
+  endif()
+  add_test(NAME moe_w4a4_policy_${_mode} COMMAND ${CMAKE_COMMAND} -E env
+    ${_w4a4_setting} --unset=DGPP_MOE_W4A4_DYNAMIC DGPP_MOE_W4A4_MIN_ROWS=256
+    DGPP_TEST_FILTER=moe_nvfp4_activation_scale_requires_opt_in $<TARGET_FILE:glm_moe_test>)
+  set_tests_properties(moe_w4a4_policy_${_mode} PROPERTIES LABELS "gpu" RUN_SERIAL TRUE SKIP_RETURN_CODE 2)
+endforeach()
+add_test(NAME moe_w4a4_policy_dynamic COMMAND ${CMAKE_COMMAND} -E env
+  DGPP_MOE_W4A4=1 DGPP_MOE_W4A4_DYNAMIC=1 DGPP_MOE_W4A4_MIN_ROWS=256
+  DGPP_TEST_FILTER=moe_nvfp4_activation_scale_requires_opt_in $<TARGET_FILE:glm_moe_test>)
+set_tests_properties(moe_w4a4_policy_dynamic PROPERTIES LABELS "gpu" RUN_SERIAL TRUE SKIP_RETURN_CODE 2)
 
 # Full-model forward parity (M4 chunk 6): this test writes a synthetic
 # mini-checkpoint, python computes the full-stack pure reference from the
@@ -1820,7 +1845,8 @@ foreach(_test IN LISTS DGPP_ALL_TESTS)
   set_tests_properties(${_test} PROPERTIES LABELS "gpu")
 endforeach()
 set_tests_properties(unit unit_tests http_server_test serve_test fabric_serve_test scheduler_test shutdown_watchdog_test engine_watchdog_test
-  qwen_yarn_fixture_test qwen_w4a4_plan_default qwen_w4a4_plan_mode_0 qwen_w4a4_plan_mode_1 PROPERTIES LABELS "host")
+  qwen_yarn_fixture_test qwen_w4a4_plan_default qwen_w4a4_plan_mode_0 qwen_w4a4_plan_mode_1
+  qwen_w4a4_plan_mode_empty qwen_w4a4_plan_mode_invalid PROPERTIES LABELS "host")
 set_tests_properties(checkpoint_audit_test route_trace_test sampling_profile_test
   site_env_test script_reports_test timed_load_test qwen_yarn_release_check_test qwen_head_compare_test portability_test spark_cross_test setup_tools_test bootstrap_test launcher_test PROPERTIES LABELS "host;python")
 if(TARGET dgpp_serve_app)

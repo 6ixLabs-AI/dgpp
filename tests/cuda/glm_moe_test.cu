@@ -12,11 +12,12 @@
 // strict oracle, budgeted there at 0 mismatches — here slightly loosened
 // for the extra chained roundings).
 #include <algorithm>
-#include <random>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <random>
 #include <stdexcept>
 #include <string>
 #include <tuple>
@@ -26,14 +27,13 @@
 #include <cuda_runtime.h>
 
 #include "common/cuda_check.hpp"
-#include "kernels/fp4_gemv.hpp"
-#include "kernels/packq_gemv.hpp"
-#include "kernels/glm_moe_launch.hpp"
-#include "kernels/latent_format.hpp"
-#include "kernels/scale_gemm.hpp"
 #include "common/dtypes.hpp"
 #include "common/test.hpp"
+#include "kernels/fp4_gemv.hpp"
 #include "kernels/glm_moe_launch.hpp"
+#include "kernels/latent_format.hpp"
+#include "kernels/packq_gemv.hpp"
+#include "kernels/scale_gemm.hpp"
 #include "models/glm/moe.hpp"
 #include "models/glm/moe_layer.hpp"
 #include "models/glm/moe_reference.hpp"
@@ -1899,6 +1899,51 @@ DGPP_TEST(moe_expert_path_matches_oracle_small_geometry_nvfp4) {
                                 /*tokens=*/6, 0x0F4, /*nvfp4=*/true);
   c.alloc();
   run_small_case(c, "nvfp4 expert path E=8 H=512 I=256 K=2");
+  c.free_all();
+}
+
+DGPP_TEST(moe_nvfp4_activation_scale_requires_opt_in) {
+  SmallCase c = make_small_case(/*E=*/4, /*H=*/128, /*I=*/64, /*K=*/2,
+                                /*tokens=*/137, 0xF4BF16, /*nvfp4=*/true);
+  c.alloc();
+  c.cfg.n_shared_experts = 0;
+  c.cfg.router_mode = dgpp::MoeRouterMode::SoftmaxTopk;
+  float *scales = nullptr, *out = nullptr;
+  DGPP_CUDA_OK(cudaMallocManaged(&scales, 2 * sizeof(float)));
+  DGPP_CUDA_OK(cudaMallocManaged(&out, c.hidden.size() * sizeof(float)));
+  c.dev_w.act_scales_dev = scales;
+  const char* mode = std::getenv("DGPP_MOE_W4A4");
+  const bool quantized = mode != nullptr && mode[0] == '1';
+  const bool static_scale = std::getenv("DGPP_MOE_W4A4_DYNAMIC") == nullptr;
+  {
+    GlmMoeLayer layer(c.dev_w, c.cfg, c.tokens, /*decode_slots=*/1);
+    std::vector<float> prefill;
+    std::vector<float> decode;
+    for (float scale : {1e-4f, 1e4f}) {
+      scales[0] = scales[1] = scale;
+      layer.enqueue_prefill_f32(c.d_hidden, out, c.tokens, nullptr, nullptr);
+      DGPP_CUDA_OK(cudaDeviceSynchronize());
+      const std::vector<float> current(out, out + c.hidden.size());
+      require(std::all_of(current.begin(), current.end(), [](float v) { return std::isfinite(v); }),
+              "NVFP4 policy output must be finite");
+      layer.enqueue_decode_f32(c.d_hidden, out, 1, nullptr, nullptr);
+      DGPP_CUDA_OK(cudaDeviceSynchronize());
+      const std::vector<float> step(out, out + c.cfg.hidden);
+      if (prefill.empty()) {
+        prefill = current;
+        decode = step;
+      } else {
+        const bool identical =
+            std::memcmp(prefill.data(), current.data(), current.size() * sizeof(float)) == 0;
+        require(identical == !(quantized && static_scale),
+                "calibration must affect prefill only with explicit static-scale W4A4 opt-in");
+        require(std::memcmp(decode.data(), step.data(), step.size() * sizeof(float)) == 0,
+                "activation quantization settings must not change decode");
+      }
+    }
+  }
+  cudaFree(out);
+  cudaFree(scales);
   c.free_all();
 }
 

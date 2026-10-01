@@ -6,6 +6,13 @@ The history by milestone. The dated engineering record in
 
 ## Unreleased
 
+- **W4A4 NVFP4 expert prefill is opt-in** (2026-10-01): default to
+  W4A16 with BF16 activations; `DGPP_MOE_W4A4=1` explicitly enables
+  activation quantization and its workspace. PR #50 reported kernel,
+  latency and BFCL results, but the paired teacher-forced and task-evaluation
+  gate required by [#68](https://github.com/HawkBearPig/dgpp/issues/68)
+  remains outstanding. Calibration scales alone no longer enable W4A4.
+
 - **Compact serving logits across all model families**: extend PR #67's
   bounded Qwen head storage to BF16 and packed Qwen heads, GLM-4.7,
   GLM-5.3, GLM-5.3-Flash, DeepSeek-V4.1 and MiMo. Serving stores only the

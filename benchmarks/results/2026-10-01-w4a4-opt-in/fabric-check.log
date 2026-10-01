@@ -1,0 +1,18 @@
+{
+  "version": "dgpp-serve 0.1.0+g4d240fc242c0.dirty (git 4d240fc242c0, cuda 13.0)",
+  "health": {
+    "status": "ok",
+    "model": "HawkBearPig/GLM-5.3-Flash-NVFP4-FP8"
+  },
+  "configuration_matches": true,
+  "binary_sha256": {
+    "rank0": "f3b6ad48cb5a8ec14f9fd59164d6e807faded80ff5e55957436513cbd8b8bf48",
+    "rank1": "f3b6ad48cb5a8ec14f9fd59164d6e807faded80ff5e55957436513cbd8b8bf48",
+    "rank2": "f3b6ad48cb5a8ec14f9fd59164d6e807faded80ff5e55957436513cbd8b8bf48",
+    "rank3": "f3b6ad48cb5a8ec14f9fd59164d6e807faded80ff5e55957436513cbd8b8bf48"
+  },
+  "successful_concurrent_requests": 4,
+  "engine_failed": false,
+  "graph_replays": 190,
+  "accepted_draft_tokens": 166
+}

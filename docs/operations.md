@@ -149,13 +149,17 @@ set `DGPP_PREFILL_HEAD_ALL_ROWS=1` in every rank before memory planning and
 startup; Flash retains its existing selected-row projection.
 See [numerical validation](numerics.md) for the serving-head probe.
 
-Qwen NVFP4 expert prefills default to W4A4 when the checkpoint supplies
-calibrated activation scales. Set `DGPP_MOE_W4A4=0` in every rank process
-to retain W4A16, or `DGPP_MOE_W4A4=1` to also enable dynamic activation
-scales for uncalibrated NVFP4 experts. `DGPP_MOE_W4A4_MIN_ROWS` defaults to
-256 routed rows. Hidden and local expert widths must be multiples of 64
-and at most 16384; other shapes and decode use W4A16. Memory plans include
-the activation workspace (28.2 MiB per rank for standard Qwen chunks).
+Qwen NVFP4 expert prefills run W4A16 by default. `DGPP_MOE_W4A4=1` in every
+rank process opts into the W4A4 path (the checkpoint's calibrated activation
+scale when it carries one, a dynamic per-row scale otherwise). That is a
+lossy activation step. PR #50 reported a BFCL comparison; the paired
+teacher-forced and task-evaluation gate in issue #68 remains outstanding.
+Treat the opt-in as an experimental accuracy tradeoff. Calibration scales
+alone never enable it. `DGPP_MOE_W4A4_MIN_ROWS`
+defaults to 256 routed rows. Hidden and local expert widths must be multiples
+of 64 and at most 16384; other shapes and decode use W4A16. Memory plans
+include the activation workspace only when opted in (28.2 MiB per rank for
+standard Qwen chunks).
 
 The [single-node guide](qwen38_single_spark.md) covers the one-Spark memory
 plan, and the [two-node benchmark](../benchmarks/results/2026-09-16-qwen-nvfp4-w2.md)

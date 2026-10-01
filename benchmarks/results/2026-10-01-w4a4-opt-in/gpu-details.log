@@ -1,0 +1,357 @@
+Start testing: Oct 01 06:05 UTC
+----------------------------------------------------------
+162/189 Testing: moe_w4a4_test
+162/189 Test: moe_w4a4_test
+Command: "/home/stephen/workspace/dgpp/build-release/moe_w4a4_test" "--tokens" "1024" "--experts" "64"
+Directory: /home/stephen/workspace/dgpp/build-release
+"moe_w4a4_test" start time: Oct 01 06:05 UTC
+Output:
+----------------------------------------------------------
+[ .. ] small layouts: worst |got - fp64| / sum|terms| = 3.12e-08
+[ .. ] small W4A4 vs W4A16: relative l2 0.0908
+[ .. ] small 128 rows x n 256 x k 256: W4A16 0.006 ms (2.7 TF)  W4A4 0.010 ms (1.7 TF, quant 0.002)  0.62x
+[ .. ] small GEMM only: f32 out 0.006 ms (2.7 TF), bf16 out 0.006 ms (2.7 TF)
+[ .. ] k320 layouts: worst |got - fp64| / sum|terms| = 5.19e-08
+[ .. ] k320 W4A4 vs W4A16: relative l2 0.0904
+[ .. ] k320 800 rows x n 320 x k 320: W4A16 0.012 ms (13.3 TF)  W4A4 0.012 ms (13.5 TF, quant 0.003)  1.01x
+[ .. ] k320 GEMM only: f32 out 0.008 ms (20.0 TF), bf16 out 0.009 ms (18.9 TF)
+[ .. ] n-tail layouts: worst |got - fp64| / sum|terms| = 7.87e-09
+[ .. ] n-tail W4A4 vs W4A16: relative l2 0.0904
+[ .. ] n-tail 300 rows x n 130 x k 2560: W4A16 0.043 ms (4.6 TF)  W4A4 0.025 ms (7.9 TF, quant 0.004)  1.71x
+[ .. ] n-tail GEMM only: f32 out 0.021 ms (9.6 TF), bf16 out 0.021 ms (9.7 TF)
+[ .. ] static-clip layouts: worst |got - fp64| / sum|terms| = 2.01e-08
+[ .. ] static-clip W4A4 vs W4A16: relative l2 0.7368
+[ .. ] static-clip 800 rows x n 320 x k 320: W4A16 0.012 ms (13.3 TF)  W4A4 0.012 ms (13.6 TF, quant 0.002)  1.02x
+[ .. ] static-clip GEMM only: f32 out 0.008 ms (20.0 TF), bf16 out 0.009 ms (19.1 TF)
+[ .. ] gate_up W4A4 vs W4A16: relative l2 0.0908
+[ .. ] gate_up 10240 rows x n 640 x k 2560: W4A16 0.685 ms (49.0 TF)  W4A4 0.548 ms (61.3 TF, quant 0.006)  1.25x
+[ .. ] gate_up GEMM only: f32 out 0.486 ms (69.1 TF), bf16 out 0.398 ms (84.3 TF)
+[ .. ] down W4A4 vs W4A16: relative l2 0.0903
+[ .. ] down 10240 rows x n 2560 x k 320: W4A16 0.666 ms (25.2 TF)  W4A4 0.635 ms (26.4 TF, quant 0.004)  1.05x
+[ .. ] down GEMM only: f32 out 0.662 ms (25.4 TF), bf16 out 0.400 ms (41.9 TF)
+[ OK ] fused swiglu+quantize vs the two-kernel chain: bitwise (codes, scales, globals)
+[ OK ] static global from device memory vs by value: bitwise (codes, scales, globals)
+[ OK ] moe_w4a4_test
+<end of output>
+Test time =   1.17 sec
+----------------------------------------------------------
+Test Passed.
+"moe_w4a4_test" end time: Oct 01 06:05 UTC
+"moe_w4a4_test" time elapsed: 00:00:01
+----------------------------------------------------------
+
+164/189 Testing: glm_moe_test
+164/189 Test: glm_moe_test
+Command: "/home/stephen/workspace/dgpp/build-release/glm_moe_test"
+Directory: /home/stephen/workspace/dgpp/build-release
+"glm_moe_test" start time: Oct 01 06:05 UTC
+Output:
+----------------------------------------------------------
+[ OK ] grouped gemv I=204: 7 segments (1..30 rows) bitwise the chunked GEMV
+[ OK ] grouped gemv I=208: 7 segments (1..30 rows) bitwise the chunked GEMV, down fp32 too
+[ OK ] moe_grouped_gemv_is_bitwise_the_chunked_scale_gemm_per_segment
+[ OK ] grouped mma I=204: 7 segments (1..245 rows) bitwise the tile GEMM
+[ OK ] grouped mma I=208: 7 segments (1..245 rows) bitwise the tile GEMM, down fp32 too
+[ OK ] moe_grouped_mma_is_bitwise_the_tile_gemm_per_segment
+[ .. ] small-case which=0: 0 of 768 elements differ (first -1: got 0000 ref 0000)
+[ .. ] small-case which=1: 0 of 768 elements differ (first -1: got 0000 ref 0000)
+[ .. ] small-case down: 0 of 1536 elements differ (first -1: got 0 ref 0)
+[ OK ] moe_grouped_mma_small_case_shapes_bitwise_the_tile_gemm
+[ OK ] accum ordered: 16 tokens x 4 slots bitwise the fmaf chain
+[ OK ] moe_accum_ordered_is_bitwise_the_fmaf_chain
+[ OK ] prefill device path E=8 H=512 I=256 K=2 M=1: bitwise
+[ OK ] prefill device path E=8 H=512 I=256 K=2 M=3: bitwise
+[ OK ] prefill device path E=16 H=1024 I=512 K=4 M=2: bitwise
+[ OK ] prefill device path E=8 H=512 I=256 K=4 M=64: bitwise
+[ OK ] moe_enqueue_prefill_is_bitwise_the_host_path
+[ OK ] tiled router: 70 tokens x 288 experts bitwise the warp form
+[ OK ] moe_router_tiled_dots_are_bitwise_the_warp_form
+[ OK ] router E=288 H=4096 K=8 tokens=1: 0 certified near-tie swaps, max weight rel err 2e-07
+[ OK ] router E=288 H=4096 K=8 tokens=3: 0 certified near-tie swaps, max weight rel err 1e-07
+[ OK ] router E=288 H=4096 K=8 tokens=257: 0 certified near-tie swaps, max weight rel err 2.2e-07
+[ OK ] router E=288 H=4096 K=8 tokens=17: 0 certified near-tie swaps, max weight rel err 1.2e-07
+[ OK ] router E=384 H=5120 K=6 tokens=1: 0 certified near-tie swaps, max weight rel err 1.2e-07
+[ OK ] router E=384 H=5120 K=6 tokens=5: 0 certified near-tie swaps, max weight rel err 2.3e-07
+[ OK ] router E=384 H=5120 K=6 tokens=70: 0 certified near-tie swaps, max weight rel err 2.4e-07
+[ OK ] moe_router_matches_oracle_real_geometry
+[ OK ] router ties: experts 0..7, uniform weights
+[ OK ] moe_router_ties_break_to_lower_expert_id
+[ OK ] swiglu clamps: asymmetric limits, boundary values
+[ OK ] moe_swiglu_clamp_edge_semantics
+[ .. ] expert path (gemv, same case) E=8 M=1: max 0 ulps, 0/512 over soft, 0 hard, l2=0
+[ .. ] expert path (mma) E=8 M=1: max 0 ulps, 0/512 over soft, 0 hard, l2=0
+[ .. ] expert path (gemv, same case) E=8 M=17: max 0 ulps, 0/8704 over soft, 0 hard, l2=3.9e-08
+[ .. ] expert path (mma) E=8 M=17: max 0 ulps, 0/8704 over soft, 0 hard, l2=8e-05
+[ .. ] expert path (gemv, same case) E=16 M=5: max 0 ulps, 0/5120 over soft, 0 hard, l2=1.8e-05
+[ .. ] expert path (mma) E=16 M=5: max 0 ulps, 0/5120 over soft, 0 hard, l2=0.00021
+[ .. ] expert path (gemv, same case) E=8 M=300: max 0 ulps, 0/153600 over soft, 0 hard, l2=6e-05
+[ .. ] expert path (mma) E=8 M=300: max 0 ulps, 0/153600 over soft, 0 hard, l2=0.00012
+[ OK ] moe_expert_path_mma_matches_oracle_small_geometry
+[ .. ] expert path E=8 M=1: max 0 ulps, 0/512 over soft, 0 hard, l2=0
+[ .. ] expert path E=8 M=17: max 0 ulps, 0/8704 over soft, 0 hard, l2=3.9e-08
+[ .. ] expert path E=16 M=5: max 0 ulps, 0/5120 over soft, 0 hard, l2=1.8e-05
+[ OK ] moe_expert_path_matches_oracle_small_geometry
+[ OK ] accumulation order: ids {5,6,7} ascending, output matches oracle
+[ OK ] moe_accumulation_order_is_ascending_expert
+[ OK ] decode slot path E=8 H=512 I=256 K=2 M=1: bitwise
+[ OK ] decode slot path E=8 H=512 I=256 K=2 M=3: bitwise
+[ OK ] decode slot path E=16 H=1024 I=512 K=4 M=2: bitwise
+[ OK ] moe_decode_slot_path_is_bitwise_host_path
+[ .. ] sliced fold E=8 I=256 world=2: worst err/budget 0.771, 0/1536 over budget, l2=0.0028
+[ .. ] sliced fold E=16 I=512 world=4: worst err/budget 0.690, 0/2048 over budget, l2=0.0026
+[ .. ] sliced fold E=8 I=512 world=2: worst err/budget 0.744, 0/2048 over budget, l2=0.0027
+[ OK ] moe_sliced_ranks_fold_matches_unsliced_oracle
+[ .. ] nvfp4 shared expert path (gemv) M=1: max 0 ulps, 0/512 over soft, 0 hard, l2=0
+[ .. ] nvfp4 shared expert path (mma) M=1: max 0 ulps, 0/512 over soft, 0 hard, l2=5.5e-06
+[ OK ] nvfp4 shared expert E=8 H=512 I=384 K=2 M=1: oracle + bitwise paths
+[ .. ] nvfp4 shared expert path (gemv) M=3: max 0 ulps, 0/1536 over soft, 0 hard, l2=0
+[ .. ] nvfp4 shared expert path (mma) M=3: max 0 ulps, 0/1536 over soft, 0 hard, l2=0
+[ OK ] nvfp4 shared expert E=8 H=512 I=384 K=2 M=3: oracle + bitwise paths
+[ .. ] nvfp4 shared expert path (gemv) M=40: max 0 ulps, 0/20480 over soft, 0 hard, l2=3.7e-05
+[ .. ] nvfp4 shared expert path (mma) M=40: max 0 ulps, 0/20480 over soft, 0 hard, l2=0.0002
+[ OK ] nvfp4 shared expert E=8 H=512 I=384 K=4 M=40: oracle + bitwise paths
+[ OK ] moe_nvfp4_shared_expert_matches_oracle_and_every_path_is_bitwise
+[ OK ] fp4 grouped gemv: 7 segments (1..30 rows) bitwise the launcher
+[ OK ] moe_grouped_gemv_fp4_is_bitwise_the_single_matrix_launcher
+[ .. ] mx fp4 ldm gate I=224: worst relative error vs the oracle 3.889e-03 (bf16 out)
+[ .. ] mx fp4 ldm down I=224: worst relative error vs the oracle 2.675e-05 (fp32 out)
+[ .. ] mx fp4 ldm gate I=320: worst relative error vs the oracle 3.891e-03 (bf16 out)
+[ .. ] mx fp4 ldm down I=320: worst relative error vs the oracle 3.669e-05 (fp32 out)
+[ OK ] moe_grouped_mma_fp4_mx_matches_the_oracle_per_segment
+[ OK ] fp4 grouped mma I=208: 7 segments (1..245 rows) bitwise the dense form, gate bf16 + row map + unaligned rows + down fp32
+[ OK ] fp4 grouped mma I=320: 7 segments (1..245 rows) bitwise the dense form, gate bf16 + row map + unaligned rows + down fp32
+[ OK ] moe_grouped_mma_fp4_is_bitwise_the_dense_form_per_segment
+[ .. ] nvfp4 expert path (gemv, same case) E=8 M=1: max 0 ulps, 0/512 over soft, 0 hard, l2=0
+[ .. ] nvfp4 expert path (mma) E=8 M=1: max 0 ulps, 0/512 over soft, 0 hard, l2=0
+[ .. ] nvfp4 expert path (gemv, same case) E=8 M=17: max 0 ulps, 0/8704 over soft, 0 hard, l2=1.7e-07
+[ .. ] nvfp4 expert path (mma) E=8 M=17: max 0 ulps, 0/8704 over soft, 0 hard, l2=4.9e-05
+[ .. ] nvfp4 expert path (gemv, same case) E=16 M=5: max 0 ulps, 0/5120 over soft, 0 hard, l2=3.1e-07
+[ .. ] nvfp4 expert path (mma) E=16 M=5: max 0 ulps, 0/5120 over soft, 0 hard, l2=0.00043
+[ .. ] nvfp4 expert path (gemv, same case) E=8 M=300: max 0 ulps, 0/153600 over soft, 0 hard, l2=5.6e-05
+[ .. ] nvfp4 expert path (mma) E=8 M=300: max 0 ulps, 0/153600 over soft, 0 hard, l2=5.8e-05
+[ OK ] moe_expert_path_mma_matches_oracle_small_geometry_nvfp4
+[ .. ] nvfp4 expert path E=8 H=512 I=256 K=2: max 0 ulps, 0/3072 over soft, 0 hard, l2=9.2e-07
+[ OK ] moe_expert_path_matches_oracle_small_geometry_nvfp4
+[ OK ] moe_nvfp4_activation_scale_requires_opt_in
+[ OK ] moe_w4a4_host_and_device_segmentation_match_both_output_formats
+[ .. ] nvfp4 host path vs oracle: max 0 ulps, 0/512 over soft, 0 hard, l2=0
+[ OK ] nvfp4 decode slot path E=8 H=512 I=256 K=2 M=1: bitwise
+[ .. ] nvfp4 host path vs oracle: max 0 ulps, 0/1536 over soft, 0 hard, l2=0
+[ OK ] nvfp4 decode slot path E=8 H=512 I=256 K=2 M=3: bitwise
+[ .. ] nvfp4 host path vs oracle: max 0 ulps, 0/2048 over soft, 0 hard, l2=0
+[ OK ] nvfp4 decode slot path E=16 H=1024 I=512 K=4 M=2: bitwise
+[ OK ] moe_decode_slot_path_is_bitwise_host_path_nvfp4
+[ .. ] nvfp4 sliced fold E=8 I=256 world=2: worst err/budget 0.744, 0/1536 over budget, l2=0.0026
+[ .. ] nvfp4 sliced fold E=16 I=512 world=4: worst err/budget 0.648, 0/2048 over budget, l2=0.0027
+[ .. ] nvfp4 sliced fold E=8 I=512 world=2: worst err/budget 0.744, 0/2048 over budget, l2=0.003
+[ OK ] moe_sliced_ranks_fold_matches_unsliced_oracle_nvfp4
+[ .. ] mxfp4 expert path E=8 H=512 I=256 K=2: max 0 ulps, 0/3072 over soft, 0 hard, l2=0
+[ .. ] mxfp4 tile kernel vs oracle: max 0 ulps, 0/3072 over soft, 0 hard, l2=1.2e-08
+[ .. ] mxfp4 GEMV core vs oracle: max 0 ulps, 0/3072 over soft, 0 hard, l2=0
+[ OK ] moe_expert_path_matches_oracle_small_geometry_mxfp4
+[ .. ] mxfp4 host path vs oracle: max 0 ulps, 0/512 over soft, 0 hard, l2=2.1e-05
+[ .. ] mxfp4 GEMV host path vs oracle: max 0 ulps, 0/512 over soft, 0 hard, l2=2.1e-05
+[ .. ] mxfp4 tile host path vs oracle: max 0 ulps, 0/512 over soft, 0 hard, l2=0
+[ OK ] mxfp4 decode slot path E=8 H=512 I=256 K=2 M=1: bitwise the GEMV host path; the tile path within budget
+[ .. ] mxfp4 host path vs oracle: max 0 ulps, 0/1536 over soft, 0 hard, l2=0
+[ .. ] mxfp4 GEMV host path vs oracle: max 0 ulps, 0/1536 over soft, 0 hard, l2=0
+[ .. ] mxfp4 tile host path vs oracle: max 0 ulps, 0/1536 over soft, 0 hard, l2=3.7e-05
+[ OK ] mxfp4 decode slot path E=8 H=512 I=256 K=2 M=3: bitwise the GEMV host path; the tile path within budget
+[ .. ] mxfp4 host path vs oracle: max 0 ulps, 0/2048 over soft, 0 hard, l2=0
+[ .. ] mxfp4 GEMV host path vs oracle: max 0 ulps, 0/2048 over soft, 0 hard, l2=0
+[ .. ] mxfp4 tile host path vs oracle: max 0 ulps, 0/2048 over soft, 0 hard, l2=0.00018
+[ OK ] mxfp4 decode slot path E=16 H=1024 I=512 K=4 M=2: bitwise the GEMV host path; the tile path within budget
+[ .. ] mxfp4 host path vs oracle: max 0 ulps, 0/2048 over soft, 0 hard, l2=0
+[ .. ] mxfp4 GEMV host path vs oracle: max 0 ulps, 0/2048 over soft, 0 hard, l2=0
+[ .. ] mxfp4 tile host path vs oracle: max 0 ulps, 0/2048 over soft, 0 hard, l2=0.00017
+[ OK ] mxfp4 decode slot path E=8 H=1024 I=576 K=6 M=2: bitwise the GEMV host path; the tile path within budget
+[ OK ] moe_decode_slot_path_is_bitwise_host_path_mxfp4
+[ .. ] mxfp4 sliced fold E=8 I=256 world=2: worst err/budget 0.771, 0/1536 over budget, l2=0.0029
+[ .. ] mxfp4 sliced fold E=16 I=512 world=4: worst err/budget 0.731, 0/2048 over budget, l2=0.0028
+[ .. ] mxfp4 sliced fold E=8 I=2304 world=2: worst err/budget 0.744, 0/2048 over budget, l2=0.0029
+[ OK ] moe_sliced_ranks_fold_matches_unsliced_oracle_mxfp4
+[ OK ] mxfp4 grouped gemv: 7 segments (1..30 rows) bitwise the launcher
+[ OK ] moe_grouped_gemv_mxfp4_is_bitwise_the_single_matrix_launcher
+[ OK ] packq int4 grouped gemv: 7 segments (1..30 rows) bitwise the launcher
+[ OK ] packq int8 grouped gemv: 7 segments (1..30 rows) bitwise the launcher
+[ OK ] moe_grouped_gemv_packq_is_bitwise_the_single_matrix_launcher
+[ .. ] packq int4 expert path E=8 M=1: max 0 ulps, 0/512 over soft, 0 hard, l2=0
+[ .. ] packq int4 expert path E=8 M=6: max 0 ulps, 0/3072 over soft, 0 hard, l2=0
+[ .. ] packq int4 expert path E=16 M=5: max 0 ulps, 0/5120 over soft, 0 hard, l2=0.00017
+[ .. ] packq int8 expert path E=8 M=1: max 0 ulps, 0/512 over soft, 0 hard, l2=0
+[ .. ] packq int8 expert path E=8 M=6: max 0 ulps, 0/3072 over soft, 0 hard, l2=0
+[ .. ] packq int8 expert path E=16 M=5: max 0 ulps, 0/5120 over soft, 0 hard, l2=2.1e-05
+[ .. ] packq int4 g128/f16 expert path E=8 M=1: max 0 ulps, 0/512 over soft, 0 hard, l2=1.2e-05
+[ .. ] packq int4 g128/f16 expert path E=8 M=6: max 0 ulps, 0/3072 over soft, 0 hard, l2=2.8e-07
+[ .. ] packq int4 g128/f16 expert path E=16 M=5: max 0 ulps, 0/5120 over soft, 0 hard, l2=5.6e-09
+[ .. ] packq int8 g128/f16 expert path E=8 M=1: max 0 ulps, 0/512 over soft, 0 hard, l2=0
+[ .. ] packq int8 g128/f16 expert path E=8 M=6: max 0 ulps, 0/3072 over soft, 0 hard, l2=0
+[ .. ] packq int8 g128/f16 expert path E=16 M=5: max 0 ulps, 0/5120 over soft, 0 hard, l2=8.5e-05
+[ OK ] moe_expert_path_matches_oracle_small_geometry_packq
+[ .. ] packed expert prefill lowering: max 0 ulps, 0/8192 over soft, 0 hard, l2=5.7e-05
+[ .. ] packed expert prefill lowering: max 0 ulps, 0/8704 over soft, 0 hard, l2=4.8e-05
+[ .. ] packed expert prefill lowering: max 0 ulps, 0/16896 over soft, 0 hard, l2=2.1e-09
+[ .. ] packed expert prefill lowering: max 0 ulps, 0/65024 over soft, 0 hard, l2=7.8e-05
+[ .. ] packed expert prefill lowering: max 0 ulps, 0/65536 over soft, 0 hard, l2=4.1e-05
+[ .. ] packed expert prefill lowering: max 0 ulps, 0/66048 over soft, 0 hard, l2=5.8e-05
+[ .. ] packed expert prefill lowering: max 0 ulps, 0/131584 over soft, 0 hard, l2=1.6e-05
+[ .. ] packed expert prefill lowering: max 0 ulps, 0/8192 over soft, 0 hard, l2=7.1e-05
+[ .. ] packed expert prefill lowering: max 0 ulps, 0/8704 over soft, 0 hard, l2=8.1e-06
+[ .. ] packed expert prefill lowering: max 0 ulps, 0/16896 over soft, 0 hard, l2=3.4e-05
+[ .. ] packed expert prefill lowering: max 0 ulps, 0/65024 over soft, 0 hard, l2=0.00012
+[ .. ] packed expert prefill lowering: max 0 ulps, 0/65536 over soft, 0 hard, l2=8.8e-05
+[ .. ] packed expert prefill lowering: max 0 ulps, 0/66048 over soft, 0 hard, l2=2.4e-05
+[ .. ] packed expert prefill lowering: max 0 ulps, 0/131584 over soft, 0 hard, l2=7.7e-05
+[ .. ] packed g128/f16 expert prefill lowering: max 0 ulps, 0/8192 over soft, 0 hard, l2=0
+[ .. ] packed g128/f16 expert prefill lowering: max 0 ulps, 0/8704 over soft, 0 hard, l2=0.00031
+[ .. ] packed g128/f16 expert prefill lowering: max 0 ulps, 0/16896 over soft, 0 hard, l2=2.2e-05
+[ .. ] packed g128/f16 expert prefill lowering: max 0 ulps, 0/65024 over soft, 0 hard, l2=2.7e-05
+[ .. ] packed g128/f16 expert prefill lowering: max 0 ulps, 0/65536 over soft, 0 hard, l2=4.5e-05
+[ .. ] packed g128/f16 expert prefill lowering: max 0 ulps, 0/66048 over soft, 0 hard, l2=9.1e-05
+[ .. ] packed g128/f16 expert prefill lowering: max 0 ulps, 0/131584 over soft, 0 hard, l2=9.3e-05
+[ .. ] packed g128/f16 expert prefill lowering: max 0 ulps, 0/8192 over soft, 0 hard, l2=0
+[ .. ] packed g128/f16 expert prefill lowering: max 0 ulps, 0/8704 over soft, 0 hard, l2=0
+[ .. ] packed g128/f16 expert prefill lowering: max 0 ulps, 0/16896 over soft, 0 hard, l2=0.00014
+[ .. ] packed g128/f16 expert prefill lowering: max 0 ulps, 0/65024 over soft, 0 hard, l2=3.2e-05
+[ .. ] packed g128/f16 expert prefill lowering: max 0 ulps, 0/65536 over soft, 0 hard, l2=3.7e-05
+[ .. ] packed g128/f16 expert prefill lowering: max 0 ulps, 0/66048 over soft, 0 hard, l2=9.6e-06
+[ .. ] packed g128/f16 expert prefill lowering: max 0 ulps, 0/131584 over soft, 0 hard, l2=4e-05
+[ OK ] moe_packq_prefill_tile_matches_oracle_and_host_segmentation
+[ .. ] packq host path vs oracle: max 0 ulps, 0/512 over soft, 0 hard, l2=0
+[ OK ] packq int4 decode slot path E=8 H=512 I=256 K=2 M=1: bitwise
+[ .. ] packq host path vs oracle: max 0 ulps, 0/1536 over soft, 0 hard, l2=0
+[ OK ] packq int4 decode slot path E=8 H=512 I=256 K=2 M=3: bitwise
+[ .. ] packq host path vs oracle: max 0 ulps, 0/2048 over soft, 0 hard, l2=0
+[ OK ] packq int4 decode slot path E=16 H=1024 I=512 K=4 M=2: bitwise
+[ .. ] packq host path vs oracle: max 0 ulps, 0/512 over soft, 0 hard, l2=0
+[ OK ] packq int8 decode slot path E=8 H=512 I=256 K=2 M=1: bitwise
+[ .. ] packq host path vs oracle: max 0 ulps, 0/1536 over soft, 0 hard, l2=7e-07
+[ OK ] packq int8 decode slot path E=8 H=512 I=256 K=2 M=3: bitwise
+[ .. ] packq host path vs oracle: max 0 ulps, 0/2048 over soft, 0 hard, l2=0
+[ OK ] packq int8 decode slot path E=16 H=1024 I=512 K=4 M=2: bitwise
+[ .. ] packq host path vs oracle: max 0 ulps, 0/512 over soft, 0 hard, l2=0
+[ OK ] packq int4 g128/f16 decode slot path E=8 H=512 I=256 K=2 M=1: bitwise
+[ .. ] packq host path vs oracle: max 0 ulps, 0/1536 over soft, 0 hard, l2=0
+[ OK ] packq int4 g128/f16 decode slot path E=8 H=512 I=256 K=2 M=3: bitwise
+[ .. ] packq host path vs oracle: max 0 ulps, 0/2048 over soft, 0 hard, l2=0
+[ OK ] packq int4 g128/f16 decode slot path E=16 H=1024 I=512 K=4 M=2: bitwise
+[ .. ] packq host path vs oracle: max 0 ulps, 0/512 over soft, 0 hard, l2=0
+[ OK ] packq int8 g128/f16 decode slot path E=8 H=512 I=256 K=2 M=1: bitwise
+[ .. ] packq host path vs oracle: max 0 ulps, 0/1536 over soft, 0 hard, l2=0
+[ OK ] packq int8 g128/f16 decode slot path E=8 H=512 I=256 K=2 M=3: bitwise
+[ .. ] packq host path vs oracle: max 0 ulps, 0/2048 over soft, 0 hard, l2=3.6e-09
+[ OK ] packq int8 g128/f16 decode slot path E=16 H=1024 I=512 K=4 M=2: bitwise
+[ OK ] moe_decode_slot_path_is_bitwise_host_path_packq
+[ .. ] packq int4 sliced fold E=8 I=256 world=2: worst err/budget 0.744, 0/1536 over budget, l2=0.003
+[ .. ] packq int4 sliced fold E=16 I=512 world=4: worst err/budget 0.744, 0/2048 over budget, l2=0.0027
+[ .. ] packq int4 sliced fold E=8 I=512 world=2: worst err/budget 0.785, 0/2048 over budget, l2=0.0028
+[ .. ] packq int8 sliced fold E=8 I=256 world=2: worst err/budget 0.696, 0/1536 over budget, l2=0.0029
+[ .. ] packq int8 sliced fold E=16 I=512 world=4: worst err/budget 0.653, 0/2048 over budget, l2=0.0027
+[ .. ] packq int8 sliced fold E=8 I=512 world=2: worst err/budget 0.744, 0/2048 over budget, l2=0.0028
+[ .. ] packq int4 sliced fold E=8 I=256 world=2: worst err/budget 0.696, 0/1536 over budget, l2=0.003
+[ .. ] packq int4 sliced fold E=16 I=512 world=4: worst err/budget 0.684, 0/2048 over budget, l2=0.0026
+[ .. ] packq int4 sliced fold E=8 I=512 world=2: worst err/budget 0.771, 0/2048 over budget, l2=0.0027
+[ .. ] packq int8 sliced fold E=8 I=256 world=2: worst err/budget 0.744, 0/1536 over budget, l2=0.0029
+[ .. ] packq int8 sliced fold E=16 I=512 world=4: worst err/budget 0.684, 0/2048 over budget, l2=0.0028
+[ .. ] packq int8 sliced fold E=8 I=512 world=2: worst err/budget 0.785, 0/2048 over budget, l2=0.003
+[ OK ] moe_sliced_ranks_fold_matches_unsliced_oracle_packq
+33 tests, 0 failed
+<end of output>
+Test time =  34.17 sec
+----------------------------------------------------------
+Test Passed.
+"glm_moe_test" end time: Oct 01 06:06 UTC
+"glm_moe_test" time elapsed: 00:00:34
+----------------------------------------------------------
+
+165/189 Testing: moe_w4a4_layer_test
+165/189 Test: moe_w4a4_layer_test
+Command: "/usr/bin/cmake" "-E" "env" "DGPP_MOE_W4A4=1" "--unset=DGPP_MOE_W4A4_F32_DOWN" "--unset=DGPP_MOE_W4A4_DYNAMIC" "DGPP_MOE_W4A4_MIN_ROWS=256" "DGPP_MOE_SWIGLU_QUANT=1" "DGPP_TEST_FILTER=moe_w4a4_host_and_device_segmentation_match_both_output_formats" "/home/stephen/workspace/dgpp/build-release/glm_moe_test"
+Directory: /home/stephen/workspace/dgpp/build-release
+"moe_w4a4_layer_test" start time: Oct 01 06:06 UTC
+Output:
+----------------------------------------------------------
+2026-10-01 06:06:04.727 INFO  moe: W4A4 NVFP4 prefill experts on (the checkpoint's static activation scale; opted in by DGPP_MOE_W4A4=1; paired quality validation pending in issue #68)
+[ OK ] moe_w4a4_host_and_device_segmentation_match_both_output_formats
+1 tests, 0 failed
+<end of output>
+Test time =   0.45 sec
+----------------------------------------------------------
+Test Passed.
+"moe_w4a4_layer_test" end time: Oct 01 06:06 UTC
+"moe_w4a4_layer_test" time elapsed: 00:00:00
+----------------------------------------------------------
+
+166/189 Testing: moe_w4a4_policy_default
+166/189 Test: moe_w4a4_policy_default
+Command: "/usr/bin/cmake" "-E" "env" "--unset=DGPP_MOE_W4A4" "--unset=DGPP_MOE_W4A4_DYNAMIC" "DGPP_MOE_W4A4_MIN_ROWS=256" "DGPP_TEST_FILTER=moe_nvfp4_activation_scale_requires_opt_in" "/home/stephen/workspace/dgpp/build-release/glm_moe_test"
+Directory: /home/stephen/workspace/dgpp/build-release
+"moe_w4a4_policy_default" start time: Oct 01 06:06 UTC
+Output:
+----------------------------------------------------------
+[ OK ] moe_nvfp4_activation_scale_requires_opt_in
+1 tests, 0 failed
+<end of output>
+Test time =   0.44 sec
+----------------------------------------------------------
+Test Passed.
+"moe_w4a4_policy_default" end time: Oct 01 06:06 UTC
+"moe_w4a4_policy_default" time elapsed: 00:00:00
+----------------------------------------------------------
+
+167/189 Testing: moe_w4a4_policy_0
+167/189 Test: moe_w4a4_policy_0
+Command: "/usr/bin/cmake" "-E" "env" "DGPP_MOE_W4A4=0" "--unset=DGPP_MOE_W4A4_DYNAMIC" "DGPP_MOE_W4A4_MIN_ROWS=256" "DGPP_TEST_FILTER=moe_nvfp4_activation_scale_requires_opt_in" "/home/stephen/workspace/dgpp/build-release/glm_moe_test"
+Directory: /home/stephen/workspace/dgpp/build-release
+"moe_w4a4_policy_0" start time: Oct 01 06:06 UTC
+Output:
+----------------------------------------------------------
+[ OK ] moe_nvfp4_activation_scale_requires_opt_in
+1 tests, 0 failed
+<end of output>
+Test time =   0.46 sec
+----------------------------------------------------------
+Test Passed.
+"moe_w4a4_policy_0" end time: Oct 01 06:06 UTC
+"moe_w4a4_policy_0" time elapsed: 00:00:00
+----------------------------------------------------------
+
+168/189 Testing: moe_w4a4_policy_1
+168/189 Test: moe_w4a4_policy_1
+Command: "/usr/bin/cmake" "-E" "env" "DGPP_MOE_W4A4=1" "--unset=DGPP_MOE_W4A4_DYNAMIC" "DGPP_MOE_W4A4_MIN_ROWS=256" "DGPP_TEST_FILTER=moe_nvfp4_activation_scale_requires_opt_in" "/home/stephen/workspace/dgpp/build-release/glm_moe_test"
+Directory: /home/stephen/workspace/dgpp/build-release
+"moe_w4a4_policy_1" start time: Oct 01 06:06 UTC
+Output:
+----------------------------------------------------------
+2026-10-01 06:06:06.073 INFO  moe: W4A4 NVFP4 prefill experts on (the checkpoint's static activation scale; opted in by DGPP_MOE_W4A4=1; paired quality validation pending in issue #68)
+[ OK ] moe_nvfp4_activation_scale_requires_opt_in
+1 tests, 0 failed
+<end of output>
+Test time =   0.45 sec
+----------------------------------------------------------
+Test Passed.
+"moe_w4a4_policy_1" end time: Oct 01 06:06 UTC
+"moe_w4a4_policy_1" time elapsed: 00:00:00
+----------------------------------------------------------
+
+169/189 Testing: moe_w4a4_policy_dynamic
+169/189 Test: moe_w4a4_policy_dynamic
+Command: "/usr/bin/cmake" "-E" "env" "DGPP_MOE_W4A4=1" "DGPP_MOE_W4A4_DYNAMIC=1" "DGPP_MOE_W4A4_MIN_ROWS=256" "DGPP_TEST_FILTER=moe_nvfp4_activation_scale_requires_opt_in" "/home/stephen/workspace/dgpp/build-release/glm_moe_test"
+Directory: /home/stephen/workspace/dgpp/build-release
+"moe_w4a4_policy_dynamic" start time: Oct 01 06:06 UTC
+Output:
+----------------------------------------------------------
+2026-10-01 06:06:06.531 INFO  moe: W4A4 NVFP4 prefill experts on (a dynamic per-row activation scale; opted in by DGPP_MOE_W4A4=1; paired quality validation pending in issue #68)
+[ OK ] moe_nvfp4_activation_scale_requires_opt_in
+1 tests, 0 failed
+<end of output>
+Test time =   0.45 sec
+----------------------------------------------------------
+Test Passed.
+"moe_w4a4_policy_dynamic" end time: Oct 01 06:06 UTC
+"moe_w4a4_policy_dynamic" time elapsed: 00:00:00
+----------------------------------------------------------
+
+End testing: Oct 01 06:06 UTC
+
+gpu =  37.59 sec*proc

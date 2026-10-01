@@ -1,0 +1,4 @@
+========= COMPUTE-SANITIZER
+[ OK ] moe_nvfp4_activation_scale_requires_opt_in
+1 tests, 0 failed
+========= ERROR SUMMARY: 0 errors

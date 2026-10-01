@@ -1,0 +1,23 @@
+Internal ctest changing into directory: /home/stephen/workspace/dgpp/build-release
+Test project /home/stephen/workspace/dgpp/build-release
+    Start 162: moe_w4a4_test
+1/7 Test #162: moe_w4a4_test ....................   Passed    1.17 sec
+    Start 164: glm_moe_test
+2/7 Test #164: glm_moe_test .....................   Passed   34.17 sec
+    Start 165: moe_w4a4_layer_test
+3/7 Test #165: moe_w4a4_layer_test ..............   Passed    0.45 sec
+    Start 166: moe_w4a4_policy_default
+4/7 Test #166: moe_w4a4_policy_default ..........   Passed    0.44 sec
+    Start 167: moe_w4a4_policy_0
+5/7 Test #167: moe_w4a4_policy_0 ................   Passed    0.46 sec
+    Start 168: moe_w4a4_policy_1
+6/7 Test #168: moe_w4a4_policy_1 ................   Passed    0.45 sec
+    Start 169: moe_w4a4_policy_dynamic
+7/7 Test #169: moe_w4a4_policy_dynamic ..........   Passed    0.45 sec
+
+100% tests passed, 0 tests failed out of 7
+
+Label Time Summary:
+gpu    =  37.59 sec*proc (7 tests)
+
+Total Test time (real) =  37.60 sec

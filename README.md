@@ -119,7 +119,8 @@ record the modes measured for each deployment.
   the template's two prefill levers, with the decode step flat from 3K
   context up. See the [record](benchmarks/results/2026-09-28-qwen-autoround-int4/README.md).
 - **Model-specific prefill paths**: packed int4/int8 tensor-core prefill for
-  full GLM-5.3, tiled QSA and calibrated NVFP4 W4A4 expert prefill for Qwen,
+  full GLM-5.3, tiled QSA prefill for Qwen (W4A4 expert prefill is opt-in
+  pending the gate in issue #68),
   and bounded grouped prefill for DeepSeek-V4.1-Flash. Qwen can optionally
   yield between prefill chunks so active decodes continue making progress.
 - **Opt-in 512K context for Qwen3.8-Flash-Next** with `engine.rope_scaling`

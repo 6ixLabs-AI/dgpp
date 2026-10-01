@@ -1,0 +1,5 @@
+========= COMPUTE-SANITIZER
+2026-10-01 06:06:23.966 INFO  moe: W4A4 NVFP4 prefill experts on (the checkpoint's static activation scale; opted in by DGPP_MOE_W4A4=1; paired quality validation pending in issue #68)
+[ OK ] moe_nvfp4_activation_scale_requires_opt_in
+1 tests, 0 failed
+========= ERROR SUMMARY: 0 errors

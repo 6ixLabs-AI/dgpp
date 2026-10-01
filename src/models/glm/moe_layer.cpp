@@ -708,16 +708,17 @@ void GlmMoeLayer::ensure_w4a4(size_t rows, int k) {
 
 // The routed NVFP4 experts' prefill GEMMs on the native block-scaled FP4
 // tensor cores (src/kernels/moe_w4a4.cu), activations quantized to NVFP4 per
-// row with the checkpoint's static input_scale -- what SGLang's
-// flashinfer_cutlass MoE runs for these checkpoints. On by default where the
-// loader provides that calibrated scale (Qwen3.8 NVFP4); DGPP_MOE_W4A4=0 keeps
-// W4A16 everywhere, DGPP_MOE_W4A4=1 also takes it without a static scale
-// (dynamic per-row activation scale). Chains of at least
-// DGPP_MOE_W4A4_MIN_ROWS routed rows (default 256), eager only.
-static int moe_w4a4_mode() {  // 0 off, 1 forced on, -1 default (on with a static scale)
-  static const int v = [] {
+// row. This changes activations and the prefill state consumed by decode;
+// it requires explicit opt-in while issue #68's paired quality gate remains
+// outstanding. DGPP_MOE_W4A4=1 takes it for
+// chains of at least DGPP_MOE_W4A4_MIN_ROWS routed rows (default 256), eager
+// only, with the checkpoint's static input_scale where the loader provides
+// one and a dynamic per-row scale otherwise. Unset or anything else: W4A16
+// everywhere. A calibrated scale never turns the path on by itself.
+static bool moe_w4a4_opt_in() {
+  static const bool v = [] {
     const char* e = std::getenv("DGPP_MOE_W4A4");
-    return e == nullptr || *e == '\0' ? -1 : e[0] == '0' ? 0 : 1;
+    return e != nullptr && e[0] == '1';
   }();
   return v;
 }
@@ -735,16 +736,16 @@ static size_t moe_w4a4_min_rows() {
   return v;
 }
 
-static bool moe_w4a4_eligible(bool calibrated, int hidden, int inter, size_t rows) {
-  const int mode = moe_w4a4_mode();
-  return (mode == 1 || (mode == -1 && calibrated)) && rows >= moe_w4a4_min_rows() && hidden > 0 &&
-         inter > 0 && hidden % 64 == 0 && inter % 64 == 0 && hidden <= 16384 && inter <= 16384;
+static bool moe_w4a4_eligible(int hidden, int inter, size_t rows) {
+  return moe_w4a4_opt_in() && rows >= moe_w4a4_min_rows() && hidden > 0 && inter > 0 &&
+         hidden % 64 == 0 && inter % 64 == 0 && hidden <= 16384 && inter <= 16384;
 }
 
-size_t GlmMoeLayer::w4a4_scratch_bytes(const GlmMoeConfig& cfg, int max_tokens, bool calibrated) {
+size_t GlmMoeLayer::w4a4_scratch_bytes(const GlmMoeConfig& cfg, int max_tokens,
+                                       bool /*calibrated*/) {
   const size_t rows =
       static_cast<size_t>(std::max(max_tokens, 0)) * (cfg.top_k + cfg.n_shared_experts);
-  if (!moe_w4a4_eligible(calibrated, cfg.hidden, cfg.inter, rows)) return 0;
+  if (!moe_w4a4_eligible(cfg.hidden, cfg.inter, rows)) return 0;
   const int k = std::max(cfg.hidden, cfg.inter);
   return rows * (static_cast<size_t>(k) / 2 + nvfp4_act_scale_stride(k) + sizeof(float));
 }
@@ -774,7 +775,7 @@ void GlmMoeLayer::grouped_expert_chain(MoeExpertKernel kernel,
   const int fp4_group = fp4 ? w_.experts_fp4[0].scale_group : kFp4Group;
   const size_t I_max = static_cast<size_t>(std::max(I_r, I_s));
   const bool w4a4 = fp4 && !packq && fp4_group == kFp4Group && kernel == MoeExpertKernel::kMma &&
-                    moe_w4a4_eligible(w_.act_scales_dev != nullptr, H, I_r, rows_total);
+                    moe_w4a4_eligible(H, I_r, rows_total);
   // The W4A4 chain's down rows in bf16 (half the write and the ordered
   // accumulation's read; SGLang's CUTLASS MoE keeps a bf16 intermediate too)
   // unless DGPP_MOE_W4A4_F32_DOWN=1; only without a shared segment, whose
@@ -793,8 +794,11 @@ void GlmMoeLayer::grouped_expert_chain(MoeExpertKernel kernel,
   down_bf16_ = (w4a4 || packq_mma_bf16_down) && shared_seg == nullptr && !f32_down;
   if (w4a4) {
     static const bool logged = [&] {
-      DGPP_LOG_INFO("moe: W4A4 NVFP4 prefill experts on ({} activation scale; DGPP_MOE_W4A4=0 turns it off)",
-                    moe_w4a4_static() && w_.act_scales_dev != nullptr ? "the checkpoint's static" : "a dynamic per-row");
+      DGPP_LOG_INFO(
+          "moe: W4A4 NVFP4 prefill experts on ({} activation scale; opted in by "
+          "DGPP_MOE_W4A4=1; paired quality validation pending in issue #68)",
+          moe_w4a4_static() && w_.act_scales_dev != nullptr ? "the checkpoint's static"
+                                                            : "a dynamic per-row");
       return true;
     }();
     (void)logged;

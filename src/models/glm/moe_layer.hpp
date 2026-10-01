@@ -162,9 +162,10 @@ class GlmMoeLayer {
   static size_t scratch_bytes(const GlmMoeConfig& cfg, int max_tokens,
                               int decode_slots = 0, int graph_table_slots = 0,
                               size_t* pinned_bytes = nullptr);
-  // Additional lazy workspace for NVFP4 experts. Call only for that format;
-  // calibrated selects the default-on policy used by the Qwen loader.
-  // Disabled modes and unsupported shapes need no W4A4 workspace.
+  // Additional lazy workspace for NVFP4 experts. Call only for that format.
+  // calibrated says the loader supplies a static activation scale; the
+  // reservation follows DGPP_MOE_W4A4 alone (opt-in, issue #68), so the
+  // default and unsupported shapes need no W4A4 workspace.
   static size_t w4a4_scratch_bytes(const GlmMoeConfig& cfg, int max_tokens,
                                    bool calibrated = false);
 

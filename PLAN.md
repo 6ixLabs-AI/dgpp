@@ -136,9 +136,12 @@ Their implementation and evaluation records are maintained separately:
 
 ## Qwen NVFP4 expert prefill
 
-Calibrated Qwen NVFP4 experts use W4A4 for eligible grouped prefills. The
-host reference supports both output formats, and the memory plan reserves
-the quantized activation buffers. Decode retains W4A16. The
+Qwen NVFP4 experts use W4A16 by default. `DGPP_MOE_W4A4=1` opts into
+W4A4 for eligible grouped prefills and reserves the quantized activation
+buffers. The host reference supports both output formats. Decode retains
+W4A16. Issue #68 tracks the paired static/dynamic-scale teacher-forced and
+task-evaluation gate required before revisiting this default; passing
+kernel tests or a single BFCL comparison does not complete that gate. The
 [PR #50 follow-up](benchmarks/results/2026-09-25-pr50-w4a4.md) records the
 regression coverage and validation.
 
