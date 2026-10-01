@@ -24,7 +24,10 @@ The history by milestone. The dated engineering record in
   per-slot attention/head/walk at row offsets); `DGPP_DFLASH2_DEPTH=k`
   caps the verify width (exact transcripts). Host speculator halves
   covered by `dflash2_speculator_test` (294/294 with unit_tests); the
-  device batch path is build-checked only.
+  device batch path is build-checked only. Measured 2026-10-01 on
+  tool-eval-bench: batch +5–9% at c4, no errors; depth-5 τ 4.0 and
+  throughput-neutral vs depth-7 (that bench is ~3/4 plain traffic —
+  the rest of its gap to graph-MTP is the eager plain path).
 - **The DFlash2 block drafter on the Qwen3.5-family native engine**
   (2026-10-01, plan §7): `engine.dflash_model` (or `--dflash-model`) serves
   `z-lab/Qwen3.8-27B-DFlash2` — five bidirectional draft layers fed by

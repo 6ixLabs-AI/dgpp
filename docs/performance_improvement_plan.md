@@ -446,7 +446,12 @@ the flat ~8 t/s c4 line — same short-prompt harness gives dflash
 with C1 transcripts 12/12 identical to the pre-batch build. Open
 long-context follow-ups (both opt-in, default-off, serving validation
 pending): `DGPP_DFLASH2_DRAFT_BATCH=1` for one stacked redraft forward
-per step, `DGPP_DFLASH2_DEPTH=k` for a capped verify width.
+per step, `DGPP_DFLASH2_DEPTH=k` for a capped verify width. Measured
+2026-10-01: batch +5–9% at c4 with no errors; depth-5 keeps τ 4.0
+(80% window use) and is throughput-neutral vs depth-7 — the bench's
+traffic is ~3/4 plain (grammar/tool-constrained), so the rest of its
+gap to graph-MTP is the eager plain path (`decode_graph=false`),
+i.e. batched graphs, not the drafter.
 
 ## 8. P1 experiments / P3 implementation: remaining single-stream wins
 

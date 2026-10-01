@@ -165,6 +165,28 @@ Both need serving validation (host unit tests cover the speculator
 halves in `dflash2_speculator_test`; the device batch path is
 build-checked only — the GPU was under the user's bench).
 
+### Measured on tool-eval-bench (2026-10-01, new binary)
+
+Shipped path, spec-bench: τ 3.1–6.1, avg 4.5 (`...17-22-23...md`).
+Shipped path, throughput: d0 7.7/11.8/14.9, d4096 7.4/10.1/11.6,
+d8192 6.9/7.5/9.0 at c1/c2/c4 (`...17-38-10...md`).
+`DRAFT_BATCH=1`, throughput: d0 8.1/12.0/15.7, d4096 7.7/10.3/12.3,
+d8192 7.3/8.8/9.8 — +5–9% at c4, no errors (`...17-53-46...md`).
+`DRAFT_BATCH=1 DEPTH=5`, spec-bench: window 5, τ 3.0–5.0 avg 4.0,
+waste 40% vs 50% (`...17-57-38...md`); throughput: identical to
+depth-7 within noise (`...18-18-05...md`).
+
+The depth neutrality is explained, not a lever failure: of 117
+requests in that server's log, 87 ran plain (~1.0 tok/pass —
+grammar/tool-constrained agentic steps never enter speculation) and
+only 30 engaged spec (mean 3.86 tok/pass). Three quarters of the
+throughput bench never touches the drafter, so no spec-side lever
+moves its headline number much. The remaining gap to graph-MTP there
+(15.7 vs 37 at d0 c4) sits mostly in the plain path: the dflash
+config forces `decode_graph=false`, so its plain steps are eager
+while MTP's are graphed. Closing that gap means batched graphs with
+a drafter loaded (plan §7 step 4), not further draft tuning.
+
 ## Recorded GLM-5.3 result
 
 On 2026-09-03 at TP=4, greedy depth-1 MTP accepted 88.7% of drafts on the
