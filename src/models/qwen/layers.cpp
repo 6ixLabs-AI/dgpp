@@ -138,6 +138,16 @@ void gemm_dense(const QwenGemmWorkspace& g, const uint16_t* act, int64_t act_str
 
 void qwen_configure_gemm_rows(CublasLtGemm& gemm, int tokens, bool decode) {
   const bool wide_decode = decode && tokens > 16;
+  // Wide decode's GEMMs take the streaming tensor-core form: the weights read
+  // ONCE for every stacked row, where the 4-row GEMV chunks (the kernel-only
+  // band below) re-read them once per chunk — eight times at 32 rows, the
+  // 8K profile's 83 % of a step (docs/mtp.md). Tolerance-equal, not bitwise:
+  // the m=1..16 band keeps its dispatch, so the C1 gate's m=1 row stays the
+  // GEMV's. The kernel-only band remains the guard (it still throws for a
+  // shape neither form takes) and the fallback for the shapes the mma form
+  // cannot take; the band's 64-row top extends to the mma's 128 (the c8/c16
+  // verify batch was falling to the Lt algorithm).
+  gemm.set_decode_mma(wide_decode, 17, kMmaGemvMaxRowsPerLaunch);
   gemm.set_kernel_only_rows(wide_decode ? 17 : 0, wide_decode ? kGemmDecodeLoweringRows : 0);
   gemm.set_bf12_wide(decode);
 }

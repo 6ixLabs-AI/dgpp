@@ -466,12 +466,26 @@ The 8K step profile (`DGPP_DFLASH2_PHASES=1` + nsys, 2026-10-02):
 466 ms/pass at c4 = verify 195 + draft 260 + host ~11; the graph is
 neutral at length (launches amortized), so the c4 gap to MTP there
 (12.9 vs 14.8 same-workload agg tg; dflash still wins c1, 12.1 vs
-7.8) sits in the draft block, which the kernel sum attributes to
-weight re-reading — 400 eight-row MMA GEMV launches take 83% of the
-step's GPU time, the 32 stacked rows chunking each layer's weights
-into four 8-row reads (target and drafter alike). The next lever is
-wide-row GEMM dispatch for the stacked verify/draft (one 32-row
-weight read instead of four), not attention or further graph work.
+7.8) sits in the draft block. The original kernel-sum read of that
+window was wrong (`mma_gemv_kernel<(int)8, …>` is the mma form's
+128-row tile, and those launches are the target's FP8 *prefill*
+chunks); the corrected diagnosis (2026-10-02, dispatch trace via
+`DGPP_MMA_TRACE`): the **BF16 drafter**'s wide GEMMs ran the
+kernel-only 4-row GEMV chunks — m=32 as eight 4-row launches, eight
+reads of the 5.8 GB of draft weights per pass — while the FP8 target
+was already single-read. The lever was then implemented the same day:
+`set_decode_mma(on, min_rows, max_rows)` plus the wide-decode opt-in
+in `qwen_configure_gemm_rows` (17..128 rows → the streaming mma form,
+one weight read; m ≤ 16 untouched, so C1 stays bit-exact 12/12, eager
+and graphed). Result: the 8K draft phase 260 → 92 ms/pass, and the
+same-workload head-to-head flips to **dflash 14.9 / 13.2 / 12.2 agg
+tg at c4/c2/c1 against MTP's 14.8 / 12.7 / 7.6** — the §7 exit gate
+("per-class end-to-end results beat the best native-MTP
+configuration") is now met at every concurrency tried on the Qwen
+lane (see mtp.md "wide-row GEMM dispatch"). Remaining in this lane:
+the vLLM walk-parity dump (open), sampled verification (open), and
+the c2 band (m=16 still Lt; the dsv41 table says Lt leads the mma
+form below ~16 rows, so leaving it is the conservative call).
 
 ## 8. P1 experiments / P3 implementation: remaining single-stream wins
 

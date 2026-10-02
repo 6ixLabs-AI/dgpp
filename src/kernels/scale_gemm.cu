@@ -303,6 +303,18 @@ void launch_scale_gemm(const uint16_t* act, size_t act_row_stride_elems,
   // per four-row GEMV launch, so prefill-sized segments go this way too.
   // The tile kernel keeps the large-m shapes where its grid fills the GPU.
   if (dispatch_rows <= kGemvMaxM && fp8_gemv::shape_ok(w_payload, /*rows=*/1, k)) {
+    {
+      static int trace_left = -1;  // the DGPP_MMA_TRACE budget, read once
+      if (trace_left < 0) {
+        const char* e = std::getenv("DGPP_MMA_TRACE");
+        trace_left = (e && *e && *e != '0') ? (std::atoi(e) > 0 ? std::atoi(e) : 64) : 0;
+      }
+      if (trace_left > 0) {
+        --trace_left;
+        std::fprintf(stderr, "scale_gemv m=%d n=%d k=%d\n", m, n, k);
+        std::fflush(stderr);
+      }
+    }
     for (int row0 = 0; row0 < m;) {
       int rows = std::min(fp8_gemv::kMaxRows, m - row0);
       while (!fp8_gemv::shape_ok(w_payload, rows, k)) --rows;

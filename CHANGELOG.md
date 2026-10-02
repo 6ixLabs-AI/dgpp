@@ -6,6 +6,36 @@ The history by milestone. The dated engineering record in
 
 ## Unreleased
 
+- **Wide-row GEMM dispatch for the stacked verify/draft** (2026-10-02):
+  `CublasLtGemm::set_decode_mma` gains a min-rows bound and
+  `qwen_configure_gemm_rows` opts the wide decode into it
+  (`set_decode_mma(wide_decode, 17, kMmaGemvMaxRowsPerLaunch)`): a
+  stacked batch of 17..128 BF16 rows now takes the streaming
+  tensor-core GEMM (`mma_gemv.hpp`, the weights read once for every
+  row of the launch) instead of the kernel-only 4-row GEMV chunks that
+  re-read each weight once per chunk — eight times at the 32-row c4
+  batch. The 8K profile's draft phase (260 ms of a 466 ms c4 pass) was
+  exactly that re-reading: the BF16 5.8 GB `z-lab/Qwen3.8-27B-DFlash2`
+  drafter took the kernel-only band while the FP8 target was already
+  single-read through the scale-GEMM streaming form (the profile's
+  "400 eight-row MMA GEMVs" were misnamed — that kernel's `(int)8` is
+  its 128-row tile, and those launches are the target's FP8 prefill
+  chunks; the decode waste was the `bf16_gemv_kernel<4>` family).
+  Measured: the 8K draft phase drops 260 → 92 ms/pass (verify
+  195 → 192, already single-read) and the same-workload 8K
+  head-to-head flips to dflash 14.9 / 13.2 / 12.2 agg tg at
+  c4/c2/c1 against MTP's 14.8 / 12.7 / 7.6 — the plan §7 exit gate,
+  met at every concurrency tried; short-context c4 goes 36 →
+  53.8–56.0 agg tg and c8 lands at 56.9. The band's edges are the
+  numerics boundary: m ≤ 16 keeps its dispatch (GEMV at 1..4, Lt at
+  5..16), so C1 stays bit-exact 12/12, eager and graph replay alike,
+  and c2 is unchanged; c4 moves into the documented tolerance-equal
+  cross-dispatch class. The kernel-only band stays as the shape guard
+  and fallback, and its 64-row top extends to the mma's 128 (the c8/c16
+  batches previously fell to sixteen GEMV chunks / the Lt algorithm).
+  New `DGPP_MMA_TRACE=n` prints the first n shape decisions of every
+  dense-GEMM dispatch (mma form / GEMV chunks / Lt / scale-GEMV rows)
+  for the bisection.
 - **The DFlash2 verify rides a captured CUDA graph** (2026-10-02):
   `DGPP_DFLASH2_VERIFY_GRAPH=1` replays the multi-slot verify batch as
   one static 8/16/32-row graph (`session_verify_batch_graph`, keyed per
@@ -24,9 +54,9 @@ The history by milestone. The dated engineering record in
   match the eager batch's documented near-tie class (graph-vs-eager
   7–8/12 like eager-vs-eager 8/12). The 8K step profile
   (`DGPP_DFLASH2_PHASES=1` splits fed/verify/commit/draft per pass):
-  the graph is neutral at length and 83% of a step's GPU time is the
-  8-row-chunked MMA GEMVs of target and drafter — the next lever is
-  wide-row GEMM dispatch, not the graph. Default off; the drafted
+  the graph is neutral at length and the step's GEMM time sits in the
+  drafter's 4-row GEMV chunks (the wide-row GEMM dispatch entry above
+  is the follow-up). Default off; the drafted
   verify is otherwise unchanged (drafts, judge, rollback and redrafts
   stay eager between replays).
 - **The DFlash2 speculative pass batches across slots** (2026-10-01):

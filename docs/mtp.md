@@ -252,22 +252,74 @@ exactly neutral here (466.4 vs 465.0 ms eager): at this length the
 ~600 launches are amortized, so the graph's value is short-context
 and low-occupancy, not long-context.
 
-The nsys kernel sum for one 258 ms step window: 400 launches of the
-8-row bf16 MMA GEMV take **210 ms (83% of the GPU time)** — the
-weight-stream GEMMs of both the 48-layer target and the 5-layer
-drafter, chunked at 8 rows over the 32 stacked rows, so **each layer's
-weights are read 4x per pass**. The draft's 260 ms phase is mostly
-that re-reading (5 layers x 2.9B x 4 chunk reads), which is exactly
-the cost MTP does not pay (its drafter is one layer) — and it is the
-whole of the same-workload c4 gap at 8K: MTP graphed 14.8 / 12.8 /
-7.8 agg tg at c4/c2/c1 against dflash's 12.9 / 13.2 / 12.1 (dflash
-wins c1, MTP wins c4, c2 ties). Secondary items in the window: the
-target's F32 lm head (one 5.2 ms launch per step) and ~14 ms of
-cutlass Lt GEMM; attention itself is ~1.4 ms. The structural lever is
-therefore not attention or the graph — it is running the stacked
-verify/draft rows in fewer, wider GEMM launches (one 32-row read of
-each weight instead of four 8-row reads), which attacks the draft's
-share directly.
+The nsys window named for the finding was misread (corrected
+2026-10-02, below): `mma_gemv_kernel<(int)8, …>` is the mma form's
+**128-row** tile, not an 8-row chunk, and those 400 launches are the
+target's FP8 prefill chunks, not the decode GEMMs. The decode waste
+was the **BF16 drafter's** 4-row GEMV chunks (the `bf16_gemv_kernel<4>`
+family: 5580 launches, ~48/pass at c4, each of the 32 stacked rows'
+GEMM re-reading its weights four-row at a time). The drafter —
+`z-lab/Qwen3.8-27B-DFlash2`, 5 layers, 2.9B, **BF16** (5.8 GB) — ran
+every wide GEMM through `CublasLtGemm::matmul`'s kernel-only band
+(`qwen_configure_gemm_rows` sets `[17, 64]` for T > 16), where m=32
+splits into eight 4-row GEMV launches: **eight reads of the 5.8 GB of
+draft weights per draft pass** (~46 GB of weight traffic). The target
+is FP8 and took the scale-GEMM streaming mma form already (one weight
+read whatever m), which is why the verify phase did not move when the
+drafter's did. The c4 gap at 8K was that re-reading — MTP does not pay
+it (its drafter is one layer) — plus the draft's attention over the
+long KV. Before/after: MTP graphed 14.8 / 12.8 / 7.8 agg tg at
+c4/c2/c1 against dflash's 12.9 / 13.2 / 12.1 (dflash won c1, MTP won
+c4, c2 tied). Secondary items in the window: the target's F32 lm head
+(one 5.2 ms launch per step, ~2%) and ~14 ms of cutlass Lt GEMM;
+attention itself is ~1.4 ms.
+
+### Wide-row GEMM dispatch (2026-10-02): the draft pays 1x
+
+The structural lever, implemented: `CublasLtGemm::set_decode_mma`
+gains a min-rows bound (`gemm.hpp`, `gemm_cublaslt.cpp`:
+`decode_mma_min_rows`, the dispatch condition now
+`m >= min && m <= max`), and `qwen_configure_gemm_rows` opts the wide
+decode in — `set_decode_mma(wide_decode, 17, kMmaGemvMaxRowsPerLaunch)`
+— so a stacked verify/draft batch of 17..128 BF16 rows takes the
+streaming tensor-core GEMM (`mma_gemv.hpp`: the weights read **once**
+for every row of the launch, 16/32/64/128-row forms) instead of the
+4-row GEMV chunks. The band's edges are the numerics boundary:
+
+- **m ≤ 16 keeps its dispatch** (the GEMV rows at 1..4, Lt at 5..16),
+  so the C1 gate's single-slot batch (m=8) and the c2 batch (m=16) are
+  bit-for-bit what they were — C1 stays bit-exact 12/12, eager and
+  graph replay alike (re-verified 2026-10-02 on the new binary).
+- The kernel-only band stays as the guard (it still throws for a shape
+  neither form takes) and the fallback for shapes the mma form cannot
+  take; its 64-row top extends to the mma's 128, so the c8/c16 batches
+  (m=64/128, previously sixteen GEMV chunks / the Lt algorithm) read
+  once too.
+- mma is tolerance-equal, not bitwise: the c4 batch's transcripts move
+  with it into the documented cross-dispatch class (single near-tie
+  flips, as c2/c4 already were).
+
+The band is set per pass by `qwen_configure_gemm_rows` (the target's
+`run_rows` and the drafter's pass both call it on their `gemm_`), so
+prefill (decode=false) and the narrow batches clear it. `dsv41` keeps
+its existing `set_decode_mma(on)` call (min defaults to 1). The draft's
+FP8 GEMMs were already the streaming form through the scale-GEMM
+`mma_from_rows`, so the change lands on the BF16 sites — which, for
+this lane, are the drafter's.
+
+Measured 2026-10-02 (Qwen3.8-27B lane, new binary, same rig as above):
+8.3K prompt + 128 decode, 4 slots — **the draft phase drops from 260
+to 92 ms/pass** (PHASES: total 466 → 295 ms; verify 195 → 192, the
+FP8 target's GEMMs were already single-read), and the same-workload
+head-to-head flips: **dflash 14.9 / 13.2 / 12.2 agg tg at c4/c2/c1
+against MTP's 14.8 / 12.7 / 7.6** (three clean repeats at c4:
+14.8–14.9). Short context, c4: 36 → 53.8–56.0 agg tg (the step there
+was GEMV-dominated: the draft's 46 GB/pass of re-reads was most of a
+~60 ms step); c8 lands at 56.9 agg tg. The graph stays exactly neutral
+(graph 52.3 vs eager 53.8 vs padded-eager 49.3 agg tg at c4 short).
+This closes the plan §7 exit gate on the Qwen lane: per-class
+end-to-end, DFlash2 now beats the best native-MTP configuration at
+every concurrency tried.
 
 ## Recorded GLM-5.3 result
 
