@@ -1139,7 +1139,9 @@ bool GenerationService::parse_chat(const dgpp::minijson::Value& body,
         // The DSML invoke names the tool as the schema lists it —
         // "namespace::name" under a namespace — and the grammar's targets
         // must spell the same (the parser strips the namespace again).
-        if (markers_.tool_format() == dgpp::text::ToolFormat::kDsml) {
+        // DeepSeek-V4's dialect has no namespaces: the schema lists the
+        // function's name as given, and so does the grammar.
+        if (markers_.dsml_namespaces()) {
           try {
             g.tools.back().name = dgpp::text::Dsv41Prompt::qualified_tool_name(t);
           } catch (const std::exception& e) {
@@ -1150,7 +1152,7 @@ bool GenerationService::parse_chat(const dgpp::minijson::Value& body,
       }
       // A named choice under DSML names the function; the target is its
       // qualified spelling.
-      if (g.mode == GrammarSpec::Mode::kNamed && markers_.tool_format() == dgpp::text::ToolFormat::kDsml)
+      if (g.mode == GrammarSpec::Mode::kNamed && markers_.dsml_namespaces())
         for (const dgpp::text::GrammarTool& tool : g.tools)
           if (tool.name == g.named || (tool.name.size() > g.named.size() + 2 &&
                                        tool.name.compare(tool.name.size() - g.named.size() - 2, std::string::npos,
@@ -1586,14 +1588,14 @@ bool GenerationService::parse_chat(const dgpp::minijson::Value& body,
   globals.push_back(Member{"messages", Value::make_array(std::move(msgs))});
   if (have_tools && choice != Choice::kNone) {
     // Keep function fields in their original wrapped or flat shape, plus
-    // DeepSeek namespaces so rendered names agree with the tool grammar.
+    // DeepSeek-V4.1 namespaces so rendered names agree with the tool grammar.
     // Omit unrelated metadata, such as BFCL's function-level response schemas.
     // DGPP_TOOLS_RAW=1 renders the tools verbatim.
     static const bool raw = std::getenv("DGPP_TOOLS_RAW") != nullptr;
     if (raw) {
       globals.push_back(Member{"tools", *tools});
     } else {
-      const bool dsml = markers_.tool_format() == dgpp::text::ToolFormat::kDsml;
+      const bool dsml = markers_.dsml_namespaces();
       const auto keep_function_field = [dsml](std::string_view key) {
         return key == "name" || key == "description" || key == "parameters" || key == "strict" ||
                (dsml && key == "namespace");
@@ -3452,6 +3454,27 @@ bool GenerationService::engine_pass(const PreTickHook& pre_tick) {
     admissions.swap(pending_admissions_);
     cancels.swap(pending_cancels_);
     stops.swap(pending_stops_);
+  }
+  // The arrival gather: requests sent together reach the engine a few
+  // milliseconds apart (their HTTP parse and tokenization), and the first
+  // would otherwise start its read-in alone, one tick ahead of the rest.
+  // An idle engine waits once for the burst — rank 0's timing only: the
+  // peers replay the journal's order.
+  if (cfg_.admission_gather_ms > 0 && !admissions.empty()) {
+    const auto meters = sched_.meters();
+    if (meters.active == 0 && meters.queued == 0) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(cfg_.admission_gather_ms));
+      std::lock_guard<std::mutex> lock(mutex_);
+      admissions.insert(admissions.end(), std::make_move_iterator(pending_admissions_.begin()),
+                        std::make_move_iterator(pending_admissions_.end()));
+      pending_admissions_.clear();
+      cancels.insert(cancels.end(), std::make_move_iterator(pending_cancels_.begin()),
+                     std::make_move_iterator(pending_cancels_.end()));
+      pending_cancels_.clear();
+      stops.insert(stops.end(), std::make_move_iterator(pending_stops_.begin()),
+                   std::make_move_iterator(pending_stops_.end()));
+      pending_stops_.clear();
+    }
   }
   PassEvents events;
   for (auto& a : admissions) {

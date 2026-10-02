@@ -1078,6 +1078,20 @@ DGPP_TEST(moe_enqueue_prefill_is_bitwise_the_host_path) {
             "prefill staged biased scores equal the host path's");
     std::printf("[ OK ] prefill device path E=%d H=%d I=%d K=%d M=%d: bitwise\n",
                 cs.E, cs.H, cs.I, cs.K, cs.M);
+    // The phased prefill (the router and the accumulation per row block
+    // around the one chain): bitwise the same output.
+    const int ma = cs.M / 2;
+    DGPP_CUDA_OK(cudaMemset(c.d_out, 0x7F, host.size() * 2));
+    layer.route_prefill_rows(c.d_hidden, 0, ma, nullptr);
+    layer.route_prefill_rows(c.d_hidden, ma, cs.M - ma, nullptr);
+    layer.enqueue_prefill_phased(c.d_hidden, cs.M, nullptr);
+    layer.accumulate_prefill_rows(c.d_out, cs.M, ma, cs.M - ma, nullptr);
+    layer.accumulate_prefill_rows(c.d_out, cs.M, 0, ma, nullptr);
+    DGPP_CUDA_OK(cudaDeviceSynchronize());
+    std::memcpy(dev.data(), c.d_out, dev.size() * 2);
+    require(std::memcmp(host.data(), dev.data(), host.size() * 2) == 0,
+            "the phased prefill must be bitwise-identical to enqueue");
+    std::printf("[ OK ] phased prefill (router and accumulation in row blocks of %d + %d): bitwise\n", ma, cs.M - ma);
     cudaFreeHost(pin_ids); cudaFreeHost(pin_w); cudaFreeHost(pin_b);
     c.free_all();
   }
@@ -2114,6 +2128,7 @@ DGPP_TEST(moe_decode_slot_path_is_bitwise_host_path_mxfp4) {
       {8, 512, 256, 2, 3},    // multi-row steps
       {16, 1024, 512, 4, 2},  // gate k=1024, down k=512, K=4
       {8, 1024, 576, 6, 2},   // the release's world-4 down width (18 chunks: 2 lanes x 9), top-6
+      {8, 1024, 576, 6, 5},   // a draft block's five rows: more shared slots than a group of four
   };
   for (const Case& cs : cases) {
     SmallCase c = make_small_case(cs.E, cs.H, cs.I, cs.K, cs.M, 0x3F4CADE + cs.E + cs.M + cs.I,
@@ -2145,6 +2160,20 @@ DGPP_TEST(moe_decode_slot_path_is_bitwise_host_path_mxfp4) {
     std::memcpy(fused.data(), c.d_out, fused.size() * 2);
     require(std::memcmp(gemv_host.data(), fused.data(), host.size() * 2) == 0,
             "mxfp4 decode slot path must be bitwise-identical to the GEMV host path");
+    // The shared expert's slots early in the execution order
+    // (GlmMoeConfig::shared_slots_early, the DeepSeek-V4-Flash decode): the
+    // order alone moves — every row bitwise the default order's, one row
+    // (which launches the order kernel only under this flag) included.
+    {
+      dgpp::GlmMoeConfig early_cfg = c.cfg;
+      early_cfg.shared_slots_early = true;
+      GlmMoeLayer early(c.dev_w, early_cfg, std::max(cs.M, 1), /*decode_slots=*/cs.M);
+      DGPP_CUDA_OK(cudaMemset(c.d_out, 0x7F, host.size() * 2));
+      early.enqueue_decode(c.d_hidden, c.d_out, cs.M, nullptr, nullptr);
+      DGPP_CUDA_OK(cudaDeviceSynchronize());
+      require(std::memcmp(c.d_out, fused.data(), host.size() * 2) == 0,
+              "mxfp4 decode: the early shared-slot order must be bitwise the default order");
+    }
     // The prefill path takes the tile kernel's MXFP4 form: bitwise the
     // host path through it (MoeExpertKernel::kMma), within budget of the oracle.
     std::vector<uint16_t> mma_host(host.size(), 0x7F7F);

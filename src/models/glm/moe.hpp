@@ -59,6 +59,31 @@ struct GlmMoeConfig {
   float routed_scaling_factor = 2.5f;
   bool norm_topk_prob = true;
   float swiglu_limit = 10.0f;  // +inf: no clamps (the Qwen experts)
+  // Decode launches run the shared expert's slots beside the first routed
+  // ones instead of last (launch_moe_slot_order's shared_early: the order
+  // alone moves, every bit stays). A family opts in after its own fabric
+  // A/B (DeepSeek-V4-Flash, 2026-10-01).
+  bool shared_slots_early = false;
+  // Decode launches run the FP8 shared expert OUTSIDE the slot kernels
+  // (2026-10-02): its gate and up as tensor-core GEMVs over all the batch's
+  // rows (kernels/mma_gemv.hpp, unsplit: no reduce launches) on two side
+  // streams forked at the layer's input, then the activation and the down
+  // GEMV, joined before the accumulation. In the slot kernels the shared
+  // expert is one slot per ROW on the CUDA cores — on a two-node rank 62 us
+  // of a one-row launch and 115 us of a four-row one (moe_dup_bench at the
+  // 1024-row slice), a fifth of the layer's expert time; the GEMVs read the
+  // L2-resident matrices once for every row.
+  // The arrangement matters: a kernel that becomes ready while the slot
+  // kernels' blocks are queued is dispatched behind that whole queue (the
+  // first form of this, with split-K reduce launches on one side stream,
+  // gave back at its join what the slots had shed). Gate and up are
+  // launched before the router, so they run at once; the activation and
+  // the down GEMV become ready under the gate/up slot kernel and run ahead
+  // of the down slot kernel.
+  // NOT the slot chain's bits (the tensor-core chain: tolerance-equal; a
+  // row's result is still its own whatever rows share the launch). A family
+  // opts in after its own fabric A/B (DeepSeek-V4-Flash).
+  bool shared_mma_aside = false;
   MoeRouterMode router_mode = MoeRouterMode::SigmoidBias;
 
   // Weight bytes of one routed expert (payload + block scales): the number

@@ -122,16 +122,20 @@ void launch_scale_gemv_multi_bf16(const Fp8GemvProblem* problems, int n_problems
 // tolerance-equal, not bitwise — so a family switches every site or none
 // (its batched decode rows must stay bitwise its rows alone). Shapes the
 // mma form cannot take (k % 64, alignment) keep the older forms.
+// ws / ws_bytes: the tensor-core form's split-K workspace (mma_gemv.hpp: a
+// small-n site's k range across blocks at m <= 32, a chain that is the
+// same whatever m but not the unsplit one) — a caller passes it for its
+// decode walks only when its prefill chunks must stay bitwise each other.
 void launch_scale_gemm_grid_bf16(const uint16_t* act, size_t act_row_stride_elems,
                                  const uint8_t* w_payload, const float* w_scales,
                                  uint16_t* out, int m, int n, int k, cudaStream_t stream,
                                  size_t out_row_stride_elems, int rs, int cs,
-                                 bool decode_mma = false);
+                                 bool decode_mma = false, void* ws = nullptr, size_t ws_bytes = 0);
 void launch_scale_gemm_grid_f32(const uint16_t* act, size_t act_row_stride_elems,
                                 const uint8_t* w_payload, const float* w_scales, float* out,
                                 int m, int n, int k, cudaStream_t stream,
                                 size_t out_row_stride_elems, int rs, int cs,
-                                bool decode_mma = false);
+                                bool decode_mma = false, void* ws = nullptr, size_t ws_bytes = 0);
 
 void launch_scale_gemm_tile_bf16(const uint16_t* act, size_t act_row_stride_elems,
                                  const uint8_t* w_payload, const float* w_scales,

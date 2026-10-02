@@ -1391,6 +1391,123 @@ DGPP_TEST(dsa_select_decode_row_groups) {
   }
 }
 
+// The 64-head indexer at the DeepSeek-V4-Flash release shape (2026-10-01):
+// 64 heads x 128, relu, select_k 512, one entry per pool (kpool 1) — the
+// kernel's kHG = 2 instantiation, which scores 16-entry tiles on the tensor
+// cores (e4m3 codes widened exactly to f16, mma f16 -> f32) and needs the
+// per-symbol dynamic shared-memory opt-in (a missing one is `invalid
+// argument` at the launch, which the tiny fixture's select_k 16 never
+// reached). Rows 1, 4 and 6, contexts below, at and far above select_k,
+// lists through a two-block table. The tensor core's accumulation order is
+// the hardware's, so the gate is the selection against exact (fp64)
+// logits: the picks are distinct visible entries in ascending order, every
+// pick scores at or above the k-th exact logit and every entry left out at
+// or below it, within the fp32 dot's rounding (1e-5 of the row's range) —
+// and two launches agree bit for bit.
+DGPP_TEST(dsa_select_decode_64_heads_release_shape) {
+  constexpr int heads = 64, dim = 128, select_k = 512;
+  for (const int rows : {1, 4, 6}) {
+    const std::vector<int64_t> visibles = {3001, 512, 513, 37, 0, 2999};
+    const int pools_per_block = 1504;  // two blocks, swapped: block 0 -> physical 1
+    const int64_t n_pools = 2 * pools_per_block;
+    std::vector<int64_t> pos(static_cast<size_t>(rows));
+    for (int r = 0; r < rows; ++r) pos[size_t(r)] = visibles[size_t(r)] - 1;  // kpool 1: pos + 1 visible entries
+    const uint64_t seed = 9100 + uint64_t(rows);
+    std::vector<uint8_t> q8(size_t(rows) * heads * dim), k8(size_t(n_pools) * dim);
+    for (size_t i = 0; i < q8.size(); ++i) {
+      q8[i] = uint8_t(hash32(seed + i) & 0xFF);
+      if ((q8[i] & 0x7Fu) == 0x7Fu) q8[i] ^= 0x01u;  // no NaN encodings
+    }
+    for (size_t i = 0; i < k8.size(); ++i) {
+      k8[i] = uint8_t(hash32(seed + 0x9E3779B9u + i) & 0xFF);
+      if ((k8[i] & 0x7Fu) == 0x7Fu) k8[i] ^= 0x01u;
+    }
+    std::vector<float> w(size_t(rows) * heads), ks(static_cast<size_t>(n_pools));
+    for (size_t i = 0; i < w.size(); ++i) w[i] = random_f32(seed + 1, int64_t(i)) * 0.01f;
+    for (size_t i = 0; i < ks.size(); ++i) ks[i] = std::ldexp(1.0f, -6 - int(i % 3));
+    std::vector<int32_t> req_ids(static_cast<size_t>(rows), 0);
+    const int32_t table[2] = {1, 0};
+    const auto slot_of = [&](int64_t e) { return int64_t(table[e / pools_per_block]) * pools_per_block + e % pools_per_block; };
+
+    DevBuf dq8(q8.size()), dw(w.size() * 4), dki(k8.size()), dks(ks.size() * 4), dpos(pos.size() * 8),
+        dri(req_ids.size() * 4), dbt(8), dtopk(size_t(select_k) * rows * 4), dcnt(rows * 4),
+        dws(dsa_select_workspace_bytes(rows, n_pools)), dctr(8);
+    dq8.upload(q8.data(), q8.size());
+    dw.upload(w.data(), w.size() * 4);
+    dki.upload(k8.data(), k8.size());
+    dks.upload(ks.data(), ks.size() * 4);
+    dpos.upload(pos.data(), pos.size() * 8);
+    dri.upload(req_ids.data(), req_ids.size() * 4);
+    int32_t ctr0[2] = {0, 0};
+    dbt.upload(table, 8);
+    dctr.upload(ctr0, 8);
+    std::vector<int32_t> got(size_t(select_k) * rows, -12345), counts(static_cast<size_t>(rows), -1), again;
+    for (int pass = 0; pass < 2; ++pass) {
+      dsa_select_decode(dq8.p, static_cast<const float*>(dw.p), static_cast<const int32_t*>(dri.p),
+                        static_cast<const int64_t*>(dpos.p), rows, static_cast<const int32_t*>(dbt.p), 2, dki.p,
+                        static_cast<const float*>(dks.p), pools_per_block, heads, dim, select_k, 1, select_k,
+                        static_cast<int32_t*>(dtopk.p), static_cast<int32_t*>(dcnt.p), dws.p, n_pools,
+                        static_cast<int32_t*>(dctr.p), 0, 0, /*relu=*/true);
+      cudaDeviceSynchronize();
+      if (pass == 0) {
+        dtopk.download(got.data(), got.size() * 4);
+        dcnt.download(counts.data(), counts.size() * 4);
+      } else {
+        again.assign(got.size(), 0);
+        dtopk.download(again.data(), again.size() * 4);
+        if (again != got) throw std::runtime_error("64-head select: two launches differ");
+      }
+    }
+
+    std::vector<double> logits(static_cast<size_t>(n_pools));
+    for (int r = 0; r < rows; ++r) {
+      const std::string tag = "64-head select rows=" + std::to_string(rows) + " r=" + std::to_string(r);
+      const int64_t visible = pos[size_t(r)] + 1;
+      double lo = 0, hi = 0;
+      for (int64_t j = 0; j < visible; ++j) {
+        const size_t slot = size_t(slot_of(j));
+        double total = 0.0;
+        for (int h = 0; h < heads; ++h) {
+          double partial = 0.0;
+          for (int d = 0; d < dim; ++d)
+            partial += double(fp8_e4m3_bits_to_float(q8[(size_t(r) * heads + size_t(h)) * dim + d])) *
+                       double(fp8_e4m3_bits_to_float(k8[slot * dim + d]));
+          total += double(w[size_t(r) * heads + size_t(h)]) * std::max(partial, 0.0);
+        }
+        logits[size_t(j)] = total * double(ks[slot]);
+        lo = std::min(lo, logits[size_t(j)]);
+        hi = std::max(hi, logits[size_t(j)]);
+      }
+      const int want_n = int(std::min<int64_t>(visible, select_k));
+      if (counts[size_t(r)] != want_n)
+        throw std::runtime_error(tag + ": count " + std::to_string(counts[size_t(r)]) + " vs " + std::to_string(want_n));
+      const int32_t* row = &got[size_t(r) * select_k];
+      std::vector<bool> picked(static_cast<size_t>(std::max<int64_t>(visible, 1)), false);
+      for (int i = 0; i < select_k; ++i) {
+        if (i >= want_n) {
+          if (row[i] != -1) throw std::runtime_error(tag + ": the list is not -1 padded past its count");
+          continue;
+        }
+        if (row[i] < 0 || row[i] >= visible) throw std::runtime_error(tag + ": a pick outside the visible entries");
+        if (i > 0 && row[i] <= row[i - 1]) throw std::runtime_error(tag + ": the picks are not ascending and distinct");
+        picked[size_t(row[i])] = true;
+      }
+      if (visible > select_k) {
+        std::vector<double> sorted(logits.begin(), logits.begin() + visible);
+        std::nth_element(sorted.begin(), sorted.begin() + (select_k - 1), sorted.end(), std::greater<double>());
+        const double kth = sorted[size_t(select_k - 1)];
+        const double tol = 1e-5 * (hi - lo);
+        for (int64_t j = 0; j < visible; ++j) {
+          if (picked[size_t(j)] && logits[size_t(j)] < kth - tol)
+            throw std::runtime_error(tag + ": a pick below the k-th logit");
+          if (!picked[size_t(j)] && logits[size_t(j)] > kth + tol)
+            throw std::runtime_error(tag + ": an entry above the k-th logit left out");
+        }
+      }
+    }
+  }
+}
+
 // The selection must not depend on the grid: 7 blocks vs 48 blocks produce
 // identical rows (uneven stripes at grid=7 exercise the stripe bounds).
 DGPP_TEST(dsa_select_decode_grid_invariance) {
