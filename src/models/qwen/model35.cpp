@@ -1646,10 +1646,22 @@ std::vector<Qwen35Model::Outputs> Qwen35Model::session_verify_batch_graph(
   // Not our shape (or a broken capture latched): the exact eager batch.
   if (!dflash_graph_verify_available() || df_verify_broken_)
     return session_verify_batch(reqs, feds, offsets);
+  // Phase 1: stage the padded rows. This can fail transiently (the pool or
+  // context bound at this batch size); the unpadded eager batch is more
+  // flexible and may still serve the step. A staging failure is NOT a
+  // broken graph — fall back without latching, since the condition can clear.
+  int slots = 0;
+  std::vector<int> offs;
+  RowRun run;
   try {
-    int slots = 0;
-    std::vector<int> offs;
-    RowRun run = df_stage_padded(reqs, feds, &slots, &offs);
+    run = df_stage_padded(reqs, feds, &slots, &offs);
+  } catch (const std::exception& e) {
+    DGPP_LOG_WARN("dflash verify padded staging failed, eager this step: {}",
+                  e.what());
+    return session_verify_batch(reqs, feds, offsets);
+  }
+  // Phase 2: the graph capture/replay. A failure here is a genuine graph break.
+  try {
     // A grown pool moves the tables pointer the capture baked in: drop
     // the stale graphs and recapture below (rare; admission windows).
     const int32_t* tables = pool_.blocks().device_tables();

@@ -303,13 +303,17 @@ for every row of the launch, 16/32/64/128-row forms) instead of the
   with it into the documented cross-dispatch class (single near-tie
   flips, as c2/c4 already were).
 
-The band is set per pass by `qwen_configure_gemm_rows` (the target's
-`run_rows` and the drafter's pass both call it on their `gemm_`), so
-prefill (decode=false) and the narrow batches clear it. `dsv41` keeps
-its existing `set_decode_mma(on)` call (min defaults to 1). The draft's
-FP8 GEMMs were already the streaming form through the scale-GEMM
-`mma_from_rows`, so the change lands on the BF16 sites — which, for
-this lane, are the drafter's.
+The band is set per pass by `qwen_configure_gemm_rows` on the shared
+`gemm_` — called by the MTP target pass (`mtp_run_rows`) and the
+drafter's passes (`dflash2_draft`, `dflash2_draft_batch`). The DFlash2
+target verify pass (`run_rows`) runs between them and inherits the
+sticky state the last call left, which is harmless: every wide pass
+sets the same [17,128] band, and the narrow C1/c2 taps keep their
+GEMV/Lt dispatch. Prefill (decode=false) and the narrow batches clear
+it. `dsv41` keeps its existing `set_decode_mma(on)` call (min defaults
+to 1). The draft's FP8 GEMMs were already the streaming form through
+the scale-GEMM `mma_from_rows`, so the change lands on the BF16 sites
+— which, for this lane, are the drafter's.
 
 Measured 2026-10-02 (Qwen3.8-27B lane, new binary, same rig as above):
 8.3K prompt + 128 decode, 4 slots — **the draft phase drops from 260
