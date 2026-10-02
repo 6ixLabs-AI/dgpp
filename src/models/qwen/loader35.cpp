@@ -5,6 +5,7 @@
 
 #include <array>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <stdexcept>
 
@@ -16,6 +17,17 @@ namespace {
 bool ends_with(const std::string& s, const std::string& suffix) {
   const size_t n = suffix.size();
   return s.size() >= n && s.compare(s.size() - n, n, suffix) == 0;
+}
+
+// Per-layer build progress logs, off by default (the sibling qwen loader
+// prints nothing). Set DGPP_QWEN35_LOADER_VERBOSE to a non-'0' value to
+// trace layer construction at boot.
+bool loader_verbose() {
+  static const bool v = [] {
+    const char* e = std::getenv("DGPP_QWEN35_LOADER_VERBOSE");
+    return e != nullptr && e[0] != '\0' && e[0] != '0';
+  }();
+  return v;
 }
 
 // Rank-invariant reads at world > 1 (mirrors the qwen loader's rule):
@@ -338,20 +350,20 @@ struct Qwen35LoaderFamily::Builder : WeightBuilder<QwenExpectedTensor> {
     const bool is_mtp = layer == mtp_layer;
     const Qwen35LayerKind kind = is_mtp ? Qwen35LayerKind::Full : cfg.layers[layer];
     const std::string p = qwen35_layer_prefix(cfg, layer);
-    std::fprintf(stderr, "[qwen35] build_layer %d kind=%d prefix=%s\n", layer, (int)kind, p.c_str());
+    if (loader_verbose())
+      std::fprintf(stderr, "[qwen35] build_layer %d kind=%d prefix=%s\n", layer, (int)kind, p.c_str());
     Qwen35LayerResident& o = out;
     o.kind = kind;
     o.layer = layer;
     o.input_norm = load_bf16(p + "input_layernorm.weight");
     o.post_norm = load_bf16(p + "post_attention_layernorm.weight");
-    std::fprintf(stderr, "[qwen35] layer %d norms done\n", layer);
     if (kind == Qwen35LayerKind::Gdn)
       build_gdn(p);
     else
       build_full(p);
-    std::fprintf(stderr, "[qwen35] layer %d attn done\n", layer);
     build_mlp(p);
-    std::fprintf(stderr, "[qwen35] layer %d mlp done\n", layer);
+    if (loader_verbose())
+      std::fprintf(stderr, "[qwen35] layer %d done (kind=%d)\n", layer, (int)kind);
   }
 };
 

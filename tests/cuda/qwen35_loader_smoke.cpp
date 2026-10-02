@@ -53,10 +53,15 @@ std::vector<uint16_t> down16(const uint16_t* d, size_t n) {
 }  // namespace
 
 int main(int argc, char** argv) {
-  const std::string ckpt = argc > 1
-                               ? argv[1]
-                               : "/home/ahmmed/.cache/huggingface/hub/models--Qwen--Qwen3.8-27B-FP8/"
-                                 "snapshots/017b9c7af6b5689d5dd426a76e0bc077eb5ca20a";
+  if (argc < 2) {
+    std::fprintf(stderr,
+                 "usage: %s <checkpoint-dir>\n"
+                 "  <checkpoint-dir> must hold config.json + the safetensors shards for "
+                 "Qwen3.8-27B-FP8 (e.g. a Hugging Face snapshot directory)\n",
+                 argv[0]);
+    return 2;
+  }
+  const std::string ckpt = argv[1];
   dgpp::Qwen35TextConfig cfg = dgpp::Qwen35TextConfig::from_json_file(ckpt + "/config.json");
   std::fprintf(stderr, "MARK config parsed: hidden=%d layers=%d\n", cfg.hidden_size,
                cfg.num_hidden_layers);
