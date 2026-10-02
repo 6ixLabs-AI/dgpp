@@ -1,0 +1,780 @@
+{
+  "generated_at": "2026-10-02T21:34:04.282084+00:00",
+  "scope": "Completed launches only; sampled extrema include startup and shutdown, and do not establish transient peaks between observations.",
+  "launches": [
+    {
+      "directory": "raw/dsv4-w4/long/default",
+      "nodes": [
+        {
+          "path": "raw/dsv4-w4/long/default/node0-telemetry.jsonl",
+          "first_at": "2026-10-02T20:12:41.908158+00:00",
+          "last_at": "2026-10-02T20:17:43.674188+00:00",
+          "memory_samples": 300,
+          "gpu_samples": 60,
+          "minimum_available_GiB": 44.406742095947266,
+          "maximum_swap_used_MiB": 162.3671875,
+          "maximum_temperature_C": 77.0,
+          "active_thermal_samples": 0,
+          "gpu_query_errors": 0,
+          "maximum_memory_psi_avg10_percent": {
+            "some": 0.0,
+            "full": 0.0
+          },
+          "vmstat_deltas": {
+            "pswpin": 7,
+            "pswpout": 0,
+            "allocstall_dma": 0,
+            "allocstall_dma32": 0,
+            "allocstall_normal": 0,
+            "allocstall_movable": 0,
+            "allocstall_device": 0,
+            "pgsteal_kswapd": 0,
+            "pgsteal_direct": 0,
+            "pgsteal_khugepaged": 0,
+            "pgsteal_proactive": 0,
+            "pgscan_kswapd": 0,
+            "pgscan_direct": 0,
+            "pgscan_khugepaged": 0,
+            "pgscan_proactive": 0,
+            "pgscan_direct_throttle": 0,
+            "pgscan_anon": 0,
+            "pgscan_file": 0,
+            "pgsteal_anon": 0,
+            "pgsteal_file": 0,
+            "oom_kill": 0
+          }
+        },
+        {
+          "path": "raw/dsv4-w4/long/default/node1-telemetry.jsonl",
+          "first_at": "2026-10-02T20:13:43.737590+00:00",
+          "last_at": "2026-10-02T20:18:45.249844+00:00",
+          "memory_samples": 299,
+          "gpu_samples": 60,
+          "minimum_available_GiB": 45.72263717651367,
+          "maximum_swap_used_MiB": 190.58203125,
+          "maximum_temperature_C": 72.0,
+          "active_thermal_samples": 0,
+          "gpu_query_errors": 0,
+          "maximum_memory_psi_avg10_percent": {
+            "some": 0.0,
+            "full": 0.0
+          },
+          "vmstat_deltas": {
+            "pswpin": 0,
+            "pswpout": 0,
+            "allocstall_dma": 0,
+            "allocstall_dma32": 0,
+            "allocstall_normal": 0,
+            "allocstall_movable": 0,
+            "allocstall_device": 0,
+            "pgsteal_kswapd": 0,
+            "pgsteal_direct": 0,
+            "pgsteal_khugepaged": 0,
+            "pgsteal_proactive": 0,
+            "pgscan_kswapd": 0,
+            "pgscan_direct": 0,
+            "pgscan_khugepaged": 0,
+            "pgscan_proactive": 0,
+            "pgscan_direct_throttle": 0,
+            "pgscan_anon": 0,
+            "pgscan_file": 0,
+            "pgsteal_anon": 0,
+            "pgsteal_file": 0,
+            "oom_kill": 0
+          }
+        },
+        {
+          "path": "raw/dsv4-w4/long/default/node2-telemetry.jsonl",
+          "unavailable": true,
+          "detail": [
+            "ssh: connect to host 192.168.50.232 port 22: No route to host"
+          ]
+        },
+        {
+          "path": "raw/dsv4-w4/long/default/node3-telemetry.jsonl",
+          "first_at": "2026-10-02T20:12:38.140476+00:00",
+          "last_at": "2026-10-02T20:17:39.334331+00:00",
+          "memory_samples": 299,
+          "gpu_samples": 60,
+          "minimum_available_GiB": 45.7677001953125,
+          "maximum_swap_used_MiB": 48.6796875,
+          "maximum_temperature_C": 74.0,
+          "active_thermal_samples": 0,
+          "gpu_query_errors": 0,
+          "maximum_memory_psi_avg10_percent": {
+            "some": 0.0,
+            "full": 0.0
+          },
+          "vmstat_deltas": {
+            "pswpin": 0,
+            "pswpout": 0,
+            "allocstall_dma": 0,
+            "allocstall_dma32": 0,
+            "allocstall_normal": 0,
+            "allocstall_movable": 0,
+            "allocstall_device": 0,
+            "pgsteal_kswapd": 0,
+            "pgsteal_direct": 0,
+            "pgsteal_khugepaged": 0,
+            "pgsteal_proactive": 0,
+            "pgscan_kswapd": 0,
+            "pgscan_direct": 0,
+            "pgscan_khugepaged": 0,
+            "pgscan_proactive": 0,
+            "pgscan_direct_throttle": 0,
+            "pgscan_anon": 0,
+            "pgscan_file": 0,
+            "pgsteal_anon": 0,
+            "pgsteal_file": 0,
+            "oom_kill": 0
+          }
+        }
+      ]
+    },
+    {
+      "directory": "raw/dsv4-w4/modes/depth3",
+      "nodes": [
+        {
+          "path": "raw/dsv4-w4/modes/depth3/node0-telemetry.jsonl",
+          "first_at": "2026-10-02T20:11:17.098335+00:00",
+          "last_at": "2026-10-02T20:12:40.822017+00:00",
+          "memory_samples": 84,
+          "gpu_samples": 17,
+          "minimum_available_GiB": 49.335853576660156,
+          "maximum_swap_used_MiB": 162.3671875,
+          "maximum_temperature_C": 72.0,
+          "active_thermal_samples": 0,
+          "gpu_query_errors": 0,
+          "maximum_memory_psi_avg10_percent": {
+            "some": 0.0,
+            "full": 0.0
+          },
+          "vmstat_deltas": {
+            "pswpin": 0,
+            "pswpout": 0,
+            "allocstall_dma": 0,
+            "allocstall_dma32": 0,
+            "allocstall_normal": 0,
+            "allocstall_movable": 0,
+            "allocstall_device": 0,
+            "pgsteal_kswapd": 0,
+            "pgsteal_direct": 0,
+            "pgsteal_khugepaged": 0,
+            "pgsteal_proactive": 0,
+            "pgscan_kswapd": 0,
+            "pgscan_direct": 0,
+            "pgscan_khugepaged": 0,
+            "pgscan_proactive": 0,
+            "pgscan_direct_throttle": 0,
+            "pgscan_anon": 0,
+            "pgscan_file": 0,
+            "pgsteal_anon": 0,
+            "pgsteal_file": 0,
+            "oom_kill": 0
+          }
+        },
+        {
+          "path": "raw/dsv4-w4/modes/depth3/node1-telemetry.jsonl",
+          "first_at": "2026-10-02T20:12:18.941121+00:00",
+          "last_at": "2026-10-02T20:13:42.712796+00:00",
+          "memory_samples": 84,
+          "gpu_samples": 17,
+          "minimum_available_GiB": 50.72621536254883,
+          "maximum_swap_used_MiB": 190.58203125,
+          "maximum_temperature_C": 65.0,
+          "active_thermal_samples": 0,
+          "gpu_query_errors": 0,
+          "maximum_memory_psi_avg10_percent": {
+            "some": 0.0,
+            "full": 0.0
+          },
+          "vmstat_deltas": {
+            "pswpin": 0,
+            "pswpout": 0,
+            "allocstall_dma": 0,
+            "allocstall_dma32": 0,
+            "allocstall_normal": 0,
+            "allocstall_movable": 0,
+            "allocstall_device": 0,
+            "pgsteal_kswapd": 0,
+            "pgsteal_direct": 0,
+            "pgsteal_khugepaged": 0,
+            "pgsteal_proactive": 0,
+            "pgscan_kswapd": 0,
+            "pgscan_direct": 0,
+            "pgscan_khugepaged": 0,
+            "pgscan_proactive": 0,
+            "pgscan_direct_throttle": 0,
+            "pgscan_anon": 0,
+            "pgscan_file": 0,
+            "pgsteal_anon": 0,
+            "pgsteal_file": 0,
+            "oom_kill": 0
+          }
+        },
+        {
+          "path": "raw/dsv4-w4/modes/depth3/node2-telemetry.jsonl",
+          "unavailable": true,
+          "detail": [
+            "ssh: connect to host 192.168.50.232 port 22: No route to host"
+          ]
+        },
+        {
+          "path": "raw/dsv4-w4/modes/depth3/node3-telemetry.jsonl",
+          "first_at": "2026-10-02T20:11:13.350118+00:00",
+          "last_at": "2026-10-02T20:12:37.099539+00:00",
+          "memory_samples": 84,
+          "gpu_samples": 17,
+          "minimum_available_GiB": 50.74662780761719,
+          "maximum_swap_used_MiB": 48.6796875,
+          "maximum_temperature_C": 67.0,
+          "active_thermal_samples": 0,
+          "gpu_query_errors": 0,
+          "maximum_memory_psi_avg10_percent": {
+            "some": 0.0,
+            "full": 0.0
+          },
+          "vmstat_deltas": {
+            "pswpin": 0,
+            "pswpout": 0,
+            "allocstall_dma": 0,
+            "allocstall_dma32": 0,
+            "allocstall_normal": 0,
+            "allocstall_movable": 0,
+            "allocstall_device": 0,
+            "pgsteal_kswapd": 0,
+            "pgsteal_direct": 0,
+            "pgsteal_khugepaged": 0,
+            "pgsteal_proactive": 0,
+            "pgscan_kswapd": 0,
+            "pgscan_direct": 0,
+            "pgscan_khugepaged": 0,
+            "pgscan_proactive": 0,
+            "pgscan_direct_throttle": 0,
+            "pgscan_anon": 0,
+            "pgscan_file": 0,
+            "pgsteal_anon": 0,
+            "pgsteal_file": 0,
+            "oom_kill": 0
+          }
+        }
+      ]
+    },
+    {
+      "directory": "raw/dsv4-w4/modes/depth5",
+      "nodes": [
+        {
+          "path": "raw/dsv4-w4/modes/depth5/node0-telemetry.jsonl",
+          "first_at": "2026-10-02T20:09:51.063130+00:00",
+          "last_at": "2026-10-02T20:11:16.772670+00:00",
+          "memory_samples": 86,
+          "gpu_samples": 18,
+          "minimum_available_GiB": 49.36205291748047,
+          "maximum_swap_used_MiB": 162.3671875,
+          "maximum_temperature_C": 72.0,
+          "active_thermal_samples": 0,
+          "gpu_query_errors": 0,
+          "maximum_memory_psi_avg10_percent": {
+            "some": 0.0,
+            "full": 0.0
+          },
+          "vmstat_deltas": {
+            "pswpin": 0,
+            "pswpout": 0,
+            "allocstall_dma": 0,
+            "allocstall_dma32": 0,
+            "allocstall_normal": 0,
+            "allocstall_movable": 0,
+            "allocstall_device": 0,
+            "pgsteal_kswapd": 0,
+            "pgsteal_direct": 0,
+            "pgsteal_khugepaged": 0,
+            "pgsteal_proactive": 0,
+            "pgscan_kswapd": 0,
+            "pgscan_direct": 0,
+            "pgscan_khugepaged": 0,
+            "pgscan_proactive": 0,
+            "pgscan_direct_throttle": 0,
+            "pgscan_anon": 0,
+            "pgscan_file": 0,
+            "pgsteal_anon": 0,
+            "pgsteal_file": 0,
+            "oom_kill": 0
+          }
+        },
+        {
+          "path": "raw/dsv4-w4/modes/depth5/node1-telemetry.jsonl",
+          "first_at": "2026-10-02T20:10:52.912358+00:00",
+          "last_at": "2026-10-02T20:12:17.714502+00:00",
+          "memory_samples": 85,
+          "gpu_samples": 17,
+          "minimum_available_GiB": 50.71731948852539,
+          "maximum_swap_used_MiB": 190.58203125,
+          "maximum_temperature_C": 67.0,
+          "active_thermal_samples": 0,
+          "gpu_query_errors": 0,
+          "maximum_memory_psi_avg10_percent": {
+            "some": 0.0,
+            "full": 0.0
+          },
+          "vmstat_deltas": {
+            "pswpin": 0,
+            "pswpout": 0,
+            "allocstall_dma": 0,
+            "allocstall_dma32": 0,
+            "allocstall_normal": 0,
+            "allocstall_movable": 0,
+            "allocstall_device": 0,
+            "pgsteal_kswapd": 0,
+            "pgsteal_direct": 0,
+            "pgsteal_khugepaged": 0,
+            "pgsteal_proactive": 0,
+            "pgscan_kswapd": 0,
+            "pgscan_direct": 0,
+            "pgscan_khugepaged": 0,
+            "pgscan_proactive": 0,
+            "pgscan_direct_throttle": 0,
+            "pgscan_anon": 0,
+            "pgscan_file": 0,
+            "pgsteal_anon": 0,
+            "pgsteal_file": 0,
+            "oom_kill": 0
+          }
+        },
+        {
+          "path": "raw/dsv4-w4/modes/depth5/node2-telemetry.jsonl",
+          "unavailable": true,
+          "detail": [
+            "ssh: connect to host 192.168.50.232 port 22: No route to host"
+          ]
+        },
+        {
+          "path": "raw/dsv4-w4/modes/depth5/node3-telemetry.jsonl",
+          "first_at": "2026-10-02T20:09:47.322501+00:00",
+          "last_at": "2026-10-02T20:11:12.450919+00:00",
+          "memory_samples": 85,
+          "gpu_samples": 17,
+          "minimum_available_GiB": 50.66642761230469,
+          "maximum_swap_used_MiB": 48.6796875,
+          "maximum_temperature_C": 69.0,
+          "active_thermal_samples": 0,
+          "gpu_query_errors": 0,
+          "maximum_memory_psi_avg10_percent": {
+            "some": 0.0,
+            "full": 0.0
+          },
+          "vmstat_deltas": {
+            "pswpin": 0,
+            "pswpout": 0,
+            "allocstall_dma": 0,
+            "allocstall_dma32": 0,
+            "allocstall_normal": 0,
+            "allocstall_movable": 0,
+            "allocstall_device": 0,
+            "pgsteal_kswapd": 0,
+            "pgsteal_direct": 0,
+            "pgsteal_khugepaged": 0,
+            "pgsteal_proactive": 0,
+            "pgscan_kswapd": 0,
+            "pgscan_direct": 0,
+            "pgscan_khugepaged": 0,
+            "pgscan_proactive": 0,
+            "pgscan_direct_throttle": 0,
+            "pgscan_anon": 0,
+            "pgscan_file": 0,
+            "pgsteal_anon": 0,
+            "pgsteal_file": 0,
+            "oom_kill": 0
+          }
+        }
+      ]
+    },
+    {
+      "directory": "raw/dsv4-w4/modes/plain",
+      "nodes": [
+        {
+          "path": "raw/dsv4-w4/modes/plain/node0-telemetry.jsonl",
+          "first_at": "2026-10-02T20:07:46.947650+00:00",
+          "last_at": "2026-10-02T20:09:50.902512+00:00",
+          "memory_samples": 124,
+          "gpu_samples": 25,
+          "minimum_available_GiB": 52.43944549560547,
+          "maximum_swap_used_MiB": 162.3671875,
+          "maximum_temperature_C": 71.0,
+          "active_thermal_samples": 0,
+          "gpu_query_errors": 0,
+          "maximum_memory_psi_avg10_percent": {
+            "some": 0.0,
+            "full": 0.0
+          },
+          "vmstat_deltas": {
+            "pswpin": 0,
+            "pswpout": 0,
+            "allocstall_dma": 0,
+            "allocstall_dma32": 0,
+            "allocstall_normal": 0,
+            "allocstall_movable": 0,
+            "allocstall_device": 0,
+            "pgsteal_kswapd": 0,
+            "pgsteal_direct": 0,
+            "pgsteal_khugepaged": 0,
+            "pgsteal_proactive": 0,
+            "pgscan_kswapd": 0,
+            "pgscan_direct": 0,
+            "pgscan_khugepaged": 0,
+            "pgscan_proactive": 0,
+            "pgscan_direct_throttle": 0,
+            "pgscan_anon": 0,
+            "pgscan_file": 0,
+            "pgsteal_anon": 0,
+            "pgsteal_file": 0,
+            "oom_kill": 0
+          }
+        },
+        {
+          "path": "raw/dsv4-w4/modes/plain/node1-telemetry.jsonl",
+          "first_at": "2026-10-02T20:08:48.769784+00:00",
+          "last_at": "2026-10-02T20:10:51.842292+00:00",
+          "memory_samples": 123,
+          "gpu_samples": 25,
+          "minimum_available_GiB": 53.84425354003906,
+          "maximum_swap_used_MiB": 190.58203125,
+          "maximum_temperature_C": 67.0,
+          "active_thermal_samples": 0,
+          "gpu_query_errors": 0,
+          "maximum_memory_psi_avg10_percent": {
+            "some": 0.0,
+            "full": 0.0
+          },
+          "vmstat_deltas": {
+            "pswpin": 0,
+            "pswpout": 0,
+            "allocstall_dma": 0,
+            "allocstall_dma32": 0,
+            "allocstall_normal": 0,
+            "allocstall_movable": 0,
+            "allocstall_device": 0,
+            "pgsteal_kswapd": 0,
+            "pgsteal_direct": 0,
+            "pgsteal_khugepaged": 0,
+            "pgsteal_proactive": 0,
+            "pgscan_kswapd": 0,
+            "pgscan_direct": 0,
+            "pgscan_khugepaged": 0,
+            "pgscan_proactive": 0,
+            "pgscan_direct_throttle": 0,
+            "pgscan_anon": 0,
+            "pgscan_file": 0,
+            "pgsteal_anon": 0,
+            "pgsteal_file": 0,
+            "oom_kill": 0
+          }
+        },
+        {
+          "path": "raw/dsv4-w4/modes/plain/node2-telemetry.jsonl",
+          "unavailable": true,
+          "detail": [
+            "ssh: connect to host 192.168.50.232 port 22: No route to host"
+          ]
+        },
+        {
+          "path": "raw/dsv4-w4/modes/plain/node3-telemetry.jsonl",
+          "first_at": "2026-10-02T20:07:43.221614+00:00",
+          "last_at": "2026-10-02T20:09:46.321334+00:00",
+          "memory_samples": 123,
+          "gpu_samples": 25,
+          "minimum_available_GiB": 53.8087158203125,
+          "maximum_swap_used_MiB": 48.6796875,
+          "maximum_temperature_C": 68.0,
+          "active_thermal_samples": 0,
+          "gpu_query_errors": 0,
+          "maximum_memory_psi_avg10_percent": {
+            "some": 0.0,
+            "full": 0.0
+          },
+          "vmstat_deltas": {
+            "pswpin": 0,
+            "pswpout": 0,
+            "allocstall_dma": 0,
+            "allocstall_dma32": 0,
+            "allocstall_normal": 0,
+            "allocstall_movable": 0,
+            "allocstall_device": 0,
+            "pgsteal_kswapd": 0,
+            "pgsteal_direct": 0,
+            "pgsteal_khugepaged": 0,
+            "pgsteal_proactive": 0,
+            "pgscan_kswapd": 0,
+            "pgscan_direct": 0,
+            "pgscan_khugepaged": 0,
+            "pgscan_proactive": 0,
+            "pgscan_direct_throttle": 0,
+            "pgscan_anon": 0,
+            "pgscan_file": 0,
+            "pgsteal_anon": 0,
+            "pgsteal_file": 0,
+            "oom_kill": 0
+          }
+        }
+      ]
+    },
+    {
+      "directory": "raw/dsv4-w4/performance/default",
+      "nodes": [
+        {
+          "path": "raw/dsv4-w4/performance/default/node0-telemetry.jsonl",
+          "first_at": "2026-10-02T19:55:23.623199+00:00",
+          "last_at": "2026-10-02T20:07:45.801273+00:00",
+          "memory_samples": 736,
+          "gpu_samples": 148,
+          "minimum_available_GiB": 44.28956985473633,
+          "maximum_swap_used_MiB": 162.3671875,
+          "maximum_temperature_C": 77.0,
+          "active_thermal_samples": 0,
+          "gpu_query_errors": 0,
+          "maximum_memory_psi_avg10_percent": {
+            "some": 0.0,
+            "full": 0.0
+          },
+          "vmstat_deltas": {
+            "pswpin": 0,
+            "pswpout": 0,
+            "allocstall_dma": 0,
+            "allocstall_dma32": 0,
+            "allocstall_normal": 0,
+            "allocstall_movable": 0,
+            "allocstall_device": 0,
+            "pgsteal_kswapd": 0,
+            "pgsteal_direct": 0,
+            "pgsteal_khugepaged": 0,
+            "pgsteal_proactive": 0,
+            "pgscan_kswapd": 0,
+            "pgscan_direct": 0,
+            "pgscan_khugepaged": 0,
+            "pgscan_proactive": 0,
+            "pgscan_direct_throttle": 0,
+            "pgscan_anon": 0,
+            "pgscan_file": 0,
+            "pgsteal_anon": 0,
+            "pgsteal_file": 0,
+            "oom_kill": 0
+          }
+        },
+        {
+          "path": "raw/dsv4-w4/performance/default/node1-telemetry.jsonl",
+          "first_at": "2026-10-02T19:56:25.406293+00:00",
+          "last_at": "2026-10-02T20:08:48.325831+00:00",
+          "memory_samples": 737,
+          "gpu_samples": 148,
+          "minimum_available_GiB": 45.776344299316406,
+          "maximum_swap_used_MiB": 190.59375,
+          "maximum_temperature_C": 76.0,
+          "active_thermal_samples": 0,
+          "gpu_query_errors": 0,
+          "maximum_memory_psi_avg10_percent": {
+            "some": 0.0,
+            "full": 0.0
+          },
+          "vmstat_deltas": {
+            "pswpin": 2,
+            "pswpout": 0,
+            "allocstall_dma": 0,
+            "allocstall_dma32": 0,
+            "allocstall_normal": 0,
+            "allocstall_movable": 0,
+            "allocstall_device": 0,
+            "pgsteal_kswapd": 0,
+            "pgsteal_direct": 0,
+            "pgsteal_khugepaged": 0,
+            "pgsteal_proactive": 0,
+            "pgscan_kswapd": 0,
+            "pgscan_direct": 0,
+            "pgscan_khugepaged": 0,
+            "pgscan_proactive": 0,
+            "pgscan_direct_throttle": 0,
+            "pgscan_anon": 0,
+            "pgscan_file": 0,
+            "pgsteal_anon": 0,
+            "pgsteal_file": 0,
+            "oom_kill": 0
+          }
+        },
+        {
+          "path": "raw/dsv4-w4/performance/default/node2-telemetry.jsonl",
+          "unavailable": true,
+          "detail": [
+            "ssh: connect to host 192.168.50.232 port 22: No route to host"
+          ]
+        },
+        {
+          "path": "raw/dsv4-w4/performance/default/node3-telemetry.jsonl",
+          "first_at": "2026-10-02T19:55:20.054327+00:00",
+          "last_at": "2026-10-02T20:07:41.901343+00:00",
+          "memory_samples": 736,
+          "gpu_samples": 148,
+          "minimum_available_GiB": 45.765411376953125,
+          "maximum_swap_used_MiB": 48.69921875,
+          "maximum_temperature_C": 79.0,
+          "active_thermal_samples": 0,
+          "gpu_query_errors": 0,
+          "maximum_memory_psi_avg10_percent": {
+            "some": 0.0,
+            "full": 0.0
+          },
+          "vmstat_deltas": {
+            "pswpin": 0,
+            "pswpout": 0,
+            "allocstall_dma": 0,
+            "allocstall_dma32": 0,
+            "allocstall_normal": 0,
+            "allocstall_movable": 0,
+            "allocstall_device": 0,
+            "pgsteal_kswapd": 0,
+            "pgsteal_direct": 0,
+            "pgsteal_khugepaged": 0,
+            "pgsteal_proactive": 0,
+            "pgscan_kswapd": 0,
+            "pgscan_direct": 0,
+            "pgscan_khugepaged": 0,
+            "pgscan_proactive": 0,
+            "pgscan_direct_throttle": 0,
+            "pgscan_anon": 0,
+            "pgscan_file": 0,
+            "pgsteal_anon": 0,
+            "pgsteal_file": 0,
+            "oom_kill": 0
+          }
+        }
+      ]
+    },
+    {
+      "directory": "raw/dsv4-w4/quality/default",
+      "nodes": [
+        {
+          "path": "raw/dsv4-w4/quality/default/node0-telemetry.jsonl",
+          "first_at": "2026-10-02T20:17:44.233974+00:00",
+          "last_at": "2026-10-02T20:26:22.748861+00:00",
+          "memory_samples": 515,
+          "gpu_samples": 103,
+          "minimum_available_GiB": 44.37044906616211,
+          "maximum_swap_used_MiB": 162.32421875,
+          "maximum_temperature_C": 75.0,
+          "active_thermal_samples": 0,
+          "gpu_query_errors": 0,
+          "maximum_memory_psi_avg10_percent": {
+            "some": 0.0,
+            "full": 0.0
+          },
+          "vmstat_deltas": {
+            "pswpin": 518,
+            "pswpout": 0,
+            "allocstall_dma": 0,
+            "allocstall_dma32": 0,
+            "allocstall_normal": 0,
+            "allocstall_movable": 0,
+            "allocstall_device": 0,
+            "pgsteal_kswapd": 0,
+            "pgsteal_direct": 0,
+            "pgsteal_khugepaged": 0,
+            "pgsteal_proactive": 0,
+            "pgscan_kswapd": 0,
+            "pgscan_direct": 0,
+            "pgscan_khugepaged": 0,
+            "pgscan_proactive": 0,
+            "pgscan_direct_throttle": 0,
+            "pgscan_anon": 0,
+            "pgscan_file": 0,
+            "pgsteal_anon": 0,
+            "pgsteal_file": 0,
+            "oom_kill": 0
+          }
+        },
+        {
+          "path": "raw/dsv4-w4/quality/default/node1-telemetry.jsonl",
+          "first_at": "2026-10-02T20:18:46.079524+00:00",
+          "last_at": "2026-10-02T20:27:24.790399+00:00",
+          "memory_samples": 515,
+          "gpu_samples": 103,
+          "minimum_available_GiB": 45.79461669921875,
+          "maximum_swap_used_MiB": 190.58203125,
+          "maximum_temperature_C": 72.0,
+          "active_thermal_samples": 0,
+          "gpu_query_errors": 0,
+          "maximum_memory_psi_avg10_percent": {
+            "some": 0.0,
+            "full": 0.0
+          },
+          "vmstat_deltas": {
+            "pswpin": 2,
+            "pswpout": 0,
+            "allocstall_dma": 0,
+            "allocstall_dma32": 0,
+            "allocstall_normal": 0,
+            "allocstall_movable": 0,
+            "allocstall_device": 0,
+            "pgsteal_kswapd": 0,
+            "pgsteal_direct": 0,
+            "pgsteal_khugepaged": 0,
+            "pgsteal_proactive": 0,
+            "pgscan_kswapd": 0,
+            "pgscan_direct": 0,
+            "pgscan_khugepaged": 0,
+            "pgscan_proactive": 0,
+            "pgscan_direct_throttle": 0,
+            "pgscan_anon": 0,
+            "pgscan_file": 0,
+            "pgsteal_anon": 0,
+            "pgsteal_file": 0,
+            "oom_kill": 0
+          }
+        },
+        {
+          "path": "raw/dsv4-w4/quality/default/node2-telemetry.jsonl",
+          "unavailable": true,
+          "detail": [
+            "ssh: connect to host 192.168.50.232 port 22: No route to host"
+          ]
+        },
+        {
+          "path": "raw/dsv4-w4/quality/default/node3-telemetry.jsonl",
+          "first_at": "2026-10-02T20:17:40.466607+00:00",
+          "last_at": "2026-10-02T20:26:19.156280+00:00",
+          "memory_samples": 515,
+          "gpu_samples": 103,
+          "minimum_available_GiB": 45.75019836425781,
+          "maximum_swap_used_MiB": 48.6796875,
+          "maximum_temperature_C": 76.0,
+          "active_thermal_samples": 0,
+          "gpu_query_errors": 0,
+          "maximum_memory_psi_avg10_percent": {
+            "some": 0.0,
+            "full": 0.0
+          },
+          "vmstat_deltas": {
+            "pswpin": 0,
+            "pswpout": 0,
+            "allocstall_dma": 0,
+            "allocstall_dma32": 0,
+            "allocstall_normal": 0,
+            "allocstall_movable": 0,
+            "allocstall_device": 0,
+            "pgsteal_kswapd": 0,
+            "pgsteal_direct": 0,
+            "pgsteal_khugepaged": 0,
+            "pgsteal_proactive": 0,
+            "pgscan_kswapd": 0,
+            "pgscan_direct": 0,
+            "pgscan_khugepaged": 0,
+            "pgscan_proactive": 0,
+            "pgscan_direct_throttle": 0,
+            "pgscan_anon": 0,
+            "pgscan_file": 0,
+            "pgsteal_anon": 0,
+            "pgsteal_file": 0,
+            "oom_kill": 0
+          }
+        }
+      ]
+    }
+  ]
+}

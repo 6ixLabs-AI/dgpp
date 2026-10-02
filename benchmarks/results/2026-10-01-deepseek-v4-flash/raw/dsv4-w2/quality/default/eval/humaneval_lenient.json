@@ -1,0 +1,35 @@
+{
+  "strict_passed": 141,
+  "n": 164,
+  "unclosed_fence_failures": [
+    "HumanEval/67",
+    "HumanEval/73",
+    "HumanEval/79",
+    "HumanEval/86",
+    "HumanEval/90",
+    "HumanEval/99",
+    "HumanEval/105",
+    "HumanEval/116",
+    "HumanEval/119",
+    "HumanEval/123",
+    "HumanEval/126",
+    "HumanEval/130",
+    "HumanEval/133",
+    "HumanEval/145"
+  ],
+  "pass_when_the_open_block_is_executed": [
+    "HumanEval/67",
+    "HumanEval/73",
+    "HumanEval/79",
+    "HumanEval/86",
+    "HumanEval/90",
+    "HumanEval/99",
+    "HumanEval/105",
+    "HumanEval/116",
+    "HumanEval/119",
+    "HumanEval/123",
+    "HumanEval/130",
+    "HumanEval/133"
+  ],
+  "lenient_passed": 153
+}

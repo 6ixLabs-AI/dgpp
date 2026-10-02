@@ -1,0 +1,78 @@
+{
+  "started_at": "2026-10-02T19:55:23.377259+00:00",
+  "commit": "904f76c8519ad6b1e55dc1eafffbb05e71c49f41",
+  "tracked_diff": "CHANGELOG.md                        | 145 ++++++++++++++++++++\n CMakeLists.txt                      |  97 ++++++++++++-\n PLAN.md                             |   1 +\n README.md                           |  41 +++++-\n apps/dgpp_serve.cpp                 | 216 +++++++++++++++++++++++++++--\n deploy/README.md                    |   2 +\n docs/benchmarks.md                  |  30 +++-\n docs/testing.md                     |  26 +++-\n scripts/README.md                   |   1 +\n scripts/cluster_doctor.py           |  12 +-\n src/engine/graph_engine.hpp         | 242 ++++++++++++++++++++++++++++----\n src/engine/session_model.hpp        | 116 +++++++++++++++-\n src/engine/tp_bus.hpp               |  24 ++++\n src/engine/verify_schedule.hpp      |  21 ++-\n src/kernels/csa2.cu                 |  91 ++++++++----\n src/kernels/dsa.cu                  | 267 +++++++++++++++++++++++++++++-------\n src/kernels/dsv41_dspark.cu         | 169 +++++++++++++++++++++--\n src/kernels/dsv41_dspark.hpp        |  28 +++-\n src/kernels/gemm.hpp                |   7 +\n src/kernels/gemm_cublaslt.cpp       |   9 +-\n src/kernels/glm_mhc.cu              |   9 +-\n src/kernels/glm_mhc_launch.hpp      |   7 +\n src/kernels/glm_moe.cu              |  79 ++++++++++-\n src/kernels/glm_moe_launch.hpp      |  17 ++-\n src/kernels/mma_gemv.cu             |  86 ++++++++----\n src/kernels/mma_gemv.hpp            |  14 +-\n src/kernels/scale_gemm.cu           |  10 +-\n src/kernels/scale_gemm.hpp          |   8 +-\n src/loaders/architecture.cpp        |   6 +-\n src/loaders/architecture.hpp        |   2 +\n src/models/glm/moe.hpp              |  25 ++++\n src/models/glm/moe_layer.cpp        | 164 +++++++++++++++++++---\n src/models/glm/moe_layer.hpp        |  38 +++++\n src/net/bus_kernel.cu               |  16 ++-\n src/net/bus_kernel.hpp              |   2 +-\n src/sched/scheduler.cpp             | 152 +++++++++++++++++---\n src/sched/scheduler.hpp             |  15 ++\n src/serve/cluster_config.cpp        |  11 ++\n src/serve/cluster_config.hpp        |  13 ++\n src/serve/fabric_serve.cpp          |  18 ++-\n src/serve/fabric_serve.hpp          |   2 +\n src/serve/frontend.hpp              |  39 ++++++\n src/serve/generation_service.cpp    |  31 ++++-\n src/serve/generation_service.hpp    |   1 +\n src/serve/prefill_policy.hpp        |   6 +\n src/text/chat_template.cpp          |  48 +++++--\n src/text/tool_grammar.cpp           | 109 ++++++++++-----\n src/text/tool_grammar.hpp           |  13 +-\n src/text/tool_parser.cpp            |  62 ++++++---\n src/text/tool_parser.hpp            |  27 +++-\n tests/cuda/dsa_test.cu              | 117 ++++++++++++++++\n tests/cuda/glm_moe_test.cu          |  29 ++++\n tests/cuda/mma_gemv_test.cu         | 111 +++++++++++++++\n tests/cuda/qwen_engine_test.cpp     |  23 ++--\n tests/host/fabric_serve_test.cpp    |   8 ++\n tests/host/scheduler_test.cpp       | 142 ++++++++++++++++++-\n tests/host/serve_test.cpp           |  55 +++++++-\n tests/python/portability_test.py    |   1 +\n tests/unit/cluster_config_test.cpp  |  28 +++-\n tests/unit/tool_grammar_test.cpp    | 220 ++++++++++++++++++++++++++++-\n tests/unit/tool_parser_test.cpp     | 136 +++++++++++++++++-\n tests/unit/verify_schedule_test.cpp |  26 ++++\n tools/gen_tokenizer_goldens.py      |  57 +++++++-\n 63 files changed, 3201 insertions(+), 327 deletions(-)",
+  "site_settings": {
+    "DGPP_HTTP_PORT": "18080",
+    "DGPP_FABRIC_PORT": "29970",
+    "DGPP_JOURNAL_PORT": "29971",
+    "DGPP_LOG_DIR": "~/dgpp/log",
+    "DGPP_STAGE_DIR": "/tmp/bus4",
+    "DGPP_RELEASE_DIR": "~/dgpp/releases",
+    "DGPP_HTTP_BIND": "0.0.0.0",
+    "DGPP_NODES": "192.168.88.11 192.168.88.12 192.168.88.13 192.168.88.14",
+    "DGPP_SSH_USER": "stephen"
+  },
+  "templates": [
+    {
+      "id": "dsv4-w4",
+      "template": "deploy/cluster_deepseek-v4-flash_mxfp4-fp8_w4.example.json",
+      "config": "configs/dsv4-w4.json",
+      "model": "deepseek-ai/DeepSeek-V4-Flash-0731",
+      "world": 4,
+      "slots": 6
+    },
+    {
+      "id": "dsv4-w2",
+      "template": "deploy/cluster_deepseek-v4-flash_mxfp4-fp8_w2.example.json",
+      "config": "configs/dsv4-w2.json",
+      "model": "deepseek-ai/DeepSeek-V4-Flash-0731",
+      "world": 2,
+      "slots": 4
+    }
+  ],
+  "datasets": {
+    "gsm8k_test.jsonl": "3730d312f6e3440559ace48831e51066acaca737f6eabec99bccb9e4b3c39d14",
+    "HumanEval.jsonl": "1d49078ba3e2b196b9344535bef34a43021f038fad9561d6ee7c53450609a6a2"
+  },
+  "eval_image": "sha256:8630ab77c5adf06e1f914483db4dd70e3fa59118160daab9b0ee75e685344221",
+  "eval_image_repo_digests": [
+    "python@sha256:2f17fc044b579bab302c2e8054d3a686e2cb9a83de48e70534b94cd8ebbe06a9"
+  ],
+  "eval_image_platform": "linux/arm64",
+  "checkpoint_revisions": {
+    "models--deepseek-ai--DeepSeek-V4-Flash-0731": [
+      "7872f01b1d1fe23eabc4c98b48bffcef5a386062"
+    ]
+  },
+  "binary_sha256": "fb6f3b63d88529041b34187bf1ce01dae2c3378ac9f8bcbb3569f54dadbd7600",
+  "version": "dgpp-serve 0.1.0+g904f76c8519a.dirty (git 904f76c8519a, cuda 13.0)",
+  "benchmark_environment": {
+    "CUDA_DEVICE_MAX_CONNECTIONS": "32"
+  },
+  "benchmark_environment_scope": "CUDA_DEVICE_MAX_CONNECTIONS=32 on the benchmark client/rank-0 launch and local microbenchmarks; peer launches use their login environment.",
+  "evaluation_thinking_controls": "Reasoning effort low when thinking enabled; none with --no-think. isolated_eval.py supplies none to avoid conflicting API parameters.",
+  "telemetry": {
+    "script": "node_telemetry.py",
+    "scope": "Four-node launches initiated after the second Node3 recovery; earlier performance runs do not have this continuous telemetry.",
+    "memory_interval_s": 1,
+    "gpu_interval_s": 5,
+    "node3_kernel_stream": true,
+    "spot_checks": [
+      "raw/qwen-yarn-w2/long/default/health-snapshots.jsonl"
+    ],
+    "node3_management_ssh": {
+      "host": "192.168.50.232",
+      "host_key_alias": "192.168.88.13",
+      "verified_hostname": "spark-a289",
+      "record": "raw/environment-audit/node3-management-link.json"
+    }
+  },
+  "note": "The DeepSeek-V4-Flash-0731 campaign of 2026-10-02 (the fifth run of this record): the tree after the grouped resumable prefill, the prefill fold overlap and the re-measured schedule constants (tracked_diff lists the uncommitted files); the other deployments' numbers are the earlier campaigns'.",
+  "completed_at": "2026-10-02T21:09:42.985936+00:00",
+  "reference_harness": {
+    "tool": "llama-benchy",
+    "arguments": "--pp 2048 --tg 128 --runs 40 --concurrency 1 --latency-mode none --skip-coherence (default sampling: temperature 1, top_p 1; thinking on, effort low); the concurrency legs --runs 10 --concurrency 1 2 5 10 --latency-mode generation",
+    "results": "tg128 64.19 +- 5.65 tokens/s (40 runs, four nodes, the campaign binary; pp2048 1,490); concurrency 1/2/5/10 with --latency-mode generation: tg total 66.0 / 90.6 / 121.1 / 66.4, pp total 1,608 / 1,630 / 1,664 / 987; two nodes 1/2/5: tg 40.5 / 56.1 / 44.7, pp 1,063 / 1,116 / 566"
+  }
+}
