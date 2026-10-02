@@ -148,6 +148,7 @@ void open_ops_file(dgpp::serve::OpStreamObserver* oplog,
 
 struct ServeKnobs {
   dgpp::serve::FileInputConfig file_inputs;
+  int world = 1;  // dgpp_build_info's world_size
   uint16_t http_port = 8080;
   std::string http_bind = "127.0.0.1";
   int64_t http_max_body_bytes = dgpp::serve::kDefaultHttpMaxBodyBytes;
@@ -927,6 +928,9 @@ int serve_openai(dgpp::sched::SchedulerEngine* engine, int64_t vocab_size,
   scfg.position_ceiling = k.position_ceiling;
   scfg.kv_pool_tokens = k.kv_pool_tokens;
   scfg.rope_scaling = k.rope_scaling;
+  scfg.build_version = DGPP_VERSION;
+  scfg.build_git_sha = DGPP_GIT_SHA;
+  scfg.world_size = k.world;
   {
     // The prefix cache's key (M7): what the entries are bound to.
     char key[96];
@@ -2237,6 +2241,7 @@ int main(int argc, char** argv) {
     knobs.default_chat_template_kwargs = default_chat_template_kwargs;
     knobs.mtp = mtp;
     knobs.stats_interval_s = stats_interval_s;
+    knobs.world = world;
     knobs.position_ceiling = position_ceiling;
     knobs.kv_pool_tokens = pool_tokens;
     knobs.rope_scaling = rope_scaling;
