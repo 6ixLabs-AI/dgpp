@@ -6,6 +6,22 @@ The history by milestone. The dated engineering record in
 
 ## Unreleased
 
+- **DFlash2 default-knob sweep: the shipped defaults are the measured
+  best** (2026-10-02): every env-gated DFlash2 performance option was
+  re-benchmarked against its alternative on the current binary, so the
+  out-of-box configuration is fastest in every cell with no env vars to
+  set. `DGPP_DFLASH2_VERIFY_GRAPH=0` (the eager batch) stays the
+  default: it wins short-context c4 (53.8–56.0 vs 51.8–52.3 graph, and
+  24.2 vs 20.1 at c1 against the single-slot graph) and ties 8K
+  (14.9 vs 14.8) — the pre-GEMM "graph is the fastest path" reading was
+  reversed by the wide-row dispatch. Batched redrafts stay default-on
+  (14.9 vs 14.3 off at 8K c4), the full verify block stays default
+  (`DGPP_DFLASH2_DEPTH=k` caps lose 14.9 → 14.4 @ k=4 → 13.2 @ k=2 at
+  8K c4 — the long-context cap hypothesis did not pay off at 8K), and
+  per-slot top-1 stays default over walk (~1.2 vs 4.4–6.0 tok/pass).
+  The env gates remain as bisection/diagnostic tools; nothing
+  performance-relevant is opt-in on this lane. Docs: mtp.md
+  "default knob sweep".
 - **Wide-row GEMM dispatch for the stacked verify/draft** (2026-10-02):
   `CublasLtGemm::set_decode_mma` gains a min-rows bound and
   `qwen_configure_gemm_rows` opts the wide decode into it

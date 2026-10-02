@@ -321,6 +321,22 @@ This closes the plan §7 exit gate on the Qwen lane: per-class
 end-to-end, DFlash2 now beats the best native-MTP configuration at
 every concurrency tried.
 
+Default knob sweep (2026-10-02, current binary): the shipped defaults
+were re-benchmarked against every env-gated alternative, so the
+out-of-box configuration is the measured-best one in every cell:
+
+| knob | shipped default | alternative, 8K c4 / short c4 | verdict |
+|---|---|---|---|
+| `DGPP_DFLASH2_VERIFY_GRAPH` | `0` (eager batch) | graph `1`: 14.8 / 51.8–52.3; graph+single `2`: — / 20.1 at c1 | eager wins short, ties 8K — keep `0` |
+| `DGPP_DFLASH2_DRAFT_BATCH` | `1` (batched redrafts) | `0`: 14.3 at 8K c4 | on stays default |
+| `DGPP_DFLASH2_DEPTH` | unset (full block) | `4`: 14.4; `2`: 13.2 at 8K c4 | full block stays default (the long-context cap hypothesis did not pay off at 8K) |
+| `DGPP_DFLASH2_WALK` | unset (per-slot top-1) | `1`: ~1.2 vs 4.4–6.0 tok/pass | top-1 stays default |
+
+Short-context c1/c2 round out the matrix: eager 24.2 / 39.3 vs graph
+24.1 / 38.6 and graph+single 20.1 / 38.4. The env gates stay in place
+as bisection/diagnostic tools (`BATCH_EAGER`, `PHASES`, `TRACE`,
+`DGPP_MMA_TRACE`); nothing performance-relevant is opt-in.
+
 ## Recorded GLM-5.3 result
 
 On 2026-09-03 at TP=4, greedy depth-1 MTP accepted 88.7% of drafts on the

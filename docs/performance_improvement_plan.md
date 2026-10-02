@@ -458,9 +458,18 @@ replays the batched verify as one static 8/16/32-row graph (the
 slots' fed rows padded to full 8-row blocks; the drafter's context
 K/V feed is a recorded node — first capture attempt starved the
 planes and decayed acceptance), with the C1 capture bit-exact and the
-graph the fastest path (35.9–36.1 vs 35.0–35.4 agg tg at c4 on the
-short-prompt harness; see mtp.md "batched graph capture with a
-drafter loaded").
+graph the fastest path on that binary (35.9–36.1 vs 35.0–35.4 agg tg
+at c4 on the short-prompt harness; see mtp.md "batched graph capture
+with a drafter loaded"). After the wide-row GEMM dispatch the
+ranking flipped (eager 53.8–56.0 vs graph 51.8–52.3 at c4 short,
+neutral at 8K), so the eager batch — already the default — is the
+best option; a full default-knob sweep on the current binary
+(2026-10-02) re-confirmed every shipped default: eager batch
+(`VERIFY_GRAPH=0`) ≥ graph; batched redrafts on (`DRAFT_BATCH`)
+14.9 vs 14.3 off at 8K c4; full verify depth 14.9 vs 14.4 (k=4) vs
+13.2 (k=2) at 8K c4; per-slot top-1 over walk (~1.2 tok/pass).
+Nothing performance-relevant is opt-in on this lane (mtp.md
+"default knob sweep").
 
 The 8K step profile (`DGPP_DFLASH2_PHASES=1` + nsys, 2026-10-02):
 466 ms/pass at c4 = verify 195 + draft 260 + host ~11; the graph is
