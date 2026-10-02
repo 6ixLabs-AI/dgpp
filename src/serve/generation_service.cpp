@@ -2542,6 +2542,8 @@ void GenerationService::route_metrics_prometheus(HttpResponseWriter& w) {
                 st.step_s);
   out.histogram("dgpp_request_prompt_tokens", "Prompt tokens per request.", st.prompt_tokens);
   out.histogram("dgpp_request_generation_tokens", "Generated tokens per request.", st.generation_tokens);
+  if (rank_metrics_)
+    write_rank_metrics(out, rank_identity_, m, snapshot_age_s, /*ticks=*/-1, rank_collectives_);
   w.respond(200, "text/plain; version=0.0.4; charset=utf-8", out.take());
 }
 

@@ -914,7 +914,10 @@ the prompts. Its artifacts land under `build-ci/fabric-runs/failure_drill_*`.
   with TTFT, queue, prefill, decode, end-to-end, inter-token and step-time
   histograms (the
   [family list](openai-compatibility.md#prometheus-exposition)); scrape rank
-  0 only. `GET /health` is `{"status":"ok"}` while the engine lives.
+  0 for the service; with `DGPP_METRICS_PORT` set, each peer serves its own
+  `dgpp_rank_*` step, prefill and pool meters on that port of its node
+  address ([per-rank families](openai-compatibility.md#per-rank-families)).
+  `GET /health` is `{"status":"ok"}` while the engine lives.
 - **Under load:** `scripts/serve_soak_run.sh MINUTES OUT_DIR` boots the
   world with the production knobs, starts `scripts/node_probe.sh` on every
   node, runs `scripts/serve_soak.py` (multi-turn chat, long generations,

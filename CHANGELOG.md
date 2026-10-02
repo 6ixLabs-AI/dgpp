@@ -14,6 +14,11 @@ The history by milestone. The dated engineering record in
   a `dgpp_build_info` line. The scheduler's observer gains `on_admit` (timing
   only; the op stream does not record it). The route's three original
   `spec_decode_*` samples keep their exact form.
+- **Per-rank metrics**: every rank reports `dgpp_rank_*` (step and prefill
+  wall time, generated tokens, pool, completed collectives, snapshot age);
+  rank 0 on `/metrics/prometheus`, each peer on an optional listener
+  (`DGPP_METRICS_PORT` / `ports.metrics` / `--metrics-port`, off by default)
+  on its node address.
 
 - **W4A4 NVFP4 expert prefill is opt-in** (2026-10-01): default to
   W4A16 with BF16 activations; `DGPP_MOE_W4A4=1` explicitly enables

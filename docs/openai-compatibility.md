@@ -347,6 +347,27 @@ The histograms (`_bucket`, `_sum`, `_count`) are measured on rank 0's clock:
 | `dgpp_decode_step_duration_seconds` | Engine decode step time: each pass's mean, observed once per step. |
 | `dgpp_request_prompt_tokens`, `dgpp_request_generation_tokens` | Request sizes in tokens. |
 
+#### Per-rank families
+
+The families above describe the service once. Each rank also reports its own
+share of the work as `dgpp_rank_*`, labeled `rank`: `dgpp_rank_info{rank,world_size,version,git_sha}`,
+`dgpp_rank_decode_steps_total`, `dgpp_rank_decode_step_seconds_total` and
+`dgpp_rank_prefill_seconds_total` (wall time inside the engine's calls, the
+collectives it waited on included), `dgpp_rank_generation_tokens_total`,
+`dgpp_rank_num_requests_running`, `dgpp_rank_kv_pool_blocks_total` and
+`_in_use`, `dgpp_rank_collectives_total` (the bus's completed multi-rank
+collectives) and `dgpp_rank_snapshot_age_seconds`. Ranks run every step
+together, so step time per step that is higher on one rank than on the others
+points at that rank's GPU or link. Rank 0 appends its own (`rank="0"`) to
+`/metrics/prometheus` in a multi-rank world. A peer serves no HTTP API; with
+`DGPP_METRICS_PORT` set in `.env` (config `ports.metrics`, `--metrics-port`)
+each peer serves its families at `GET /metrics/prometheus` on its node
+address (an IPv4 address; `--metrics-bind` overrides it), adding
+`dgpp_rank_ticks_total`, the journal records it applied. A peer publishes
+after every tick it applies, so `dgpp_rank_snapshot_age_seconds` also grows
+while the world is idle. The bus's per-lane traffic counters are not exported:
+the bus updates them outside its stats lock.
+
 Request histograms count choices, as the TTFT counters do, and observe at the
 first token or at retire. A request shed before admission observes none of
 them. Latency buckets run from 1 ms to 640 s, step buckets from 1 ms to 10 s and

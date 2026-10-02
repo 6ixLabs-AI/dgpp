@@ -92,6 +92,7 @@
 #include "text/tool_parser.hpp"
 #include "serve/http_server.hpp"
 #include "serve/prometheus.hpp"
+#include "serve/rank_metrics.hpp"
 
 namespace dgpp::serve {
 
@@ -279,6 +280,13 @@ class GenerationService : public HttpHandler,
   // engine thread). The fabric verification hashes the per-rank streams
   // against each other — the smoke's md5 procedure, serving edition. w1
   // leaves it unset.
+  // Rank 0's own dgpp_rank_* families on /metrics/prometheus (the peers
+  // serve theirs on their metrics listeners); `collectives` may be null.
+  void set_rank_metrics(RankIdentity id, const std::atomic<uint64_t>* collectives) {
+    rank_identity_ = std::move(id);
+    rank_collectives_ = collectives;
+    rank_metrics_ = true;
+  }
   void set_audit_observer(dgpp::sched::SchedulerObserver* audit) {
     audit_ = audit;
   }
@@ -638,6 +646,9 @@ class GenerationService : public HttpHandler,
   // The step-time histogram's watermark: the decode steps and step wall
   // time already observed (engine pass, under mutex_).
   int64_t observed_decode_steps_ = 0;
+  bool rank_metrics_ = false;  // set before serving, read-only after
+  RankIdentity rank_identity_;
+  const std::atomic<uint64_t>* rank_collectives_ = nullptr;
   double observed_step_ms_ = 0.0;
   bool shutdown_ = false;
   bool failed_ = false;      // fail_engine() happened

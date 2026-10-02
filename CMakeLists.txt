@@ -870,7 +870,8 @@ add_library(dgpp_serve STATIC
   src/serve/generation_service.cpp
   src/serve/fabric_serve.cpp
   src/serve/serve_stats.cpp
-  src/serve/prometheus.cpp)
+  src/serve/prometheus.cpp
+  src/serve/rank_metrics.cpp)
 target_link_libraries(dgpp_serve
   PUBLIC dgpp_core dgpp_models_glm dgpp_loaders dgpp_net Threads::Threads)
 dgpp_set_common(dgpp_serve)
