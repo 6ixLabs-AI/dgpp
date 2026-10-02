@@ -6,21 +6,26 @@ The history by milestone. The dated engineering record in
 
 ## Unreleased
 
-- **DFlash2 default-knob sweep: the shipped defaults are the measured
-  best** (2026-10-02): every env-gated DFlash2 performance option was
-  re-benchmarked against its alternative on the current binary, so the
-  out-of-box configuration is fastest in every cell with no env vars to
-  set. `DGPP_DFLASH2_VERIFY_GRAPH=0` (the eager batch) stays the
-  default: it wins short-context c4 (53.8–56.0 vs 51.8–52.3 graph, and
-  24.2 vs 20.1 at c1 against the single-slot graph) and ties 8K
-  (14.9 vs 14.8) — the pre-GEMM "graph is the fastest path" reading was
-  reversed by the wide-row dispatch. Batched redrafts stay default-on
-  (14.9 vs 14.3 off at 8K c4), the full verify block stays default
-  (`DGPP_DFLASH2_DEPTH=k` caps lose 14.9 → 14.4 @ k=4 → 13.2 @ k=2 at
-  8K c4 — the long-context cap hypothesis did not pay off at 8K), and
-  per-slot top-1 stays default over walk (~1.2 vs 4.4–6.0 tok/pass).
-  The env gates remain as bisection/diagnostic tools; nothing
-  performance-relevant is opt-in on this lane. Docs: mtp.md
+- **DFlash2 verify graph is the shipped default; level `0` is the eager
+  opt-out** (2026-10-02): a default-knob sweep found the previous "eager
+  batch is the default" reading was wrong — `step_batch` graphed the
+  multi-slot verify batch at *every* level (levels 0 and 1 were
+  identical), so last pass's "eager vs graph" numbers were graph-vs-
+  graph. Level `0` now means the true packed eager batch (the `want_graph`
+  condition gained a `graph_level >= 1` gate) and the default is `1`
+  (the multi-slot graph): re-measured against the real eager path
+  (`DGPP_DFLASH2_BATCH_EAGER=1`), the graph ties it at 8K c4 (14.9 vs
+  14.8–14.9) and leads it at short-context c4/c8 (~54–55 vs ~51 agg tg,
+  within that harness's run-to-run variance), never slower — so it is
+  the measured-best default. The single-slot graph (level `2`) stays off
+  by default: it is the slowest c1 option (20.1 vs the scalar path's
+  24.2), and the 2-slot gate in `step_batch` keeps C1 on the scalar path
+  (bit-exact 12/12 re-confirmed after the change). Batched redrafts stay
+  default-on (14.9 vs 14.3 off at 8K c4), the full verify block stays
+  default (`DGPP_DFLASH2_DEPTH=k` caps lose 14.9 → 14.4 @ k=4 → 13.2 @
+  k=2 at 8K c4), and per-slot top-1 stays default over walk (~1.2 vs
+  4.4–6.0 tok/pass). Nothing performance-relevant is opt-in on this
+  lane; the env gates remain bisection/diagnostic tools. Docs: mtp.md
   "default knob sweep".
 - **Wide-row GEMM dispatch for the stacked verify/draft** (2026-10-02):
   `CublasLtGemm::set_decode_mma` gains a min-rows bound and
@@ -72,9 +77,10 @@ The history by milestone. The dated engineering record in
   (`DGPP_DFLASH2_PHASES=1` splits fed/verify/commit/draft per pass):
   the graph is neutral at length and the step's GEMM time sits in the
   drafter's 4-row GEMV chunks (the wide-row GEMM dispatch entry above
-  is the follow-up). Default off; the drafted
-  verify is otherwise unchanged (drafts, judge, rollback and redrafts
-  stay eager between replays).
+  is the follow-up). Default off at this entry (superseded the same
+  day — the multi-slot graph is now the shipped default, see the entry
+  above); the drafted verify is otherwise unchanged (drafts, judge,
+  rollback and redrafts stay eager between replays).
 - **The DFlash2 speculative pass batches across slots** (2026-10-01):
   every arriving slot's verify rows ride one physical target pass
   (`session_verify_batch`'s slot-major staging and per-slot rollback

@@ -460,16 +460,20 @@ K/V feed is a recorded node — first capture attempt starved the
 planes and decayed acceptance), with the C1 capture bit-exact and the
 graph the fastest path on that binary (35.9–36.1 vs 35.0–35.4 agg tg
 at c4 on the short-prompt harness; see mtp.md "batched graph capture
-with a drafter loaded"). After the wide-row GEMM dispatch the
-ranking flipped (eager 53.8–56.0 vs graph 51.8–52.3 at c4 short,
-neutral at 8K), so the eager batch — already the default — is the
-best option; a full default-knob sweep on the current binary
-(2026-10-02) re-confirmed every shipped default: eager batch
-(`VERIFY_GRAPH=0`) ≥ graph; batched redrafts on (`DRAFT_BATCH`)
-14.9 vs 14.3 off at 8K c4; full verify depth 14.9 vs 14.4 (k=4) vs
-13.2 (k=2) at 8K c4; per-slot top-1 over walk (~1.2 tok/pass).
-Nothing performance-relevant is opt-in on this lane (mtp.md
-"default knob sweep").
+with a drafter loaded"). A later default-knob sweep found that reading
+had been graph-vs-graph: the shipped default (`DGPP_DFLASH2_VERIFY_GRAPH`
+unset) had always graphed the multi-slot batch — levels 0 and 1 were
+identical — so those "eager" numbers were the graph. Making level `0` a
+true eager baseline and setting the default to `1` (the multi-slot
+graph), re-measured against the real eager path (`BATCH_EAGER=1`): the
+graph ties it at 8K c4 (14.9 vs 14.8–14.9) and leads it at
+short-context c4/c8 (~54–55 vs ~51 agg tg, within that harness's
+variance), never slower; the single-slot graph (level `2`) is the slowest
+c1 option (20.1 vs the scalar path's 24.2), so lone slots stay scalar.
+The rest of the sweep held: batched redrafts on (`DRAFT_BATCH`) 14.9 vs
+14.3 off at 8K c4; full verify depth 14.9 vs 14.4 (k=4) vs 13.2 (k=2);
+per-slot top-1 over walk (~1.2 tok/pass). Nothing performance-relevant
+is opt-in on this lane (mtp.md "default knob sweep").
 
 The 8K step profile (`DGPP_DFLASH2_PHASES=1` + nsys, 2026-10-02):
 466 ms/pass at c4 = verify 195 + draft 260 + host ~11; the graph is

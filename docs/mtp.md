@@ -239,8 +239,12 @@ and 35.9–39.0 vs 35.9–36.1 at c2 (short-prompt harness, 4x64
 batches). c2/c4 graph-vs-eager transcripts sit in the same near-tie
 class as eager-vs-eager (7–8/12 on the mixed-12 harness — the
 residual run-to-run wobble is the pre-existing sticky GEMM dispatch,
-not the graph). Default off; the padded layout costs one extra
-8-row block of GEMM work per padded slot.
+not the graph). The multi-slot graph is now the shipped default
+(`DGPP_DFLASH2_VERIFY_GRAPH` unset = `1`): it ties the packed eager
+batch at 8K and leads it at short context, and is never slower — see
+the default knob sweep below; level `0` opts back out to the eager
+batch, and `BATCH_EAGER=1` forces it at any level. The padded layout
+(`=3`) costs one extra 8-row block of GEMM work per padded slot.
 
 ### 8K profile (2026-10-02): the step is GEMV, and the draft pays 4x
 
@@ -323,18 +327,31 @@ every concurrency tried.
 
 Default knob sweep (2026-10-02, current binary): the shipped defaults
 were re-benchmarked against every env-gated alternative, so the
-out-of-box configuration is the measured-best one in every cell:
+out-of-box configuration is the measured-best one in every cell. The
+verify-graph default in particular was corrected this pass: the shipped
+default is the **multi-slot verify graph** (`DGPP_DFLASH2_VERIFY_GRAPH=1`);
+the true packed eager batch is level `0` (and `BATCH_EAGER=1` forces it
+at any level). The earlier "eager is the default" reading was wrong —
+level 0 and level 1 both graphed the multi-slot batch, so last pass's
+eager-vs-graph A/B was graph-vs-graph. Measured against the real eager
+baseline, the graph ties it at 8K c4 (14.9 vs 14.8–14.9) and leads it at
+short-context c4/c8 (median ~54–55 vs ~51 agg tg, inside that harness's
+run-to-run variance) and is never slower; the single-slot graph (level
+`2`) is the slowest c1 option (20.1 vs the scalar path's 24.2), so lone
+slots stay scalar at the default:
 
 | knob | shipped default | alternative, 8K c4 / short c4 | verdict |
 |---|---|---|---|
-| `DGPP_DFLASH2_VERIFY_GRAPH` | `0` (eager batch) | graph `1`: 14.8 / 51.8–52.3; graph+single `2`: — / 20.1 at c1 | eager wins short, ties 8K — keep `0` |
+| `DGPP_DFLASH2_VERIFY_GRAPH` | `1` (multi-slot graph) | eager `0`: 14.8–14.9 / ~51; +single-slot `2`: — / 20.1 at c1 | graph ties 8K, leads short, never slower — ship `1` |
 | `DGPP_DFLASH2_DRAFT_BATCH` | `1` (batched redrafts) | `0`: 14.3 at 8K c4 | on stays default |
 | `DGPP_DFLASH2_DEPTH` | unset (full block) | `4`: 14.4; `2`: 13.2 at 8K c4 | full block stays default (the long-context cap hypothesis did not pay off at 8K) |
 | `DGPP_DFLASH2_WALK` | unset (per-slot top-1) | `1`: ~1.2 vs 4.4–6.0 tok/pass | top-1 stays default |
 
-Short-context c1/c2 round out the matrix: eager 24.2 / 39.3 vs graph
-24.1 / 38.6 and graph+single 20.1 / 38.4. The env gates stay in place
-as bisection/diagnostic tools (`BATCH_EAGER`, `PHASES`, `TRACE`,
+The c1 lone slot is the scalar path at every level < 2 (the 2-slot gate
+in `step_batch`), so it is level-invariant: 24.2 agg tg; only level `2`
+(single-slot graph) changes it, to 20.1. The c2 batch (16 rows) rides
+the same multi-slot graph as c4. The env gates stay in place as
+bisection/diagnostic tools (`BATCH_EAGER`, `PHASES`, `TRACE`,
 `DGPP_MMA_TRACE`); nothing performance-relevant is opt-in.
 
 ## Recorded GLM-5.3 result

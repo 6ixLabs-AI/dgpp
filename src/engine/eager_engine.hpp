@@ -312,16 +312,20 @@ class EagerEngineAdapter : public sched::SchedulerEngine {
       }
       const long long ph1 = ph ? ns_now() : 0;
       std::vector<int> offs;
-      // The verify, per DGPP_DFLASH2_VERIFY_GRAPH level: 0 packed eager
-      // (shipped); 1 multi-slot batches replay a captured static verify;
-      // 2 lone slots too; 3 the bisection control — the same static
-      // padded staging executed eagerly. Drafts, judge, rollback and
-      // redrafts are unchanged around it; any capture breakage falls back
-      // to the eager batch inside the model call. BATCH_EAGER forces the
-      // packed eager batch at any level.
+      // The verify, per DGPP_DFLASH2_VERIFY_GRAPH level: 0 the packed
+      // eager batch (the opt-out baseline, no graph); 1 multi-slot batches
+      // replay a captured static verify (the shipped default, the measured
+      // best); 2 lone slots too; 3 the bisection control — the same static
+      // padded staging executed eagerly. A lone slot is the scalar path at
+      // every level < 2 (the line-289 gate), so a C1 transcript keeps the
+      // scalar kernel sequence. Drafts, judge, rollback and redrafts are
+      // unchanged around it; any capture breakage falls back to the eager
+      // batch inside the model call. BATCH_EAGER forces the packed eager
+      // batch at any level.
       const bool padded = !dflash_batch_eager() && graph_level == 3 &&
                           model_->dflash_graph_verify_available();
       const bool want_graph = !dflash_batch_eager() && !padded &&
+                              graph_level >= 1 &&
                               (graph_level >= 2 || reqs.size() >= 2) &&
                               model_->dflash_graph_verify_available();
       auto outs = want_graph
@@ -614,12 +618,17 @@ class EagerEngineAdapter : public sched::SchedulerEngine {
     return v;
   }
   static int dflash_verify_graph() {
-    // 0: eager everywhere (shipped). 1: multi-slot batches replay the
-    // captured verify. 2: lone slots too (their own 8-row capture — the
-    // capture-mechanism control: no padding involved at all).
+    // 0: the packed eager batch — no graph (the opt-out baseline). 1:
+    // multi-slot batches replay the captured static verify (the shipped
+    // default — the measured best: ~5–8% over the eager batch at
+    // short-context c4/c8, a tie at 8K). 2: lone slots too (their own
+    // 8-row capture — the capture-mechanism control: no padding involved
+    // at all). 3: the bisection control — the same static padded staging
+    // executed eagerly.
     static const int v = [] {
       const char* e = std::getenv("DGPP_DFLASH2_VERIFY_GRAPH");
-      if (!e || !*e || *e == '0') return 0;
+      if (!e || !*e) return 1;   // shipped default: the multi-slot graph
+      if (*e == '0') return 0;   // opt out: the packed eager batch
       return std::atoi(e);
     }();
     return v;
