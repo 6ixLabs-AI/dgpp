@@ -1,5 +1,15 @@
 # Tests
 
+`prefix_snapshot_test` forces a four-block K/V pool full at snapshot time in
+Qwen and GLM. It covers monolithic and resumable prefill, unchanged target/draft
+logits, full-block pin cleanup, skipped hop replacements, timer/slot reuse, and
+propagation of non-pool errors. Build it with `qwen_forward_test` and
+`glm_forward_test`, then run CTest with
+`-R '^(qwen_forward_fixture|glm_forward_fixture|prefix_snapshot_test)$'`.
+`scheduler_test` also checks that skipped hops never become cache entries,
+including replacements of older snapshots, and that skipped prefill slots and
+the `skipped_no_block` counter are handled correctly.
+
 The long-document prefix-cache regression is covered by `scheduler_test`
 (changed tails, lookahead identity, small arenas and cleanup), `qwen_decode_test`
 and `glm_tp_test` (two snapshots, resumed target/draft logits and budget changes).
