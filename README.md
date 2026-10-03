@@ -159,6 +159,8 @@ record the modes measured for each deployment.
   Completions, streaming, constrained tool calls, `response_format` with
   supported JSON schemas, `reasoning_content`, logprobs, `stop`, `n`,
   `logit_bias` and usage details; plus model, health and metrics endpoints.
+  Assistant history accepts Anthropic-style thinking parts forwarded through
+  LiteLLM.
   See the [API compatibility profile and live prefill metrics](docs/openai-compatibility.md)
   for supported options and model-dependent limitations.
 - **Image inputs**: PNG/JPEG/WebP data URIs in Chat Completions for GLM-5.3-Flash

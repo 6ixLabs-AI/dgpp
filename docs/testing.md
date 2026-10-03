@@ -20,6 +20,13 @@ The entry floor and the head cut (2026-09-28) are covered by `scheduler_test`
 The [fabric record](../benchmarks/results/2026-09-21-prefix-document-reuse.md)
 covers real 32K/260K prompts, KV sharing and the recipe memory-plan audit.
 
+`serve_test` covers assistant thinking history with the
+`DGPP_TEST_FILTER=serve_thinkingParts_` cases: mixed visible and reasoning
+parts, redacted/empty thinking, explicit reasoning precedence, tool-call
+history, invalid field types and role restrictions. The UTF-8 case keeps
+heap-backed reasoning alive through later messages and template preparation;
+run these cases under the `asan` preset to check the owned-string lifetime.
+
 Release and testing builds use separate CMake presets and directories:
 
 | Preset | Directory | Purpose |

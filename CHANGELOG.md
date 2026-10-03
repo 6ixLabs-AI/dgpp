@@ -6,6 +6,12 @@ The history by milestone. The dated engineering record in
 
 ## Unreleased
 
+- **Assistant thinking history through LiteLLM** (2026-10-03): accept
+  Anthropic-style assistant thinking parts by folding their text into
+  `reasoning_content`, preserving explicit reasoning strings and dropping
+  redacted payloads. Thinking-only content becomes an empty string, including
+  in tool-call history. Regression tests cover UTF-8 ownership, precedence,
+  empty/redacted parts and invalid fields/roles. Fixes #74 via #76.
 - **Serve DeepSeek-V4-Flash** (2026-10-01): the seventh family,
   `deepseek_v4` (`deepseek-ai/DeepSeek-V4-Flash-0731` as shipped: MXFP4
   routed experts, FP8 block-128 attention projections and shared expert,
