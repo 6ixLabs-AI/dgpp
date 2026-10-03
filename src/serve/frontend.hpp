@@ -20,6 +20,7 @@
 #include "loaders/minijson.hpp"
 #include "text/chat_template.hpp"
 #include "text/dsv41_prompt.hpp"
+#include "text/dsv4_prompt.hpp"
 #include "text/tokenizer.hpp"
 #include "text/tool_parser.hpp"
 #include "serve/generation_service.hpp"
@@ -106,6 +107,44 @@ class Dsv41Frontend : public ModelFrontend {
   bool template_reads(std::string_view name) const override { return dgpp::text::Dsv41Prompt::reads(name); }
   std::string render_chat(const minijson::Value& globals) const override {
     return dgpp::text::Dsv41Prompt::render(globals);
+  }
+  dgpp::text::ChatMarkers markers() const override { return markers_; }
+  std::vector<int64_t> boundary_token_ids() const override {
+    std::vector<int64_t> ids;
+    for (const dgpp::text::ChatMarker& m : markers_.role_markers) ids.push_back(m.id);
+    return ids;
+  }
+
+ private:
+  const dgpp::text::Tokenizer* tok_;
+  dgpp::text::ChatMarkers markers_;
+};
+
+// The DeepSeek-V4 frontend (DeepSeek-V4-Flash-0731, model_type
+// deepseek_v4): text/dsv4_prompt renders its encoder's format; the markers
+// come off its tokenizer (<think>, </think>, the ｜DSML｜ tag token, the
+// <｜User｜> / <｜Assistant｜> turn markers as the prefix cache's boundaries —
+// this tokenizer has no <｜System｜>). The tokenizer shares the tag token
+// with DeepSeek-V4.1's, so the DSML spelling is stated here:
+// DsmlDialect::kV4 ("<｜DSML｜tool_calls>", no space after the tag, no
+// namespaces). The grammar vocabulary the engine builds must state the
+// same (GrammarVocab::from_tokenizer's dsml_dialect argument).
+class Dsv4Frontend : public ModelFrontend {
+ public:
+  static constexpr dgpp::text::DsmlDialect kDsmlDialect = dgpp::text::DsmlDialect::kV4;
+
+  explicit Dsv4Frontend(const dgpp::text::Tokenizer* tok) : tok_(tok) {
+    if (tok_ == nullptr) throw std::invalid_argument("Dsv4Frontend: the tokenizer must be loaded");
+    markers_ = dgpp::text::ChatMarkers::from_tokenizer(*tok_);
+    markers_.dsml_dialect = kDsmlDialect;
+  }
+  std::vector<int64_t> encode_text(std::string_view text) const override { return tok_->encode(text); }
+  std::string decode_ids(const std::vector<int64_t>& ids) const override {
+    return tok_->decode(ids, /*skip_special_tokens=*/true);
+  }
+  bool template_reads(std::string_view name) const override { return dgpp::text::Dsv4Prompt::reads(name); }
+  std::string render_chat(const minijson::Value& globals) const override {
+    return dgpp::text::Dsv4Prompt::render(globals);
   }
   dgpp::text::ChatMarkers markers() const override { return markers_; }
   std::vector<int64_t> boundary_token_ids() const override {

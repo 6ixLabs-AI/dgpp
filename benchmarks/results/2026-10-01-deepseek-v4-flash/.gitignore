@@ -1,0 +1,11 @@
+# Operation-stream digests are retained in rank-identity.json.
+raw/**/server/*.ops
+raw/**/server/launcher.lock
+raw/**/server/*.process.json*
+raw/**/server/*.pid
+raw/**/*.nsys-rep
+raw/**/*.sqlite
+ab/**/server-*/*.ops
+ab/**/server-*/launcher.lock
+ab/**/server-*/*.process.json*
+ab/**/server-*/*.pid

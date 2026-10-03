@@ -58,13 +58,23 @@ void launch_mma_gemv_fp8_f32(const uint16_t* act, size_t act_stride, const uint8
                              const float* scales, float* out, int m, int n, int k,
                              size_t out_stride, int rs, int cs, cudaStream_t stream,
                              void* ws = nullptr, size_t ws_bytes = 0);
+// The swiglu form (2026-10-02, the DeepSeek-V4-Flash shared expert's down
+// projection): out = swiglu(gate, up) x W^T, the activation
+//   g = min(gate, limit), u = clamp(up, -limit, limit), bf16(bf16(g * sigmoid(g)) * u)
+// computed as the rows are staged — bitwise launch_moe_swiglu_clamp followed
+// by launch_mma_gemv_fp8_f32 on its output, without the launch between (a
+// kernel that becomes ready behind a queued one waits for it). gate / up:
+// bf16 [m, act_stride], both 16-byte aligned. The unsplit chain.
+void launch_mma_gemv_fp8_swiglu_f32(const uint16_t* gate, const uint16_t* up, float limit, size_t act_stride,
+                                    const uint8_t* w, const float* scales, float* out, int m, int n, int k,
+                                    size_t out_stride, int rs, int cs, cudaStream_t stream);
 // bf16 weights (the lm head); out bf16 or f32.
 void launch_mma_gemv_bf16_bf16(const uint16_t* act, size_t act_stride, const uint16_t* w,
                                uint16_t* out, int m, int n, int k, size_t out_stride,
-                               cudaStream_t stream);
+                               cudaStream_t stream, void* ws = nullptr, size_t ws_bytes = 0);
 void launch_mma_gemv_bf16_f32(const uint16_t* act, size_t act_stride, const uint16_t* w,
                               float* out, int m, int n, int k, size_t out_stride,
-                              cudaStream_t stream);
+                              cudaStream_t stream, void* ws = nullptr, size_t ws_bytes = 0);
 // The shape the kernel takes (k a multiple of 16, aligned pointers, m in range).
 bool mma_gemv_shape_ok(const void* w, const void* act, size_t act_stride, int m, int k);
 

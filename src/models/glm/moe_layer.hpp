@@ -88,6 +88,15 @@ class GlmMoeLayer {
   // kMma to serve as the prefill path's bitwise reference.
   void enqueue_prefill(const uint16_t* hidden, uint16_t* out, int tokens,
                        MoeTraceStaging* trace, cudaStream_t stream);
+  // The prefill in phases, for a caller that overlaps its boundary folds
+  // with the per-row ends of the layer (the DeepSeek-V4 walk, 2026-10-02):
+  // the router over a row block ahead of the chain (route_prefill_rows on
+  // every row before enqueue_prefill_phased), the chain without its
+  // accumulation, the accumulation per row block. The same kernels per
+  // row as enqueue_prefill: bitwise its output.
+  void route_prefill_rows(const uint16_t* hidden, int r0, int rows, cudaStream_t stream);
+  void enqueue_prefill_phased(const uint16_t* hidden, int tokens, cudaStream_t stream);
+  void accumulate_prefill_rows(uint16_t* out, int tokens, int r0, int rows, cudaStream_t stream);
   void enqueue(const uint16_t* hidden, uint16_t* out, int tokens,
                cudaStream_t stream,
                MoeExpertKernel kernel = MoeExpertKernel::kGemv);
@@ -169,6 +178,19 @@ class GlmMoeLayer {
   static size_t w4a4_scratch_bytes(const GlmMoeConfig& cfg, int max_tokens,
                                    bool calibrated = false);
 
+  // Hash routing for the NEXT enqueues (DeepSeek-V4-Flash's first layers):
+  // a token's experts come from `tid2eid` (int32 [vocab, top_k], rows
+  // ascending) at `tokens` (device int64, one per hidden row) instead of
+  // the top-k of its scores; the weights stay the normalized scores. Null
+  // table: the router's own selection (the default). The caller sets it
+  // before a hash layer's enqueue and clears it after; under capture the
+  // pointers are baked (stable device buffers).
+  void set_hash_routing(const int32_t* tid2eid, const int64_t* tokens, int vocab) {
+    hash_tid2eid_ = tid2eid;
+    hash_tokens_ = tokens;
+    hash_vocab_ = vocab;
+  }
+
   // Streaming-weight interface (M4 diagnostic forward): swap the device weight
   // views (router gate/bias, expert and shared matrices). Device scratch
   // and segmentation buffers are shape-keyed and unaffected.
@@ -217,6 +239,14 @@ class GlmMoeLayer {
   int routed_seg_max_rows(const MoeSegment* d_segs, int n_segs, int fallback,
                           cudaStream_t stream);
 
+  // The router, then (hash routing) the routes replaced from the table.
+  void route(const uint16_t* hidden, int tokens, cudaStream_t stream, int* counters = nullptr);
+  void prefill_chain(const uint16_t* hidden, int tokens, cudaStream_t stream);
+  bool shared_aside_takes(bool with_shared, int tokens) const;
+  const int32_t* hash_tid2eid_ = nullptr;
+  const int64_t* hash_tokens_ = nullptr;
+  int hash_vocab_ = 0;
+
   GlmMoeWeights w_;
   GlmMoeConfig cfg_;
   int max_tokens_;
@@ -249,6 +279,14 @@ class GlmMoeLayer {
   uint16_t* d_slot_act_ = nullptr;  // [slots, inter] (fused gate/up/swiglu)
   float* d_slot_down_ = nullptr;
   int32_t* d_slot_order_ = nullptr; // [slots] expert-sorted execution order
+  // GlmMoeConfig::shared_mma_aside: the shared expert's own chain.
+  uint16_t* d_sh_gate_ = nullptr;   // [decode_slots, inter]
+  uint16_t* d_sh_up_ = nullptr;
+  uint16_t* d_sh_act_ = nullptr;
+  cudaStream_t sh_side_[2] = {nullptr, nullptr};  // gate (then the activation and down), up
+  cudaEvent_t sh_fork_ = nullptr;
+  cudaEvent_t sh_up_done_ = nullptr;
+  cudaEvent_t sh_join_ = nullptr;
   int* d_router_counters_ = nullptr;  // [decode_slots] fused-select tickets    // [slots, hidden] fp32 partial dots
   // The device expert-view table, re-uploaded per enqueue_decode call.
   // NO CACHE, DELIBERATELY: the streaming loader refills one

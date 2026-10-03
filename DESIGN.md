@@ -2376,6 +2376,14 @@ format. Unsupported input modalities and request fields are rejected
 with errors naming the parameter. Supported schema constraints and
 tool-choice rules are enforced through token masks as described in §10.
 
+Before rendering, assistant `thinking` content parts are folded into owned
+`reasoning_content` storage unless an explicit string already supplies it.
+Null reasoning is treated as absent. Redacted thinking and signatures are
+dropped; thinking-only content becomes an empty string. This normalization
+also applies to assistant tool-call history. Other roles and content parts
+retain their existing validation; the checkpoint template controls which
+history reasoning is rendered.
+
 Sampling defaults come from `generation_config.json`, with configured
 and per-request overrides. Parameters include temperature, top-p, top-k,
 min-p, repetition/presence/frequency penalties, seed and logit bias.

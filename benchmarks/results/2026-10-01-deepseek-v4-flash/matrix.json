@@ -1,0 +1,18 @@
+[
+  {
+    "id": "dsv4-w4",
+    "template": "deploy/cluster_deepseek-v4-flash_mxfp4-fp8_w4.example.json",
+    "config": "configs/dsv4-w4.json",
+    "model": "deepseek-ai/DeepSeek-V4-Flash-0731",
+    "world": 4,
+    "slots": 6
+  },
+  {
+    "id": "dsv4-w2",
+    "template": "deploy/cluster_deepseek-v4-flash_mxfp4-fp8_w2.example.json",
+    "config": "configs/dsv4-w2.json",
+    "model": "deepseek-ai/DeepSeek-V4-Flash-0731",
+    "world": 2,
+    "slots": 4
+  }
+]

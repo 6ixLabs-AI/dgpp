@@ -19,6 +19,8 @@
 #include "common/dtypes.hpp"
 #include "common/test.hpp"
 #include "kernels/bf16_gemv.hpp"
+#include "kernels/dense_mma_bf16w.hpp"
+#include "kernels/glm_moe_launch.hpp"
 #include "kernels/mma_gemv.hpp"
 #include "kernels/scale_gemm.hpp"
 
@@ -178,6 +180,115 @@ DGPP_TEST(mma_gemv_bf16_matches_oracle_and_is_m_invariant) {
     }
   }
   std::printf("[ OK ] mma_gemv bf16: bitwise m-invariant\n");
+}
+
+// The dense tensor-core GEMM over bf16 weights (kernels/dense_mma_bf16w.hpp,
+// the DeepSeek-V4-Flash prefill's compressor projections): inside the
+// double oracle's budget on a ragged shape (m and n off the tile sizes),
+// bitwise the same row whatever rows share the launch — a chunked prefill's
+// contract — and the bf16 epilogue the rounded fp32 one.
+DGPP_TEST(dense_mma_bf16w_matches_oracle_and_is_row_invariant) {
+  const Problem p = make(150, 344, 512, 7, 7, 0x9E3779B97F4A7C15ull);
+  Dev d(p);
+  require(dgpp::dense_mma_bf16w_shape_ok(d.w16, p.k), "the shape the kernel takes");
+  dgpp::launch_dense_mma_bf16w_f32(d.act, p.k, d.w16, d.outf, p.m, p.n, p.k, nullptr);
+  DGPP_CUDA_OK(cudaDeviceSynchronize());
+  const std::vector<float> full = fetch_f(d.outf, size_t(p.m) * p.n);
+  const double err = max_rel_err(p, full, [&](int r, int c) { return dgpp::bf16_bits_to_float(p.w16[size_t(r) * p.k + c]); });
+  std::printf("[ .. ] dense_mma_bf16w [150 x 344 x 512]: max rel err vs the double oracle %.3e\n", err);
+  require(err < 2e-3, "dense bf16w: outside the oracle budget");
+  // Any chunking of the rows gives the same rows.
+  for (int chunk : {1, 37, 64, 101}) {
+    for (int r0 = 0; r0 < p.m; r0 += (chunk == 1 ? 29 : chunk)) {
+      const int rows = std::min(chunk, p.m - r0);
+      dgpp::launch_dense_mma_bf16w_f32(d.act + size_t(r0) * p.k, p.k, d.w16, d.outf, rows, p.n, p.k, nullptr);
+      DGPP_CUDA_OK(cudaDeviceSynchronize());
+      const std::vector<float> part = fetch_f(d.outf, size_t(rows) * p.n);
+      for (int i = 0; i < rows; ++i)
+        require(std::memcmp(part.data() + size_t(i) * p.n, full.data() + size_t(r0 + i) * p.n, size_t(p.n) * 4) == 0,
+                "dense bf16w: a row differs across chunkings");
+    }
+  }
+  dgpp::launch_dense_mma_bf16w_bf16(d.act, p.k, d.w16, d.outb, p.m, p.n, p.k, nullptr);
+  DGPP_CUDA_OK(cudaDeviceSynchronize());
+  const std::vector<uint16_t> fb = fetch_b(d.outb, size_t(p.m) * p.n);
+  for (size_t i = 0; i < fb.size(); ++i)
+    require(fb[i] == dgpp::float_to_bf16_bits(full[i]), "dense bf16w: the bf16 epilogue is the rounded fp32 one");
+  std::printf("[ OK ] dense_mma_bf16w: row-invariant across chunkings, epilogues agree\n");
+}
+
+// The swiglu form: bitwise the clamp launch followed by the plain fp8 GEMV.
+DGPP_TEST(mma_gemv_fp8_swiglu_form_is_bitwise_the_clamp_then_the_gemv) {
+  const Problem p = make(6, 1024, 512, 7, 7, 0x7F4A7C159E3779B9ull);
+  Dev d(p);
+  // gate = the problem's activations, up = a second set (the weights' first rows reused as bf16 values).
+  uint16_t* up; uint16_t* act;
+  DGPP_CUDA_OK(cudaMalloc(&up, size_t(p.m) * p.k * 2)); DGPP_CUDA_OK(cudaMalloc(&act, size_t(p.m) * p.k * 2));
+  DGPP_CUDA_OK(cudaMemcpy(up, p.w16.data(), size_t(p.m) * p.k * 2, cudaMemcpyHostToDevice));
+  for (const float limit : {10.0f, 0.25f}) {
+    for (int m : {1, 4, 6}) {
+      dgpp::launch_moe_swiglu_clamp(d.act, up, act, int64_t(m) * p.k, limit, nullptr);
+      dgpp::launch_mma_gemv_fp8_f32(act, p.k, d.w8, d.scales, d.outf, m, p.n, p.k, 0, p.rs, p.cs, nullptr);
+      DGPP_CUDA_OK(cudaDeviceSynchronize());
+      const std::vector<float> want = fetch_f(d.outf, size_t(m) * p.n);
+      DGPP_CUDA_OK(cudaMemset(d.outf, 0xA5, size_t(m) * p.n * 4));
+      dgpp::launch_mma_gemv_fp8_swiglu_f32(d.act, up, limit, p.k, d.w8, d.scales, d.outf, m, p.n, p.k, 0, p.rs, p.cs, nullptr);
+      DGPP_CUDA_OK(cudaDeviceSynchronize());
+      const std::vector<float> got = fetch_f(d.outf, size_t(m) * p.n);
+      require(std::memcmp(want.data(), got.data(), want.size() * 4) == 0, "swiglu form: differs from the clamp launch + the GEMV");
+    }
+  }
+  cudaFree(up); cudaFree(act);
+  std::printf("[ OK ] mma_gemv swiglu form: bitwise the clamp launch then the GEMV (m = 1, 4, 6; two limits)\n");
+}
+
+// The gated ring form (the lazy ratio-128 compressors): a row that
+// completes a group gets the group's rows off its request's ring, bitwise
+// the plain launch on the same rows; every other row's output is untouched.
+DGPP_TEST(dense_mma_bf16w_groups_are_the_plain_rows_and_gated) {
+  const int requests = 3, slots = 104, group = 96, n = 344, k = 512;
+  const Problem p = make(requests * slots, n, k, 7, 7, 0xC2B2AE3D27D4EB4Full);  // act: the ring [requests][slots][k]
+  Dev d(p);
+  struct Row { int req; int64_t pos; };
+  // (req 0, 95): the first group, slots 0..95.  (req 1, 191): the second,
+  // positions 96..191 = slots 96..103, 0..87 (the wrap).  The rest: no group.
+  const std::vector<Row> rows = {{0, 95}, {0, 96}, {1, 191}, {2, -1}, {2, 94}};
+  const int R = int(rows.size());
+  std::vector<int32_t> req(R); std::vector<int64_t> pos(R);
+  for (int i = 0; i < R; ++i) { req[size_t(i)] = rows[size_t(i)].req; pos[size_t(i)] = rows[size_t(i)].pos; }
+  int32_t* dreq; int64_t* dpos; float* dout; uint16_t* dgather; float* dref;
+  DGPP_CUDA_OK(cudaMalloc(&dreq, size_t(R) * 4)); DGPP_CUDA_OK(cudaMalloc(&dpos, size_t(R) * 8));
+  DGPP_CUDA_OK(cudaMalloc(&dout, size_t(R) * group * n * 4)); DGPP_CUDA_OK(cudaMalloc(&dgather, size_t(group) * k * 2));
+  DGPP_CUDA_OK(cudaMalloc(&dref, size_t(group) * n * 4));
+  DGPP_CUDA_OK(cudaMemcpy(dreq, req.data(), size_t(R) * 4, cudaMemcpyHostToDevice));
+  DGPP_CUDA_OK(cudaMemcpy(dpos, pos.data(), size_t(R) * 8, cudaMemcpyHostToDevice));
+  std::vector<float> sentinel(size_t(R) * group * n, -777.25f);
+  DGPP_CUDA_OK(cudaMemcpy(dout, sentinel.data(), sentinel.size() * 4, cudaMemcpyHostToDevice));
+  dgpp::launch_dense_mma_bf16w_groups_f32(d.act, slots, dreq, dpos, R, group, d.w16, dout, n, k, nullptr);
+  DGPP_CUDA_OK(cudaDeviceSynchronize());
+  const std::vector<float> got = fetch_f(dout, size_t(R) * group * n);
+  int completed = 0;
+  for (int i = 0; i < R; ++i) {
+    const float* mine = got.data() + size_t(i) * group * n;
+    if (pos[size_t(i)] < 0 || (pos[size_t(i)] + 1) % group != 0) {
+      for (size_t e = 0; e < size_t(group) * n; ++e) require(mine[e] == -777.25f, "groups: a row without a group wrote");
+      continue;
+    }
+    ++completed;
+    std::vector<uint16_t> gathered(size_t(group) * k);
+    for (int t = 0; t < group; ++t) {
+      const int64_t slot = (pos[size_t(i)] - group + 1 + t) % slots;
+      std::memcpy(gathered.data() + size_t(t) * k, p.act.data() + (size_t(req[size_t(i)]) * slots + size_t(slot)) * k, size_t(k) * 2);
+    }
+    DGPP_CUDA_OK(cudaMemcpy(dgather, gathered.data(), gathered.size() * 2, cudaMemcpyHostToDevice));
+    dgpp::launch_dense_mma_bf16w_f32(dgather, k, d.w16, dref, group, n, k, nullptr);
+    DGPP_CUDA_OK(cudaDeviceSynchronize());
+    const std::vector<float> ref = fetch_f(dref, size_t(group) * n);
+    require(std::memcmp(mine, ref.data(), ref.size() * 4) == 0, "groups: a group differs from the plain launch on its rows");
+  }
+  require(completed == 2, "groups: the test's two completing rows");
+  cudaFree(dreq); cudaFree(dpos); cudaFree(dout); cudaFree(dgather); cudaFree(dref);
+  std::printf("[ OK ] dense_mma_bf16w groups: bitwise the plain rows (a wrapped ring included), gated rows untouched\n");
 }
 
 DGPP_TEST(mma_gemv_cold_timing_beside_the_gemv_cores) {

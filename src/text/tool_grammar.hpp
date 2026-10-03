@@ -169,10 +169,15 @@ class GrammarVocab {
   GrammarVocab(std::vector<std::string> texts, ChatMarkers markers,
                std::vector<int64_t> eos_ids, int vocab_size,
                int64_t call_turn_eos = -1);
-  // From the tokenizer: decode(id) of every id up to its max_id.
+  // From the tokenizer: decode(id) of every id up to its max_id. The
+  // markers are ChatMarkers::from_tokenizer's with `dsml_dialect` stated —
+  // the DSML spelling is the family's, not the tokenizer's (a DeepSeek-V4
+  // checkpoint passes DsmlDialect::kV4; it must agree with the frontend's
+  // markers, which the parser reads).
   static GrammarVocab from_tokenizer(const Tokenizer& tok,
                                      const std::vector<int64_t>& eos_ids,
-                                     int vocab_size);
+                                     int vocab_size,
+                                     DsmlDialect dsml_dialect = DsmlDialect::kV41);
 
   int vocab_size() const { return vocab_size_; }
   const ChatMarkers& markers() const { return markers_; }
@@ -284,7 +289,9 @@ class GrammarState {
     kQFreeKey,     // an open key set: free text through ">\n"
     kQValue,       // the typed value, then "\n</parameter>\n"
     kQClose,       // </tool_call>
-    // The DeepSeek-V4.1 DSML format: one marker id (the ｜DSML｜ tag token)
+    // The DeepSeek DSML format (the V4.1 spelling shown; under
+    // DsmlDialect::kV4 the tag names are "tool_calls" / "invoke" /
+    // "parameter" with no space after the tag): one marker id (the ｜DSML｜ tag token)
     // inside text tags — "<" TAG " calls>\n" opens the block, each call
     // is "<" TAG " invoke name=\"NAME\">\n" ... "</" TAG " invoke>\n" with
     // parameters "<" TAG " parameter name=\"K\" string=\"true|false\">" V

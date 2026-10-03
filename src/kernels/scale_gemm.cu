@@ -390,11 +390,12 @@ void launch_scale_gemm_grid(const uint16_t* act, size_t act_row_stride_elems,
 void launch_scale_gemm_grid_bf16(const uint16_t* act, size_t act_row_stride_elems,
                                  const uint8_t* w_payload, const float* w_scales,
                                  uint16_t* out, int m, int n, int k, cudaStream_t stream,
-                                 size_t out_row_stride_elems, int rs, int cs, bool decode_mma) {
+                                 size_t out_row_stride_elems, int rs, int cs, bool decode_mma,
+                                 void* ws, size_t ws_bytes) {
   if (decode_mma && m >= 1 && n > 0 && k > 0 && cs >= 4 &&
       mma_gemv_shape_ok(w_payload, act, act_row_stride_elems, m, k)) {
     launch_mma_gemv_fp8_bf16(act, act_row_stride_elems, w_payload, w_scales, out, m, n, k,
-                             out_row_stride_elems, rs, cs, stream);
+                             out_row_stride_elems, rs, cs, stream, ws, ws_bytes);
     return;
   }
   launch_scale_gemm_grid<uint16_t>(act, act_row_stride_elems, w_payload, w_scales, out, m, n, k,
@@ -404,11 +405,12 @@ void launch_scale_gemm_grid_bf16(const uint16_t* act, size_t act_row_stride_elem
 void launch_scale_gemm_grid_f32(const uint16_t* act, size_t act_row_stride_elems,
                                 const uint8_t* w_payload, const float* w_scales, float* out,
                                 int m, int n, int k, cudaStream_t stream,
-                                size_t out_row_stride_elems, int rs, int cs, bool decode_mma) {
+                                size_t out_row_stride_elems, int rs, int cs, bool decode_mma,
+                                void* ws, size_t ws_bytes) {
   if (decode_mma && m >= 1 && n > 0 && k > 0 && cs >= 4 &&
       mma_gemv_shape_ok(w_payload, act, act_row_stride_elems, m, k)) {
     launch_mma_gemv_fp8_f32(act, act_row_stride_elems, w_payload, w_scales, out, m, n, k,
-                            out_row_stride_elems, rs, cs, stream);
+                            out_row_stride_elems, rs, cs, stream, ws, ws_bytes);
     return;
   }
   launch_scale_gemm_grid<float>(act, act_row_stride_elems, w_payload, w_scales, out, m, n, k,

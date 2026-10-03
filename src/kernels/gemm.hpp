@@ -166,6 +166,13 @@ class CublasLtGemm : public IGemm {
   // dozen bf16 rows — bf16_gemv_test's table, 2026-09-14).
   void set_decode_mma(bool on, int max_rows = 0);
   bool decode_mma() const override;
+  // The tensor-core form's split-K for the decode-shaped bf16 calls (m <=
+  // kMmaGemvMaxRows; mma_gemv.hpp): the caller's matmul workspace holds the
+  // fp32 partials. A row's chain is then the same whatever m rides in the
+  // launch, but not the unsplit chain — a model turns it on for its decode
+  // walks and off for its prefill walks when a short prefill chunk must stay
+  // bitwise the rows of a long one. Off by default.
+  void set_decode_split_k(bool on);
   int decode_mma_max_rows() const override;
 
   // A lossless 12-bit companion of a bf16 weight (bf12_gemv.hpp): the GEMV

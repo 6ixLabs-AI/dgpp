@@ -7,6 +7,7 @@
 
 #include "common/cuda_check.hpp"
 #include "common/log.hpp"
+#include "engine/pool_exhausted.hpp"
 #include "kernels/dsa.hpp"
 #include "kernels/glm_mhc_launch.hpp"
 #include "kernels/glm_moe_launch.hpp"
@@ -287,8 +288,12 @@ void GlmDiagnosticModel::prefill_chunk(PrefillCursor& cursor, int64_t budget) {
   }
   for (auto* at = snap; at != nullptr; at = at->next) {
     if (!at->taken && at->position == c1) {
-      *at->meta = session_snapshot(req, at->dst);
-      at->taken = true;
+      try {
+        *at->meta = session_snapshot(req, at->dst);
+        at->taken = true;
+      } catch (const CachePoolExhausted& e) {
+        DGPP_LOG_WARN("prefix cache: snapshot at {} skipped for slot {}: {}", c1, req, e.what());
+      }
     }
   }
   cursor.next = c1;
@@ -631,7 +636,7 @@ GlmDiagnosticModel::SessionSnapshotMeta GlmDiagnosticModel::session_snapshot(
       const int32_t b = pool_.acquire_pinned_block();
       if (b < 0) {
         pool_.unpin_blocks(meta.full_blocks.data(), n_full);
-        throw std::runtime_error("session_snapshot: cache pool exhausted (the partial block)");
+        throw CachePoolExhausted("session_snapshot: cache pool exhausted (the partial block)");
       }
       pool_.copy_block_contents(row[n_full], b, stream_);
       meta.partial_block = b;
@@ -723,7 +728,7 @@ GlmDiagnosticModel::SessionSnapshotMeta GlmDiagnosticModel::session_snapshot_pos
       const int32_t b = pool_.acquire_pinned_block();
       if (b < 0) {
         pool_.unpin_blocks(meta.full_blocks.data(), n_full);
-        throw std::runtime_error(
+        throw CachePoolExhausted(
             "session_snapshot_post_row0: cache pool exhausted (the partial block)");
       }
       pool_.copy_block_contents(row[n_full], b, stream_);

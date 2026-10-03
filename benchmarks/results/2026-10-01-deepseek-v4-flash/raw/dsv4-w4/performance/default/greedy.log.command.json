@@ -1,0 +1,22 @@
+{
+  "command": [
+    "/usr/bin/python3",
+    "/home/stephen/workspace/dgpp/scripts/timed_load.py",
+    "127.0.0.1",
+    "18080",
+    "--concurrency",
+    "1,2,4,6",
+    "--classes",
+    "all",
+    "--repeat",
+    "3",
+    "--max-tokens",
+    "256",
+    "--json-out",
+    "/home/stephen/workspace/dgpp/benchmarks/results/2026-10-01-deepseek-v4-flash/raw/dsv4-w4/performance/default/greedy.json"
+  ],
+  "cwd": "/home/stephen/workspace/dgpp",
+  "started_at": "2026-10-02T19:55:53.871249+00:00",
+  "returncode": 0,
+  "finished_at": "2026-10-02T20:02:06.616584+00:00"
+}
