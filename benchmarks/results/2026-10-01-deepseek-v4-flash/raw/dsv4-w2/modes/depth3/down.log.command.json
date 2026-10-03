@@ -1,0 +1,15 @@
+{
+  "command": [
+    "/usr/bin/python3",
+    "/home/stephen/workspace/dgpp/scripts/dgpp-cluster",
+    "down",
+    "--config",
+    "/home/stephen/workspace/dgpp/benchmarks/results/2026-10-01-deepseek-v4-flash/raw/dsv4-w2/modes/depth3/config.json",
+    "--log-dir",
+    "/home/stephen/workspace/dgpp/benchmarks/results/2026-10-01-deepseek-v4-flash/raw/dsv4-w2/modes/depth3/server"
+  ],
+  "cwd": "/home/stephen/workspace/dgpp",
+  "started_at": "2026-10-02T20:47:36.076468+00:00",
+  "returncode": 0,
+  "finished_at": "2026-10-02T20:47:39.780783+00:00"
+}

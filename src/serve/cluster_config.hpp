@@ -154,6 +154,10 @@ struct ClusterConfig {
     int default_max_tokens = 256;
     FileInputConfig file_inputs;
     int queue_limit = 64;
+    // Rank 0 holds the first arrival at an idle engine this long for the
+    // rest of its burst (requests sent together land a few ms apart), so
+    // they are read in together. 0: tick at once.
+    int admission_gather_ms = 3;
     int max_connections = 64;
     bool no_eos = false;
     bool compact_batches = false;
@@ -175,6 +179,15 @@ struct ClusterConfig {
     double mtp_schedule_lambda = 0.0;
     int mtp_schedule_min_depth = 1;
     bool mtp_schedule_adapt = true;  // lambda follows the modeled throughput, floored at mtp_schedule_lambda
+    // A sampled request's acceptance per position as a fraction of the
+    // confidence head's, when its drafts are the draft's argmax
+    // (mtp_draft greedy); 0: sampled requests verify the whole block.
+    double mtp_schedule_sampled_scale = 0.93;
+    // A sampled request's drafts: "sampled" (draws from the draft's own
+    // distribution, the ratio verify), "greedy" (the draft's argmax, accepted
+    // with probability P(draft)) or "auto" (the family's measured better
+    // rule: greedy for a DSpark block, sampled elsewhere). Exact either way.
+    std::string mtp_draft = "auto";
     int graph_batch_min_live = 0;  // 0 = min(2, max_concurrency) (the batch family, 2026-09-07)
     int sampling_candidates = 128;
     double prefix_cache_gib = 1.5;

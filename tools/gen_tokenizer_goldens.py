@@ -22,6 +22,10 @@ tools/gen_unicode_tables.py).
 
 Regenerating: python3 tools/gen_tokenizer_goldens.py
   [--model ORG/NAME] [--tokenizer-json PATH] [--out FILE]
+(the corpus and the default output follow the model's name: GLM, Qwen,
+MiMo, DeepSeek-V4.1-*, DeepSeek-V4-* — e.g.
+  .venv/bin/python tools/gen_tokenizer_goldens.py --model deepseek-ai/DeepSeek-V4-Flash-0731
+writes tests/data/dsv4_tokenizer_goldens.jsonl)
 
 The Qwen3.8-Flash-Next corpus (2026-09-09) adds the NFC and mark cases its
 tokenizer.json needs — decomposed and precomposed accents, singleton
@@ -188,6 +192,52 @@ DSV41_CASES = [c for c in CASES if USER not in c and ASSIST not in c and EOS not
 ]
 
 
+# The DeepSeek-V4 corpus (DeepSeek-V4-Flash-0731, 2026-10-01): the V4.1
+# vocabulary, merges and pre-tokenizer with nine added tokens changed — no
+# <｜System｜> (id 128799 is a placeholder here, so the text is ordinary BPE
+# pieces; likewise <｜deepseek_image｜>), and <｜image｜>, <｜image2｜> and the
+# six table-markup tokens where V4.1 has placeholders. The V4.1 cases all
+# stand (as text where the token is gone); added: the changed tokens, the
+# quick-instruction task tokens, and the shapes of this model's encoder
+# (encoding_dsv4.py) — the effort preambles, the bare system text, and the
+# DSML block in its spelling (no space after the tag, "tool_calls").
+DSV4_EFFORT_HIGH = (
+    "Reasoning Effort: Absolute maximum with no shortcuts permitted.\n"
+    "You MUST be very thorough in your thinking and comprehensively decompose the problem to resolve the root cause, "
+    "rigorously stress-testing your logic against all potential paths, edge cases, and adversarial scenarios.\n"
+    "Explicitly write out your entire deliberation process, documenting every intermediate step, considered "
+    "alternative, and rejected hypothesis to ensure absolutely no assumption is left unchecked.\n\n")
+DSV4_EFFORT_MAX = (
+    "Reasoning Effort: Beyond maximum — exhaustive, relentless, and uncompromising.\n"
+    "You MUST reason with the utmost depth and rigor, leaving absolutely nothing to chance: exhaustively decompose "
+    "the problem into its most fundamental components, trace every causal chain to its root, and resolve the "
+    "underlying cause rather than any surface symptom.\n"
+    "Do not stop reasoning until you have independently verified the solution from multiple angles and are certain "
+    "that no assumption remains unchecked and no error remains undiscovered.\n\n")
+DSV4_CASES = DSV41_CASES + [
+    "<｜place▁holder▁no▁799｜>", "<｜image｜>", "<｜image2｜>", "<｜table｜>", "<｜/table>｜", "<｜tr｜>", "<｜/tr｜>",
+    "<｜td｜>", "<｜/td｜>", "<｜table｜><｜tr｜><｜td｜>cell 1<｜/td｜><｜td｜>2<｜/td｜><｜/tr｜><｜/table>｜",
+    "<｜action｜>", "<｜query｜>", "<｜authority｜>", "<｜domain｜>", "<｜title｜>", "<｜extracted_url｜>", "<｜read_url｜>",
+    DS_BOS + "You are a helpful assistant." + DS_USER + "Hello" + DS_ASSIST + THINK_CLOSE + "Hi!" + DS_EOS,
+    DS_BOS + DSV4_EFFORT_HIGH + "You are a helpful assistant." + DS_USER + "What is 2+2?" + DS_ASSIST + THINK_OPEN,
+    DS_BOS + DSV4_EFFORT_MAX + DS_USER + "What is 2+2?" + DS_ASSIST + THINK_OPEN,
+    DS_BOS + "System text.<｜latest_reminder｜>2026-07-31,Friday,Paris,App,English" + DS_USER + "Which day?" + DS_ASSIST
+    + THINK_CLOSE + "<｜action｜>",
+    "\n\n<" + DS_DSML + "tool_calls>\n<" + DS_DSML + 'invoke name="get_weather">\n<' + DS_DSML
+    + 'parameter name="city" string="true">Paris</' + DS_DSML + "parameter>\n<" + DS_DSML
+    + 'parameter name="days" string="false">3</' + DS_DSML + "parameter>\n</" + DS_DSML + "invoke>\n</" + DS_DSML
+    + "tool_calls>" + DS_EOS,
+    "<" + DS_DSML + 'invoke name="now">\n\n</' + DS_DSML + "invoke>\n<" + DS_DSML + 'invoke name="now">\n</' + DS_DSML
+    + "invoke>\n",
+    'You can invoke tools by writing a "<' + DS_DSML + 'tool_calls>" block like the following:\n\n<' + DS_DSML
+    + "tool_calls>\n<" + DS_DSML + 'invoke name="$TOOL_NAME">\n<' + DS_DSML
+    + 'parameter name="$PARAMETER_NAME" string="true|false">$PARAMETER_VALUE</' + DS_DSML + "parameter>\n...\n</"
+    + DS_DSML + "invoke>\n</" + DS_DSML + "tool_calls>\n",
+    DS_EOS + DS_USER + "<tool_result>found\n\n[Unsupported audio]</tool_result>\n\nAnd now?" + DS_ASSIST + THINK_OPEN,
+    "该助手为DeepSeek，由深度求索公司创造。<｜latest_reminder｜>2026-02-21,星期六,广州,App,中文",
+]
+
+
 # The MiMo-V2.6-Flash corpus (2026-09-22): the Qwen2 regex under NFC —
 # GLM's letter/punctuation classes (marks are punctuation, not letters)
 # with a single \p{N} per pretoken — and its own added tokens (Qwen's plus
@@ -217,9 +267,12 @@ def main():
     model = args.model
     is_mimo = "MiMo" in model
     is_qwen = "Qwen" in model or is_mimo  # NFC tokenizers
-    is_dsv41 = "DeepSeek-V4" in model
-    cases = DSV41_CASES if is_dsv41 else MIMO_CASES if is_mimo else QWEN_CASES if is_qwen else CASES
+    is_dsv4 = "DeepSeek-V4-" in model  # DeepSeek-V4-Flash-0731 (model_type deepseek_v4), not V4.1
+    is_dsv41 = "DeepSeek-V4" in model and not is_dsv4
+    cases = (DSV4_CASES if is_dsv4 else DSV41_CASES if is_dsv41 else MIMO_CASES if is_mimo
+             else QWEN_CASES if is_qwen else CASES)
     out_path = args.out_opt or args.out or (
+        "tests/data/dsv4_tokenizer_goldens.jsonl" if is_dsv4 else
         "tests/data/dsv41_tokenizer_goldens.jsonl" if is_dsv41 else
         "tests/data/mimo_tokenizer_goldens.jsonl" if is_mimo else
         "tests/data/qwen_tokenizer_goldens.jsonl" if is_qwen else "tests/data/glm_tokenizer_goldens.jsonl")

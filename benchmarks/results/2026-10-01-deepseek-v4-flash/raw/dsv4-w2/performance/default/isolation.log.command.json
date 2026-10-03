@@ -1,0 +1,22 @@
+{
+  "command": [
+    "/usr/bin/python3",
+    "/home/stephen/workspace/dgpp/scripts/serve_load.py",
+    "127.0.0.1",
+    "18080",
+    "--concurrency",
+    "1",
+    "--max-tokens",
+    "256",
+    "--isolation",
+    "4",
+    "--classes",
+    "chat",
+    "--json-out",
+    "/home/stephen/workspace/dgpp/benchmarks/results/2026-10-01-deepseek-v4-flash/raw/dsv4-w2/performance/default/isolation.json"
+  ],
+  "cwd": "/home/stephen/workspace/dgpp",
+  "started_at": "2026-10-02T20:40:20.678061+00:00",
+  "returncode": 0,
+  "finished_at": "2026-10-02T20:40:48.814062+00:00"
+}

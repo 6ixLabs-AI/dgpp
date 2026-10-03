@@ -1,0 +1,24 @@
+{
+  "command": [
+    "/usr/bin/python3",
+    "/home/stephen/workspace/dgpp/benchmarks/results/2026-10-01-deepseek-v4-flash/isolated_eval.py",
+    "127.0.0.1",
+    "18080",
+    "--out",
+    "/home/stephen/workspace/dgpp/benchmarks/results/2026-10-01-deepseek-v4-flash/raw/dsv4-w2/quality/default/eval",
+    "--tasks",
+    "humaneval,gsm8k,extract",
+    "--limit",
+    "300",
+    "--concurrency",
+    "4",
+    "--max-tokens",
+    "2048",
+    "--no-think",
+    "--allow-code-execution"
+  ],
+  "cwd": "/home/stephen/workspace/dgpp",
+  "started_at": "2026-10-02T20:54:18.308345+00:00",
+  "returncode": 0,
+  "finished_at": "2026-10-02T21:08:54.679613+00:00"
+}

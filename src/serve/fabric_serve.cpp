@@ -413,9 +413,13 @@ std::string encode_journal_settings(const WorldSettings& s) {
   }
   out += ",\"emsh\":";
   append_json_string(&out, s.embed_sharding);
-  out += std::format(",\"mss\":{},\"msrow\":{:.17g},\"msbase\":{:.17g},\"mslam\":{:.17g},\"msmin\":{},\"msad\":{}",
+  out += std::format(",\"mss\":{},\"msrow\":{:.17g},\"msbase\":{:.17g},\"mslam\":{:.17g},\"msmin\":{},\"msad\":{},"
+                     "\"msss\":{:.17g}",
                      s.mtp_schedule ? 1 : 0, s.mtp_schedule_row_ms, s.mtp_schedule_base_ms,
-                     s.mtp_schedule_lambda, s.mtp_schedule_min_depth, s.mtp_schedule_adapt ? 1 : 0);
+                     s.mtp_schedule_lambda, s.mtp_schedule_min_depth, s.mtp_schedule_adapt ? 1 : 0,
+                     s.mtp_schedule_sampled_scale);
+  out += ",\"mdr\":";
+  append_json_string(&out, s.mtp_draft);
   out.push_back('}');
   return out;
 }
@@ -625,7 +629,17 @@ JournalRecord decode_journal_line(std::string_view line) {
       // Records before the adaptive lambda (2026-09-14, later) carry no msad: fixed.
       if (const dgpp::minijson::Value* msad = v.find("msad")) s.mtp_schedule_adapt = msad->as_int() != 0;
       else s.mtp_schedule_adapt = false;
+      // Records before 2026-10-02 carry no sampled scale: sampled requests
+      // verify the whole block.
+      if (const dgpp::minijson::Value* msss = v.find("msss")) s.mtp_schedule_sampled_scale = msss->as_double();
+      else s.mtp_schedule_sampled_scale = 0.0;
+      if (!(s.mtp_schedule_sampled_scale >= 0.0 && s.mtp_schedule_sampled_scale <= 1.0))
+        throw std::runtime_error("worker settings: msss must be in [0, 1]");
     }
+    // Records before 2026-10-01 carry no draft rule: the family's default.
+    if (const dgpp::minijson::Value* mdr = v.find("mdr")) s.mtp_draft = std::string(mdr->as_string());
+    if (s.mtp_draft != "auto" && s.mtp_draft != "sampled" && s.mtp_draft != "greedy")
+      throw std::runtime_error("worker settings: mdr must be auto, sampled or greedy");
     if (s.world < 2 || s.max_concurrency < 1 || s.kv_capacity < 1 ||
         (s.admission != "full" && s.admission != "grow") ||
         !latent_format_from_string(s.kv_dtype) ||

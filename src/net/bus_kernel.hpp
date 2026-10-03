@@ -207,7 +207,7 @@ constexpr int kBusMaxGraphGens = 256;       // recorded nodes per graph
 // select one per replay (for example one scalar graph per request slot plus
 // the full row batch). Each variant owns a disjoint generation-cell set;
 // windows still execute strictly one at a time.
-constexpr int kBusMaxGraphVariants = 64;  // two per slot and two per batch family, per verify depth (64 since 2026-09-14: six slots with four families at three scheduled depths need 60)
+constexpr int kBusMaxGraphVariants = 128;  // two per slot and two per batch family, per verify depth (64 from 2026-09-14: six slots with four families at three scheduled depths need 60; 128 since 2026-10-02: the same recipe at all five depths of a DSpark block needs 100 — the two depths the budget dropped were 1.5 % of a sampled stream)
 // Replay windows armed at once (2026-09-06, the pipelined replay): the
 // engine arms the next replay's window while the previous replay is still
 // running, on a DIFFERENT variant (a variant's cells are in flight until

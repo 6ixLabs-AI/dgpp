@@ -282,6 +282,19 @@ class SchedulerEngine {
   virtual PrefillProgress advance_prefill(int, int64_t = 0) {
     throw std::logic_error("SchedulerEngine: resumable prefill is unavailable");
   }
+  // Several in-flight prefills' next chunks, request i within budgets[i] tokens.
+  // An engine with prefill_group_advance() runs them as ONE physical walk
+  // (the weights stream once for all of them) — the scheduler then reads
+  // every prompt past one aligned chunk in through its cursor and begins
+  // as many per tick as the budget has aligned shares, so prompts that
+  // arrive together are read in together. The default advances one by one.
+  virtual bool prefill_group_advance() const { return false; }
+  virtual std::vector<PrefillProgress> advance_prefill_group(const std::vector<int>& reqs,
+                                                             const std::vector<int64_t>& budgets) {
+    std::vector<PrefillProgress> out;
+    for (size_t i = 0; i < reqs.size(); ++i) out.push_back(advance_prefill(reqs[i], budgets.at(i)));
+    return out;
+  }
   virtual int32_t prefill_cached(int req, const std::vector<int64_t>& prompt,
                                  PrefixPrefill* plan) {
     (void)req;
@@ -704,6 +717,8 @@ class Scheduler {
   void admit(int arrival);
   void begin_prefill(int arrival, int64_t budget);
   void advance_prefill(int arrival, int64_t budget);
+  void advance_prefill_group(const std::vector<int>& arrivals, const std::vector<int64_t>& budgets);
+  void apply_prefill_progress(int arrival, const SchedulerEngine::PrefillProgress& progress, int64_t budget, double ms);
   // The chunked-prefill predicate behind the admit dispatch: a positive
   // budget, chunkable inputs (plain text, or images on an engine that
   // chunks them), and a prompt longer than one tick's budget.

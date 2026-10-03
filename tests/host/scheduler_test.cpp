@@ -441,7 +441,7 @@ class GroupFakeEngine : public FakeEngine {
 
 class ChunkFakeEngine : public FakeEngine {
  public:
-  explicit ChunkFakeEngine(int64_t total_blocks = 100) : FakeEngine(2, total_blocks, 2, 2) {}
+  explicit ChunkFakeEngine(int64_t total_blocks = 100, int slots = 2) : FakeEngine(slots, total_blocks, 2, 2) {}
   int64_t prefill_chunk_alignment() const override { return 2; }
   int64_t prefill_chunk_limit() const override { return 16; }
   int64_t prefill_group_span_limit() const override { return 16; }
@@ -511,6 +511,19 @@ DGPP_TEST(scheduler_serving_auto_prefill_budget_respects_engine_geometry_and_opt
   policy.prefill_budget_tokens = -1;
   engine.align = engine.limit = 0;
   require(resolved().prefill_budget_tokens == 0, "unsupported engine keeps synchronous prefill");
+  // An engine that advances its in-flight prompts as one walk: the idle
+  // budget defaults to the whole forward; an explicit one survives.
+  struct GroupGeometry : GeometryEngine {
+    bool prefill_group_advance() const override { return true; }
+  } grouped;
+  grouped.limit = 4096;
+  const auto regrouped = [&] { return dgpp::serve::resolve_prefill_policy(policy, grouped); };
+  require(regrouped().prefill_budget_tokens == 256 && regrouped().prefill_idle_budget_tokens == 4096,
+          "a group-advance engine takes the whole forward when nothing decodes");
+  require(resolved().prefill_idle_budget_tokens == 0, "other engines keep one budget");
+  policy.prefill_idle_budget_tokens = 1024;
+  require(regrouped().prefill_budget_tokens == 256 && regrouped().prefill_idle_budget_tokens == 1024,
+          "an explicit idle budget survives");
 }
 
 DGPP_TEST(scheduler_chunked_prefill_bounds_work_and_keeps_decode_running) {
@@ -554,6 +567,133 @@ DGPP_TEST(scheduler_chunked_prefill_bounds_work_and_keeps_decode_running) {
   require(sched.find("long")->generated == std::vector<int64_t>({20, 21, 22}), "chunked transcript");
   require(sched.meters().prompt_tokens_computed == 13 && sched.meters().pool_blocks_in_use == 0,
           "no double counting or reservation leak");
+}
+
+// An engine that advances its in-flight prefills as one walk: every prompt
+// past one aligned chunk reads in through its cursor (even one within the
+// budget), a tick begins as many as the budget has shares, and the
+// in-flight prompts advance through ONE engine call per tick.
+DGPP_TEST(scheduler_group_advance_reads_co_arrivals_in_through_one_walk_per_tick) {
+  class GroupAdvance : public ChunkFakeEngine {
+   public:
+    GroupAdvance() : ChunkFakeEngine(1000, 4) {}
+    bool prefill_group_advance() const override { return true; }
+    std::vector<PrefillProgress> advance_prefill_group(const std::vector<int>& reqs,
+                                                       const std::vector<int64_t>& budgets) override {
+      std::string op = "GA";
+      for (const int64_t b : budgets) op += ":" + std::to_string(b);
+      ops_.push_back(op);
+      return ChunkFakeEngine::advance_prefill_group(reqs, budgets);
+    }
+  } engine;
+  engine.arm(0, {10, 11, 12}, 3);
+  engine.arm(1, {20, 21, 22}, 3);
+  engine.arm(2, {30, 31, 32}, 3);
+  dgpp::sched::AdmissionPolicy policy;
+  policy.prefill_budget_tokens = 8;
+  Scheduler sched(&engine, {}, 0, policy);
+  const int lens[3] = {9, 7, 5};
+  for (int i = 0; i < 3; ++i) {
+    SchedulerRequest r;
+    r.id = "r" + std::to_string(i);
+    r.prompt.assign(static_cast<size_t>(lens[i]), 3 + i);
+    r.max_steps = 3;
+    sched.submit(r);
+  }
+  const auto count = [&](const std::string& op) {
+    return std::count(engine.ops().begin(), engine.ops().end(), op);
+  };
+  // Tick 1: the three queued prompts begin together (even the ones within
+  // the budget: they are past one aligned chunk) and share one walk. 21
+  // tokens outstanding, more than two ticks: the split is max-min fair.
+  sched.tick();
+  require(count("GA:4:2:2") == 1 && count("PF:0:4") == 1 && count("PF:1:2") == 1 && count("PF:2:2") == 1,
+          "prompts queued together begin together, on fair shares (one engine call)");
+  require(sched.meters().prefilling == 3, "three prompts in flight");
+  // Tick 2: 13 tokens outstanding, within two ticks of the end: the budget
+  // goes to the longest remainders, bringing them level.
+  sched.tick();
+  require(count("GA:4:4") == 1 && count("PF:0:4") == 2 && count("PF:1:4") == 1,
+          "near the end the budget levels the remainders");
+  require(sched.meters().prefilling == 3, "nobody finishes ahead of the others");
+  // Tick 3: 5 tokens outstanding — every prompt finishes in the same walk.
+  sched.tick();
+  require(count("GA:2:2:4") == 1 && count("PF:0:1") == 1 && count("PF:1:1") == 1 && count("PF:2:3") == 1,
+          "the prompts finish together");
+  require(sched.meters().prefilling == 0, "all three decode from the same tick");
+  sched.run_to_completion();
+  require(sched.find("r0")->generated == std::vector<int64_t>({10, 11, 12}) &&
+              sched.find("r1")->generated == std::vector<int64_t>({20, 21, 22}) &&
+              sched.find("r2")->generated == std::vector<int64_t>({30, 31, 32}),
+          "group-advanced transcripts");
+  require(sched.meters().prompt_tokens_computed == 21 && sched.meters().pool_blocks_in_use == 0,
+          "no double counting or reservation leak");
+  // Far from the end the split is max-min fair: a short prompt beside a
+  // long one takes equal units until it is met, finishes, and what it
+  // leaves goes to the long one.
+  GroupAdvance uneven;
+  uneven.arm(0, {10, 11}, 2);
+  uneven.arm(1, {20, 21}, 2);
+  Scheduler fair(&uneven, {}, 0, policy);
+  SchedulerRequest big;
+  big.id = "big";
+  big.prompt.assign(40, 3);
+  big.max_steps = 2;
+  fair.submit(big);
+  fair.tick();
+  SchedulerRequest small;
+  small.id = "small";
+  small.prompt.assign(5, 4);
+  small.max_steps = 2;
+  fair.submit(small);
+  const auto ucount = [&](const std::string& op) {
+    return std::count(uneven.ops().begin(), uneven.ops().end(), op);
+  };
+  fair.tick();
+  require(ucount("GA:4:4") == 1 && ucount("PF:0:4") == 1 && ucount("PF:1:4") == 1, "equal units far from the end");
+  fair.tick();
+  require(ucount("GA:6:2") == 1 && ucount("PF:0:6") == 1 && ucount("PF:1:1") == 1,
+          "the short prompt finishes; its slack goes to the long one");
+  require(fair.meters().prefilling == 1 && fair.find("small")->steps_done >= 1, "the short prompt decodes while the long one reads in");
+  fair.run_to_completion();
+  require(fair.find("big")->generated == std::vector<int64_t>({10, 11}) &&
+              fair.find("small")->generated == std::vector<int64_t>({20, 21}),
+          "fair-split transcripts");
+  // The busy budget is a quantum per reading prompt: beside a decoding
+  // request, two prompts read in at twice the one-prompt budget, and the
+  // decode keeps its pass every tick.
+  GroupAdvance busy;
+  busy.arm(0, {10, 11, 12, 13, 14, 15, 16, 17}, 8);
+  busy.arm(1, {20, 21}, 2);
+  busy.arm(2, {30, 31}, 2);
+  dgpp::sched::AdmissionPolicy quantum;
+  quantum.prefill_budget_tokens = 4;
+  Scheduler shared(&busy, {}, 0, quantum);
+  SchedulerRequest decode;
+  decode.id = "decode";
+  decode.prompt = {1, 2};
+  decode.max_steps = 8;
+  shared.submit(decode);
+  shared.tick();
+  for (int i = 0; i < 2; ++i) {
+    SchedulerRequest r;
+    r.id = "reader" + std::to_string(i);
+    r.prompt.assign(12, 5 + i);
+    r.max_steps = 2;
+    shared.submit(r);
+  }
+  for (int tick = 0; tick < 3; ++tick) {
+    const auto before = shared.meters().tokens_generated;
+    shared.tick();
+    require(std::count(busy.ops().begin(), busy.ops().end(), "GA:4:4") == tick + 1,
+            "two reading prompts take a quantum each per tick");
+    require(shared.meters().tokens_generated > before, "the decode keeps its pass between the walks");
+  }
+  require(shared.meters().prefilling == 0, "both prompts finished in the third walk");
+  shared.run_to_completion();
+  require(shared.find("reader0")->generated == std::vector<int64_t>({20, 21}) &&
+              shared.find("reader1")->generated == std::vector<int64_t>({30, 31}),
+          "busy-quantum transcripts");
 }
 
 DGPP_TEST(scheduler_chunked_images_keep_decode_running_and_cancel_cleanly) {
