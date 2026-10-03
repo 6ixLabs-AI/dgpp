@@ -240,6 +240,9 @@ class FakeEngine : public SchedulerEngine {
     pinned_positions_.erase(slot);
     ops_.push_back("F:" + std::to_string(slot));
   }
+  int64_t prefix_position(int slot) const override {
+    return pinned_.count(slot) ? pinned_positions_.at(slot) : -1;
+  }
   int64_t pinned_blocks() const {
     int64_t n = 0;
     for (const auto& [slot, blocks] : pinned_) n += blocks;
@@ -2559,6 +2562,82 @@ DGPP_TEST(scheduler_prefixCache_twoTokenStepsHopOverAnAlignedPositionAndSnapshot
               "\n  expected: " + expected_one);
   require(sched1.meters().prefix_hops == 0 && sched1.meters().prefix_rolling == 1,
           "no hop, one rolling snapshot");
+}
+
+DGPP_TEST(scheduler_prefixCache_skippedHopNeverPublishesAnEmptyOrReplacedSlot) {
+  class SkippingEngine : public FakeEngine {
+   public:
+    explicit SkippingEngine(int64_t skip) : FakeEngine(1, 100, 64), skip_(skip) {}
+    std::vector<int32_t> step(int req) override {
+      const auto it = hop_armed_.find(req);
+      if (it != hop_armed_.end() && it->second.second == skip_) {
+        // PrefixArena releases the old snapshot before attempting its
+        // replacement. Model the full-pool return with the slot empty.
+        prefix_release(it->second.first);
+        hop_armed_.erase(it);
+      }
+      return FakeEngine::step(req);
+    }
+   private:
+    int64_t skip_;
+  };
+  for (const int64_t skip : {24, 28}) {
+    SkippingEngine engine(skip);
+    engine.set_partial_pins(true);
+    engine.set_prefix_arena(4, 4);
+    engine.set_step_tokens_max(2);
+    const int cap = skip == 24 ? 6 : 8;
+    engine.arm_batches(0, 31, {{32, 33}, {34, 35}, {36, 37}, {38, 39}}, cap);
+    engine.arm(0, {41}, 1);
+    Scheduler sched(&engine, {kEos});
+    const auto prompt = counted_prompt(21);
+    sched.submit(make_cached_request("skip", prompt, {12}, cap));
+    sched.run_to_completion();
+    const auto meters = sched.meters();
+    require(meters.prefix_hops == (skip == 24 ? 0 : 1) &&
+                meters.prefix_skipped_no_block == 1 && meters.prefix_close_entries == 0,
+            "a skipped first hop or replacement cannot become a close entry");
+    require(meters.prefix_entries == 1 && engine.pinned_blocks() == 1,
+            "only the prefill entry survives; the rolling slot was returned");
+    auto next = prompt;
+    next.insert(next.end(), {31, 32, 33, 34, 35, 36, 37, 38, 39});
+    sched.submit(make_cached_request("reuse", next, {12, skip}, 1));
+    sched.run_to_completion();
+    require(sched.meters().prefix_hits == 1 && sched.meters().prefix_tokens_saved == 12,
+            "the next request attaches to the valid prefill entry, not the skipped hop");
+    require(sched.meters().prefix_snapshots == 2,
+            "the returned rolling slot is reusable by the next prefill");
+  }
+}
+
+DGPP_TEST(scheduler_prefixCache_untakenPrefillReturnsSlotsAndCountsBlockSkips) {
+  class SkippingEngine : public FakeEngine {
+   public:
+    SkippingEngine() : FakeEngine(1, 100, 64) {}
+    bool skip = true;
+    int32_t prefill_cached(int req, const std::vector<int64_t>& prompt,
+                          PrefixPrefill* plan) override {
+      if (!skip) return FakeEngine::prefill_cached(req, prompt, plan);
+      skip = false;
+      auto without_snapshots = *plan;
+      without_snapshots.snap_slot = without_snapshots.body_snap_slot = without_snapshots.head_snap_slot = -1;
+      return FakeEngine::prefill_cached(req, prompt, &without_snapshots);
+    }
+  } engine;
+  engine.set_prefix_arena(2, 4, 8);
+  engine.arm(0, {10}, 1);
+  engine.arm(0, {20}, 1);
+  Scheduler sched(&engine, {});
+  for (const auto* id : {"skip", "reuse"}) {
+    sched.submit(make_cached_request(id, counted_prompt(39), {36}, 1));
+    sched.run_to_completion();
+    if (std::string(id) == "skip")
+      require(sched.meters().prefix_entries == 0 && sched.meters().prefix_skipped_no_block == 2 &&
+                  engine.pinned_blocks() == 0,
+              "both skipped cuts leave no cache entry or block reference");
+  }
+  require(sched.meters().prefix_snapshots == 2 && sched.meters().prefix_skipped_no_block == 2,
+          "both arena slots returned after skips; successes do not count as skips");
 }
 
 DGPP_TEST(scheduler_prefixCache_admissionCountsTheSnapshotCopiesAgainstThePool) {

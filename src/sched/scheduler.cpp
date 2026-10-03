@@ -874,6 +874,9 @@ void Scheduler::finish_prefill_snapshot(Request& r, int slot, int64_t position, 
                                         bool head) {
   if (slot < 0) return;
   if (!taken) {
+    // A completed prefill reached every requested cut, but the model can
+    // leave a snapshot untaken when its partial-block copy cannot fit.
+    ++cache_.stats().skipped_no_block;
     cache_.give_back_slot(slot);
     return;
   }
@@ -1004,9 +1007,9 @@ void Scheduler::step_batch(const std::vector<int>& arrivals) {
 
   cursor_ = arrivals.back();
   // The prefix cache's hops (M7): an armed request whose step committed two
-  // tokens had its state at the armed position taken by the engine inside
-  // the step — recorded before the tokens are applied, so a retire in this
-  // pass finds the rolling slot at the position the close entry wants. A
+  // tokens may have saved its state at the armed position inside the step.
+  // Check the arena before recording it, so a retire in this pass finds
+  // the rolling slot at the position the close entry wants. A
   // one-token step landed ON the position: the next tick's rolling
   // snapshot (or the retire-time one) takes it.
   for (size_t i = 0; i < arrivals.size(); ++i) {
@@ -1015,6 +1018,17 @@ void Scheduler::step_batch(const std::vector<int>& arrivals) {
     const int64_t hop = r.hop_armed;
     r.hop_armed = -1;
     if (batches[i].size() < 2) continue;
+    const int64_t position = engine_->prefix_position(r.rolling_slot);
+    if (position < 0) {
+      // A failed replacement released the previous snapshot too. Forget
+      // its position so retirement cannot publish an empty slot, and the
+      // next attempt reserves a fresh partial block rather than reusing it.
+      r.rolling_position = -1;
+      ++cache_.stats().skipped_no_block;
+      continue;
+    }
+    if (position != hop)
+      throw std::logic_error("Scheduler: the hop snapshot's position differs from the armed position");
     r.rolling_position = hop;
     ++cache_.stats().rolling;
     ++cache_.stats().hops;

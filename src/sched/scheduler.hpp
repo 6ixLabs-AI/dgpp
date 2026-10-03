@@ -229,15 +229,23 @@ class SchedulerEngine {
   virtual PrefixInfo prefix_info() const { return {}; }
   // The hop (M7 under a multi-token step): the request's next step may
   // commit past `position` (= its committed count + 1, pool-aligned) without
-  // stopping there; if it commits two tokens, the engine takes the state
+  // stopping there; if it commits two tokens, the engine attempts to save the state
   // after the step's first row — the state at `position` — into arena slot
-  // `slot` before returning from that step. A one-token step lands ON the
+  // `slot` before returning from that step (check prefix_position afterwards).
+  // A one-token step lands ON the
   // position and the scheduler's rolling snapshot follows at the next tick.
   // The arm holds until the slot's next step (or its close).
   virtual void prefix_arm_hop(int req, int slot, int64_t position) {
     (void)req;
     (void)slot;
     (void)position;
+  }
+  // The position actually stored in an arena slot, or -1 if it is empty.
+  // A multi-token step may skip its armed hop when the cache pool is full;
+  // token acceptance alone does not establish that the snapshot was taken.
+  virtual int64_t prefix_position(int slot) const {
+    (void)slot;
+    throw std::logic_error("SchedulerEngine: this engine has no prefix cache");
   }
   // The prefill with the cache: `boundaries` (absolute positions, ascending)
   // are the request's structural cut positions — the cold chunking cuts at

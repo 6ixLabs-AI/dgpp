@@ -1752,6 +1752,13 @@ set(GLM_FORWARD_FIXTURE ${CMAKE_CURRENT_BINARY_DIR}/glm_forward_fixture)
 add_test(NAME glm_forward_fixture
   COMMAND glm_forward_test --write-fixture ${GLM_FORWARD_FIXTURE})
 set_tests_properties(glm_forward_fixture PROPERTIES SKIP_RETURN_CODE 2)
+add_executable(prefix_snapshot_test tests/cuda/prefix_snapshot_test.cpp)
+target_include_directories(prefix_snapshot_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(prefix_snapshot_test PRIVATE dgpp_models_qwen_layers dgpp_models_glm_loader CUDA::cudart)
+dgpp_set_common(prefix_snapshot_test)
+add_test(NAME prefix_snapshot_test
+  COMMAND prefix_snapshot_test ${QWEN_FORWARD_FIXTURE} ${GLM_FORWARD_FIXTURE})
+set_tests_properties(prefix_snapshot_test PROPERTIES DEPENDS "qwen_forward_fixture;glm_forward_fixture" RUN_SERIAL TRUE)
 add_test(NAME glm_forward_generate
   COMMAND ${Python3_EXECUTABLE}
           ${CMAKE_CURRENT_SOURCE_DIR}/tools/glm_reference_dump.py
