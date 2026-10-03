@@ -24,6 +24,7 @@
 #include "kernels/fp8_dequant.hpp"
 #include "kernels/gemm.hpp"
 #include "kernels/kernels.hpp"
+#include "kernels/mma_gemv.hpp"
 #include "kernels/qwen_mtp.hpp"
 #include "kernels/qwen_norm.hpp"
 #include "kernels/qsa.hpp"
@@ -533,6 +534,16 @@ Qwen35Model::~Qwen35Model() {
   cudaFree(pt_act_scales_);
 }
 
+void Qwen35Model::configure_gemm_rows(int rows, bool decode) {
+  qwen_configure_gemm_rows(gemm_, rows, decode);
+  // 17..128 decode rows: the streaming tensor-core form reads a bf16 weight
+  // once for every row of the launch where the kernel-only band's 4-row GEMV
+  // chunks re-read it per chunk (eight times at the 32-row verify batch:
+  // the 8K profile's draft phase, 260 -> 92 ms/pass). m <= 16 keeps its
+  // dispatch, so the C1 verify and the lone-slot draft are unchanged.
+  gemm_.set_decode_mma(decode && rows > 16, 17, kMmaGemvMaxRowsPerLaunch);
+}
+
 void Qwen35Model::build_layer_objects(const Qwen35LayerResident& r) {
   if (r.kind == Qwen35LayerKind::Gdn) {
     if (!gdn_)
@@ -1004,7 +1015,7 @@ void Qwen35Model::graph_prepare() {
 // position. head_rows == 0 fills the draft K/V only (prefill cache fill).
 void Qwen35Model::mtp_run_rows(int req, const int64_t* tokens, int64_t first_pos, int T,
                                bool decode_row, bool capture, int head_rows, int batch_requests) {
-  qwen_configure_gemm_rows(gemm_, T, decode_row);
+  configure_gemm_rows(T, decode_row);
   if (!mtp_) throw std::logic_error("mtp_run_rows: MTP is not enabled");
   if (T <= 0 || T > max_tokens_) throw std::invalid_argument("mtp_run_rows: rows");
   if (head_rows < 0 || head_rows > T) throw std::invalid_argument("mtp_run_rows: head_rows");
@@ -1119,6 +1130,7 @@ Qwen35Model::Outputs Qwen35Model::run_rows(const RowRun& run) {
   // called under capture.
   const int H = cfg_.hidden_size;
   const float eps = cfg_.rms_norm_eps;
+  configure_gemm_rows(T, run.decode);
   const RowInputs in = begin_run(run);
   const bool batched = in.batched;
   const int num_requests = in.num_requests;
@@ -1306,7 +1318,7 @@ bool Qwen35Model::dflash2_draft(int req, int64_t bonus, std::vector<int32_t>* dr
   DGPP_CUDA_OK(cudaMemcpyAsync(df_tokens_, df_io64_h_ + QR, QR * 8, cudaMemcpyHostToDevice, stream_));
   embed_gather_bf16(globals_.embed, df_tokens_, df_resid_, QR, H, stream_);
 
-  qwen_configure_gemm_rows(gemm_, QR, true);
+  configure_gemm_rows(QR, true);
   const float scale = 1.0f / std::sqrt(static_cast<float>(HD));
   for (int l = 0; l < L; ++l) {
     const DFlash2LayerWeights& w = dfw_.layers[l];
@@ -1356,11 +1368,9 @@ bool Qwen35Model::dflash2_draft(int req, int64_t bonus, std::vector<int32_t>* dr
   // The mask rows through the shared head and their top-K.
   head_gemv(df_h_ + static_cast<size_t>(H), df_logits_, D, stream_);
   dflash2_topk_f32(df_logits_, df_ids_, df_sc_, lm_vocab_count_, D, dfcfg_.selector_top_k, stream_);
-  // Proposal rule (docs/mtp.md): per-slot top-1. The chained walk runs
-  // first and its picks are replaced by each slot's own top-1; the walk
-  // pass itself is load-bearing (skipping it collapses acceptance via an
-  // undiagnosed coupling — suspected GEMM/state — so it stays).
-  // DGPP_DFLASH2_WALK=1 keeps the walk's own picks (vLLM parity work).
+  // The proposal: the reference chained selector walk (vLLM's
+  // _selector_walk_kernel at temperature 0) over each mask row's top-K —
+  // scores[l][p][c] = unary[l][c] + <pred[id(l-1,p)] * hidden[l], succ[id(l,c)]>.
   gemm_.matmul(df_h_ + static_cast<size_t>(H), dfw_.hidden_projection, df_hidden32_, D,
                dfcfg_.selector_rank, H, DType::BF16, GemmOut::F32, static_cast<size_t>(H),
                gemm_ws_, gemm_ws_bytes_, stream_);
@@ -1369,17 +1379,7 @@ bool Qwen35Model::dflash2_draft(int req, int64_t bonus, std::vector<int32_t>* dr
                         dfcfg_.selector_rank, stream_);
   DGPP_CUDA_OK(cudaMemcpyAsync(df_tok_h_, df_tok_, D * 4, cudaMemcpyDeviceToHost, stream_));
   DGPP_CUDA_OK(cudaStreamSynchronize(stream_));
-  if (std::getenv("DGPP_DFLASH2_WALK")) {
-    drafts->assign(df_tok_h_, df_tok_h_ + D);
-    return true;
-  }
-  {
-    std::vector<int32_t> ids(static_cast<size_t>(D) * dfcfg_.selector_top_k);
-    DGPP_CUDA_OK(cudaMemcpy(ids.data(), df_ids_, ids.size() * 4, cudaMemcpyDeviceToHost));
-    drafts->clear();
-    for (int l = 0; l < D; ++l)
-      drafts->push_back(ids[static_cast<size_t>(l) * dfcfg_.selector_top_k]);
-  }
+  drafts->assign(df_tok_h_, df_tok_h_ + D);
   return true;
 }
 
@@ -1448,7 +1448,7 @@ void Qwen35Model::dflash2_draft_batch(const std::vector<int>& reqs,
                                static_cast<size_t>(R) * 8, cudaMemcpyHostToDevice, stream_));
   embed_gather_bf16(globals_.embed, df_tokens_, df_resid_, R, H, stream_);
 
-  qwen_configure_gemm_rows(gemm_, R, true);
+  configure_gemm_rows(R, true);
   const float scale = 1.0f / std::sqrt(static_cast<float>(HD));
   for (int l = 0; l < L; ++l) {
     const DFlash2LayerWeights& w = dfw_.layers[l];
@@ -1518,26 +1518,12 @@ void Qwen35Model::dflash2_draft_batch(const std::vector<int>& reqs,
   DGPP_CUDA_OK(cudaMemcpyAsync(df_tok_h_, df_tok_, static_cast<size_t>(NS) * D * 4,
                                cudaMemcpyDeviceToHost, stream_));
   DGPP_CUDA_OK(cudaStreamSynchronize(stream_));
-  const bool walk = std::getenv("DGPP_DFLASH2_WALK") != nullptr;
-  if (walk) {
-    for (int k = 0; k < NS; ++k)
-      (*drafts)[static_cast<size_t>(idx[static_cast<size_t>(k)])].assign(
-          df_tok_h_ + static_cast<size_t>(k) * D, df_tok_h_ + static_cast<size_t>(k + 1) * D);
-    return;
-  }
-  {
-    std::vector<int32_t> ids(static_cast<size_t>(NS) * D * topk);
-    DGPP_CUDA_OK(cudaMemcpy(ids.data(), df_ids_, ids.size() * 4, cudaMemcpyDeviceToHost));
-    for (int k = 0; k < NS; ++k) {
-      std::vector<int32_t>& out = (*drafts)[static_cast<size_t>(idx[static_cast<size_t>(k)])];
-      out.clear();
-      for (int r = 0; r < D; ++r)
-        out.push_back(ids[(static_cast<size_t>(k) * D + r) * topk]);
-    }
-  }
+  for (int k = 0; k < NS; ++k)
+    (*drafts)[static_cast<size_t>(idx[static_cast<size_t>(k)])].assign(
+        df_tok_h_ + static_cast<size_t>(k) * D, df_tok_h_ + static_cast<size_t>(k + 1) * D);
 }
 
-// The static padded layout both padded variants stage: every slot's fed rows
+// The static padded layout the captured verify stages: every slot's fed rows
 // at [s*8, s*8+T), the block's tail rows position -1 (every state-writing
 // kernel skips them; their compute-only results are never read back).
 // Validates, grows blocks, uploads and returns the RowRun (capture=false;
@@ -1614,39 +1600,6 @@ Qwen35Model::RowRun Qwen35Model::df_stage_padded(
   // read): bitwise the eager C1 step. Batches need the span form.
   run.batch_requests = slots == 1 ? 0 : slots;
   return run;
-}
-
-std::vector<Qwen35Model::Outputs> Qwen35Model::session_verify_batch_padded(
-    const std::vector<int>& reqs, const std::vector<std::vector<int64_t>>& feds,
-    std::vector<int>* offsets) {
-  // The bisection control: padded static staging, eager execution.
-  try {
-    int slots = 0;
-    std::vector<int> offs;
-    RowRun run = df_stage_padded(reqs, feds, &slots, &offs);
-    Outputs out = run_rows(run);  // eager: finish_run materializes all rows
-    const int S = static_cast<int>(reqs.size());
-    if (offsets) *offsets = offs;
-    std::vector<Outputs> outs(static_cast<size_t>(S));
-    for (int s = 0; s < S; ++s) {
-      const int T = static_cast<int>(feds[static_cast<size_t>(s)].size());
-      const int block = query_block_rows();
-      Outputs& o = outs[static_cast<size_t>(s)];
-      const size_t base = static_cast<size_t>(s) * block;
-      o.logits.assign(out.logits.begin() + base * lm_vocab_count_,
-                      out.logits.begin() + (base + T) * lm_vocab_count_);
-      o.lm_vocab_begin = out.lm_vocab_begin;
-      o.lm_vocab_count = out.lm_vocab_count;
-      o.final_hidden_bits.assign(out.final_hidden_bits.begin() + base * hidden_,
-                                 out.final_hidden_bits.begin() + (base + T) * hidden_);
-      session_pos_[static_cast<size_t>(reqs[static_cast<size_t>(s)])] += T;
-      push_position(reqs[static_cast<size_t>(s)]);
-    }
-    return outs;
-  } catch (const std::exception& e) {
-    DGPP_LOG_ERROR("dflash padded verify failed, plain batch: {}", e.what());
-    return session_verify_batch(reqs, feds, offsets);
-  }
 }
 
 std::vector<Qwen35Model::Outputs> Qwen35Model::session_verify_batch_graph(

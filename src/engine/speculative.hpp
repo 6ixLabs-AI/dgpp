@@ -379,7 +379,7 @@ class DFlash2Speculator {
   // per-step depth. null (the default) verifies the whole block. The
   // policy returns the number of drafts to verify, clamped to [0, depth].
   // (Experimental lever for long-context work, where each tail row scores
-  // the full KV for a shrinking acceptance: DGPP_DFLASH2_DEPTH caps it —
+  // the full KV for a shrinking acceptance: engine.dflash_depth caps it —
   // see EagerEngine's dflash wiring.)
   void set_depth_policy(std::function<int(const std::vector<int32_t>&)> p) {
     depth_policy_ = std::move(p);

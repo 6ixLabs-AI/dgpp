@@ -161,6 +161,17 @@ class Qwen35Model : public SessionModel<Qwen35Model> {
   static bool prefill_fp8_per_tensor() { return prefill_fp8_per_tensor_; }
   static void set_dense_weights_fp8(bool on) { dense_weights_fp8_ = on; }
   static bool dense_weights_fp8() { return dense_weights_fp8_; }
+  // The DFlash2 drafter's serving options (engine.dflash_verify_graph,
+  // engine.dflash_draft_batch, engine.dflash_depth), set from the cluster
+  // config before the engine is built; the eager engine reads them.
+  static void set_dflash_options(bool verify_graph, bool draft_batch, int depth) {
+    dflash_verify_graph_ = verify_graph;
+    dflash_draft_batch_ = draft_batch;
+    dflash_depth_ = depth;
+  }
+  static bool dflash_verify_graph() { return dflash_verify_graph_; }
+  static bool dflash_draft_batch() { return dflash_draft_batch_; }
+  static int dflash_depth() { return dflash_depth_; }
   // Group prefills (one walk, a span per request): spans share the
   // max_tokens activation rows; the scheduler only groups snapshot-free
   // members (admissible_group), so no snapshot plumbing is needed.
@@ -218,8 +229,8 @@ class Qwen35Model : public SessionModel<Qwen35Model> {
   // the plane needs no rollback, the same overwrite protocol as the MTP
   // plane). dflash2_draft then runs the block: [bonus, mask x drafts]
   // through the five bidirectional layers over the plane context; each
-  // mask slot's own top-1 proposes the `drafts()` following tokens
-  // (DGPP_DFLASH2_WALK=1 restores the reference chained selector walk).
+  // mask rows' top-K go through the reference chained selector walk, which
+  // proposes the `drafts()` following tokens.
   bool dflash2_enabled() const { return dflash2_; }
   int dflash2_drafts() const { return dflash2_ ? dfcfg_.drafts() : 0; }
   // False without a draft (pool exhausted / context bound): the caller
@@ -252,12 +263,6 @@ class Qwen35Model : public SessionModel<Qwen35Model> {
   std::vector<Outputs> session_verify_batch_graph(
       const std::vector<int>& reqs, const std::vector<std::vector<int64_t>>& feds,
       std::vector<int>* offsets = nullptr);
-  // The bisection control for the captured verify: the same static padded
-  // 8-row-block staging, executed eagerly (no capture) — isolates the
-  // padding rows from the capture mechanism.
-  std::vector<Outputs> session_verify_batch_padded(
-      const std::vector<int>& reqs, const std::vector<std::vector<int64_t>>& feds,
-      std::vector<int>* offsets = nullptr);
   static constexpr int query_block_rows() { return 8; }
 
  private:
@@ -267,6 +272,12 @@ class Qwen35Model : public SessionModel<Qwen35Model> {
                          const std::vector<std::vector<int64_t>>& feds,
                          int* slots_out, std::vector<int>* offs_out);
   void build_layer_objects(const Qwen35LayerResident& r);
+  // The dense GEMM band for this model's own CublasLtGemm: the shared Qwen
+  // rule, plus the streaming mma form for 17..128-row decode batches (the
+  // drafter's stacked block forwards and the taps of a wide verify read
+  // their bf16 weights once instead of once per 4-row GEMV chunk). Other
+  // families' instances keep the shared rule.
+  void configure_gemm_rows(int rows, bool decode);
   void dense_mlp(const uint16_t* x, uint16_t* out, int tokens, const Qwen35DenseMlpResident& m,
                  cudaStream_t stream, int layer, bool resume = false);
   // The lm head over `rows` activation rows into F32 logits: the blockwise
@@ -308,6 +319,9 @@ class Qwen35Model : public SessionModel<Qwen35Model> {
   size_t gemm_ws_bytes_ = 0;
   size_t dense_bridge_bytes_ = 0;
   inline static bool prefill_fp8_per_tensor_ = false;
+  inline static bool dflash_verify_graph_ = true;
+  inline static bool dflash_draft_batch_ = true;
+  inline static int dflash_depth_ = 0;
   inline static bool dense_weights_fp8_ = false;
   // Per-tensor FP8 prefill recipe (engine.prefill_fp8_per_tensor, Resident only):
   // gate/up/down requantized once at boot to E4M3 with one F32 scale each;

@@ -151,6 +151,13 @@ change greedy transcripts (the head within the first tokens, the prefill
 recipe at long context), so a deployment that enables them is not the
 checkpoint's model. The family is world-1 only.
 
+Its DFlash2 drafter (`engine.dflash_model`, the `_dflash2` template) runs the
+eager world-1 engine with `mtp` and `decode_graph` off; its own options are
+`engine.dflash_verify_graph` (the multi-slot verify as a captured graph, the
+default), `engine.dflash_draft_batch` (stacked redrafts, the default) and
+`engine.dflash_depth` (a verify-depth cap, 0 = the block). None of them
+changes a transcript: the drafter only proposes, the greedy verify decides.
+
 Qwen FP8 and packed heads keep the full product's kernel selection and
 accumulation order. BF16 heads use the existing small-row projection, which
 can change FP32 rounding. Acceptance uses an FP64 oracle and teacher-forced

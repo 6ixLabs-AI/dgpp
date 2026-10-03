@@ -1359,6 +1359,9 @@ int main(int argc, char** argv) {
       "      (engine.prefill_fp8_per_tensor; ~2x the prefill rate, +23 GiB, changes greedy output)\n"
       "    [--dflash-model DIR_OR_ID]  DFlash2 block drafter checkpoint (replaces --mtp; eager world-1)\n"
       "    [--no-dflash]  run plain from a drafter template (the A/B knob)\n"
+      "    [--no-dflash-verify-graph]  the multi-slot verify as an eager batch (engine.dflash_verify_graph)\n"
+      "    [--no-dflash-draft-batch]  one block forward per slot (engine.dflash_draft_batch)\n"
+      "    [--dflash-depth N]  verify only the first N drafts per step, 0 = the block (engine.dflash_depth)\n"
       "    [--mtp-schedule]  the confidence-scheduled verify depth (DeepSeek-V4.1's\n"
       "      DSpark): a step verifies only the drafts whose prefix survival beats\n"
       "      the value of a verify row; exact\n"
@@ -1406,6 +1409,8 @@ int main(int argc, char** argv) {
       "    (DGPP_LOG_LEVEL=debug)\n";
 
   std::string ckpt, model_id, peer, dflash_model;
+  bool dflash_verify_graph = true, dflash_draft_batch = true;
+  int dflash_depth = 0;
   uint16_t port = 8080, fabric_port = 29970, journal_port = 29971;
   int64_t kv_capacity = 8192;
   int64_t http_max_body_bytes = dgpp::serve::kDefaultHttpMaxBodyBytes;
@@ -1543,6 +1548,9 @@ int main(int argc, char** argv) {
     decode_graph = e.decode_graph;
     mtp = e.mtp;
     if (dflash_model.empty()) dflash_model = e.dflash_model;  // the flag wins
+    dflash_verify_graph = e.dflash_verify_graph;
+    dflash_draft_batch = e.dflash_draft_batch;
+    dflash_depth = e.dflash_depth;
     mtp_depth = e.mtp_depth;
     mtp_depth_explicit = e.mtp_depth_set;
     mtp_schedule = e.mtp_schedule;
@@ -1639,6 +1647,9 @@ int main(int argc, char** argv) {
     else if (a == "--mtp") mtp = true;
     else if (a == "--dflash-model") dflash_model = next();
     else if (a == "--no-dflash") dflash_model.clear();  // the plain path from a drafter template (the A/B knob)
+    else if (a == "--no-dflash-verify-graph") dflash_verify_graph = false;
+    else if (a == "--no-dflash-draft-batch") dflash_draft_batch = false;
+    else if (a == "--dflash-depth") dflash_depth = std::stoi(next());
     else if (a == "--no-mtp") {  // the plain T=1 world from an MTP template (the A/B knob)
       mtp = false;
       no_mtp_cli = true;
@@ -1750,7 +1761,9 @@ int main(int argc, char** argv) {
         return 1;
       }
     }
-    DGPP_LOG_INFO("dflash2 drafter -> {}", dflash_dir);
+    DGPP_LOG_INFO("dflash2 drafter -> {} (verify graph {}, draft batch {}, depth {})", dflash_dir,
+                  dflash_verify_graph ? "on" : "off", dflash_draft_batch ? "on" : "off",
+                  dflash_depth == 0 ? "block" : std::to_string(dflash_depth));
   }
   // The MTP depth a family defaults (DeepSeek-V4.1's DSpark block verifies
   // five drafts): resolved on every rank before the settings record leaves
@@ -1841,6 +1854,10 @@ int main(int argc, char** argv) {
         ws.prefill_fold_scales = prefill_fold_scales;
         ws.prefill_fp8_gemm = prefill_fp8_gemm;
         ws.prefill_fp8_per_tensor = prefill_fp8_per_tensor;
+        ws.dflash_model = dflash_model;
+        ws.dflash_verify_graph = dflash_verify_graph;
+        ws.dflash_draft_batch = dflash_draft_batch;
+        ws.dflash_depth = dflash_depth;
         ws.expert_gemm = expert_gemm;
         ws.expert_gemm_prefetch = expert_gemm_prefetch;
         ws.expert_tile_list = expert_tile_list;
@@ -1909,6 +1926,10 @@ int main(int argc, char** argv) {
         prefill_fold_scales = ws.prefill_fold_scales;
         prefill_fp8_gemm = ws.prefill_fp8_gemm;
         prefill_fp8_per_tensor = ws.prefill_fp8_per_tensor;
+        dflash_model = ws.dflash_model;
+        dflash_verify_graph = ws.dflash_verify_graph;
+        dflash_draft_batch = ws.dflash_draft_batch;
+        dflash_depth = ws.dflash_depth;
         expert_gemm = ws.expert_gemm;
         expert_gemm_prefetch = ws.expert_gemm_prefetch;
         expert_tile_list = ws.expert_tile_list;
@@ -2058,6 +2079,11 @@ int main(int argc, char** argv) {
   // prefill recipe and the BF16 lm head requantized to block FP8.
   dgpp::Qwen35Model::set_prefill_fp8_per_tensor(prefill_fp8_per_tensor);
   dgpp::Qwen35Model::set_dense_weights_fp8(dense_weights == "fp8");
+  if (dflash_depth < 0 || dflash_depth > 7) {
+    DGPP_LOG_ERROR("engine.dflash_depth (--dflash-depth) must be in [0, 7], got {}", dflash_depth);
+    return 2;
+  }
+  dgpp::Qwen35Model::set_dflash_options(dflash_verify_graph, dflash_draft_batch, dflash_depth);
   if (prefill_fp8_per_tensor)
     DGPP_LOG_INFO("serve: engine.prefill_fp8_per_tensor on — prefill GEMMs on per-tensor e4m3 (not transcript-preserving)");
   dgpp::QwenLayerStream::set_ngram_prestage(ngram_prestage);

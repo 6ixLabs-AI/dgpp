@@ -414,9 +414,7 @@ independently with its weights and planes in the memory plan, taps
 capture through the five `fc` slices with fp32 accumulation, the five
 draft layers run bidirectional sliding-window attention over pool
 planes with the 2-tap dynamic grouped convs, per-slot top-1 proposals
-verify 2.5–6.1 tok/pass against MTP depth-2's 2.3–2.8 (the reference
-chained selector walk is implemented exactly and kept behind
-`DGPP_DFLASH2_WALK`, but verifies only ~1.2 here — see mtp.md), and
+verify 2.5–6.1 tok/pass against MTP depth-2's 2.3–2.8 (the reference chained selector walk is the proposal rule since the unary-index fix of 2026-10-03 — see mtp.md), and
 acceptance is the greedy verify/rollback of eight rows
 (`kSpecRows`/`kSpecMaxDrafts` generalized 6/5 → 8/7; the DSpark block
 is unchanged). The batched pass landed 2026-10-01: one physical target
@@ -431,11 +429,7 @@ selector's conditional proposal) is open. The GLM-Flash lane (step
 Measured 2026-10-01 (Qwen3.8-27B-FP8, greedy, 12-prompt battery,
 max_tokens 128): the block's per-slot top-1 proposals verify 2.5–6.1
 tok/pass against MTP depth-2's 2.3–2.82 — the exit gate, met on every
-prompt tried. The reference chained selector walk (implemented exactly,
-kept behind `DGPP_DFLASH2_WALK`) verifies only ~1.2 here; either a
-vLLM cross-check shows the reference picks the same drafts here
-(head-domain behavior, proposal rule to revisit), or it picks better
-ones (our block outputs differ somewhere top-1 doesn't see).
+prompt tried. The chained selector walk is the proposal rule (its unary term is the candidate's logit; the earlier predecessor-indexed form verified ~1.2 and was replaced by the top-1 until 2026-10-03).
 Transcripts match plain modulo single near-tie flips from
 width-dependent GEMM numerics (T=8 verify vs T=1 steps). Concurrency
 (2026-10-01): the batched speculative pass (one physical verify for
@@ -444,7 +438,7 @@ the flat ~8 t/s c4 line — same short-prompt harness gives dflash
 25.7/41.3/52.4 agg tg at c1/c2/c4 vs MTP depth-2's 14.4/32.6/47.3,
 with C1 transcripts 12/12 identical to the pre-batch build. The
 stacked redraft is default-on (opt out with
-`DGPP_DFLASH2_DRAFT_BATCH=0`); `DGPP_DFLASH2_DEPTH=k` stays opt-in.
+`engine.dflash_draft_batch: false`); `engine.dflash_depth` stays opt-in.
 Measured 2026-10-01: batch +5–9% at c4 with no errors; depth-5 keeps
 τ 4.0 (80% window use). Headline correction the same day: the
 throughput bench's traffic was *sampled* (benchy omits temperature;
@@ -453,7 +447,7 @@ spec never engaged on either lane — all older throughput numbers are
 sampled-plain decode, graphs vs eager. With `temperature=0` forced,
 dflash throughput jumps +60–190% and wins every c1/c2 cell vs
 graphed MTP (τ 4.5 vs ~2.5), ceding only c4, where graphs scale
-linearly. That lane closed 2026-10-02: `DGPP_DFLASH2_VERIFY_GRAPH=1`
+linearly. That lane closed 2026-10-02: `engine.dflash_verify_graph`
 replays the batched verify as one static 8/16/32-row graph (the
 slots' fed rows padded to full 8-row blocks; the drafter's context
 K/V feed is a recorded node — first capture attempt starved the
@@ -461,16 +455,16 @@ planes and decayed acceptance), with the C1 capture bit-exact and the
 graph the fastest path on that binary (35.9–36.1 vs 35.0–35.4 agg tg
 at c4 on the short-prompt harness; see mtp.md "batched graph capture
 with a drafter loaded"). A later default-knob sweep found that reading
-had been graph-vs-graph: the shipped default (`DGPP_DFLASH2_VERIFY_GRAPH`
+had been graph-vs-graph: the shipped default (`engine.dflash_verify_graph`
 unset) had always graphed the multi-slot batch — levels 0 and 1 were
 identical — so those "eager" numbers were the graph. Making level `0` a
 true eager baseline and setting the default to `1` (the multi-slot
-graph), re-measured against the real eager path (`BATCH_EAGER=1`): the
+graph), re-measured against the real eager path (`engine.dflash_verify_graph: false`): the
 graph ties it at 8K c4 (14.9 vs 14.8–14.9) and leads it at
 short-context c4/c8 (~54–55 vs ~51 agg tg, within that harness's
 variance), never slower; the single-slot graph (level `2`) is the slowest
 c1 option (20.1 vs the scalar path's 24.2), so lone slots stay scalar.
-The rest of the sweep held: batched redrafts on (`DRAFT_BATCH`) 14.9 vs
+The rest of the sweep held: batched redrafts on (`engine.dflash_draft_batch`) 14.9 vs
 14.3 off at 8K c4; full verify depth 14.9 vs 14.4 (k=4) vs 13.2 (k=2);
 per-slot top-1 over walk (~1.2 tok/pass). Nothing performance-relevant
 is opt-in on this lane (mtp.md "default knob sweep").

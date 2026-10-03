@@ -396,6 +396,10 @@ std::string encode_journal_settings(const WorldSettings& s) {
   out += std::format(",\"pfb16\":{},\"pffold\":{},\"pffp8\":{},\"pfpt\":{}", s.prefill_bf16_partials ? 1 : 0,
                      s.prefill_fold_scales ? 1 : 0, s.prefill_fp8_gemm ? 1 : 0,
                      s.prefill_fp8_per_tensor ? 1 : 0);
+  out += ",\"dfm\":";
+  append_json_string(&out, s.dflash_model);
+  out += std::format(",\"dfvg\":{},\"dfdb\":{},\"dfdp\":{}", s.dflash_verify_graph ? 1 : 0,
+                     s.dflash_draft_batch ? 1 : 0, s.dflash_depth);
   out += ",\"xgemm\":";
   append_json_string(&out, s.expert_gemm);
   out += std::format(",\"xpf\":{},\"xtl\":{},\"xpair\":{},\"npre\":{}", s.expert_gemm_prefetch,
@@ -588,6 +592,11 @@ JournalRecord decode_journal_line(std::string_view line) {
     if (v.find("pffold")) s.prefill_fold_scales = flag("pffold");
     if (v.find("pffp8")) s.prefill_fp8_gemm = flag("pffp8");
     if (v.find("pfpt")) s.prefill_fp8_per_tensor = flag("pfpt");  // 2026-10-03: the 27B recipe
+    // The DFlash2 drafter (2026-10-03): records before it carry none.
+    if (const dgpp::minijson::Value* dfm = v.find("dfm")) s.dflash_model = std::string(dfm->as_string());
+    if (v.find("dfvg")) s.dflash_verify_graph = flag("dfvg");
+    if (v.find("dfdb")) s.dflash_draft_batch = flag("dfdb");
+    if (const dgpp::minijson::Value* dfdp = v.find("dfdp")) s.dflash_depth = static_cast<int>(dfdp->as_int());
     // The expert GEMM's form and companions (2026-09-30): records before them carry the defaults.
     if (const dgpp::minijson::Value* xg = v.find("xgemm")) s.expert_gemm = std::string(xg->as_string());
     if (const dgpp::minijson::Value* xpf = v.find("xpf")) s.expert_gemm_prefetch = static_cast<int>(xpf->as_int());

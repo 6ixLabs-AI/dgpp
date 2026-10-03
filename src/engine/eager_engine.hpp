@@ -266,11 +266,16 @@ class EagerEngineAdapter : public sched::SchedulerEngine {
           const int T = static_cast<int>(fed.size());
           const auto out = model_->session_verify(req, fed);
           const std::vector<int32_t> winners = rows_pick()(local_row_maxes(out, T));
-          std::vector<int32_t> committed = sp->commit(fed, winners, 0);
+          const std::vector<int32_t> committed = sp->commit(fed, winners, 0);
           pending = sp->next();
-          for (int32_t t : committed) s.context.push_back(t);
-          s.context.push_back(static_cast<int32_t>(pending));
-          return committed;
+          // The tokens decided this step: the accepted drafts (committed[0]
+          // is the pending token, emitted when it was decided) and the
+          // verify's next token, which becomes the pending one — the plain
+          // step's contract (it returns the token it decided).
+          std::vector<int32_t> fresh(committed.begin() + 1, committed.end());
+          fresh.push_back(static_cast<int32_t>(pending));
+          for (int32_t t : fresh) s.context.push_back(t);
+          return fresh;
         }
       }
     }
@@ -288,8 +293,7 @@ class EagerEngineAdapter : public sched::SchedulerEngine {
   // kernel sequence bit-for-bit.
   std::vector<std::vector<int32_t>> step_batch(const std::vector<int>& reqs) override {
     if constexpr (requires { model_->dflash2_enabled(); }) {
-      const int graph_level = dflash_verify_graph();
-      if (!model_->dflash2_enabled() || reqs.size() < (graph_level >= 2 ? size_t{1} : size_t{2}))
+      if (!model_->dflash2_enabled() || reqs.size() < 2)
         return SchedulerEngine::step_batch(reqs);
       const bool ph = dflash_phases();
       const auto ns_now = [] {
@@ -315,33 +319,23 @@ class EagerEngineAdapter : public sched::SchedulerEngine {
       }
       const long long ph1 = ph ? ns_now() : 0;
       std::vector<int> offs;
-      // The verify, per DGPP_DFLASH2_VERIFY_GRAPH level: 0 the packed
-      // eager batch (the opt-out baseline, no graph); 1 multi-slot batches
-      // replay a captured static verify (the shipped default, the measured
-      // best); 2 lone slots too; 3 the bisection control — the same static
-      // padded staging executed eagerly. A lone slot is the scalar path at
-      // every level < 2 (the line-289 gate), so a C1 transcript keeps the
+      // The verify: multi-slot batches replay the captured static verify
+      // (engine.dflash_verify_graph, the measured best: ~5–8 % over the
+      // eager batch at short context, a tie at 8K); a lone slot is the
+      // scalar path (the 2-slot gate above), so a C1 transcript keeps the
       // scalar kernel sequence. Drafts, judge, rollback and redrafts are
-      // unchanged around it; any capture breakage falls back to the eager
-      // batch inside the model call. BATCH_EAGER forces the packed eager
-      // batch at any level.
-      const bool padded = !dflash_batch_eager() && graph_level == 3 &&
-                          model_->dflash_graph_verify_available();
-      const bool want_graph = !dflash_batch_eager() && !padded &&
-                              graph_level >= 1 &&
-                              (graph_level >= 2 || reqs.size() >= 2) &&
-                              model_->dflash_graph_verify_available();
-      auto outs = want_graph
-                      ? model_->session_verify_batch_graph(reqs, feds, &offs)
-                      : padded ? model_->session_verify_batch_padded(reqs, feds, &offs)
-                               : model_->session_verify_batch(reqs, feds, &offs);
+      // unchanged around it; a capture breakage falls back to the eager
+      // batch inside the model call.
+      const bool want_graph = model_->dflash_verify_graph() && model_->dflash_graph_verify_available();
+      auto outs = want_graph ? model_->session_verify_batch_graph(reqs, feds, &offs)
+                             : model_->session_verify_batch(reqs, feds, &offs);
       const long long ph2 = ph ? ns_now() : 0;
       std::vector<std::vector<int32_t>> out(reqs.size());
-      // Batched redrafts (DGPP_DFLASH2_DRAFT_BATCH=1): one stacked block
+      // Batched redrafts (engine.dflash_draft_batch): one stacked block
       // forward for every spec slot instead of one per slot. Otherwise
       // each slot redrafts alone (the shipped behavior).
       std::vector<size_t> batch_idx;
-      if (dflash_draft_batch()) {
+      if (model_->dflash_draft_batch()) {
         for (size_t i = 0; i < reqs.size(); ++i)
           if (is_spec[i]) batch_idx.push_back(i);
       }
@@ -353,14 +347,13 @@ class EagerEngineAdapter : public sched::SchedulerEngine {
           auto& sp = spec_.at(static_cast<size_t>(reqs[i]));
           const int T = static_cast<int>(feds[i].size());
           const std::vector<int32_t> winners = rows_pick()(local_row_maxes(outs[i], T));
-          if (use_batch) {
-            out[i] = sp->commit_verify(feds[i], winners, offs[i]);
-          } else {
-            out[i] = sp->commit(feds[i], winners, offs[i]);
-          }
+          const std::vector<int32_t> committed = use_batch ? sp->commit_verify(feds[i], winners, offs[i])
+                                                            : sp->commit(feds[i], winners, offs[i]);
           pending = sp->next();
+          // As in step(): committed[0] is the already-emitted pending token.
+          out[i].assign(committed.begin() + 1, committed.end());
+          out[i].push_back(static_cast<int32_t>(pending));
           for (int32_t t : out[i]) s.context.push_back(t);
-          s.context.push_back(static_cast<int32_t>(pending));
         } else {
           const int32_t next = decide(s, outs[i]);
           s.context.push_back(next);
@@ -573,12 +566,11 @@ class EagerEngineAdapter : public sched::SchedulerEngine {
     }
     if (!sp) {
       sp = std::make_unique<DFlash2Speculator<Model>>(*model_, req, rows_pick());
-      // Experimental verify-depth cap (long-context throughput work):
-      // DGPP_DFLASH2_DEPTH=k verifies only the first k drafts per step
-      // (exact transcripts — unverified drafts re-draft next step).
-      // Unset (the default) verifies the whole block.
-      const int depth_cap = dflash_depth_cap();
-      if (depth_cap >= 0) {
+      // engine.dflash_depth = k verifies only the first k drafts per step
+      // (exact transcripts — unverified drafts re-draft next step); 0, the
+      // default, verifies the whole block.
+      const int depth_cap = model_->dflash_depth();
+      if (depth_cap > 0) {
         const int D = model_->dflash2_drafts();
         int k = depth_cap < D ? depth_cap : D;
         sp->set_depth_policy([k](const std::vector<int32_t>& d) {
@@ -591,56 +583,9 @@ class EagerEngineAdapter : public sched::SchedulerEngine {
     return sp->fed_rows();
   }
 
-  // Cached env gates for the dflash throughput work (both default off,
-  // so the shipped path is untouched unless the operator opts in).
-  static int dflash_depth_cap() {
-    static const int v = [] {
-      const char* e = std::getenv("DGPP_DFLASH2_DEPTH");
-      if (!e || !*e) return -1;
-      const int k = std::atoi(e);
-      return k < 0 ? -1 : k;
-    }();
-    return v;
-  }
-  static bool dflash_draft_batch() {
-    // Batched redrafts (one stacked forward per step): default ON —
-    // validated +5–9% at c4 with no errors, C1-identical by construction
-    // (a single spec slot keeps the scalar redraft). DGPP_DFLASH2_DRAFT_BATCH=0
-    // opts out to the per-slot redrafts.
-    static const bool v = [] {
-      const char* e = std::getenv("DGPP_DFLASH2_DRAFT_BATCH");
-      return !(e && *e == '0');
-    }();
-    return v;
-  }
   static bool dflash_trace() {
     static const bool v = [] {
       const char* e = std::getenv("DGPP_DFLASH2_TRACE");
-      return e && *e && *e != '0';
-    }();
-    return v;
-  }
-  static int dflash_verify_graph() {
-    // 0: the packed eager batch — no graph (the opt-out baseline). 1:
-    // multi-slot batches replay the captured static verify (the shipped
-    // default — the measured best: ~5–8% over the eager batch at
-    // short-context c4/c8, a tie at 8K). 2: lone slots too (their own
-    // 8-row capture — the capture-mechanism control: no padding involved
-    // at all). 3: the bisection control — the same static padded staging
-    // executed eagerly.
-    static const int v = [] {
-      const char* e = std::getenv("DGPP_DFLASH2_VERIFY_GRAPH");
-      if (!e || !*e) return 1;   // shipped default: the multi-slot graph
-      if (*e == '0') return 0;   // opt out: the packed eager batch
-      return std::atoi(e);
-    }();
-    return v;
-  }
-  static bool dflash_batch_eager() {
-    // Force the eager batch inside the graph method (the 3-way bisection:
-    // scalar vs eager-batch vs captured-batch on identical staging).
-    static const bool v = [] {
-      const char* e = std::getenv("DGPP_DFLASH2_BATCH_EAGER");
       return e && *e && *e != '0';
     }();
     return v;

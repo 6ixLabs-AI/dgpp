@@ -178,6 +178,13 @@ struct ClusterConfig {
     // Replaces mtp (mutually exclusive); the draft width is the
     // checkpoint's block_size - 1.
     std::string dflash_model = "";
+    // Its serving options: the multi-slot verify replayed as a captured
+    // graph (the measured best), the redrafts stacked across slots, and a
+    // verify-depth cap (0 = the whole block; transcripts are exact at any
+    // value — unverified drafts re-draft next step).
+    bool dflash_verify_graph = true;
+    bool dflash_draft_batch = true;
+    int dflash_depth = 0;
     // The confidence-scheduled verify depth (engine/verify_schedule.hpp,
     // 2026-09-14; needs mtp and a family with a confidence head — DSpark):
     // a step verifies only the leading drafts whose prefix survival beats
