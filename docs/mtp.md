@@ -83,8 +83,11 @@ the same recipe plain). Acceptance is the ordinary greedy verify: the fed
 rows (the pending token plus the drafts) run through the target, the accepted
 prefix commits, the rest rolls back, and the step returns the tokens it
 decided (the accepted drafts and the verify's next token), so the transcript
-equals the plain world's. Sampled, grammar-constrained and penalized requests
-run the plain step. The throughput line carries the drafter's per-position
+equals a plain world's of the same verify width: 4/4 identical to an MTP
+depth-4 world (both verify five or more rows, the streaming mma class); a
+3-row MTP verify or a T=1 step differs within the family's cross-dispatch
+near-tie class (`mma_from_rows` 5). Sampled, grammar-constrained and
+penalized requests run the plain step. The throughput line carries the drafter's per-position
 acceptance in the MTP group.
 
 ### Proposal rule: the selector walk

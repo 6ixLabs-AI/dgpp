@@ -20,7 +20,8 @@ The history by milestone. The dated engineering record in
   verified width (exact at any value). `kSpecRows` 6 → 8 for the 8-row
   block (the MTP families' `mtp_depth` stays 1–5). The step returns the
   tokens it decided (the accepted drafts and the verify's next token) like
-  the plain step, so transcripts equal the plain world's; the selector's
+  the plain step, so transcripts equal a plain world's of the same verify
+  width (4/4 identical to MTP depth 4); the selector's
   unary term is the candidate's logit (vLLM `_score_edges`), which makes
   the walk the proposal rule (+2–11 % tokens per step over a per-slot
   top-1). The 27B family's own GEMM instance takes the streaming mma form
