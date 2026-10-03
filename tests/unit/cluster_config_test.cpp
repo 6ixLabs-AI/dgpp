@@ -141,7 +141,7 @@ DGPP_TEST(cluster_config_parses_fills_defaults_and_derives_the_world) {
               c.engine.rendezvous_timeout_ms == 120000 && !c.engine.reasoning_in_content &&
               c.engine.kv_dtype == "bf16" && c.engine.bf16_weights == "checkpoint" &&
               c.engine.fp8_head == "gemv" && !c.engine.prefill_bf16_partials && !c.engine.prefill_fold_scales &&
-              !c.engine.prefill_fp8_gemm && c.engine.expert_gemm == "wide" && c.engine.expert_gemm_prefetch == 3 &&
+              !c.engine.prefill_fp8_gemm && !c.engine.prefill_fp8_per_tensor && c.engine.expert_gemm == "wide" && c.engine.expert_gemm_prefetch == 3 &&
               c.engine.expert_tile_list && !c.engine.expert_gemm_pair && c.engine.ngram_prestage,
           "the engine defaults");
   // The expert GEMM's form and companions (2026-09-30): keys, not environment switches.
@@ -152,14 +152,16 @@ DGPP_TEST(cluster_config_parses_fills_defaults_and_derives_the_world) {
               xg.engine.expert_gemm_pair && !xg.engine.ngram_prestage,
           "the expert GEMM keys parse");
   // The opt-in prefill levers (2026-09-30): off unless the config says so.
-  for (const std::string key : {"prefill_bf16_partials", "prefill_fold_scales", "prefill_fp8_gemm"}) {
+  for (const std::string key : {"prefill_bf16_partials", "prefill_fold_scales", "prefill_fp8_gemm",
+                                "prefill_fp8_per_tensor"}) {
     const auto on = dgpp::serve::parse_cluster_config(
         R"({"model":"m","nodes":["h"],"engine":{")" + key + R"(":true}})", "t");
     const bool got = key == "prefill_bf16_partials" ? on.engine.prefill_bf16_partials
                      : key == "prefill_fold_scales"  ? on.engine.prefill_fold_scales
-                                                     : on.engine.prefill_fp8_gemm;
+                     : key == "prefill_fp8_gemm"     ? on.engine.prefill_fp8_gemm
+                                                     : on.engine.prefill_fp8_per_tensor;
     const int others = (on.engine.prefill_bf16_partials ? 1 : 0) + (on.engine.prefill_fold_scales ? 1 : 0) +
-                       (on.engine.prefill_fp8_gemm ? 1 : 0);
+                       (on.engine.prefill_fp8_gemm ? 1 : 0) + (on.engine.prefill_fp8_per_tensor ? 1 : 0);
     require(got && others == 1, "engine." + key + " opt-in alone");
   }
   const auto compact = dgpp::serve::parse_cluster_config(

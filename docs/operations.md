@@ -139,6 +139,18 @@ that buffer. Hidden states retain their original layout for cache snapshots
 and MTP. For a vocabulary shard of `V` entries, a prefill capacity `T` and
 decode capacity `D`, this saves `(T - D) * V * 4` device bytes per rank.
 
+Qwen3.8-27B-FP8 (`qwen3_5`) serves its native block-FP8 projections exactly by
+default: decode rows through the block-scaled FP8 GEMV / streaming MMA, prefill
+through the dequantized bf16 GEMM, the BF16 lm head as shipped. Two opt-in
+levers trade exactness for speed and must be named in the config:
+`engine.dense_weights: "fp8"` requantizes the lm head to block FP8 (half its
+bytes per decode row, 15 ms of a 3-row MTP pass), and
+`engine.prefill_fp8_per_tensor: true` runs the prefill GEMMs on cuBLASLt's
+per-tensor e4m3 kernels (about 2x the prefill rate, +23 GiB resident). Both
+change greedy transcripts (the head within the first tokens, the prefill
+recipe at long context), so a deployment that enables them is not the
+checkpoint's model. The family is world-1 only.
+
 Qwen FP8 and packed heads keep the full product's kernel selection and
 accumulation order. BF16 heads use the existing small-row projection, which
 can change FP32 rounding. Acceptance uses an FP64 oracle and teacher-forced

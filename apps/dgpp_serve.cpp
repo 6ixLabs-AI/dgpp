@@ -80,6 +80,7 @@
 #include "models/glm/gen_engine.hpp"
 #include "models/qwen/config.hpp"
 #include "models/qwen/forward.hpp"
+#include "models/qwen/model35.hpp"
 #include "models/glm4/config.hpp"
 #include "models/glm4/forward.hpp"
 #include "models/glm_dsa/config.hpp"
@@ -863,6 +864,74 @@ struct MimoFamily final : ServeFamily {
   }
 };
 
+// Qwen3.8-27B dense family (FP8 text-only, bf16 K/V pool, the MTP draft layer).
+// engine.dense_weights = fp8 requantizes its BF16 lm head to block FP8 and
+// engine.prefill_fp8_per_tensor selects the per-tensor prefill recipe; both
+// are static settings on Qwen35Model applied before the plan and the build.
+struct Qwen35Family final : ServeFamily {
+  dgpp::Qwen35TextConfig cfg;
+  std::string ckpt;
+  std::vector<int64_t> eos_;
+  std::unique_ptr<dgpp::Qwen35Model> model;
+  Qwen35Family(const std::string& checkpoint)
+      : cfg(dgpp::Qwen35TextConfig::from_json_file((fs::path(checkpoint) / "config.json").string())),
+        ckpt(checkpoint) {
+    if (cfg.eos_token_ids.empty())
+      throw std::invalid_argument("Qwen3.5: the config names no EOS token");
+    for (int64_t id : cfg.eos_token_ids) eos_.push_back(id);
+  }
+  const char* name() const override { return "qwen3_5"; }
+  int64_t vocab_size() const override { return cfg.vocab_size; }
+  const std::vector<int64_t>& eos_token_ids() const override { return eos_; }
+  int64_t block_tokens() const override { return dgpp::Qwen35Model::kv_block_tokens_static(); }
+  int prefill_chunk_tokens() const override { return dgpp::Qwen35Model::prefill_chunk_tokens(); }
+  std::string pool_check(int64_t) const override { return ""; }
+  const char* kv_format_name() const override { return "bf16"; }
+  int decode_rows_cap() const override { return dgpp::Qwen35Model::decode_rows_cap(); }
+  size_t lat_slot_bytes(int decode_rows) const override {
+    return static_cast<size_t>(decode_rows) * static_cast<size_t>(cfg.hidden_size) * 2;
+  }
+  dgpp::MemoryPlan plan(int forward_rows, int64_t context, int rank, int world_, bool fabric, int slots,
+                        bool mtp, int decode_rows) const override {
+    return dgpp::Qwen35Model::plan_memory(cfg, forward_rows, context, fabric ? rank : 0, fabric ? world_ : 1,
+                                          fabric ? dgpp::LoaderResidency::Resident : dgpp::LoaderResidency::Streaming,
+                                          slots, fabric && mtp, decode_rows);
+  }
+  size_t snapshot_bytes(int world_, bool mtp) const override {
+    return dgpp::Qwen35Model::session_snapshot_bytes(cfg, world_, mtp);
+  }
+  void build_model(dgpp::BoundaryReducer* reducer, int rank, int world_, bool fabric, int forward_rows,
+                   int64_t pool_tokens, int slots, bool mtp, int decode_rows) override {
+    // The resident image cache: the same directory the process configured
+    // for the GLM loader (prepare_serving_process).
+    dgpp::Qwen35LayerStream::set_resident_image_dir(dgpp::GlmLayerStream::resident_image_dir());
+    model = std::make_unique<dgpp::Qwen35Model>(
+        cfg, ckpt, forward_rows, pool_tokens,
+        fabric ? dgpp::LoaderResidency::Resident : dgpp::LoaderResidency::Streaming, reducer, fabric ? rank : 0,
+        fabric ? world_ : 1, slots, decode_rows, fabric && mtp);
+  }
+  void destroy_model() override { model.reset(); }
+  size_t model_snapshot_bytes() const override { return model ? model->session_snapshot_bytes() : 0; }
+  std::unique_ptr<ServeGraphEngine> make_graph_engine(dgpp::net::CollectiveBus* bus, int rank,
+                                                      int world_, uint16_t* pick_scratch,
+                                                      int batch_min_live, uint16_t* prefix_scratch,
+                                                      uint16_t* gather_scratch, int candidates,
+                                                      const dgpp::text::GrammarVocab* grammar,
+                                                      int prefix_slots, int mtp_depth,
+                                                      bool compact_batches) override {
+    return std::make_unique<ServeGraphEngineOf<dgpp::Qwen35Model>>(
+        model.get(), bus, rank, world_, pick_scratch, cfg.vocab_size, /*pick_timeout_ms=*/60000,
+        batch_min_live, prefix_scratch, gather_scratch, candidates, grammar, prefix_slots,
+        mtp_depth, compact_batches);
+  }
+  std::unique_ptr<dgpp::sched::SchedulerEngine> make_eager_engine(
+      int slots, dgpp::DecodePick pick, dgpp::DecodeSample sample, const dgpp::text::GrammarVocab* grammar,
+      int prefix_slots) override {
+    return std::make_unique<dgpp::EagerEngineAdapter<dgpp::Qwen35Model>>(
+        model.get(), slots, std::move(pick), std::move(sample), grammar, prefix_slots);
+  }
+};
+
 std::unique_ptr<ServeFamily> make_family(const std::string& ckpt, int world,
                                          dgpp::LatentFormat kv_format,
                                          const std::optional<dgpp::RopeScaling>& rope_scaling,
@@ -874,6 +943,7 @@ std::unique_ptr<ServeFamily> make_family(const std::string& ckpt, int world,
   if (arch == dgpp::ModelArchitecture::MimoV2) return std::make_unique<MimoFamily>(ckpt, kv_format);
   if (arch == dgpp::ModelArchitecture::Qwen4Exp)
     return std::make_unique<QwenFamily>(ckpt, rope_scaling, fp8_head_mma);
+  if (arch == dgpp::ModelArchitecture::Qwen3_5) return std::make_unique<Qwen35Family>(ckpt);
   if (arch == dgpp::ModelArchitecture::Glm4Moe) return std::make_unique<Glm4Family>(ckpt);
   if (arch == dgpp::ModelArchitecture::GlmMoeDsa) return std::make_unique<GlmDsaFamily>(ckpt, world, kv_format);
   return std::make_unique<GlmFamily>(ckpt, world, kv_format);
@@ -1275,6 +1345,8 @@ int main(int argc, char** argv) {
       "      must be in [1, max-concurrency])]\n"
       "      (the row batch needs max-concurrency * (1 + mtp depth) <= 8)\n"
       "    [--mtp-depth N]  draft tokens per step (1..5; the verify runs 1+N rows)\n"
+      "    [--prefill-fp8-per-tensor]  Qwen3.8-27B: prefill GEMMs on cuBLASLt's per-tensor e4m3 kernels\n"
+      "      (engine.prefill_fp8_per_tensor; ~2x the prefill rate, +23 GiB, changes greedy output)\n"
       "    [--mtp-schedule]  the confidence-scheduled verify depth (DeepSeek-V4.1's\n"
       "      DSpark): a step verifies only the drafts whose prefix survival beats\n"
       "      the value of a verify row; exact\n"
@@ -1337,6 +1409,7 @@ int main(int argc, char** argv) {
   bool prefill_bf16_partials = false;       // the opt-in prefill levers (engine.prefill_*; 2026-09-30)
   bool prefill_fold_scales = false;
   bool prefill_fp8_gemm = false;
+  bool prefill_fp8_per_tensor = false;  // the Qwen3.8-27B per-tensor prefill recipe (opt-in)
   std::string expert_gemm = "wide";         // the packed expert GEMM's form and companions (engine.expert_*)
   int expert_gemm_prefetch = 3;
   bool expert_tile_list = true;
@@ -1440,6 +1513,7 @@ int main(int argc, char** argv) {
     prefill_bf16_partials = e.prefill_bf16_partials;
     prefill_fold_scales = e.prefill_fold_scales;
     prefill_fp8_gemm = e.prefill_fp8_gemm;
+    prefill_fp8_per_tensor = e.prefill_fp8_per_tensor;
     expert_gemm = e.expert_gemm;
     expert_gemm_prefetch = e.expert_gemm_prefetch;
     expert_tile_list = e.expert_tile_list;
@@ -1531,6 +1605,7 @@ int main(int argc, char** argv) {
     else if (a == "--prefill-bf16-partials") prefill_bf16_partials = true;
     else if (a == "--prefill-fold-scales") prefill_fold_scales = true;
     else if (a == "--prefill-fp8-gemm") prefill_fp8_gemm = true;
+    else if (a == "--prefill-fp8-per-tensor") prefill_fp8_per_tensor = true;
     else if (a == "--expert-gemm") expert_gemm = next();
     else if (a == "--expert-gemm-prefetch") expert_gemm_prefetch = std::stoi(next());
     else if (a == "--no-expert-tile-list") expert_tile_list = false;
@@ -1724,6 +1799,7 @@ int main(int argc, char** argv) {
         ws.prefill_bf16_partials = prefill_bf16_partials;
         ws.prefill_fold_scales = prefill_fold_scales;
         ws.prefill_fp8_gemm = prefill_fp8_gemm;
+        ws.prefill_fp8_per_tensor = prefill_fp8_per_tensor;
         ws.expert_gemm = expert_gemm;
         ws.expert_gemm_prefetch = expert_gemm_prefetch;
         ws.expert_tile_list = expert_tile_list;
@@ -1791,6 +1867,7 @@ int main(int argc, char** argv) {
         prefill_bf16_partials = ws.prefill_bf16_partials;
         prefill_fold_scales = ws.prefill_fold_scales;
         prefill_fp8_gemm = ws.prefill_fp8_gemm;
+        prefill_fp8_per_tensor = ws.prefill_fp8_per_tensor;
         expert_gemm = ws.expert_gemm;
         expert_gemm_prefetch = ws.expert_gemm_prefetch;
         expert_tile_list = ws.expert_tile_list;
@@ -1935,6 +2012,13 @@ int main(int argc, char** argv) {
   dgpp::GlmMoeLayer::set_prefill_options(prefill_bf16_partials, prefill_fold_scales, expert_tile_list,
                                          expert_gemm_pair);
   dgpp::QwenLayerStream::set_prefill_fp8_gemm(prefill_fp8_gemm);
+  // The Qwen3.8-27B family's two opt-in FP8 levers beyond its checkpoint
+  // (both read by its memory plan and its constructor): the per-tensor
+  // prefill recipe and the BF16 lm head requantized to block FP8.
+  dgpp::Qwen35Model::set_prefill_fp8_per_tensor(prefill_fp8_per_tensor);
+  dgpp::Qwen35Model::set_dense_weights_fp8(dense_weights == "fp8");
+  if (prefill_fp8_per_tensor)
+    DGPP_LOG_INFO("serve: engine.prefill_fp8_per_tensor on — prefill GEMMs on per-tensor e4m3 (not transcript-preserving)");
   dgpp::QwenLayerStream::set_ngram_prestage(ngram_prestage);
   if (expert_gemm != "wide" || expert_gemm_prefetch != 3 || !expert_tile_list || expert_gemm_pair || !ngram_prestage)
     DGPP_LOG_INFO("expert GEMM settings: form={} prefetch={} tile_list={} pair={} ngram_prestage={}", expert_gemm,
@@ -2188,7 +2272,13 @@ int main(int argc, char** argv) {
     if (std::string(family->name()) != "qwen4_exp" && ngram_table != "resident")
       DGPP_LOG_WARN("serve: --ngram-table {} applies to the Qwen n-gram table only; the {} family has none",
                     ngram_table, family->name());
-    if (std::string(family->name()) != "qwen4_exp" && dense_weights != "checkpoint")
+    if (prefill_fp8_per_tensor && std::string(family->name()) != "qwen3_5") {
+      DGPP_LOG_ERROR("engine.prefill_fp8_per_tensor is the Qwen3.8-27B (qwen3_5) prefill recipe; {} has no such path",
+                     family->name());
+      return 1;
+    }
+    if (std::string(family->name()) != "qwen4_exp" && std::string(family->name()) != "qwen3_5" &&
+        dense_weights != "checkpoint")
       DGPP_LOG_WARN("serve: --dense-weights {} applies to the Qwen dense stack only; the {} family loads as shipped",
                     dense_weights, family->name());
     if (std::string(family->name()) != "qwen4_exp" && mtp_expert_format != "fp8")

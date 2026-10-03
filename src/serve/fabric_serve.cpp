@@ -393,8 +393,9 @@ std::string encode_journal_settings(const WorldSettings& s) {
   append_json_string(&out, s.bf16_weights);
   out += ",\"dv\":";
   append_json_string(&out, s.draft_vocab);
-  out += std::format(",\"pfb16\":{},\"pffold\":{},\"pffp8\":{}", s.prefill_bf16_partials ? 1 : 0,
-                     s.prefill_fold_scales ? 1 : 0, s.prefill_fp8_gemm ? 1 : 0);
+  out += std::format(",\"pfb16\":{},\"pffold\":{},\"pffp8\":{},\"pfpt\":{}", s.prefill_bf16_partials ? 1 : 0,
+                     s.prefill_fold_scales ? 1 : 0, s.prefill_fp8_gemm ? 1 : 0,
+                     s.prefill_fp8_per_tensor ? 1 : 0);
   out += ",\"xgemm\":";
   append_json_string(&out, s.expert_gemm);
   out += std::format(",\"xpf\":{},\"xtl\":{},\"xpair\":{},\"npre\":{}", s.expert_gemm_prefetch,
@@ -586,6 +587,7 @@ JournalRecord decode_journal_line(std::string_view line) {
     if (v.find("pfb16")) s.prefill_bf16_partials = flag("pfb16");
     if (v.find("pffold")) s.prefill_fold_scales = flag("pffold");
     if (v.find("pffp8")) s.prefill_fp8_gemm = flag("pffp8");
+    if (v.find("pfpt")) s.prefill_fp8_per_tensor = flag("pfpt");  // 2026-10-03: the 27B recipe
     // The expert GEMM's form and companions (2026-09-30): records before them carry the defaults.
     if (const dgpp::minijson::Value* xg = v.find("xgemm")) s.expert_gemm = std::string(xg->as_string());
     if (const dgpp::minijson::Value* xpf = v.find("xpf")) s.expert_gemm_prefetch = static_cast<int>(xpf->as_int());
