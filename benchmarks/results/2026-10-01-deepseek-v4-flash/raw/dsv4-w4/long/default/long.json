@@ -1,0 +1,361 @@
+{
+  "model": "deepseek-ai/DeepSeek-V4-Flash-0731",
+  "seed": 20260922,
+  "max_tokens": 256,
+  "thinking": "server_default",
+  "calibration": {
+    "prompt_sha256": "e4a17121fd76f8e6581ae84417f7cd280299d8545a2b241d77e9599fb486c914",
+    "usage": {
+      "prompt_tokens": 8586,
+      "completion_tokens": 1,
+      "total_tokens": 8587,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      },
+      "completion_tokens_details": {
+        "reasoning_tokens": 1
+      }
+    },
+    "finish": "length",
+    "text": "We",
+    "wall_ms": 5495.547200087458,
+    "ttft_ms": 5495.443759020418,
+    "last_ms": 5495.443759020418,
+    "tokens": 1
+  },
+  "samples": [
+    {
+      "requested_tokens": 4096,
+      "repeat": 0,
+      "engine": {
+        "step_ms": 3238.6,
+        "prefill_ms": 2297.3999999999996,
+        "decode_steps": 83,
+        "decode_rows": 83,
+        "tokens_generated": 256,
+        "prompts_prefilled": 1,
+        "prompt_tokens": 3844,
+        "prompt_tokens_computed": 3844
+      },
+      "engine_tokens_per_s": 78.73772617797815,
+      "ms_per_pass": 39.019277108433734,
+      "tokens_per_pass": 3.072289156626506,
+      "answer": {
+        "prompt_sha256": "5d40c15a37a2357bf01a180785ff332847fdcb0474c38e9e7fc4936567103e5d",
+        "usage": {
+          "prompt_tokens": 3844,
+          "completion_tokens": 256,
+          "total_tokens": 4100,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 256
+          }
+        },
+        "finish": "length",
+        "text": "We need answer user asks \"Write a numbered list describing the first 200 parcels and their cities. Continue until you have listed all 200.\" But current benchmark document only has 114 items (000000 to 000113). Need list first 200? We only have data for 114. Need maybe say only 114 provided? But instruction says continue until 200. We cannot invent. Need produce numbered list describing first 200 parcels and cities, but only 114 available. We should list all provided and note only 114. But user explicitly says first 200. Maybe benchmark expects extraction from document? Document has 114 items. Need list 1-114 with parcel ID and city. Then state no more data. But \"Continue until you have listed all 200\" impossible. We should not fabricate. Need answer with numbered list for items 000000-000113. Use \"Item 000000: parcel PX-0757343 in Income\" etc. Need include city. \"describing first 200 parcels and their cities\" maybe just parcel and city. We'll list all 114. Ensure numbering? They said numbered list describing first 200 parcels. We can use 1. etc. But item numbers are 000000",
+        "wall_ms": 5574.077673023567,
+        "ttft_ms": 2318.4211619663984,
+        "last_ms": 5573.980696033686,
+        "tokens": 256
+      }
+    },
+    {
+      "requested_tokens": 4096,
+      "repeat": 1,
+      "engine": {
+        "step_ms": 3211.5000000000005,
+        "prefill_ms": 81.0,
+        "decode_steps": 85,
+        "decode_rows": 85,
+        "tokens_generated": 256,
+        "prompts_prefilled": 1,
+        "prompt_tokens": 3844,
+        "prompt_tokens_computed": 4
+      },
+      "engine_tokens_per_s": 79.40214852872488,
+      "ms_per_pass": 37.78235294117648,
+      "tokens_per_pass": 3.0,
+      "answer": {
+        "prompt_sha256": "5d40c15a37a2357bf01a180785ff332847fdcb0474c38e9e7fc4936567103e5d",
+        "usage": {
+          "prompt_tokens": 3844,
+          "completion_tokens": 256,
+          "total_tokens": 4100,
+          "prompt_tokens_details": {
+            "cached_tokens": 3840
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 256
+          }
+        },
+        "finish": "length",
+        "text": "We need answer user asks \"Write a numbered list describing the first 200 parcels and their cities. Continue until you have listed all 200.\" But current benchmark document only has 114 items (000000 to 000113). Need list first 200? We only have data for 114. Need maybe say only 114 provided? But instruction says continue until 200. We cannot invent. Need produce numbered list describing first 200 parcels and cities, but only 114 available. We should list all provided and note only 114. But user explicitly says first 200. Maybe benchmark expects extraction from document? Document has 114 items. Need list 1-114 with parcel ID and city. Then state no more data. But \"Continue until you have listed all 200\" impossible. We should not fabricate. Need answer with numbered list for items 000000-000113. Use \"Item 000000: parcel PX-0757343 in Income\" etc. Need include city. \"describing first 200 parcels and their cities\" maybe just parcel and city. We'll list all 114. Ensure numbering? They said numbered list describing first 200 parcels. We can use 1. etc. But item numbers are 000000",
+        "wall_ms": 3333.990596001968,
+        "ttft_ms": 102.86334482952952,
+        "last_ms": 3333.9040668215603,
+        "tokens": 256
+      }
+    },
+    {
+      "requested_tokens": 4096,
+      "repeat": 2,
+      "engine": {
+        "step_ms": 3291.6000000000004,
+        "prefill_ms": 80.89999999999964,
+        "decode_steps": 87,
+        "decode_rows": 87,
+        "tokens_generated": 256,
+        "prompts_prefilled": 1,
+        "prompt_tokens": 3844,
+        "prompt_tokens_computed": 4
+      },
+      "engine_tokens_per_s": 77.46992344148741,
+      "ms_per_pass": 37.834482758620695,
+      "tokens_per_pass": 2.9310344827586206,
+      "answer": {
+        "prompt_sha256": "5d40c15a37a2357bf01a180785ff332847fdcb0474c38e9e7fc4936567103e5d",
+        "usage": {
+          "prompt_tokens": 3844,
+          "completion_tokens": 256,
+          "total_tokens": 4100,
+          "prompt_tokens_details": {
+            "cached_tokens": 3840
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 256
+          }
+        },
+        "finish": "length",
+        "text": "We need answer user asks \"Write a numbered list describing the first 200 parcels and their cities. Continue until you have listed all 200.\" But current benchmark document only has 114 items (000000 to 000113). Need list first 200? We only have data for 114. Need maybe say only 114 provided? But instruction says continue until 200. We cannot invent. Need produce numbered list describing first 200 parcels and cities, but only 114 available. We should list all provided and note only 114. But user explicitly says first 200. Maybe benchmark expects extraction from document? Document has 114 items. Need list 1-114 with parcel ID and city. Then state no more data. But \"Continue until you have listed all 200\" impossible. We should not fabricate. Need answer with numbered list for items 000000-000113. Use \"Item 000000: parcel PX-0757343 in Income\" etc. Need include city. \"describing first 200 parcels and their cities\" maybe just parcel and city. We'll list all 114. Ensure numbering? They said numbered list describing first 200 parcels. We can use 1. etc. But item numbers are 000000",
+        "wall_ms": 3432.3178748600185,
+        "ttft_ms": 102.87372907623649,
+        "last_ms": 3407.0569900795817,
+        "tokens": 256
+      }
+    },
+    {
+      "requested_tokens": 32768,
+      "repeat": 0,
+      "engine": {
+        "step_ms": 3403.0999999999985,
+        "prefill_ms": 26277.0,
+        "decode_steps": 86,
+        "decode_rows": 86,
+        "tokens_generated": 256,
+        "prompts_prefilled": 1,
+        "prompt_tokens": 32438,
+        "prompt_tokens_computed": 32438
+      },
+      "engine_tokens_per_s": 74.93167993887928,
+      "ms_per_pass": 39.57093023255812,
+      "tokens_per_pass": 2.9651162790697674,
+      "answer": {
+        "prompt_sha256": "e82ed5588e25161f85e5cce6f050573866adaf4b4bd70495336d51bc6796c991",
+        "usage": {
+          "prompt_tokens": 32438,
+          "completion_tokens": 256,
+          "total_tokens": 32694,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 256
+          }
+        },
+        "finish": "length",
+        "text": "We need answer user asks: \"Write a numbered list describing the first 200 parcels and their cities. Continue until you have listed all 200.\" Need produce list items 000000 to 000199? \"first 200 parcels\" from benchmark document. Need describe each parcel and city. Probably format: \"Item 000000: parcel PX-0757343 in Income\" etc. Need include city only? \"describing the first 200 parcels and their cities.\" We can list item number, parcel ID, city. Need ensure first 200 items (000000-000199). Need parse from document. We need output numbered list. Could be long but manageable. Need be accurate.\n\nLet's extract first 200 entries (0-199) with parcel ID and city. Need include status? User says \"and their cities\" so maybe parcel ID and city. \"describing the first 200 parcels and their cities\" Could include weight? But \"and their cities\" suggests city. We'll list \"Item 000000: parcel PX-0757343 in Income\" etc. Need continue until 200. Let's parse carefully.\n\nI'll go through items 000000 to 000199 from prompt.\n\nItem 000000: parcel",
+        "wall_ms": 29745.605658972636,
+        "ttft_ms": 26313.035459956154,
+        "last_ms": 29745.490409899503,
+        "tokens": 256
+      }
+    },
+    {
+      "requested_tokens": 32768,
+      "repeat": 1,
+      "engine": {
+        "step_ms": 3366.2999999999993,
+        "prefill_ms": 216.0,
+        "decode_steps": 86,
+        "decode_rows": 86,
+        "tokens_generated": 256,
+        "prompts_prefilled": 1,
+        "prompt_tokens": 32438,
+        "prompt_tokens_computed": 54
+      },
+      "engine_tokens_per_s": 75.75082434720615,
+      "ms_per_pass": 39.143023255813944,
+      "tokens_per_pass": 2.9651162790697674,
+      "answer": {
+        "prompt_sha256": "e82ed5588e25161f85e5cce6f050573866adaf4b4bd70495336d51bc6796c991",
+        "usage": {
+          "prompt_tokens": 32438,
+          "completion_tokens": 256,
+          "total_tokens": 32694,
+          "prompt_tokens_details": {
+            "cached_tokens": 32384
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 256
+          }
+        },
+        "finish": "length",
+        "text": "We need answer user asks: \"Write a numbered list describing the first 200 parcels and their cities. Continue until you have listed all 200.\" Need produce list items 000000 to 000199? \"first 200 parcels\" from benchmark document. Need describe each parcel and city. Probably format: \"Item 000000: parcel PX-0757343 in Income\" etc. Need include city only? \"describing the first 200 parcels and their cities.\" We can list item number, parcel ID, city. Need ensure first 200 items (000000-000199). Need parse from document. We need output numbered list. Could be long but manageable. Need be accurate.\n\nLet's extract first 200 entries (0-199) with parcel ID and city. Need include status? User says \"and their cities\" so maybe parcel ID and city. \"describing the first 200 parcels and their cities\" Could include weight? But \"and their cities\" suggests city. We'll list \"Item 000000: parcel PX-0757343 in Income\" etc. Need continue until 200. Let's parse carefully.\n\nI'll go through items 000000 to 000199 from prompt.\n\nItem 000000: parcel",
+        "wall_ms": 3644.8820650111884,
+        "ttft_ms": 237.87635122425854,
+        "last_ms": 3644.7808160446584,
+        "tokens": 256
+      }
+    },
+    {
+      "requested_tokens": 32768,
+      "repeat": 2,
+      "engine": {
+        "step_ms": 3358.4000000000015,
+        "prefill_ms": 226.1999999999971,
+        "decode_steps": 86,
+        "decode_rows": 86,
+        "tokens_generated": 256,
+        "prompts_prefilled": 1,
+        "prompt_tokens": 32438,
+        "prompt_tokens_computed": 54
+      },
+      "engine_tokens_per_s": 75.92901381610287,
+      "ms_per_pass": 39.05116279069769,
+      "tokens_per_pass": 2.9651162790697674,
+      "answer": {
+        "prompt_sha256": "e82ed5588e25161f85e5cce6f050573866adaf4b4bd70495336d51bc6796c991",
+        "usage": {
+          "prompt_tokens": 32438,
+          "completion_tokens": 256,
+          "total_tokens": 32694,
+          "prompt_tokens_details": {
+            "cached_tokens": 32384
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 256
+          }
+        },
+        "finish": "length",
+        "text": "We need answer user asks: \"Write a numbered list describing the first 200 parcels and their cities. Continue until you have listed all 200.\" Need produce list items 000000 to 000199? \"first 200 parcels\" from benchmark document. Need describe each parcel and city. Probably format: \"Item 000000: parcel PX-0757343 in Income\" etc. Need include city only? \"describing the first 200 parcels and their cities.\" We can list item number, parcel ID, city. Need ensure first 200 items (000000-000199). Need parse from document. We need output numbered list. Could be long but manageable. Need be accurate.\n\nLet's extract first 200 entries (0-199) with parcel ID and city. Need include status? User says \"and their cities\" so maybe parcel ID and city. \"describing the first 200 parcels and their cities\" Could include weight? But \"and their cities\" suggests city. We'll list \"Item 000000: parcel PX-0757343 in Income\" etc. Need continue until 200. Let's parse carefully.\n\nI'll go through items 000000 to 000199 from prompt.\n\nItem 000000: parcel",
+        "wall_ms": 3643.6254801228642,
+        "ttft_ms": 262.8695049788803,
+        "last_ms": 3643.525063060224,
+        "tokens": 256
+      }
+    },
+    {
+      "requested_tokens": 122000,
+      "repeat": 0,
+      "engine": {
+        "step_ms": 3305.7000000000007,
+        "prefill_ms": 199029.5,
+        "decode_steps": 73,
+        "decode_rows": 73,
+        "tokens_generated": 256,
+        "prompts_prefilled": 1,
+        "prompt_tokens": 121443,
+        "prompt_tokens_computed": 121443
+      },
+      "engine_tokens_per_s": 77.13948634177328,
+      "ms_per_pass": 45.283561643835625,
+      "tokens_per_pass": 3.493150684931507,
+      "answer": {
+        "prompt_sha256": "b486efa90dfddb60fea626ee09edf5a01ecd65dc328dc12ad3988d865bb26d24",
+        "usage": {
+          "prompt_tokens": 121443,
+          "completion_tokens": 256,
+          "total_tokens": 121699,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 256
+          }
+        },
+        "finish": "length",
+        "text": "We need answer user asks: \"Write a numbered list describing the first 200 parcels and their cities. Continue until you have listed all 200.\" Need produce list of first 200 parcels (items 000000 to 000199) with parcel ID and city? \"describing the first 200 parcels and their cities.\" Need likely include item number, parcel ID, city. Need be concise. Need ensure first 200 entries. We have benchmark document 122000? Actually list starts item 000000 to 003623. Need first 200 parcels = items 000000 through 000199 inclusive. Need list numbered 1-200? \"numbered list describing the first 200 parcels and their cities.\" Could use item numbers? Need include parcel PX-... and city. Let's extract from data.\n\nNeed parse first 200 entries. Let's list items 000000-000199 with city. Need be accurate.\n\nI'll go through:\n\n000000: parcel PX-0757343 ... Income\n000001: PX-0081436 ... Jamesport\n000002: PX-0126529 ... Dunmore\n000003: PX-0226532 ... Dunmore\n000004: PX-0538039",
+        "wall_ms": 202433.64159506746,
+        "ttft_ms": 199104.136812035,
+        "last_ms": 202433.54733800516,
+        "tokens": 256
+      }
+    },
+    {
+      "requested_tokens": 122000,
+      "repeat": 1,
+      "engine": {
+        "step_ms": 3393.7000000000007,
+        "prefill_ms": 471.69999999998254,
+        "decode_steps": 75,
+        "decode_rows": 75,
+        "tokens_generated": 256,
+        "prompts_prefilled": 1,
+        "prompt_tokens": 121443,
+        "prompt_tokens_computed": 99
+      },
+      "engine_tokens_per_s": 75.13922857058665,
+      "ms_per_pass": 45.24933333333334,
+      "tokens_per_pass": 3.4,
+      "answer": {
+        "prompt_sha256": "b486efa90dfddb60fea626ee09edf5a01ecd65dc328dc12ad3988d865bb26d24",
+        "usage": {
+          "prompt_tokens": 121443,
+          "completion_tokens": 256,
+          "total_tokens": 121699,
+          "prompt_tokens_details": {
+            "cached_tokens": 121344
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 256
+          }
+        },
+        "finish": "length",
+        "text": "We need answer user asks: \"Write a numbered list describing the first 200 parcels and their cities. Continue until you have listed all 200.\" Need produce list of first 200 parcels (items 000000 to 000199) with parcel ID and city? \"describing the first 200 parcels and their cities.\" Need likely include item number, parcel ID, city. Need be concise. Need ensure first 200 entries. We have benchmark document 122000? Actually list starts item 000000 to 003623. Need first 200 parcels = items 000000 through 000199 inclusive. Need list numbered 1-200? \"numbered list describing the first 200 parcels and their cities.\" Could use item numbers? Need include parcel PX-... and city. Let's extract from data.\n\nNeed parse first 200 entries. Let's list items 000000-000199 with city. Need be accurate.\n\nI'll go through:\n\n000000: parcel PX-0757343 ... Income\n000001: PX-0081436 ... Jamesport\n000002: PX-0126529 ... Dunmore\n000003: PX-0226532 ... Dunmore\n000004: PX-0538039",
+        "wall_ms": 3945.1003049034625,
+        "ttft_ms": 539.8836929816753,
+        "last_ms": 3944.9941280763596,
+        "tokens": 256
+      }
+    },
+    {
+      "requested_tokens": 122000,
+      "repeat": 2,
+      "engine": {
+        "step_ms": 3397.5999999999985,
+        "prefill_ms": 465.0,
+        "decode_steps": 75,
+        "decode_rows": 75,
+        "tokens_generated": 256,
+        "prompts_prefilled": 1,
+        "prompt_tokens": 121443,
+        "prompt_tokens_computed": 99
+      },
+      "engine_tokens_per_s": 75.05297857311047,
+      "ms_per_pass": 45.30133333333331,
+      "tokens_per_pass": 3.4,
+      "answer": {
+        "prompt_sha256": "b486efa90dfddb60fea626ee09edf5a01ecd65dc328dc12ad3988d865bb26d24",
+        "usage": {
+          "prompt_tokens": 121443,
+          "completion_tokens": 256,
+          "total_tokens": 121699,
+          "prompt_tokens_details": {
+            "cached_tokens": 121344
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 256
+          }
+        },
+        "finish": "length",
+        "text": "We need answer user asks: \"Write a numbered list describing the first 200 parcels and their cities. Continue until you have listed all 200.\" Need produce list of first 200 parcels (items 000000 to 000199) with parcel ID and city? \"describing the first 200 parcels and their cities.\" Need likely include item number, parcel ID, city. Need be concise. Need ensure first 200 entries. We have benchmark document 122000? Actually list starts item 000000 to 003623. Need first 200 parcels = items 000000 through 000199 inclusive. Need list numbered 1-200? \"numbered list describing the first 200 parcels and their cities.\" Could use item numbers? Need include parcel PX-... and city. Let's extract from data.\n\nNeed parse first 200 entries. Let's list items 000000-000199 with city. Need be accurate.\n\nI'll go through:\n\n000000: parcel PX-0757343 ... Income\n000001: PX-0081436 ... Jamesport\n000002: PX-0126529 ... Dunmore\n000003: PX-0226532 ... Dunmore\n000004: PX-0538039",
+        "wall_ms": 3946.705834940076,
+        "ttft_ms": 515.3584498912096,
+        "last_ms": 3946.6140249278396,
+        "tokens": 256
+      }
+    }
+  ]
+}

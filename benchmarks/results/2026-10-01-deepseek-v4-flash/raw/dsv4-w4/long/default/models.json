@@ -1,0 +1,71 @@
+{
+  "object": "list",
+  "data": [
+    {
+      "id": "deepseek-ai/DeepSeek-V4-Flash-0731",
+      "object": "model",
+      "created": 1790971991,
+      "owned_by": "dgpp",
+      "sampling": {
+        "available": true,
+        "defaults": {
+          "temperature": 1,
+          "top_p": 1,
+          "top_k": 0,
+          "min_p": 0,
+          "repetition_penalty": 1
+        }
+      },
+      "tools": {
+        "available": true,
+        "constrained": true
+      },
+      "response_format": {
+        "json_object": true,
+        "json_schema": true
+      },
+      "reasoning": {
+        "in_content": false,
+        "effort_mapping": {
+          "none": {
+            "enable_thinking": false
+          },
+          "minimal": {
+            "enable_thinking": true,
+            "reasoning_effort": "minimal"
+          },
+          "low": {
+            "enable_thinking": true,
+            "reasoning_effort": "low"
+          },
+          "medium": {
+            "enable_thinking": true,
+            "reasoning_effort": "medium"
+          },
+          "high": {
+            "enable_thinking": true,
+            "reasoning_effort": "high"
+          },
+          "xhigh": {
+            "enable_thinking": true,
+            "reasoning_effort": "xhigh"
+          },
+          "max": {
+            "enable_thinking": true,
+            "reasoning_effort": "max"
+          }
+        }
+      },
+      "default_chat_template_kwargs": {},
+      "input_modalities": [
+        "text"
+      ],
+      "context": {
+        "request_limit_tokens": 1048576,
+        "position_ceiling_tokens": null,
+        "kv_pool_tokens": 1048576,
+        "limited_by": "kv-pool"
+      }
+    }
+  ]
+}

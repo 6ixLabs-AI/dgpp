@@ -26,6 +26,17 @@ void launch_moe_router(const uint16_t* hidden, const uint16_t* gate,
                        int* counters = nullptr,
                        bool allow_tiled = true);
 
+// Hash routing (DeepSeek-V4-Flash's first layers, 2026-10-01): after
+// launch_moe_router has left every expert's score in `scores` (run it with
+// a zero bias), the routes are REPLACED — ids [tokens, top_k] =
+// tid2eid[tokens[t]] (int32 [vocab, top_k], rows ascending), weights the
+// scores at those ids normalized and scaled as the select does. tokens:
+// device int64 [n_tokens] in the hidden rows' order.
+void launch_moe_hash_routes(const int64_t* tokens, const int32_t* tid2eid,
+                            const float* scores, int32_t* ids, float* weights,
+                            const GlmMoeConfig& cfg, int vocab, int n_tokens,
+                            cudaStream_t stream);
+
 // swiglu with asymmetric clamps: gate clamp_max only, up clamp both; two
 // bf16 rounding points (silu result, then the product). n = rows*inter.
 void launch_moe_swiglu_clamp(const uint16_t* gate, const uint16_t* up,
@@ -210,8 +221,12 @@ void launch_moe_round_bf16(uint16_t* out, const float* acc, int64_t n,
 // slot, from launch_moe_slot_order — a multi-token batch sorted by expert
 // so a shared expert's second read is an L2 hit. Null = identity. Results
 // are indexed by logical slot either way (bitwise identical).
+// `shared_early`: the shared expert's slots interleaved with the first
+// routed ones instead of last (the kernel's comment: compute over
+// L2-resident weights beside the routed DRAM stream).
 void launch_moe_slot_order(const int32_t* ids, int32_t* order, int slots,
-                           int top_k, int n_experts, cudaStream_t stream);
+                           int top_k, int n_experts, cudaStream_t stream,
+                           bool shared_early = false);
 void launch_moe_slot_gate_up_swiglu(
     const uint16_t* x, size_t x_stride, const int32_t* ids,
     const int32_t* order, const MoeExpertView* views, int n_routed,

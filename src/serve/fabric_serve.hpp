@@ -152,6 +152,8 @@ struct WorldSettings {
   double mtp_schedule_lambda = 0.0;
   int mtp_schedule_min_depth = 1;
   bool mtp_schedule_adapt = true;
+  double mtp_schedule_sampled_scale = 0.93;  // engine.mtp_schedule_sampled_scale
+  std::string mtp_draft = "auto";  // engine.mtp_draft: every rank resolves the same rule
   int graph_batch_min_live = 0;
   int sampling_candidates = 0;
   double prefix_cache_gib = 0.0;

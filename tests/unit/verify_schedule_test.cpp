@@ -50,6 +50,32 @@ DGPP_TEST(verify_schedule_stops_at_the_survival_cliff) {
           "stops at the first sub-threshold survival, ignoring later spikes");
 }
 
+DGPP_TEST(verify_schedule_accept_scale_shortens_a_sampled_slot) {
+  // A sampled slot with argmax drafts accepts at a fraction of the head's
+  // rate per position: the scaled survival falls under the threshold sooner
+  // (never later), scale 1 is the greedy rule, and the batch rule takes a
+  // scale per slot.
+  std::vector<float> c(5, logit(0.8));
+  const float lam = dgpp::verify_reservation_lambda(20.0f, 9.0f);  // threshold .310
+  // S = .8, .64, .512, .410, .328: all five clear at scale 1.
+  require(dgpp::scheduled_verify_depth(c.data(), 5, 9.0f, lam) == 5, "the greedy rule clears the block");
+  require(dgpp::scheduled_verify_depth(c.data(), 5, 9.0f, lam, 1.0) == 5, "scale 1 is the greedy rule");
+  // At 0.9: p = .72 -> S = .72, .518, .373, .269: three.
+  require(dgpp::scheduled_verify_depth(c.data(), 5, 9.0f, lam, 0.9) == 3, "a scaled slot stops sooner");
+  for (double s = 0.5; s < 1.0; s += 0.1)
+    require(dgpp::scheduled_verify_depth(c.data(), 5, 9.0f, lam, s) <=
+                dgpp::scheduled_verify_depth(c.data(), 5, 9.0f, lam, s + 0.1),
+            "the depth is non-decreasing in the scale");
+  const float* confs[2] = {c.data(), c.data()};
+  const double ones[2] = {1.0, 1.0}, mixed[2] = {1.0, 0.9};
+  require(dgpp::scheduled_verify_depth_batch(confs, 2, 5, 9.0f, lam, ones) ==
+              dgpp::scheduled_verify_depth_batch(confs, 2, 5, 9.0f, lam),
+          "unit scales are the unscaled batch rule");
+  // Mean survival of (1.0, 0.9): (.8+.72)/2 .. -> .76, .579, .442, .340, .261: four.
+  require(dgpp::scheduled_verify_depth_batch(confs, 2, 5, 9.0f, lam, mixed) == 4,
+          "the batch rule averages the slots' scaled survivals");
+}
+
 DGPP_TEST(verify_schedule_larger_lambda_verifies_shallower) {
   // Monotone in lambda: the more valuable decode time is, the fewer drafts.
   std::vector<float> c(5, logit(0.85));

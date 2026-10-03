@@ -13,12 +13,14 @@
 
 #include "common/test.hpp"
 #include "loaders/minijson.hpp"
+#include "text/chat_template.hpp"
 #include "text/tool_parser.hpp"
 
 namespace {
 
 using dgpp::text::ChatMarker;
 using dgpp::text::ChatMarkers;
+using dgpp::text::DsmlDialect;
 using dgpp::text::ToolCallParser;
 using dgpp::text::ToolSchemas;
 using Event = ToolCallParser::Event;
@@ -189,11 +191,12 @@ Run drive_qwen(const std::string& text, ToolCallParser::Options opts = {}) {
 // ---- the DeepSeek-V4.1 DSML format: the tag token is the only id; the
 // brackets and tag names are text, the block opens at the tag token after
 // a "<" and closes at "</｜DSML｜ calls>".
-ChatMarkers dsml_markers() {
+ChatMarkers dsml_markers(DsmlDialect dialect = DsmlDialect::kV41) {
   ChatMarkers m;
   m.think_open = ChatMarker{kThinkOpen, "<think>"};
   m.think_close = ChatMarker{kThinkClose, "</think>"};
   m.dsml = ChatMarker{kDsml, "｜DSML｜"};
+  m.dsml_dialect = dialect;
   return m;
 }
 std::vector<int64_t> dsml_ids_of(const std::string& text) {
@@ -215,8 +218,8 @@ std::vector<int64_t> dsml_ids_of(const std::string& text) {
   }
   return out;
 }
-Run drive_dsml(const std::string& text, ToolCallParser::Options opts = {}) {
-  ToolCallParser parser(dsml_markers(), fake_decode, weather_schemas(), opts);
+Run drive_dsml(const std::string& text, ToolCallParser::Options opts = {}, DsmlDialect dialect = DsmlDialect::kV41) {
+  ToolCallParser parser(dsml_markers(dialect), fake_decode, weather_schemas(), opts);
   std::vector<Event> events;
   for (const int64_t id : dsml_ids_of(text)) parser.feed(id, &events);
   parser.finish(&events);
@@ -327,6 +330,133 @@ DGPP_TEST(tool_parser_dsml_format_malformed_block_falls_back_to_content) {
       "ok\n\n<｜DSML｜ calls>\n<｜DSML｜ invoke name=\"get_weather\">\n</｜DSML｜ invoke>\n</｜DSML｜ calls> trailing", plain);
   require(tail.calls.size() == 1 && tail.calls[0].arguments == "{}", "the closed block's call stands");
   require(tail.content == "ok trailing", "the text around the block: '" + tail.content + "'");
+}
+
+// ---- the DeepSeek-V4 dialect of DSML (encoding_dsv4.py): the same tag
+// token, but no space after it and the block named "tool_calls"; no tool
+// namespaces. The tokenizer cannot tell the dialects apart — the markers
+// state it.
+DGPP_TEST(tool_parser_dsml_v4_dialect_one_call_string_and_json_values) {
+  require(dsml_markers().dsml_dialect == DsmlDialect::kV41 && dsml_markers().dsml_namespaces(),
+          "the default dialect is V4.1's, with namespaces");
+  const ChatMarkers v4 = dsml_markers(DsmlDialect::kV4);
+  require(v4.tool_format() == dgpp::text::ToolFormat::kDsml && v4.tool_calls_available() && !v4.dsml_namespaces(),
+          "the V4 dialect is the DSML format without namespaces");
+  ToolCallParser::Options plain;
+  plain.start_in_reasoning = false;
+  const Run run = drive_dsml(
+      "Sure, let me check.\n\n<｜DSML｜tool_calls>\n<｜DSML｜invoke name=\"get_weather\">\n"
+      "<｜DSML｜parameter name=\"city\" string=\"true\">Paris</｜DSML｜parameter>\n"
+      "<｜DSML｜parameter name=\"days\" string=\"false\">3</｜DSML｜parameter>\n"
+      "</｜DSML｜invoke>\n</｜DSML｜tool_calls>",
+      plain, DsmlDialect::kV4);
+  require(run.content == "Sure, let me check.", "the content stops before the block's blank line: '" + run.content + "'");
+  require(run.calls.size() == 1, "one call");
+  require(run.calls[0].name == "get_weather", "the call's name");
+  require(run.calls[0].arguments == "{\"city\": \"Paris\", \"days\": 3}", "typed arguments: " + run.calls[0].arguments);
+}
+
+DGPP_TEST(tool_parser_dsml_v4_dialect_calls_reasoning_and_no_namespace) {
+  // The reference's own shape (encoding/tests/test_output_1.txt): the
+  // reasoning, "</think>", a blank line, the block. A "::" in a name is
+  // part of the name here — V4 has no namespaces to strip. An invoke
+  // without parameters comes in both forms: the reference RENDERS it with
+  // a blank line between its tags (the empty parameter list between the
+  // template's two newlines) and its parser reads that and the plain form.
+  const Run run = drive_dsml(
+      "think first</think>\n\n<｜DSML｜tool_calls>\n"
+      "<｜DSML｜invoke name=\"search::lookup\">\n<｜DSML｜parameter name=\"query\" string=\"true\">a \"quoted\" value</｜DSML｜parameter>\n</｜DSML｜invoke>\n"
+      "<｜DSML｜invoke name=\"get_weather\">\n<｜DSML｜parameter name=\"city\" string=\"true\">Rome</｜DSML｜parameter>\n"
+      "<｜DSML｜parameter name=\"flags\" string=\"false\">{\"metric\": true, \"n\": [1, 2]}</｜DSML｜parameter>\n</｜DSML｜invoke>\n"
+      "<｜DSML｜invoke name=\"now\">\n\n</｜DSML｜invoke>\n"
+      "<｜DSML｜invoke name=\"ping\">\n</｜DSML｜invoke>\n"
+      "</｜DSML｜tool_calls>",
+      {}, DsmlDialect::kV4);
+  require(run.reasoning == "think first" && run.reasoning_closed == 1, "the reasoning split");
+  require(run.content.empty(), "no content before the block: '" + run.content + "'");
+  require(run.calls.size() == 4, "four calls: " + std::to_string(run.calls.size()));
+  require(run.calls[0].name == "search::lookup", "a V4 name is reported as written: " + run.calls[0].name);
+  require(run.calls[0].arguments == "{\"query\": \"a \\\"quoted\\\" value\"}", "the quoted string value: " + run.calls[0].arguments);
+  require(run.calls[1].arguments == "{\"city\": \"Rome\", \"flags\": {\"metric\": true, \"n\": [1, 2]}}",
+          "the JSON value normalized: " + run.calls[1].arguments);
+  require(run.calls[2].name == "now" && run.calls[2].arguments == "{}", "the reference's blank-line form of a call without parameters");
+  require(run.calls[3].name == "ping" && run.calls[3].arguments == "{}", "the plain form of a call without parameters");
+  // The blank line is the header's only slack: two of them, or one before
+  // a later tag, is not the reference's shape.
+  ToolCallParser::Options plain;
+  plain.start_in_reasoning = false;
+  for (const char* bad : {
+           "ok\n\n<｜DSML｜tool_calls>\n<｜DSML｜invoke name=\"now\">\n\n\n</｜DSML｜invoke>\n</｜DSML｜tool_calls>",
+           "ok\n\n<｜DSML｜tool_calls>\n\n<｜DSML｜invoke name=\"now\">\n</｜DSML｜invoke>\n</｜DSML｜tool_calls>",
+           "ok\n\n<｜DSML｜tool_calls>\n<｜DSML｜invoke name=\"now\">\n</｜DSML｜invoke>\n\n</｜DSML｜tool_calls>",
+       }) {
+    const Run r = drive_dsml(bad, plain, DsmlDialect::kV4);
+    require(r.calls.empty() && r.content == bad, std::string("not the reference's shape: ") + bad);
+  }
+}
+
+DGPP_TEST(tool_parser_dsml_dialects_do_not_cross) {
+  ToolCallParser::Options plain;
+  plain.start_in_reasoning = false;
+  const std::string v41 =
+      "ok\n\n<｜DSML｜ calls>\n<｜DSML｜ invoke name=\"get_weather\">\n"
+      "<｜DSML｜ parameter name=\"city\" string=\"true\">Paris</｜DSML｜ parameter>\n</｜DSML｜ invoke>\n</｜DSML｜ calls>";
+  const std::string v4 =
+      "ok\n\n<｜DSML｜tool_calls>\n<｜DSML｜invoke name=\"get_weather\">\n"
+      "<｜DSML｜parameter name=\"city\" string=\"true\">Paris</｜DSML｜parameter>\n</｜DSML｜invoke>\n</｜DSML｜tool_calls>";
+  // Each parser reads its own spelling...
+  require(drive_dsml(v41, plain, DsmlDialect::kV41).calls.size() == 1, "V4.1 reads the V4.1 spelling");
+  require(drive_dsml(v4, plain, DsmlDialect::kV4).calls.size() == 1, "V4 reads the V4 spelling");
+  // ...and the other one's block never closes for it: literal content at
+  // the end of the turn, nothing lost, no call.
+  const Run a = drive_dsml(v4, plain, DsmlDialect::kV41);
+  require(a.calls.empty() && a.content == v4, "the V4 spelling under the V4.1 dialect is content: '" + a.content + "'");
+  const Run b = drive_dsml(v41, plain, DsmlDialect::kV4);
+  require(b.calls.empty() && b.content == v41, "the V4.1 spelling under the V4 dialect is content: '" + b.content + "'");
+}
+
+DGPP_TEST(tool_parser_dsml_v4_dialect_malformed_block_and_held_prefix) {
+  ToolCallParser::Options plain;
+  plain.start_in_reasoning = false;
+  for (const char* bad : {
+           "ok\n\n<｜DSML｜tool_calls>\n<｜DSML｜invoke name=\"get_weather\">\n<｜DSML｜parameter name=\"city\">Paris</｜DSML｜parameter>\n</｜DSML｜invoke>\n</｜DSML｜tool_calls>",
+           "ok\n\n<｜DSML｜tool_calls><｜DSML｜invoke name=\"get_weather\">\n</｜DSML｜invoke>\n</｜DSML｜tool_calls>",
+           "ok\n\n<｜DSML｜tool_calls>\n<｜DSML｜invoke name=\"get_weather\">\n"
+           "<｜DSML｜parameter name=\"city\" string=\"true\">Paris</｜DSML｜parameter>\n"
+           "<｜DSML｜parameter name=\"city\" string=\"true\">Rome</｜DSML｜parameter>\n</｜DSML｜invoke>\n</｜DSML｜tool_calls>",
+           "ok\n\n<｜DSML｜tool_calls>\n<｜DSML｜invoke name=\"get_weather\">\n",
+       }) {
+    const Run run = drive_dsml(bad, plain, DsmlDialect::kV4);
+    require(run.calls.empty(), std::string("no call from a malformed block: ") + bad);
+    require(run.content == bad, "the malformed block is literal content: '" + run.content + "'");
+  }
+  const Run held = drive_dsml("if a < b then\n\nc < d\n\n", plain, DsmlDialect::kV4);
+  require(held.content == "if a < b then\n\nc < d\n\n", "held prefixes flush as content: '" + held.content + "'");
+  const Run stray = drive_dsml("x ｜DSML｜ y", plain, DsmlDialect::kV4);
+  require(stray.content == "x ｜DSML｜ y", "a stray tag token prints verbatim: '" + stray.content + "'");
+  const Run tail = drive_dsml(
+      "ok\n\n<｜DSML｜tool_calls>\n<｜DSML｜invoke name=\"get_weather\">\n</｜DSML｜invoke>\n</｜DSML｜tool_calls> trailing", plain,
+      DsmlDialect::kV4);
+  require(tail.calls.size() == 1 && tail.calls[0].arguments == "{}", "the closed block's call stands");
+  require(tail.content == "ok trailing", "the text around the block: '" + tail.content + "'");
+}
+
+// The arguments' re-serialization is json.dumps' — floats included: the
+// notation follows the decimal exponent as Python's repr does, not the
+// shorter spelling (100000.0 is not "1e+05").
+DGPP_TEST(tool_parser_json_floats_print_as_python_repr) {
+  const auto dumps = [](const std::string& json) {
+    const dgpp::minijson::ParseResult parsed = dgpp::minijson::parse(json);
+    return dgpp::text::Value::from_minijson(parsed.root).to_json(false);
+  };
+  for (const auto& [in, want] : std::vector<std::pair<std::string, std::string>>{
+           {"0.5", "0.5"}, {"1.0", "1.0"}, {"100000.0", "100000.0"}, {"1e5", "100000.0"}, {"1E+5", "100000.0"},
+           {"123456.789", "123456.789"}, {"1e15", "1000000000000000.0"}, {"1e16", "1e+16"}, {"1.5e16", "1.5e+16"},
+           {"1e22", "1e+22"}, {"0.0001", "0.0001"}, {"0.00015", "0.00015"}, {"0.00001", "1e-05"}, {"1.5e-7", "1.5e-07"},
+           {"-2.50", "-2.5"}, {"-0.0", "-0.0"}, {"0.0", "0.0"}, {"3.141592653589793", "3.141592653589793"},
+           {"1.7976931348623157e308", "1.7976931348623157e+308"}, {"5e-324", "5e-324"}, {"12", "12"}, {"-7", "-7"}})
+    require(dumps(in) == want, "json.dumps(" + in + ") is " + want + ", got " + dumps(in));
+  require(dumps("[0.1, 1e5, {\"a\": 2.0}]") == "[0.1, 100000.0, {\"a\": 2.0}]", "nested floats");
 }
 
 DGPP_TEST(tool_parser_qwen_format_markers_and_one_call) {

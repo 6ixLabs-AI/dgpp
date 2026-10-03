@@ -54,14 +54,24 @@ inline float verify_reservation_lambda(float base_ms, float row_ms) {
 // across ranks). row_ms: cost of one verify row. lambda_tok_per_ms: the value
 // of decode time (realized throughput EWMA, floored at the reservation rate).
 // Returns k in [0, block]: the number of leading drafts to verify.
+// accept_scale: the slot's acceptance per position as a fraction of the
+// head's (1 for a greedy slot, whose draft is accepted exactly when it is
+// the target's argmax — what the head predicts; under 1 for a sampled slot
+// with argmax drafts, accepted with the target's PROBABILITY of the draft.
+// Traced on DeepSeek-V4-Flash, 2026-10-02, the whole block verified every
+// pass: the head over-states a sampled slot's FIRST draft — 0.75 predicted
+// against 0.67 accepted on prose — and is near calibrated behind it; over
+// 3,140 prose passes and 819 mixed-class ones the rule at 0.93 commits
+// within 0.2 % of the best first-position-only correction and 1.5-4 %
+// ahead of 0.8, which stops the deeper drafts short.)
 inline int scheduled_verify_depth(const float* conf_logit, int block, float row_ms,
-                              float lambda_tok_per_ms) {
+                              float lambda_tok_per_ms, double accept_scale = 1.0) {
   if (block <= 0) return 0;
   const double threshold = static_cast<double>(lambda_tok_per_ms) * row_ms;
   double survival = 1.0;  // S_i, the running prefix-survival product
   int k = 0;
   for (int i = 1; i <= block; ++i) {
-    const double p = 1.0 / (1.0 + std::exp(-static_cast<double>(conf_logit[i - 1])));
+    const double p = accept_scale / (1.0 + std::exp(-static_cast<double>(conf_logit[i - 1])));
     survival *= p;  // S_i includes sigmoid(c_{i-1})
     if (survival > threshold)
       k = i;  // this row's expected tokens still beat the value of its time
@@ -102,8 +112,10 @@ inline double verify_lambda_update(double lambda, int committed, int rows, float
   return lambda + alpha * (sample - lambda);
 }
 
+// accept_scale: per slot (null: 1 for every slot), as the scalar rule's.
 inline int scheduled_verify_depth_batch(const float* const* conf_logit, int slots, int block,
-                                        float row_ms, float lambda_tok_per_ms) {
+                                        float row_ms, float lambda_tok_per_ms,
+                                        const double* accept_scale = nullptr) {
   if (block <= 0 || slots <= 0) return 0;
   const double threshold = static_cast<double>(lambda_tok_per_ms) * row_ms;
   std::vector<double> survival(static_cast<size_t>(slots), 1.0);
@@ -112,7 +124,8 @@ inline int scheduled_verify_depth_batch(const float* const* conf_logit, int slot
     double sum = 0.0;
     for (int s = 0; s < slots; ++s) {
       const float c = conf_logit[s][i - 1];
-      survival[static_cast<size_t>(s)] *= 1.0 / (1.0 + std::exp(-static_cast<double>(c)));
+      survival[static_cast<size_t>(s)] *=
+          (accept_scale != nullptr ? accept_scale[s] : 1.0) / (1.0 + std::exp(-static_cast<double>(c)));
       sum += survival[static_cast<size_t>(s)];
     }
     if (sum / slots > threshold)

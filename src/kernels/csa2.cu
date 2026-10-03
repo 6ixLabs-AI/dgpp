@@ -758,11 +758,26 @@ __global__ void select_candidates_prefill_kernel(const float* logits, int64_t lo
 }
 
 // ---- the attention finish ---------------------------------------------------------------------
+// One block per (row, head): the splits' weights exp(m - mhat) and the
+// denominator once per block (thread 0, the splits in order: main, then
+// window, then the sink), then four output dims per thread as one 16-byte
+// load per split, eight splits in flight. (Until 2026-10-01 every thread
+// recomputed mhat, the denominator and every split's exp per dim behind
+// one load at a time: 17-41 us a launch for 5 MB of L2-resident partials.)
+// A split with m = -inf (no key in it) weighs exactly zero and is skipped:
+// the sums are the full loops' bit for bit.
+constexpr int kFinishMaxSplits = 128;
+constexpr int kFinishBatch = 8;
 __global__ void attn_finish_kernel(const float* m_main, const float* l_main, const float* c_main,
                                    int n_main, const float* m_win, const float* l_win, const float* c_win,
                                    int n_win, const float* sink, int local_heads, const int64_t* pos,
                                    const float* inv_freq, uint16_t* out) {
   __shared__ float o[kCsa2Latent];
+  __shared__ float s_w[kFinishMaxSplits];          // exp(m - mhat) of the live splits, in order
+  __shared__ const float* s_c[kFinishMaxSplits];   // their c rows [kCsa2Latent]
+  __shared__ float s_m[kFinishMaxSplits];
+  __shared__ float s_den;
+  __shared__ int s_live;
   const int r = blockIdx.x, h = blockIdx.y;
   uint16_t* orow = out + (int64_t(r) * local_heads + h) * kCsa2Latent;
   const int64_t p = pos[r];
@@ -771,37 +786,60 @@ __global__ void attn_finish_kernel(const float* m_main, const float* l_main, con
     return;
   }
   const int64_t total = int64_t(local_heads) * kCsa2Latent;
-  float mhat = -INFINITY;
-  for (int s = 0; s < n_main; ++s) mhat = fmaxf(mhat, m_main[(int64_t(r) * n_main + s) * local_heads + h]);
-  for (int s = 0; s < n_win; ++s) mhat = fmaxf(mhat, m_win[(int64_t(r) * n_win + s) * local_heads + h]);
-  const bool empty = mhat == -INFINITY;
-  float den = 0.0f;
-  if (!empty) {
-    for (int s = 0; s < n_main; ++s) {
-      const int64_t i = (int64_t(r) * n_main + s) * local_heads + h;
-      den += expf(m_main[i] - mhat) * l_main[i];
-    }
-    for (int s = 0; s < n_win; ++s) {
-      const int64_t i = (int64_t(r) * n_win + s) * local_heads + h;
-      den += expf(m_win[i] - mhat) * l_win[i];
-    }
-    den += expf(sink[h] - mhat);
-  }
-  for (int d = threadIdx.x; d < kCsa2Latent; d += blockDim.x) {
-    float num = 0.0f;
-    if (!empty) {
-      for (int s = 0; s < n_main; ++s) {
-        const int64_t i = (int64_t(r) * n_main + s) * local_heads + h;
-        num += expf(m_main[i] - mhat) * c_main[(int64_t(r) * n_main + s) * total + int64_t(h) * kCsa2Latent + d];
+  const int n_all = n_main + n_win;
+  // Every split's m, one thread per split.
+  for (int s = threadIdx.x; s < n_all; s += blockDim.x)
+    s_m[s] = s < n_main ? m_main[(int64_t(r) * n_main + s) * local_heads + h]
+                        : m_win[(int64_t(r) * n_win + (s - n_main)) * local_heads + h];
+  __syncthreads();
+  if (threadIdx.x == 0) {
+    float mhat = -INFINITY;
+    for (int s = 0; s < n_all; ++s) mhat = fmaxf(mhat, s_m[s]);
+    int live = 0;
+    float den = 0.0f;
+    if (mhat != -INFINITY) {
+      for (int s = 0; s < n_all; ++s) {
+        if (s_m[s] == -INFINITY) continue;
+        const bool main = s < n_main;
+        const int64_t i = main ? (int64_t(r) * n_main + s) * local_heads + h
+                               : (int64_t(r) * n_win + (s - n_main)) * local_heads + h;
+        const float w = expf(s_m[s] - mhat);
+        den += w * (main ? l_main[i] : l_win[i]);
+        s_w[live] = w;
+        s_c[live] = main ? c_main + (int64_t(r) * n_main + s) * total + int64_t(h) * kCsa2Latent
+                         : c_win + (int64_t(r) * n_win + (s - n_main)) * total + int64_t(h) * kCsa2Latent;
+        ++live;
       }
-      for (int s = 0; s < n_win; ++s) {
-        const int64_t i = (int64_t(r) * n_win + s) * local_heads + h;
-        num += expf(m_win[i] - mhat) * c_win[(int64_t(r) * n_win + s) * total + int64_t(h) * kCsa2Latent + d];
+      den += expf(sink[h] - mhat);
+    }
+    s_den = den;
+    s_live = mhat == -INFINITY ? -1 : live;
+  }
+  __syncthreads();
+  const int live = s_live;
+  const bool empty = live < 0;
+  const float den = s_den;
+  for (int d0 = threadIdx.x * 4; d0 < kCsa2Latent; d0 += blockDim.x * 4) {
+    float num[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    for (int s0 = 0; s0 < live; s0 += kFinishBatch) {
+      float4 v[kFinishBatch];
+#pragma unroll
+      for (int b = 0; b < kFinishBatch; ++b)
+        v[b] = s0 + b < live ? *reinterpret_cast<const float4*>(s_c[s0 + b] + d0) : make_float4(0.f, 0.f, 0.f, 0.f);
+#pragma unroll
+      for (int b = 0; b < kFinishBatch; ++b) {
+        if (s0 + b >= live) break;
+        const float w = s_w[s0 + b];
+        num[0] += w * v[b].x;
+        num[1] += w * v[b].y;
+        num[2] += w * v[b].z;
+        num[3] += w * v[b].w;
       }
     }
     // The attention output rounds to bf16; the inverse rotation then reads
     // that bf16 (the reference's two steps).
-    o[d] = bf16_bits_to_float(float_to_bf16_bits(empty ? 0.0f : num / den));
+#pragma unroll
+    for (int e = 0; e < 4; ++e) o[d0 + e] = bf16_bits_to_float(float_to_bf16_bits(empty ? 0.0f : num[e] / den));
   }
   __syncthreads();
   for (int d = threadIdx.x; d < kCsa2Latent - kCsa2Rope; d += blockDim.x) orow[d] = float_to_bf16_bits(o[d]);
@@ -1094,6 +1132,9 @@ void csa2_attn_finish(const float* m_main, const float* l_main, const float* c_m
   if (local_heads <= 0 || n_main < 0 || n_win < 0 || (n_main > 0 && (m_main == nullptr || c_main == nullptr)) ||
       (n_win > 0 && (m_win == nullptr || c_win == nullptr)))
     throw std::invalid_argument("csa2_attn_finish: shape");
+  if (n_main + n_win > kFinishMaxSplits) throw std::invalid_argument("csa2_attn_finish: more splits than the kernel stages");
+  if ((n_main > 0 && reinterpret_cast<uintptr_t>(c_main) % 16 != 0) || (n_win > 0 && reinterpret_cast<uintptr_t>(c_win) % 16 != 0))
+    throw std::invalid_argument("csa2_attn_finish: the partial rows are read as 16-byte vectors");
   attn_finish_kernel<<<dim3(unsigned(rows), unsigned(local_heads)), 128, 0, stream>>>(
       m_main, l_main, c_main, n_main, m_win, l_win, c_win, n_win, sink, local_heads, pos, inv_freq,
       static_cast<uint16_t*>(out));

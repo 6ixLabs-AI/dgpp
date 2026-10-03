@@ -57,6 +57,7 @@ struct CublasLtGemm::Impl {
   int decode_mma_max_rows = 0;               // its bound (0: every row count)
   int plan_rows = 0;                         // the Lt algorithm's row count (set_plan_rows)
   bool bf12_wide = false;                    // companions take 5..8-row calls too (set_bf12_wide)
+  bool mma_split_k = false;                  // the tensor-core form's split-K (set_decode_split_k)
   cublasLtHandle_t lt{};
   float* dev_unit_scale{};  // fp8 tensor-wise scale == 1.0f
   struct Plan {
@@ -404,6 +405,7 @@ void CublasLtGemm::set_plan_rows(int rows) {
 }
 
 void CublasLtGemm::set_bf12_wide(bool on) { impl_->bf12_wide = on; }
+void CublasLtGemm::set_decode_split_k(bool on) { impl_->mma_split_k = on; }
 
 void CublasLtGemm::register_bf12(const void* weight, const Bf12Matrix& packed) {
   if (weight == nullptr || !bf12_gemv_accepts(packed, 1))
@@ -499,12 +501,15 @@ void CublasLtGemm::matmul(const void* act, const void* weight, void* out,
     const auto* x = static_cast<const uint16_t*>(act);
     const auto* w = static_cast<const uint16_t*>(weight);
     auto* y = static_cast<uint8_t*>(out);
+    const bool split = impl_->mma_split_k && m <= kMmaGemvMaxRows;
+    void* split_ws = split ? workspace : nullptr;
+    const size_t split_bytes = split ? ws_bytes : 0;
     if (out_dtype == GemmOut::F32)
       launch_mma_gemv_bf16_f32(x, act_row_stride, w, reinterpret_cast<float*>(y), m, n, k,
-                               static_cast<size_t>(n), stream);
+                               static_cast<size_t>(n), stream, split_ws, split_bytes);
     else
       launch_mma_gemv_bf16_bf16(x, act_row_stride, w, reinterpret_cast<uint16_t*>(y), m, n, k,
-                                static_cast<size_t>(n), stream);
+                                static_cast<size_t>(n), stream, split_ws, split_bytes);
     return;
   }
   // A registered companion (bf12_gemv.hpp) takes the lowering's launches —

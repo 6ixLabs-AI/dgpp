@@ -48,6 +48,7 @@
 #include "serve/serve_stats.hpp"
 #include "text/chat_template.hpp"
 #include "text/dsv41_prompt.hpp"
+#include "text/dsv4_prompt.hpp"
 
 namespace {
 
@@ -456,8 +457,9 @@ class FakeFrontend : public ModelFrontend {
     return input;
   }
 
-  explicit FakeFrontend(bool with_markers = false, bool with_dsml = false)
-      : with_markers_(with_markers), with_dsml_(with_dsml) {}
+  explicit FakeFrontend(bool with_markers = false, bool with_dsml = false,
+                        dgpp::text::DsmlDialect dsml_dialect = dgpp::text::DsmlDialect::kV41)
+      : with_markers_(with_markers), with_dsml_(with_dsml), dsml_dialect_(dsml_dialect) {}
   // The template knob gate: a template that reads enable_thinking (Qwen3.8-
   // Flash-Next, GLM-4.7) accepts it in chat_template_kwargs; the default
   // fake, like GLM-5.3-Flash's template, does not.
@@ -531,6 +533,7 @@ class FakeFrontend : public ModelFrontend {
     m.think_close = {kThinkClose, "</think>"};
     if (with_dsml_) {
       m.dsml = {kDsml, "｜DSML｜"};
+      m.dsml_dialect = dsml_dialect_;
       return m;
     }
     m.tool_call_open = {kToolOpen, "<tool_call>"};
@@ -554,6 +557,7 @@ class FakeFrontend : public ModelFrontend {
  private:
   bool with_markers_;
   bool with_dsml_;
+  dgpp::text::DsmlDialect dsml_dialect_;
   mutable std::mutex mu_;
   mutable std::string last_globals_;
 };
@@ -677,9 +681,10 @@ struct ServiceRig {
                       int64_t position_ceiling = 0, int64_t kv_pool_tokens = 0,
                       bool resumable_prefill = false, bool with_dsml = false,
                       std::string default_chat_template_kwargs = "{}",
-                      int sse_ping_interval = dgpp::serve::kDefaultSsePingInterval)
+                      int sse_ping_interval = dgpp::serve::kDefaultSsePingInterval,
+                      dgpp::text::DsmlDialect dsml_dialect = dgpp::text::DsmlDialect::kV41)
       : engine(kSlots, /*total_blocks=*/100, /*block_tokens=*/4, can_sample),
-        frontend(with_markers, with_dsml),
+        frontend(with_markers, with_dsml, dsml_dialect),
         cfg([&] {
           ServiceConfig c;
           c.model_id = "glm-5.3-flash-fp8";
@@ -2062,6 +2067,48 @@ DGPP_TEST(serve_tools_dsmlNamespacesMatchRenderedAndConstrainedNames) {
               "the namespace description reaches the model: " + prompt);
       require(globals.find("response_schema_marker") == std::string::npos,
               "DeepSeek still drops unrelated tool fields: " + globals);
+    }
+  }
+}
+
+// The DeepSeek-V4 dialect of DSML has no tool namespaces: a `namespace`
+// field is unrelated metadata there (dropped like any other), the grammar
+// names the function as given, and the rendered schema agrees with it.
+DGPP_TEST(serve_tools_dsmlV4DialectHasNoNamespaces) {
+  ServiceRig rig(8, dgpp::sample::greedy_params(), true, std::nullopt, true, false, {}, 0, {},
+                 std::nullopt, 0, 0, /*resumable_prefill=*/false, /*with_dsml=*/true, "{}",
+                 dgpp::serve::kDefaultSsePingInterval, dgpp::text::DsmlDialect::kV4);
+  const std::string ns = R"("namespace":{"name":"search","description":"Search tools"})";
+  const std::string fields =
+      R"("name":"lookup","description":"Lookup","parameters":{"type":"object","properties":{}},"response":{"response_schema_marker":true})";
+  size_t expected_grammars = 0;
+  for (const std::string& tool :
+       {"{\"type\":\"function\"," + ns + ",\"function\":{" + fields + "}}",
+        "{\"type\":\"function\",\"function\":{" + ns + "," + fields + "}}",
+        "{" + ns + "," + fields + "}",
+        "{\"type\":\"function\",\"function\":{" + fields + "}}"}) {
+    for (const std::string& choice :
+         {std::string{R"(,"tool_choice":"required")"},
+          std::string{R"(,"tool_choice":{"type":"function","function":{"name":"lookup"}})"}}) {
+      const auto response =
+          post_until_usage(rig, chat_body("abcd", 2, ",\"tools\":[" + tool + "]" + choice));
+      require(response.find("200 OK") != std::string::npos, "tools accepted: " + response);
+      const std::string globals = rig.frontend.last_globals();
+      require(globals.find("namespace") == std::string::npos && globals.find("response_schema_marker") == std::string::npos,
+              "the V4 dialect drops namespaces with the other unrelated tool fields: " + globals);
+      const auto parsed = dgpp::minijson::parse(globals);
+      const std::string prompt = dgpp::text::Dsv4Prompt::render(parsed.root);
+      const auto grammars = rig.engine.grammars();
+      require(grammars.size() == ++expected_grammars, "each request installs a constraint");
+      const auto& grammar = grammars.back();
+      require(grammar.tools.size() == 1 && grammar.tools[0].name == "lookup", "the grammar names the function as given");
+      if (grammar.mode == dgpp::text::GrammarSpec::Mode::kNamed)
+        require(grammar.named == "lookup", "a named choice names the same function");
+      require(prompt.find("{\"name\": \"lookup\", \"description\": \"Lookup\", \"parameters\": {\"type\": \"object\", \"properties\": {}}}") !=
+                  std::string::npos,
+              "the rendered schema is the function as given, agreeing with the constraint: " + prompt);
+      require(prompt.find("<｜DSML｜tool_calls>") != std::string::npos && prompt.find("<｜DSML｜ calls>") == std::string::npos,
+              "the tools block teaches the V4 spelling");
     }
   }
 }

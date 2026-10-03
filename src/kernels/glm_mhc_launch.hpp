@@ -65,6 +65,13 @@ struct MhcSinglePass {
   float* pre_out = nullptr;
   float* post_f32 = nullptr;
   float* comb_f32 = nullptr;
+  // The fused norm's rounding (2026-10-01, DeepSeek-V4-Flash's decode
+  // sites): true = the DeepSeek reference's RMSNorm on the bf16 collapsed
+  // row — fp32 interior, the weight applied in fp32, ONE bf16 rounding
+  // (csa2_rmsnorm_bf16's arithmetic; its sum of squares in the finish's
+  // tree order, a rounding-level difference in the scale) — in place of
+  // GLM's two-rounding norm.
+  bool one_round_norm = false;
 };
 
 bool launch_mhc_compute_normed(const uint16_t* streams, const GlmMhcWeights& w,

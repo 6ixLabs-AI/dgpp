@@ -97,7 +97,8 @@ DGPP_TEST(cluster_config_parses_fills_defaults_and_derives_the_world) {
     "engine": {"max_concurrency": 2, "decode_graph": true, "prefix_cache_gib": 0.5,
                "admission": "grow", "stats_interval_s": 0, "mtp_depth": 2, "prefill": "exact",
                "prefill_budget_tokens": 256, "prefill_idle_budget_tokens": 2048,
-               "prefix_min_tokens": 512, "prefix_head_snapshots": false},
+               "prefix_min_tokens": 512, "prefix_head_snapshots": false, "mtp_draft": "greedy",
+               "mtp_schedule_sampled_scale": 0.5},
     "paths": {"log_dir": "/var/log/dgpp"}
   })";
   const dgpp::serve::ClusterConfig c = dgpp::serve::parse_cluster_config(json, "t");
@@ -110,8 +111,27 @@ DGPP_TEST(cluster_config_parses_fills_defaults_and_derives_the_world) {
               c.engine.mtp_depth == 2 && c.engine.prefix_cache_gib == 0.5 &&
               c.engine.admission == "grow" && c.engine.stats_interval_s == 0.0 && c.engine.prefill == "exact" &&
               c.engine.prefill_budget_tokens == 256 && c.engine.prefill_idle_budget_tokens == 2048 &&
-              c.engine.prefix_min_tokens == 512 && !c.engine.prefix_head_snapshots,
+              c.engine.prefix_min_tokens == 512 && !c.engine.prefix_head_snapshots &&
+              c.engine.mtp_draft == "greedy" && c.engine.mtp_schedule_sampled_scale == 0.5,
           "the given engine knobs");
+  require(dgpp::serve::parse_cluster_config(R"({"model":"m","nodes":["h"]})", "t").engine.mtp_schedule_sampled_scale == 0.93,
+          "the sampled requests' schedule scale defaults to the measured 0.93");
+  require(dgpp::serve::parse_cluster_config(R"({"model":"m","nodes":["h"]})", "t").engine.mtp_draft == "auto",
+          "the sampled requests' draft rule defaults to the family's");
+  // The idle engine's arrival gather: 3 ms by default, 0 disables, bounded.
+  require(c.engine.admission_gather_ms == 3, "the arrival gather defaults to 3 ms");
+  require(dgpp::serve::parse_cluster_config(R"({"model":"m","nodes":["h"],"engine":{"admission_gather_ms":0}})", "t")
+                  .engine.admission_gather_ms == 0,
+          "the arrival gather can be turned off");
+  {
+    bool rejected = false;
+    try {
+      (void)dgpp::serve::parse_cluster_config(R"({"model":"m","nodes":["h"],"engine":{"admission_gather_ms":5000}})", "t");
+    } catch (const std::exception&) {
+      rejected = true;
+    }
+    require(rejected, "an arrival gather past one second is refused");
+  }
   // The engine defaults are the binary's flag defaults — one set of defaults.
   require(c.engine.kv_capacity == 8192 && c.engine.default_max_tokens == 256 &&
               c.engine.queue_limit == 64 && c.engine.max_connections == 64 &&
@@ -293,6 +313,10 @@ DGPP_TEST(cluster_config_refusesUnknownKeysAndBadValuesByName) {
        "'engine.mtp_depth' must be in [1, 5]"},
       {R"({"model":"m","nodes":["h"],"engine":{"mtp_depth":0}})",
        "'engine.mtp_depth' must be in [1, 5]"},
+      {R"({"model":"m","nodes":["h"],"engine":{"mtp_draft":"beam"}})",
+       "'engine.mtp_draft' must be auto, sampled or greedy"},
+      {R"({"model":"m","nodes":["h"],"engine":{"mtp_schedule_sampled_scale":1.5}})",
+       "'engine.mtp_schedule_sampled_scale' must be in [0, 1]"},
       {R"({"model":"m","nodes":["h"],"engine":{"admission":"fast"}})",
        "'engine.admission' must be \"full\" or \"grow\""},
       {R"({"model":"m","nodes":["h"],"engine":{"prefix_cache_gib":-1}})",

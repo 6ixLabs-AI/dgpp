@@ -369,12 +369,34 @@ bool ToolCallParser::parse_qwen_block(const std::string& text) {
 
 namespace {
 constexpr const char* kDsmlText = "｜DSML｜";
-constexpr const char* kDsmlCallsOpen = "<｜DSML｜ calls";
-constexpr const char* kDsmlCallsClose = "</｜DSML｜ calls>";
-constexpr const char* kDsmlInvokeOpen = "<｜DSML｜ invoke";
-constexpr const char* kDsmlInvokeClose = "</｜DSML｜ invoke";
-constexpr const char* kDsmlParamOpen = "<｜DSML｜ parameter";
-constexpr const char* kDsmlParamClose = "/｜DSML｜ parameter";  // the reference's end token (the value ends with "<")
+// The block's tags per dialect (ChatMarkers::dsml_dialect): V4.1 writes a
+// space after the tag token and names the block "calls"; V4 writes no
+// space and names it "tool_calls".
+struct DsmlTags {
+  const char* calls_open;
+  const char* calls_close;
+  const char* invoke_open;
+  const char* invoke_close;
+  const char* param_open;
+  const char* param_close;  // the reference's end token (the value ends with "<")
+  bool namespaces;          // an invoke's "ns::name" reports the bare name
+  // An invoke's header may end in a blank line (">\n\n"): both references
+  // render an argument-less call as "<invoke name=...>\n\n</invoke>" (the
+  // empty parameter list between the template's two newlines) and their
+  // parsers accept it (the header regex's "$" matches before a final
+  // newline). Read for V4; V4.1's parser predates the finding and is left
+  // as it was (the block is then literal content there).
+  bool blank_line_head;
+};
+constexpr DsmlTags kDsmlV41Tags = {"<｜DSML｜ calls", "</｜DSML｜ calls>", "<｜DSML｜ invoke", "</｜DSML｜ invoke",
+                                   "<｜DSML｜ parameter", "/｜DSML｜ parameter", /*namespaces=*/true,
+                                   /*blank_line_head=*/false};
+constexpr DsmlTags kDsmlV4Tags = {"<｜DSML｜tool_calls", "</｜DSML｜tool_calls>", "<｜DSML｜invoke", "</｜DSML｜invoke",
+                                  "<｜DSML｜parameter", "/｜DSML｜parameter", /*namespaces=*/false,
+                                  /*blank_line_head=*/true};
+const DsmlTags& dsml_tags(DsmlDialect dialect) {
+  return dialect == DsmlDialect::kV4 ? kDsmlV4Tags : kDsmlV41Tags;
+}
 
 // The longest suffix of `text` that could begin a block: "\n\n<", "\n\n",
 // "\n" (the reference writes the block after a blank line) or "<".
@@ -504,11 +526,14 @@ std::string ToolCallParser::dsml_block_text() const {
 }
 
 bool ToolCallParser::dsml_block_closed(const std::string& text) const {
-  const size_t n = std::strlen(kDsmlCallsClose);
-  return text.size() >= n && text.compare(text.size() - n, n, kDsmlCallsClose) == 0;
+  const char* close = dsml_tags(markers_.dsml_dialect).calls_close;
+  const size_t n = std::strlen(close);
+  return text.size() >= n && text.compare(text.size() - n, n, close) == 0;
 }
 
-// The reference's parse_tool_calls over the closed block: after
+// The reference's parse_tool_calls over the closed block (the V4.1
+// spelling shown; V4's tags are "tool_calls" / "invoke" / "parameter"
+// without the space): after
 // "<｜DSML｜ calls" exactly ">\n", then invokes — each ` name="NAME">\n`,
 // parameters ` name="K" string="true|false">V<` closed by
 // "/｜DSML｜ parameter" and followed by ">\n", the invoke closed by
@@ -516,16 +541,17 @@ bool ToolCallParser::dsml_block_closed(const std::string& text) const {
 // after it. A string value is JSON-encoded; a JSON value that parses is
 // kept as written (normalized), one that does not becomes a string.
 bool ToolCallParser::parse_dsml_block(const std::string& text) {
+  const DsmlTags& tags = dsml_tags(markers_.dsml_dialect);
   dsml_calls_.clear();
-  size_t index = text.find(kDsmlCallsOpen);
+  size_t index = text.find(tags.calls_open);
   if (index == std::string::npos) return false;
-  index += std::strlen(kDsmlCallsOpen);
+  index += std::strlen(tags.calls_open);
   for (;;) {
-    Stop s = read_until(text, index, {kDsmlInvokeOpen, kDsmlCallsClose});
+    Stop s = read_until(text, index, {tags.invoke_open, tags.calls_close});
     if (s.content != ">\n" || s.which < 0) return false;
     index = s.next;
     if (s.which == 1) break;  // the calls end
-    Stop head = read_until(text, index, {kDsmlParamOpen, kDsmlInvokeClose});
+    Stop head = read_until(text, index, {tags.param_open, tags.invoke_close});
     if (head.which < 0) return false;
     index = head.next;
     // ^\s*name="(.*?)">\n$
@@ -535,18 +561,22 @@ bool ToolCallParser::parse_dsml_block(const std::string& text) {
     h.erase(0, ws);
     const std::string pre = "name=\"";
     const std::string post = "\">\n";
+    // ...">\n$: Python's "$" also matches before one final newline.
+    if (tags.blank_line_head && h.size() > post.size() &&
+        h.compare(h.size() - post.size() - 1, std::string::npos, post + "\n") == 0)
+      h.pop_back();
     if (h.size() < pre.size() + post.size() || h.compare(0, pre.size(), pre) != 0 ||
         h.compare(h.size() - post.size(), post.size(), post) != 0)
       return false;
     const std::string qualified = h.substr(pre.size(), h.size() - pre.size() - post.size());
     if (qualified.find("\">\n") != std::string::npos) return false;
     Call call;
-    const size_t ns = qualified.find("::");
+    const size_t ns = tags.namespaces ? qualified.find("::") : std::string::npos;
     call.name = ns == std::string::npos ? qualified : qualified.substr(ns + 2);
     std::vector<std::pair<std::string, std::string>> params;
     std::vector<std::string> seen;
     while (head.which == 0) {
-      Stop p = read_until(text, index, {kDsmlParamClose});
+      Stop p = read_until(text, index, {tags.param_close});
       if (p.which < 0) return false;
       index = p.next;
       // ^ name="(.*?)" string="(true|false)">(.*?)<$
@@ -579,7 +609,7 @@ bool ToolCallParser::parse_dsml_block(const std::string& text) {
         }
       }
       params.emplace_back(key, json);
-      Stop gap = read_until(text, index, {kDsmlParamOpen, kDsmlInvokeClose});
+      Stop gap = read_until(text, index, {tags.param_open, tags.invoke_close});
       if (gap.content != ">\n" || gap.which < 0) return false;
       index = gap.next;
       head.which = gap.which;
