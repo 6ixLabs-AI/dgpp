@@ -215,7 +215,7 @@ DGPP_TEST(dflash2_selector_walks_the_reference_scores) {
       for (int r = 0; r < rank; ++r)
         dot += pf[static_cast<int64_t>(pid) * rank + r] * hidden[l * rank + r] *
                sf[static_cast<int64_t>(sid) * rank + r];
-      const float score = unary[static_cast<int64_t>(l) * k + prev] + dot;
+      const float score = unary[static_cast<int64_t>(l) * k + c] + dot;
       if (score > best) {
         best = score;
         besti = c;

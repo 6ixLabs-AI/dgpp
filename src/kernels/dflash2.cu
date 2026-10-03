@@ -279,7 +279,7 @@ __global__ void topk_kernel(const float* __restrict__ logits, int32_t* __restric
 
 // ---- the selector -----------------------------------------------------------------
 
-// The scores[l][p][c] = unary[l][p] + <pred_code[id(l-1,p)] * hidden[l],
+// The scores[l][p][c] = unary[l][c] + <pred_code[id(l-1,p)] * hidden[l],
 // succ_code[id(l,c)]> table and the greedy slot walk (vLLM
 // qwen3_dflash2._score_edges + _selector_walk_kernel at temperature 0).
 __global__ void selector_kernel(const int32_t* __restrict__ ids, const float* __restrict__ unary,
@@ -308,7 +308,7 @@ __global__ void selector_kernel(const int32_t* __restrict__ ids, const float* __
       const int p = e / k, c = e % k;
       float dot = 0.0f;
       for (int r = 0; r < rank; ++r) dot += pred[p * rank + r] * h[r] * succ[c * rank + r];
-      sc[e] = unary[static_cast<int64_t>(l) * k + p] + dot;
+      sc[e] = unary[static_cast<int64_t>(l) * k + c] + dot;  // the candidate's logit (vLLM _score_edges)
     }
     __syncthreads();
     if (tid == 0) {

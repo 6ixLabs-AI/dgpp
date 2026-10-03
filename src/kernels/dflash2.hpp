@@ -75,7 +75,7 @@ void dflash2_topk_f32(const float* logits, int32_t* ids, float* scores, int64_t 
                       int k, cudaStream_t stream);
 
 // The DFlash2 candidate path selector: the scores[l][p][c] table
-// unary[l][p] + <pred_code[id(l-1, p)] * hidden[l], succ_code[id(l, c)]>
+// unary[l][c] + <pred_code[id(l-1, p)] * hidden[l], succ_code[id(l, c)]>
 // (step 0's predecessor is the anchor token, every slot) walked greedily
 // per step: token = ids[l][argmax_c scores[l][prev][c]], prev = that argmax
 // (ties to the first). One block, steps sequential, scores within a step
