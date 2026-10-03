@@ -26,6 +26,13 @@ The history by milestone. The dated engineering record in
   `engine.bf16_weights: bf12` now packs this family's bf16 decode matrices
   too (#88: the drafter's five layers and fc taps, the MTP fc, a bf16 lm
   head), the bf16 bytes staying resident for the stacked redrafts' mma form.
+  The family serves on two and four Sparks (#86): the loader's TP geometry
+  (GDN and attention heads, the MLP and the lm head sliced across the ranks,
+  the kv heads paired at world 4) through `Qwen35Model`, two boundary folds
+  a layer (the attention / GDN output and the MLP output, bf16 on the wire)
+  in the main and draft walks, the drafter at world 1 only; the loopback TP
+  gate (`qwen35_tp_test`, worlds 2 and 4 against the world-1 forward over the
+  fixture) and the `cluster_qwen3.8-27b_fp8_w2` template.
 
 - **The DFlash2 block drafter on Qwen3.8-27B** (2026-10-02, #80):
   `engine.dflash_model` serves `z-lab/Qwen3.8-27B-DFlash2` in place of the

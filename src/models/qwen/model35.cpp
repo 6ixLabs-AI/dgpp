@@ -190,7 +190,8 @@ Qwen35Model::Qwen35Model(const Qwen35TextConfig& cfg, const std::string& checkpo
                          int rank, int world, int max_requests, int decode_rows, bool mtp,
                          const std::string& dflash2_dir)
     : cfg_(cfg),
-      loader_(cfg, checkpoint_dir, rank, world, residency, LoaderHeadSharding::Full,
+      loader_(cfg, checkpoint_dir, rank, world, residency,
+              world > 1 ? LoaderHeadSharding::VocabSharded : LoaderHeadSharding::Full,
               mtp && residency == LoaderResidency::Resident),
       mtp_(mtp) {
   if (max_tokens <= 0) throw std::invalid_argument("Qwen35Model: max_tokens must be positive");
@@ -198,8 +199,13 @@ Qwen35Model::Qwen35Model(const Qwen35TextConfig& cfg, const std::string& checkpo
     throw std::invalid_argument("Qwen35Model: max_requests out of range");
   if (decode_rows > decode_rows_cap())
     throw std::invalid_argument("Qwen35Model: decode_rows exceeds the limit of 32");
-  if (world != 1) throw std::invalid_argument("Qwen35Model: TP>1 is not implemented (world must be 1)");
-  if (boundary != nullptr) throw std::invalid_argument("Qwen35Model: world 1 takes no boundary reducer");
+  if (world < 1 || rank < 0 || rank >= world) throw std::invalid_argument("Qwen35Model: rank / world out of range");
+  if (world > 1 && boundary == nullptr) throw std::invalid_argument("Qwen35Model: a TP world needs a boundary reducer");
+  if (world == 1 && boundary != nullptr) throw std::invalid_argument("Qwen35Model: world 1 takes no boundary reducer");
+  if (world > 1 && !dflash2_dir.empty())
+    throw std::invalid_argument(
+        "Qwen35Model: the DFlash2 drafter runs at world 1 (its selector reads the whole vocabulary; the TP "
+        "worlds take the MTP draft)");
   if (cfg_.eos_token_ids.empty()) throw std::invalid_argument("Qwen35Model: the config names no EOS token");
   if (mtp_ && cfg_.mtp_layer() < 0)
     throw std::invalid_argument("Qwen35Model: the config has no draft layer (mtp)");
@@ -231,8 +237,12 @@ Qwen35Model::Qwen35Model(const Qwen35TextConfig& cfg, const std::string& checkpo
         pt_full_ord_[l] = f++;
     }
   }
-  const int64_t lv = cfg_.gdn_value_heads, V = cfg_.gdn_value_head_dim, K = cfg_.gdn_key_head_dim;
-  const int64_t C = 2 * static_cast<int64_t>(cfg_.gdn_key_heads) * K + lv * V;
+  // The local TP geometry (loader35): this rank's GDN heads, attention
+  // heads, MLP slice and vocab slice; the layer objects read their own
+  // local widths from the resident slices.
+  const Qwen35LocalGeometry& geo = loader_.geometry();
+  const int64_t lv = geo.local_value_heads, V = cfg_.gdn_value_head_dim, K = cfg_.gdn_key_head_dim;
+  const int64_t C = 2 * static_cast<int64_t>(geo.local_key_heads) * K + lv * V;
   rec_elems_ = lv * V * K;
   conv_elems_ = C * (cfg_.gdn_conv_width - 1);
   // The qwen4_exp layer ctors' config view.
@@ -255,8 +265,8 @@ Qwen35Model::Qwen35Model(const Qwen35TextConfig& cfg, const std::string& checkpo
   sp.mtp = mtp_;
   sp.vocab_size = cfg_.vocab_size;
   sp.hidden = H;
-  sp.lm_vocab_begin = 0;
-  sp.lm_vocab_count = cfg_.vocab_size;
+  sp.lm_vocab_begin = geo.lm_vocab_begin;
+  sp.lm_vocab_count = geo.lm_vocab_count;
   sp.max_position_embeddings = cfg_.max_position_embeddings;
   sp.block_tokens = kv_block_tokens_static();
   sp.snapshot_align = 1;
@@ -267,7 +277,7 @@ Qwen35Model::Qwen35Model(const Qwen35TextConfig& cfg, const std::string& checkpo
   // or the DFlash2 drafter's planes (its own kv geometry, shared table).
   Qwen35KvPoolShape shape;
   shape.layers = num_full_ + (mtp_ ? 1 : 0);
-  shape.kv_heads = cfg_.num_key_value_heads;
+  shape.kv_heads = geo.local_kv_heads;
   shape.dim = cfg_.head_dim;
   shape.block_tokens = kv_block_tokens_static();
   shape.max_requests = max_requests;
@@ -340,11 +350,11 @@ Qwen35Model::Qwen35Model(const Qwen35TextConfig& cfg, const std::string& checkpo
     // stages each dequant like the MLP requant above.
     if (pt_attn_enabled_)
     {
-      const int64_t lk = cfg_.gdn_key_heads, lv = cfg_.gdn_value_heads;
+      const int64_t lk = geo.local_key_heads, lv = geo.local_value_heads;
       const int64_t K = cfg_.gdn_key_head_dim, V = cfg_.gdn_value_head_dim;
       pt_gdn_C_ = 2 * lk * K + lv * V;
       pt_gdn_LV_ = lv * V;
-      const int64_t lh = cfg_.num_attention_heads, lkv = cfg_.num_key_value_heads;
+      const int64_t lh = geo.local_heads, lkv = geo.local_kv_heads;
       const int64_t D = cfg_.head_dim;
       pt_full_QW_ = lh * 2 * D;
       pt_full_KW_ = lkv * D;
@@ -716,7 +726,7 @@ QwenPtAttnView Qwen35Model::pt_full_view(int layer) const {
 // then absmax + x/448 quantize into the slot (the bridge is idle at boot).
 void Qwen35Model::requant_mlp_pt(int slot, const Qwen35DenseMlpResident& m, cudaStream_t stream) {
   const size_t H = static_cast<size_t>(cfg_.hidden_size);
-  const size_t I = static_cast<size_t>(cfg_.intermediate_size);
+  const size_t I = static_cast<size_t>(m.gate_fp8.rows);  // this rank's MLP slice
   const size_t IH = I * H;
   uint8_t* const dst[3] = {pt_gate_ + static_cast<size_t>(slot) * IH,
                            pt_up_ + static_cast<size_t>(slot) * IH,
@@ -757,7 +767,9 @@ void Qwen35Model::head_gemv(const uint16_t* act, float* out, int rows, cudaStrea
 void Qwen35Model::dense_mlp(const uint16_t* x, uint16_t* out, int tokens,
                             const Qwen35DenseMlpResident& m, cudaStream_t stream, int layer,
                             bool resume) {
-  const int64_t H = cfg_.hidden_size, I = cfg_.intermediate_size;
+  // I is this rank's MLP slice (the resident gate rows): intermediate_size /
+  // world under TP, the whole at world 1.
+  const int64_t H = cfg_.hidden_size, I = m.gate_fp8.rows;
   // Per-tensor FP8 recipe: one shared activation quantize over the H rows
   // feeds both gate and up; the swiglu output is quantized once for down.
   // All addresses are boot-fixed (slots, scratch, scale cells), so the
@@ -860,7 +872,7 @@ MemoryPlan Qwen35Model::plan_memory(const Qwen35TextConfig& cfg, int max_tokens,
     dfcfg = std::make_unique<DFlash2Config>(DFlash2Config::from_json_file(dflash2_dir + "/config.json"));
     dfcfg->validate_against(cfg);
   }
-  const LoaderHeadSharding head = LoaderHeadSharding::Full;
+  const LoaderHeadSharding head = world > 1 ? LoaderHeadSharding::VocabSharded : LoaderHeadSharding::Full;
   const int64_t cache_tokens =
       ((std::max<int64_t>(max_cache_tokens, max_tokens) + kv_block_tokens_static() - 1) /
        kv_block_tokens_static()) *
@@ -887,7 +899,7 @@ MemoryPlan Qwen35Model::plan_memory(const Qwen35TextConfig& cfg, int max_tokens,
   for (Qwen35LayerKind k : cfg.layers)
     if (k != Qwen35LayerKind::Gdn) ++shape.layers;
   if (mtp) ++shape.layers;  // the draft plane
-  shape.kv_heads = cfg.num_key_value_heads;
+  shape.kv_heads = Qwen35LocalGeometry::from_config(cfg, rank, world, head).local_kv_heads;
   shape.dim = cfg.head_dim;
   shape.block_tokens = kv_block_tokens_static();
   shape.max_requests = max_requests;
@@ -1104,6 +1116,20 @@ void Qwen35Model::mtp_run_rows(int req, const int64_t* tokens, int64_t first_pos
   const Qwen35LayerResident& r = loader_.load_layer(cfg_.mtp_layer());
   build_layer_objects(r);
   qwen_rmsnorm_bf16(mtp_r_, r.input_norm, x_, T, H, eps, stream_);
+  // The draft layer's boundary folds (run_rows' pattern).
+  const auto stage = [&](uint16_t* fallback, int width) -> uint16_t* {
+    if (!boundary_) return fallback;
+    uint16_t* s = boundary_->stage(T, width);
+    if (s == nullptr && capture)
+      throw std::runtime_error("mtp_run_rows: a capture fold does not fit the recorder's staged buffer");
+    return s ? s : fallback;
+  };
+  const auto fold = [&](uint16_t* buf, int width) {
+    if (!boundary_) return;
+    if (!capture) DGPP_CUDA_OK(cudaStreamSynchronize(stream_));
+    boundary_->reduce(buf, T, width);
+  };
+  uint16_t* ao = stage(attn_out_, H);
   {
     QwenFullAttnCache cache = pool_.view(num_full_);
     QwenQsaRows qrows;
@@ -1114,12 +1140,15 @@ void Qwen35Model::mtp_run_rows(int req, const int64_t* tokens, int64_t first_pos
     qrows.pos0 = first_pos;
     qrows.spans = d_spans;
     qrows.num_requests = num_requests;
-    full_->enqueue(x_, T, qrows, cache, attn_out_, stream_);
+    full_->enqueue(x_, T, qrows, cache, ao, stream_);
   }
+  fold(ao, H);
   // Fused residual-add + post norm (bitwise the pair): one launch.
-  qwen_add_rmsnorm_bf16(mtp_r_, attn_out_, r.post_norm, x_, T, H, eps, stream_);
-  dense_mlp(x_, mlp_out_, T, r.mlp, stream_, cfg_.num_hidden_layers, first_pos > 0 && !decode_row);
-  add_inplace_bf16(mtp_r_, mlp_out_, static_cast<size_t>(T) * H, stream_);
+  qwen_add_rmsnorm_bf16(mtp_r_, ao, r.post_norm, x_, T, H, eps, stream_);
+  uint16_t* mo = stage(mlp_out_, H);
+  dense_mlp(x_, mo, T, r.mlp, stream_, cfg_.num_hidden_layers, first_pos > 0 && !decode_row);
+  fold(mo, H);
+  add_inplace_bf16(mtp_r_, mo, static_cast<size_t>(T) * H, stream_);
   if (head_rows == 0) return;  // prefill rows fill the cache; no head
 
   // ---- head: the draft distribution over the last head_rows rows --------
@@ -1219,6 +1248,27 @@ Qwen35Model::Outputs Qwen35Model::run_rows(const RowRun& run) {
   const int32_t* d_spans = in.spans;
   embed_gather_bf16(globals_.embed, tokens, resid_, T, H, stream_);
   Outputs out;
+  // The boundary folds (world > 1): the attention / GDN output and the MLP
+  // output are this rank's partial sums over its heads and its MLP slice;
+  // each folds across the ranks in bf16 before the residual add — two
+  // folds a layer. The producer writes into the reducer's staged buffer
+  // when the shape fits (the collective sends straight from there; under
+  // capture the recorder's one stable buffer, consumed before the next
+  // handout), else into the model's own buffer. The eager producer
+  // quiesces before the collective; under capture the fold is a recorded
+  // node and the stream order is the drain.
+  const auto stage = [&](uint16_t* fallback, int width) -> uint16_t* {
+    if (!boundary_) return fallback;
+    uint16_t* s = boundary_->stage(T, width);
+    if (s == nullptr && run.capture)
+      throw std::runtime_error("run_rows: a capture fold does not fit the recorder's staged buffer");
+    return s ? s : fallback;
+  };
+  const auto fold = [&](uint16_t* buf, int width) {
+    if (!boundary_) return;
+    if (!run.capture) DGPP_CUDA_OK(cudaStreamSynchronize(stream_));
+    boundary_->reduce(buf, T, width);
+  };
   // The speculative verify's per-row GDN snapshots (the rollback source).
   const bool snapshots = run.decode && run.snapshots;
   int full_ord = 0, gdn_ord = 0;
@@ -1226,6 +1276,7 @@ Qwen35Model::Outputs Qwen35Model::run_rows(const RowRun& run) {
     const Qwen35LayerResident& r = loader_.load_layer(layer);
     build_layer_objects(r);
     qwen_rmsnorm_bf16(resid_, r.input_norm, x_, T, H, eps, stream_);
+    uint16_t* ao = stage(attn_out_, H);
     if (r.kind == Qwen35LayerKind::Gdn) {
       KdaStateSnapshots rec_snap;
       KdaConvSnapshots conv_snap;
@@ -1243,20 +1294,20 @@ Qwen35Model::Outputs Qwen35Model::run_rows(const RowRun& run) {
         requests.num_requests = num_requests;
         gdn_->enqueue_rows(x_, gdn_rec(0, gdn_ord),
                            static_cast<int64_t>(num_gdn_) * rec_elems_, gdn_conv(0, gdn_ord),
-                           static_cast<int64_t>(num_gdn_) * conv_elems_, attn_out_, T, requests, stream_,
+                           static_cast<int64_t>(num_gdn_) * conv_elems_, ao, T, requests, stream_,
                            rec_snap, conv_snap);
       } else if (run.num_spans > 0) {
         int64_t row0 = 0;
         for (int sp = 0; sp < run.num_spans; ++sp) {
           const int len = run.span_lens[sp], sreq = run.span_reqs[sp];
           gdn_->enqueue(x_ + static_cast<size_t>(row0) * H, gdn_rec(sreq, gdn_ord),
-                        gdn_conv(sreq, gdn_ord), attn_out_ + static_cast<size_t>(row0) * H, len, stream_,
+                        gdn_conv(sreq, gdn_ord), ao + static_cast<size_t>(row0) * H, len, stream_,
                         KdaStateSnapshots{}, KdaConvSnapshots{}, KdaReplay{},
                         run.span_pos0[sp] > 0 && !run.decode);
           row0 += len;
         }
       } else {
-        gdn_->enqueue(x_, gdn_rec(req, gdn_ord), gdn_conv(req, gdn_ord), attn_out_, T, stream_, rec_snap,
+        gdn_->enqueue(x_, gdn_rec(req, gdn_ord), gdn_conv(req, gdn_ord), ao, T, stream_, rec_snap,
                       conv_snap, KdaReplay{}, run.pos0 > 0 && !run.decode);
       }
       ++gdn_ord;
@@ -1279,17 +1330,18 @@ Qwen35Model::Outputs Qwen35Model::run_rows(const RowRun& run) {
           srows.pos = d_pos + row0;
           srows.request = run.span_reqs[sp];
           srows.pos0 = run.span_pos0[sp];
-          full_->enqueue(x_ + static_cast<size_t>(row0) * H, len, srows, cache, attn_out_ + static_cast<size_t>(row0) * H,
+          full_->enqueue(x_ + static_cast<size_t>(row0) * H, len, srows, cache, ao + static_cast<size_t>(row0) * H,
                          stream_);
           row0 += len;
         }
       } else {
-        full_->enqueue(x_, T, qrows, cache, attn_out_, stream_);
+        full_->enqueue(x_, T, qrows, cache, ao, stream_);
       }
       ++full_ord;
     }
+    fold(ao, H);
     // Fused residual-add + post norm (bitwise the pair): one launch.
-    qwen_add_rmsnorm_bf16(resid_, attn_out_, r.post_norm, x_, T, H, eps, stream_);
+    qwen_add_rmsnorm_bf16(resid_, ao, r.post_norm, x_, T, H, eps, stream_);
     // A resume chunk's short tail takes the per-tensor MLP like the
     // attention resume above; group spans start at pos0 (resume false).
     // Decode/verify walks (run.decode) keep their exact GEMV dispatch.
@@ -1302,8 +1354,10 @@ Qwen35Model::Outputs Qwen35Model::run_rows(const RowRun& run) {
         mlp_resume = run.pos0 > 0;
       }
     }
-    dense_mlp(x_, mlp_out_, T, r.mlp, stream_, layer, mlp_resume);
-    add_inplace_bf16(resid_, mlp_out_, static_cast<size_t>(T) * H, stream_);
+    uint16_t* mo = stage(mlp_out_, H);
+    dense_mlp(x_, mo, T, r.mlp, stream_, layer, mlp_resume);
+    fold(mo, H);
+    add_inplace_bf16(resid_, mo, static_cast<size_t>(T) * H, stream_);
     if (run.capture_layers) {
       // The fixture gates' per-layer residual read (never under a graph
       // capture: the diagnostic forward only).
