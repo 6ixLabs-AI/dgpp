@@ -2371,6 +2371,11 @@ int main(int argc, char** argv) {
       DGPP_LOG_INFO("serve: --bf16-weights {} packs nothing on the {} family yet (its bf16 sites ride the "
                     "tensor-core kernels): the bf16 bytes serve as shipped",
                     bf16_weights, family->name());
+    if (bf16_weights == "bf12" && std::string(family->name()) == "qwen3_5")
+      DGPP_LOG_INFO("serve: --bf16-weights bf12 on the {} family packs the drafter's layers and fc taps, the MTP fc "
+                    "and a bf16 lm head, and keeps their bf16 bytes resident (one drafter arena; the stacked "
+                    "redrafts read bf16): the same residency as bf12+bf16",
+                    family->name());
     if (std::string(family->name()) != "deepseek_v41" && prefill != "bounded")
       DGPP_LOG_WARN("serve: --prefill {} applies to the DeepSeek-V4.1 family only; the {} family prefills every layer",
                     prefill, family->name());

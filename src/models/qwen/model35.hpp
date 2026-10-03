@@ -23,6 +23,7 @@
 #include "core/graph.hpp"
 #include "engine/paged_blocks.hpp"
 #include "engine/session_model.hpp"
+#include "kernels/bf12_companions.hpp"
 #include "kernels/gemm.hpp"
 #include "kernels/glm_spec.hpp"
 #include "loaders/resident_stream.hpp"
@@ -313,6 +314,14 @@ class Qwen35Model : public SessionModel<Qwen35Model> {
   Qwen35TextConfig cfg_;
   Qwen35LayerStream loader_;
   CublasLtGemm gemm_;
+  // The bf16 decode weights' 12-bit companions (engine.bf16_weights, #88):
+  // the DFlash2 drafter's layers and fc taps, the MTP fc, the bf16 lm head.
+  // This family keeps the bf16 bytes beside them under either packed mode
+  // (the drafter's arena is one allocation; the stacked redrafts past 16
+  // rows read the bf16 form through the streaming mma).
+  Bf12Companions bf12_;
+  double bf12_s_ = 0;
+  void pack_companions();
   QwenGemmWorkspace gw_;
   Qwen35GlobalsResident globals_;
   QwenTextConfig qcfg_;  // adapter: the fields the qwen4_exp layer ctors read

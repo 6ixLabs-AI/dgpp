@@ -467,6 +467,41 @@ Qwen35Model::Qwen35Model(const Qwen35TextConfig& cfg, const std::string& checkpo
   DGPP_CUDA_OK(cudaMalloc(&spec_rec_, spec_rows * static_cast<size_t>(num_gdn_) * rec_elems_ * 4));
   DGPP_CUDA_OK(
       cudaMalloc(&spec_conv_, spec_rows * static_cast<size_t>(num_gdn_) * conv_elems_ * 2));
+  if (Bf12Companions::enabled()) pack_companions();
+}
+
+// The bf16 matrices a decode pass streams through CublasLtGemm's GEMV
+// lowering, packed to their 12-bit companions (kernels/bf12_companions):
+// the drafter's five layers (qkv, o, gate, up, down) and its fc taps, the
+// MTP fc, and the lm head when it serves in bf16. The bf16 bytes stay: the
+// drafter's weights are one arena, the fc taps slices of one matrix, and the
+// stacked redrafts (17+ rows) take the streaming mma form, which reads
+// bf16 — so "bf12" and "bf12+bf16" are the same residency here.
+void Qwen35Model::pack_companions() {
+  const auto t0 = std::chrono::steady_clock::now();
+  const int64_t H = cfg_.hidden_size;
+  const auto pack = [&](const uint16_t* w, int64_t n, int64_t k) {
+    if (w != nullptr) bf12_.pack(w, n, k, gemm_, stream_);
+  };
+  if (dflash2_) {
+    const int64_t dH = dfcfg_.hidden_size, dI = dfcfg_.intermediate_size;
+    const int64_t QW = dfcfg_.q_row(), KV = dfcfg_.kv_row();
+    for (const DFlash2LayerWeights& w : dfw_.layers) {
+      pack(w.qkv, QW + 2 * KV, dH);
+      pack(w.o, dH, QW);
+      pack(w.gate, dI, dH);
+      pack(w.up, dI, dH);
+      pack(w.down, dH, dI);
+    }
+    for (size_t t = 0; t < dfcfg_.target_layer_ids.size(); ++t)
+      pack(dfw_.fc + t * static_cast<size_t>(dH) * static_cast<size_t>(dH), dH, dH);
+    pack(dfw_.hidden_projection, dfcfg_.selector_rank, dH);
+  }
+  if (mtp_) pack(globals_.mtp_fc, H, 2 * H);
+  if (!head_fp8_enabled_) pack(globals_.lm_head, lm_vocab_count_, H);
+  bf12_.finish(gemm_, 1);
+  bf12_s_ += std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+  bf12_.log_summary(rank_, bf12_s_);
 }
 
 Qwen35Model::~Qwen35Model() {
@@ -537,6 +572,7 @@ Qwen35Model::~Qwen35Model() {
 
 void Qwen35Model::configure_gemm_rows(int rows, bool decode) {
   qwen_configure_gemm_rows(gemm_, rows, decode);
+  gemm_.set_bf12_wide(decode);  // the companions take the decode batch's 5..8-row calls too
   // 17..128 decode rows: the streaming tensor-core form reads a bf16 weight
   // once for every row of the launch where the kernel-only band's 4-row GEMV
   // chunks re-read it per chunk (eight times at the 32-row verify batch:
@@ -911,6 +947,24 @@ MemoryPlan Qwen35Model::plan_memory(const Qwen35TextConfig& cfg, int max_tokens,
   if (mtp) {
     // Draft scratch: e/en/hn/hin/r/h [M,H] + cat [M,2H].
     plan.add("mtp scratch", 8 * M * H * 2);
+  }
+  if (Bf12Companions::enabled()) {
+    // The 12-bit companions of the bf16 decode matrices (pack_companions):
+    // the drafter's layers and fc taps, the MTP fc, the bf16 lm head.
+    size_t packed = 0;
+    if (dfcfg) {
+      const int64_t dH = dfcfg->hidden_size, dI = dfcfg->intermediate_size;
+      const int64_t QW = dfcfg->q_row(), KV = dfcfg->kv_row();
+      packed += static_cast<size_t>(dfcfg->num_hidden_layers) *
+                (Bf12Companions::planned_bytes(QW + 2 * KV, dH) + Bf12Companions::planned_bytes(dH, QW) +
+                 2 * Bf12Companions::planned_bytes(dI, dH) + Bf12Companions::planned_bytes(dH, dI));
+      packed += dfcfg->target_layer_ids.size() * Bf12Companions::planned_bytes(dH, dH);
+      packed += Bf12Companions::planned_bytes(dfcfg->selector_rank, dH);
+    }
+    if (mtp) packed += Bf12Companions::planned_bytes(H, 2 * H);
+    if (!(dense_weights_fp8_ && residency == LoaderResidency::Resident))
+      packed += Bf12Companions::planned_bytes(cfg.vocab_size, H);  // the head serves in bf16
+    plan.add("bf16 decode packing (12-bit companions; the bf16 bytes stay)", packed);
   }
   if (dfcfg) {
     plan.add("dflash2 drafter weights", dflash2_weights_bytes(*dfcfg));

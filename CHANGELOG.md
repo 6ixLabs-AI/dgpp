@@ -23,6 +23,9 @@ The history by milestone. The dated engineering record in
   instructions share the mma pipe's issue slots), with `kernels/fp8w_gemm`
   (63–66 TF, both scale forms, `fp8w_gemm_test`) kept for the scale GEMM's
   26 TF tile route (#89) and `fp8_gemm_bench --27b` reporting every lever.
+  `engine.bf16_weights: bf12` now packs this family's bf16 decode matrices
+  too (#88: the drafter's five layers and fc taps, the MTP fc, a bf16 lm
+  head), the bf16 bytes staying resident for the stacked redrafts' mma form.
 
 - **The DFlash2 block drafter on Qwen3.8-27B** (2026-10-02, #80):
   `engine.dflash_model` serves `z-lab/Qwen3.8-27B-DFlash2` in place of the
