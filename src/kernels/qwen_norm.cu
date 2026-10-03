@@ -91,7 +91,8 @@ __global__ void add_rmsnorm_kernel(uint16_t* __restrict__ resid,
 
 // One block per (row, group): the group's own statistics, the weight
 // indexed by the flat position in the row.
-__global__ void group_rmsnorm_kernel(const uint16_t* __restrict__ x,                                     const uint16_t* __restrict__ weight,
+__global__ void group_rmsnorm_kernel(const uint16_t* __restrict__ x,
+                                     const uint16_t* __restrict__ weight,
                                      uint16_t* __restrict__ y, int groups,
                                      int group_dim, float eps) {
   extern __shared__ float staged[];
@@ -181,8 +182,8 @@ void qwen_group_rmsnorm_bf16(const void* x, const void* weight, void* y,
 }
 
 void gdn_gated_rmsnorm_bf16(const void* x, const void* gate, const void* weight,
-                             void* y, int64_t rows, int dim, float eps,
-                             cudaStream_t stream) {
+                            void* y, int64_t rows, int dim, float eps,
+                            cudaStream_t stream) {
   check(rows, dim, "gdn gated rmsnorm");
   constexpr int kBlock = 128;
   const size_t shmem = sizeof(float) * static_cast<size_t>(dim);

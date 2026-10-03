@@ -129,6 +129,7 @@ struct WorldSettings {
   bool prefill_bf16_partials = false;        // the opt-in prefill levers (2026-09-30); absent legacy field = off
   bool prefill_fold_scales = false;
   bool prefill_fp8_gemm = false;
+  bool prefill_fp8_per_tensor = false;  // the Qwen3.8-27B per-tensor prefill recipe (opt-in)
   std::string expert_gemm = "wide";          // the packed expert GEMM's form (2026-09-30); absent legacy field = wide
   int expert_gemm_prefetch = 3;
   bool expert_tile_list = true;

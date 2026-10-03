@@ -226,6 +226,8 @@ ClusterConfig parse_cluster_config(const std::string& json, const std::string& w
           e.prefill_fold_scales = boolean(x, ek, what);
         } else if (p.key == "prefill_fp8_gemm") {
           e.prefill_fp8_gemm = boolean(x, ek, what);
+        } else if (p.key == "prefill_fp8_per_tensor") {
+          e.prefill_fp8_per_tensor = boolean(x, ek, what);
         } else if (p.key == "expert_gemm") {
           e.expert_gemm = text(x, ek, what);
           if (e.expert_gemm != "wide" && e.expert_gemm != "wide3" && e.expert_gemm != "wide4" &&

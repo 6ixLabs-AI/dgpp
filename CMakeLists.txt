@@ -165,7 +165,7 @@ add_library(dgpp_kernels STATIC
   src/kernels/dsa.cu
   src/kernels/fp8_dequant.cu
   src/kernels/fp8_gemm.cu
-  src/kernels/fp8_blockwise_dense.cu
+  src/kernels/fp8_per_tensor.cu
   src/kernels/fp4_gemv.cu
   src/kernels/packq_gemv.cu
   src/kernels/packq_gemm.cu
