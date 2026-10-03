@@ -1381,6 +1381,10 @@ bool GenerationService::parse_chat(const dgpp::minijson::Value& body,
     if (refusal && (r != "assistant" || !refusal->is_string()))
       return refuse("refusal must be a string on an assistant message", where + ".refusal");
     if ((!content || content->is_null()) && refusal) content = refusal;
+    // Anthropic-style thinking parts in assistant history (Claude Code echoes them back
+    // through LiteLLM) fold into reasoning_content, which the template already renders.
+    std::string thinking_text;
+    bool saw_thinking = false;
     if (content && content->is_array() && r != "tool") {
       std::vector<Value> parts;
       for (size_t j = 0; j < content->items().size(); ++j) {
@@ -1391,6 +1395,18 @@ bool GenerationService::parse_chat(const dgpp::minijson::Value& body,
           return refuse("content part must be an object with a type", at);
         if (part.find("prompt_cache_breakpoint"))
           return refuse("explicit cache breakpoints are not supported", at + ".prompt_cache_breakpoint", "unsupported_parameter");
+        if (r == "assistant" && (type->as_string() == "thinking" || type->as_string() == "redacted_thinking")) {
+          if (type->as_string() == "thinking") {
+            const auto* t = part.find("thinking");
+            if (t && !t->is_string()) return refuse("thinking must be a string", at + ".thinking");
+            if (t && !t->as_string().empty()) {
+              if (!thinking_text.empty()) thinking_text += "\n\n";
+              thinking_text += t->as_string();
+            }
+          }
+          saw_thinking = true;
+          continue;
+        }
         if (type->as_string() == "image_url") {
           if (r != "user") return refuse("images require a user message", at + ".type", "unsupported_content_type");
           if (!frontend_->supports_images() || !engine_->supports_images())
@@ -1409,7 +1425,9 @@ bool GenerationService::parse_chat(const dgpp::minijson::Value& body,
         if (!text || !text->is_string()) return refuse("content part text must be a string", at);
         parts.push_back(is_refusal ? Value::make_object({{"type", Value::make_string("text")}, {"text", *text}}) : part);
       }
-      normalized_content = Value::make_array(std::move(parts));
+      // only thinking parts: the visible content is empty
+      normalized_content = (saw_thinking && parts.empty()) ? Value::make_string("")
+                                                            : Value::make_array(std::move(parts));
       content = &normalized_content;
     }
     std::vector<Member> members;
@@ -1527,6 +1545,11 @@ bool GenerationService::parse_chat(const dgpp::minijson::Value& body,
       }
       if (!content_written)
         members.push_back(Member{"content", Value::make_string("")});
+      if (!thinking_text.empty()) {
+        const Value* rc = msg.find("reasoning_content");
+        if (rc == nullptr || rc->is_null())
+          members.push_back(Member{"reasoning_content", Value::make_owned_string(thinking_text)});   // owned: thinking_text dies with this loop
+      }
     } else if (r == "tool") {
       if (content == nullptr || !(content->is_string() || content->is_array()))
         return refuse(where + ".content is required for a tool message: a "

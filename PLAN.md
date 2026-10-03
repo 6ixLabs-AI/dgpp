@@ -32,6 +32,12 @@ revisions recorded with them.
 
 ## Serving support
 
+Assistant history accepts Anthropic-style thinking parts forwarded through
+LiteLLM, folding their text into `reasoning_content` and dropping redacted
+payloads. Explicit reasoning strings take precedence. Host regressions cover
+normalization, tool-call history, role validation and string ownership; see
+the [API profile](docs/openai-compatibility.md#assistant-thinking-history-dgpp-extension).
+
 Completion streams delay their preamble until output is available, with a
 terminal fallback for empty responses. Host regressions cover both endpoints,
 multiple choices, UTF-8 tails and keep-alive compatibility; see the
