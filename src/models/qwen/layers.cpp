@@ -26,7 +26,7 @@
 #include "kernels/qwen_gr.hpp"
 #include "kernels/fp8_dequant.hpp"
 #include "kernels/fp8_gemm.hpp"
-#include "kernels/fp8_blockwise_dense.hpp"
+#include "kernels/fp8_per_tensor.hpp"
 #include "kernels/full_attn.hpp"
 #include "kernels/scale_gemm.hpp"
 #include "kernels/qwen_norm.hpp"
@@ -61,7 +61,7 @@ void gemm_bf16(const QwenGemmWorkspace& g, const uint16_t* act, int64_t act_stri
                  g.ws, g.ws_bytes, stream);
 }
 
-// Per-tensor FP8 prefill product (DGPP_FP8_PT_DENSE): D[M,N] = Act[M,K] x
+// Per-tensor FP8 prefill product (engine.prefill_fp8_per_tensor): D[M,N] = Act[M,K] x
 // W[N,K]^T in E4M3 with scalar scales. The qwen35 model owns the weights,
 // the scratch and the scale cells; the workspace's GEMM is its CublasLtGemm
 // there (the only model that binds an enabled view).
@@ -421,9 +421,9 @@ size_t QwenGrSite::scratch_bytes(int hc, int hidden, int lowrank, int max_tokens
 
 QwenGdnLayer::QwenGdnLayer(const QwenGdnResident& w, const QwenGemmWorkspace& gemm,
                            const QwenTextConfig& cfg, int max_tokens, bool swish_gate)
-     : w_(w), g_(gemm), hidden_(cfg.hidden_size), lk_(w.local_key_heads), lv_(w.local_value_heads),
-       k_dim_(cfg.gdn_key_head_dim), v_dim_(cfg.gdn_value_head_dim), conv_width_(cfg.gdn_conv_width),
-       max_tokens_(max_tokens), eps_(cfg.rms_norm_eps), swish_gate_(swish_gate) {
+    : w_(w), g_(gemm), hidden_(cfg.hidden_size), lk_(w.local_key_heads), lv_(w.local_value_heads),
+      k_dim_(cfg.gdn_key_head_dim), v_dim_(cfg.gdn_value_head_dim), conv_width_(cfg.gdn_conv_width),
+      max_tokens_(max_tokens), eps_(cfg.rms_norm_eps), swish_gate_(swish_gate) {
   if (!g_.gemm || !g_.ws) throw std::invalid_argument("QwenGdnLayer: GEMM workspace required");
   if (lk_ <= 0 || lv_ <= 0 || lv_ % lk_ != 0)
     throw std::invalid_argument("QwenGdnLayer: value heads must be a multiple of key heads");

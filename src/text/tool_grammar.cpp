@@ -48,7 +48,7 @@ GrammarVocab::GrammarVocab(std::vector<std::string> texts, ChatMarkers markers,
 
 GrammarVocab GrammarVocab::from_tokenizer(const Tokenizer& tok,
                                           const std::vector<int64_t>& eos_ids,
-                                          int vocab_size) {
+                                          int vocab_size, DsmlDialect dsml_dialect) {
   const int64_t max_id = tok.max_id();
   std::vector<std::string> texts(
       static_cast<size_t>(std::max<int64_t>(max_id + 1, 0)));
@@ -64,8 +64,9 @@ GrammarVocab GrammarVocab::from_tokenizer(const Tokenizer& tok,
         for (const int64_t e : eos_ids)
           if (e == added.id) call_eos = e;
   }
-  return GrammarVocab(std::move(texts), ChatMarkers::from_tokenizer(tok),
-                      eos_ids, vocab_size, call_eos);
+  ChatMarkers markers = ChatMarkers::from_tokenizer(tok);
+  markers.dsml_dialect = dsml_dialect;
+  return GrammarVocab(std::move(texts), std::move(markers), eos_ids, vocab_size, call_eos);
 }
 
 void GrammarVocab::prepare_json() const {
@@ -400,18 +401,42 @@ bool ends_with(const std::string& s, const std::string& suffix) {
   return s.size() >= suffix.size() && s.compare(s.size() - suffix.size(), suffix.size(), suffix) == 0;
 }
 // The DSML literals with the tag as the sentinel byte (the parser's
-// kDsmlCallsOpen and friends with "｜DSML｜" replaced).
+// DsmlTags with "｜DSML｜" replaced), per dialect: V4.1 writes " calls" /
+// " invoke" / " parameter" after the tag, V4 "tool_calls" / "invoke" /
+// "parameter".
 const std::string kDTag(1, GrammarState::kDsmlSentinel);
-const std::string kDCallsTail = " calls>\n";
-const std::string kDInvokeOpen = "<" + kDTag + " invoke name=\"";
 const std::string kDInvokeHeadEnd = "\">\n";
-const std::string kDParamOpen = "<" + kDTag + " parameter name=\"";
 const std::string kDParamFlag = "\" string=\"";
 const std::string kDFlagTrue = "true\">";
 const std::string kDFlagFalse = "false\">";
-const std::string kDParamClose = "</" + kDTag + " parameter>\n";
-const std::string kDInvokeClose = "</" + kDTag + " invoke>\n";
-const std::string kDCallsClose = "</" + kDTag + " calls>";
+struct DsmlLiterals {
+  std::string calls_tail;    // after the opening "<" TAG
+  std::string invoke_open;   // through name="
+  std::string param_open;    // through name="
+  std::string param_close;
+  std::string invoke_close;
+  std::string calls_close;
+  // The close of an invoke that carries no parameter, as the reference
+  // renders it — a blank line first ("<invoke name=...>\n\n</invoke>\n",
+  // its empty parameter list between the template's two newlines) — offered
+  // beside the plain close while no parameter has opened. Empty: not
+  // offered (V4.1's grammar predates the finding and is left as it was).
+  std::string empty_invoke_close;
+  DsmlLiterals(const std::string& calls, const std::string& invoke, const std::string& parameter,
+               bool blank_line_close)
+      : calls_tail(calls + ">\n"),
+        invoke_open("<" + kDTag + invoke + " name=\""),
+        param_open("<" + kDTag + parameter + " name=\""),
+        param_close("</" + kDTag + parameter + ">\n"),
+        invoke_close("</" + kDTag + invoke + ">\n"),
+        calls_close("</" + kDTag + calls + ">"),
+        empty_invoke_close(blank_line_close ? "\n" + invoke_close : std::string()) {}
+};
+const DsmlLiterals& dsml_literals(const GrammarVocab* vocab) {
+  static const DsmlLiterals v41(" calls", " invoke", " parameter", /*blank_line_close=*/false);
+  static const DsmlLiterals v4("tool_calls", "invoke", "parameter", /*blank_line_close=*/true);
+  return vocab != nullptr && vocab->markers().dsml_dialect == DsmlDialect::kV4 ? v4 : v41;
+}
 }  // namespace
 
 const char* GrammarState::xml_function_open() const {
@@ -693,19 +718,28 @@ void GrammarState::enter(State s) {
     return;
   }
   if (s == State::kDCalls) {
-    match_.targets.push_back(kDCallsTail);
+    match_.targets.push_back(dsml_literals(vocab_).calls_tail);
     tool_ = -1;
     return;
   }
   if (s == State::kDInvoke || s == State::kDInvokeOrClose) {
     if (s == State::kDInvoke || calls_remaining()) {
+      const DsmlLiterals& d = dsml_literals(vocab_);
+      const auto add = [&](const std::string& name) {
+        match_.targets.push_back(d.invoke_open + name + kDInvokeHeadEnd);
+        // The reference's call without parameters, whole: its tokenizer
+        // has ids that span the header's end and the blank line ("\">\n\n"),
+        // which the header target alone would refuse.
+        if (!d.empty_invoke_close.empty() && call_closable_for(name))
+          match_.targets.push_back(d.invoke_open + name + kDInvokeHeadEnd + d.empty_invoke_close);
+      };
       if (spec_.mode == GrammarSpec::Mode::kNamed) {
-        match_.targets.push_back(kDInvokeOpen + spec_.named + kDInvokeHeadEnd);
+        add(spec_.named);
       } else {
-        for (const GrammarTool& t : spec_.tools) match_.targets.push_back(kDInvokeOpen + t.name + kDInvokeHeadEnd);
+        for (const GrammarTool& t : spec_.tools) add(t.name);
       }
     }
-    if (s == State::kDInvokeOrClose) match_.targets.push_back(kDCallsClose);
+    if (s == State::kDInvokeOrClose) match_.targets.push_back(dsml_literals(vocab_).calls_close);
     tool_ = -1;
     return;
   }
@@ -713,11 +747,15 @@ void GrammarState::enter(State s) {
     const GrammarTool* t = current_tool();
     if (t != nullptr && t->constrain_keys) {
       for (const std::string& k : t->keys)
-        if (!key_used(k)) match_.targets.push_back(kDParamOpen + k + kDParamFlag);
+        if (!key_used(k)) match_.targets.push_back(dsml_literals(vocab_).param_open + k + kDParamFlag);
     } else {
-      match_.targets.push_back(kDParamOpen);
+      match_.targets.push_back(dsml_literals(vocab_).param_open);
     }
-    if (call_closable()) match_.targets.push_back(kDInvokeClose);
+    if (call_closable()) {
+      match_.targets.push_back(dsml_literals(vocab_).invoke_close);
+      const std::string& blank = dsml_literals(vocab_).empty_invoke_close;
+      if (!blank.empty() && used_keys_.empty()) match_.targets.push_back(blank);
+    }
     return;
   }
   if (s == State::kDFlag) {
@@ -743,7 +781,7 @@ void GrammarState::enter(State s) {
   if (s == State::kDValue) {
     const GrammarArg* a = current_arg();
     if (a != nullptr && a->kind == GrammarArg::Kind::kText) {
-      for (const std::string& text : a->texts) match_.targets.push_back(text + kDParamClose);
+      for (const std::string& text : a->texts) match_.targets.push_back(text + dsml_literals(vocab_).param_close);
     } else if (a != nullptr && a->kind == GrammarArg::Kind::kJson) {
       value_json_ = JsonMachine(
           arg_schemas_[static_cast<size_t>(tool_)][static_cast<size_t>(arg_)],
@@ -1079,7 +1117,7 @@ void GrammarState::mask(TokenMask* out) const {
     case State::kDValue: {
       const GrammarArg* a = current_arg();
       if (!term_.empty()) {
-        list_mask(out, literal_ids(kDParamClose, term_));
+        list_mask(out, literal_ids(dsml_literals(vocab_).param_close, term_));
       } else if (a == nullptr || a->kind == GrammarArg::Kind::kFree) {
         // Free text; the tag is offered once the value ends in "</" (the
         // closer's start) — it then commits the closer.
@@ -1105,7 +1143,7 @@ void GrammarState::mask(TokenMask* out) const {
         json_mask(value_json_, /*closer=*/-2, out);
         if (value_json_.done()) {
           const int vocab = vocab_->vocab_size();
-          for (const int64_t id : literal_ids(kDParamClose, "")) {
+          for (const int64_t id : literal_ids(dsml_literals(vocab_).param_close, "")) {
             if (id < 0 || id >= vocab) continue;
             uint32_t& w = out->words[static_cast<size_t>(id >> 5)];
             const uint32_t bit = 1u << (id & 31);
@@ -1194,7 +1232,7 @@ bool GrammarState::allows(int64_t id) const {
     const GrammarArg* a = current_arg();
     if (a != nullptr && a->kind == GrammarArg::Kind::kJson) {
       const std::string& closer =
-          state_ == State::kQValue ? std::string(xml_parameter_end()) : kDParamClose;
+          state_ == State::kQValue ? std::string(xml_parameter_end()) : dsml_literals(vocab_).param_close;
       if (!term_.empty()) {
         for (const int64_t t : literal_ids(closer, term_))
           if (t == id) return true;
@@ -1304,13 +1342,20 @@ void GrammarState::advance(int64_t id) {
         enter(State::kDInvoke);
         return;
       }
-      if (match_.emitted == kDCallsClose) {
+      if (match_.emitted == dsml_literals(vocab_).calls_close) {
         enter(State::kEnd);
         return;
       }
+      // The whole call without parameters (header, blank line, close).
+      if (const std::string& blank = dsml_literals(vocab_).empty_invoke_close;
+          !blank.empty() && ends_with(match_.emitted, blank)) {
+        ++calls_;
+        enter(State::kDInvokeOrClose);
+        return;
+      }
       // "<" TAG " invoke name=\"" NAME "\">\n": bind the tool; the key ledger opens.
-      const std::string name = match_.emitted.substr(
-          kDInvokeOpen.size(), match_.emitted.size() - kDInvokeOpen.size() - kDInvokeHeadEnd.size());
+      const size_t open = dsml_literals(vocab_).invoke_open.size();
+      const std::string name = match_.emitted.substr(open, match_.emitted.size() - open - kDInvokeHeadEnd.size());
       tool_ = -1;
       used_keys_.clear();
       for (size_t i = 0; i < spec_.tools.size(); ++i)
@@ -1321,14 +1366,16 @@ void GrammarState::advance(int64_t id) {
     case State::kDParamOrClose:
       match_.emitted += id == m.dsml.id ? kDTag : vocab_->text(id);
       if (!match_.complete()) return;
-      if (match_.emitted == kDInvokeClose) {
+      if (match_.emitted == dsml_literals(vocab_).invoke_close ||
+          (!dsml_literals(vocab_).empty_invoke_close.empty() &&
+           match_.emitted == dsml_literals(vocab_).empty_invoke_close)) {
         ++calls_;
         enter(State::kDInvokeOrClose);
-      } else if (match_.emitted == kDParamOpen) {
+      } else if (match_.emitted == dsml_literals(vocab_).param_open) {
         enter(State::kDFreeKey);
       } else {
-        key_ = match_.emitted.substr(kDParamOpen.size(),
-                                     match_.emitted.size() - kDParamOpen.size() - kDParamFlag.size());
+        const size_t open = dsml_literals(vocab_).param_open.size();
+        key_ = match_.emitted.substr(open, match_.emitted.size() - open - kDParamFlag.size());
         used_keys_.push_back(key_);
         enter(State::kDFlag);
       }
@@ -1360,17 +1407,17 @@ void GrammarState::advance(int64_t id) {
       }
       if (!term_.empty()) {
         term_ += id == m.dsml.id ? kDTag : vocab_->text(id);
-        if (term_ == kDParamClose) enter(State::kDParamOrClose);
+        if (term_ == dsml_literals(vocab_).param_close) enter(State::kDParamOrClose);
         return;
       }
       if (a != nullptr && a->kind == GrammarArg::Kind::kJson) {
         bool terminator = false;
         if (value_json_.done())
-          for (const int64_t t : literal_ids(kDParamClose, ""))
+          for (const int64_t t : literal_ids(dsml_literals(vocab_).param_close, ""))
             if (t == id) terminator = true;
         if (terminator) {
           term_ += vocab_->text(id);
-          if (term_ == kDParamClose) enter(State::kDParamOrClose);
+          if (term_ == dsml_literals(vocab_).param_close) enter(State::kDParamOrClose);
           return;
         }
         for (const char c : vocab_->text(id))

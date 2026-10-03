@@ -801,7 +801,10 @@ __global__ __launch_bounds__(kConsumerThreads) void bus_allreduce_kernel(
 // 80 KB since 2026-09-13: two 6144-wide decode rows from three peers
 // (72 KB) fold from shared memory too — the GB10 block allows 99 KB and the
 // kernel's static shared memory is under 1 KB.
-constexpr size_t kGraphStageBytes = size_t{80} << 10;
+// 96 KB since 2026-10-01: four 4096-wide rows from three peers (a depth-3
+// verify pass: 98,304 B of the block's 101,376) — unstaged, that pass's
+// collectives ran 57-63 us against the 1-row 36.
+constexpr size_t kGraphStageBytes = size_t{96} << 10;
 
 // The graph twin of the kernel above (§6.2, the decode step's replayed
 // launch sequence). The protocol is identical — snapshot, claim/fold/ack,
@@ -1232,15 +1235,18 @@ cudaError_t launch_bus_allreduce_graph(const BusAllReduceGraphView& v,
                                        uint64_t deadline_cycles,
                                        cudaStream_t stream) {
   // Staged only when every peer's slot stays 16-byte aligned (elems a
-  // multiple of 8: the step's small all-gathers are not) and the three
-  // slots fit the budget.
+  // multiple of 8: the step's small all-gathers are not) and the world's
+  // peer slots fit the budget (one peer at world 2: three times the rows).
   const size_t payload = static_cast<size_t>(elems) * 2;
-  const bool stage = (elems % 8) == 0 && payload * kBusMaxPeers <= kGraphStageBytes;
+  const size_t peers = static_cast<size_t>(v.send_peers);
+  const bool stage = (elems % 8) == 0 && peers != 0 && payload * peers <= kGraphStageBytes;
   const uint32_t stage_words = stage ? elems / 4 : 0u;
   // Wider rows need more outstanding system-memory loads from the single
   // consumer block. Keep the small-message launch, use 512 threads for
   // medium payloads and 1024 from 128 KiB. Element ownership changes;
   // the rank-order arithmetic and placement proof do not.
+  // (TRIED 2026-10-01 on the four-row 32 KiB payload, staged: 1024 threads
+  // +11 us per collective, 256 threads level with 512.)
   const int threads = payload < 32768 ? 256 : payload < 131072 ? 512 : 1024;
   // The co-claimed peers' gate: one interleaved pass (the default), or the
   // sequential per-peer gates (DGPP_BUS_GATE=sequential).
@@ -1248,7 +1254,7 @@ cudaError_t launch_bus_allreduce_graph(const BusAllReduceGraphView& v,
     const char* e = std::getenv("DGPP_BUS_GATE");
     return e == nullptr || std::string_view(e) != "sequential";
   }();
-  const size_t smem = stage ? payload * kBusMaxPeers : 0;
+  const size_t smem = stage ? payload * peers : 0;
 #define DGPP_LAUNCH_GRAPH_AR(T, I)                                                      \
   bus_allreduce_graph_kernel<T, I><<<1, T, smem, stream>>>(v, my_rank, src, dst, elems, \
                                                            cell, deadline_cycles, stage_words)

@@ -125,24 +125,189 @@ The history by milestone. The dated engineering record in
   here, an open parity question documented in mtp.md
   (`deploy/cluster_qwen3.8-27b-fp8_w1_dflash2.example.json`).
 
-- **Serve Qwen3.8-27B-FP8 on the native engine, with MTP**
-  (2026-10-01): a new family, `qwen3_5` — the 27B dense model, 64 layers
-  of Gated-Delta-Net (48) and full-attention (16) — served from its native
-  blockwise-FP8 checkpoint `Qwen/Qwen3.8-27B-FP8`. The streaming loader
-  (`loader35`) reads the GDN in_proj (qkv/z) + out and the full-attention
-  q/k/v/o projections and the dense gate/up/down MLPs as blockwise FP8
-  (E4M3 + 128×128 scales), keeps the norms BF16, and loads the MTP draft
-  head (BF16) onto the last full-attention slot. `Qwen35Model` adds the
-  per-tensor FP8 prefill recipe (`DGPP_FP8_PT_DENSE`, Resident only —
-  every MLP and attention projection is boot-requantized into per-tensor
-  slots) and the blockwise-FP8 lm head (`DGPP_FP8_HEAD`) over the packed
-  decode batching. MTP speculative decoding (`engine.mtp` / `--mtp`)
-  drafts on the MTP head and verifies/rolls back on the shared greedy
-  path, so transcripts stay exact. Recipe
-  `deploy/cluster_qwen3.8-27b-fp8_w1_mtp2.example.json` (plain:
-  `..._w1.example.json`); kernel references in `qwen_full_attn_test` /
-  `full_attn_test` / `qwen_norm_test`, the config gates in
-  `qwen35_config_test`, and the loader smoke in `qwen35_loader_smoke`.
+- **Serve Qwen3.8-27B-FP8 on the native engine, with MTP** (2026-10-01,
+  #79): a new family, `qwen3_5` — the 27B dense model, 64 layers of
+  Gated-Delta-Net (48, swish output gate) and full attention (16, GQA with
+  the partial rotary and the per-head output gate) — served from its native
+  blockwise-FP8 checkpoint `Qwen/Qwen3.8-27B-FP8` on one Spark. The
+  streaming loader (`loader35`) reads the GDN in_proj (qkv/z) + out and
+  the full-attention q/k/v/o projections and the dense gate/up/down MLPs
+  as blockwise FP8 (E4M3 + 128×128 scales, widened to F32 at load), keeps
+  the norms BF16, and loads the MTP draft layer onto the last full-attention
+  slot; `Qwen35Model` runs the shared session core (paged K/V over the
+  full-attention layers, model-owned GDN state per slot, the speculative
+  verify/rollback, the decode graphs). MTP (`engine.mtp`, depth 2 in the
+  template) drafts on the MTP head and verifies on the greedy path, so
+  transcripts equal the plain world's. Numerics are the checkpoint's by
+  default (block-scaled FP8 GEMV / streaming MMA at decode rows, the
+  dequantized bf16 GEMM at prefill, the BF16 lm head); two opt-in keys
+  trade exactness for speed and change greedy output —
+  `engine.dense_weights: "fp8"` (the lm head requantized to block FP8) and
+  `engine.prefill_fp8_per_tensor` (prefill GEMMs on cuBLASLt's per-tensor
+  e4m3 kernels, ~2x the prefill rate, +23 GiB). One template,
+  `deploy/cluster_qwen3.8-27b_fp8_w1.example.json`; kernel references in
+  `qwen_full_attn_test` / `full_attn_test` / `qwen_norm_test`, the config
+  and binding gates in `unit_tests`. Measured on one GB10 (greedy, the
+  exact defaults): T=1 119 ms/step (the byte floor is 105), MTP depth 2
+  151 ms/pass at 2.1–2.9 tokens per pass, T=1 and MTP transcripts
+  identical; with both FP8 levers 132 ms/pass. The dense MLP's k=17408
+  down projection runs the streaming mma form at every row count (the
+  GEMV's 48 KiB staging holds one row of it, so a 3-row pass read it three
+  times: 74 ms of a 180 ms step). Thanks to AhmmedSamier for the port.
+
+- **Assistant thinking history through LiteLLM** (2026-10-03): accept
+  Anthropic-style assistant thinking parts by folding their text into
+  `reasoning_content`, preserving explicit reasoning strings and dropping
+  redacted payloads. Thinking-only content becomes an empty string, including
+  in tool-call history. Regression tests cover UTF-8 ownership, precedence,
+  empty/redacted parts and invalid fields/roles. Fixes #74 via #76.
+- **Serve DeepSeek-V4-Flash** (2026-10-01): the seventh family,
+  `deepseek_v4` (`deepseek-ai/DeepSeek-V4-Flash-0731` as shipped: MXFP4
+  routed experts, FP8 block-128 attention projections and shared expert,
+  BF16 compressors, router and head). New: the sliding-window attention
+  over one shared 512-wide latent with positional rings, the ratio-4
+  (overlapping groups, a 64-head indexer selecting 512 entries) and
+  ratio-128 compressed caches, token-table routing on layers 0–2
+  (`GlmMoeLayer::set_hash_routing`), the two-pass hyper-connection sites,
+  the DSpark block draft over three window-only stages, the family's
+  loader / model / fixture ladder (config and binding units, loader, model,
+  TP worlds 2 and 4, graph engine), the port of the release's
+  `encoding_dsv4.py` prompt encoder with its DSML tool dialect, deployment
+  templates for two and four nodes at the model's full 1M-token context,
+  and `tools/dsv4_torch_reference.py`, which runs the release's own
+  `inference/model.py` layer code against the engine's per-layer dump.
+  `engine.mtp_draft` (`auto` | `sampled` | `greedy`) chooses how a sampled
+  request's drafts are picked; this family defaults to the draft's most
+  likely token, accepted with the target's probability of it. With such
+  drafts a sampled request follows the confidence-scheduled verify depth
+  too, at `engine.mtp_schedule_sampled_scale` (0.93) of the head's
+  acceptance — the templates schedule the five-draft block for greedy and
+  sampled requests alike. Measurements
+  in [docs/benchmarks.md](docs/benchmarks.md) and the
+  [campaign record](benchmarks/results/2026-10-01-deepseek-v4-flash/README.md);
+  the [model card](docs/model_cards/DeepSeek-V4-Flash.md).
+- **DeepSeek-V4-Flash decode and prefill kernels** (2026-10-01): L2 weight
+  prefetch windows at the collectives and inside the attention layer;
+  split-K on the decode walks' dense projections; the mHC dots, finish and
+  sublayer norm in one launch with the comb on a side stream; the window
+  attention on the tensor-core listed kernel; a tensor-core scoring pass
+  for the 64-head decode select (`dsa.cu`); the collective's shared-memory
+  staging budget raised to 96 KiB and sized by the world's peers, so a
+  four-row 4096-wide fold is staged; the shared expert's slots run beside
+  the first routed ones (`GlmMoeConfig::shared_slots_early`, this family
+  only — the order alone moves); the attention finish computing its split
+  weights once per block with batched loads (`csa2.cu`, shared with
+  DeepSeek-V4.1); the K/V row's norm, rotation, quantization, ring append
+  and window list in one launch (`dsv4_kv_tail`); the Markov bias's row
+  loads batched. Prefill: the index-select tile sized by the chunk's own
+  entry count instead of the 1M-context bound, the dense FP8 projections
+  through the grouped tensor-core GEMM and the BF16 compressor projections
+  through a new dense tensor-core kernel (`kernels/dense_mma_bf16w`), both
+  row-count-invariant so a chunked prefill stays bitwise the one-shot.
+  Every decode change is bitwise the chain it replaces (transcripts
+  identical on the fabric). Fixes found on the way: a block-draft family's
+  decode batch must cover slots × block (depths under 4 at six slots failed
+  to boot; DeepSeek-V4.1 shared the bug), the scheduler's retire line
+  subtracted the prefill twice from the decode time, and the 64-head decode
+  select lacked its dynamic shared-memory opt-in.
+- **DeepSeek-V4-Flash decode, second round** (2026-10-02), 39.0 → 37.0 ms
+  per depth-3 pass on four nodes and the scheduled depth's whole range:
+  the ratio-128 compressors pool lazily — the open group's layer inputs
+  wait in a positional ring and the group is projected once, when it
+  completes, on the prefill's tile chain (`launch_dense_mma_bf16w_groups_f32`;
+  a pass that completes no group reads no compressor weights, and a
+  decode-published entry is bitwise a prefill's of the same inputs); a
+  compressing layer's window attention runs on a side stream beside its
+  compressor and selection; the draft block's base logits come off a
+  block-FP8 copy of the LM head (half the bytes; 132 MB per rank on four
+  nodes) and every logit within reach of a pick's maximum is recomputed
+  from the BF16 rows after the Markov bias (`dsv41_dspark_rescore`), so the
+  drafts are the BF16 head's — pass counts identical on the fabric. The
+  bus's graph-variant budget is 128 (was 64), so six slots schedule all
+  five verify depths instead of 1 / 3 / 5: replayed over 3,140 traced
+  passes the two missing depths were 1.5 % of a sampled stream.
+  `engine.mtp_schedule_sampled_scale` defaults to 0.93 (the head is near
+  calibrated for a sampled request behind its first draft; 0.8 stopped the
+  deeper drafts short). Tried and reverted with their numbers in the
+  source: the shared expert on tensor-core GEMVs on a side stream (a
+  kernel launched behind the slot kernels' block queue is dispatched after
+  it), and the split-K fold inside the GEMV launch (level).
+- **Batching past the decode-row ceiling** (2026-10-02): a block-draft
+  recipe whose slots times the full block exceed the decode batch (six
+  DeepSeek-V4-Flash slots at depth 5: 36 rows of 32) replayed one scalar
+  graph per live slot whenever every slot was live — six concurrent
+  requests ran at one stream's aggregate rate (64–110 tokens/s). Under the
+  scheduled verify depth the engine now builds a depth-capped family for
+  all slots (five rows each: up to four drafts; a step the policy asks
+  five of verifies four, which is exact), and at a fixed depth the widest
+  family takes the slots it covers with the rest stepped alone: 127–167
+  tokens/s at six requests on four nodes. Transcripts are plain decode's
+  in both forms (`dsv4_engine_test`). `kBusMaxGraphVariants` is 128.
+- **DeepSeek-V4-Flash prefill: the boundary folds under the other half's
+  work** (2026-10-02): a prefill walk of 512 rows or more runs each layer
+  in two row blocks, so a block's all-reduce — the GPU idle through it, a
+  fifth of a 2K prefill on four nodes — runs under the other block's
+  compute: the second block's attention under the first's fold, the next
+  layer's site and attention of the first under the second's MoE fold,
+  the first block's router and the second's expert accumulation under the
+  folds between (`GlmMoeLayer::route_prefill_rows`,
+  `enqueue_prefill_phased`, `accumulate_prefill_rows`; the expert chain
+  stays one pass over every row — its cost is the weights it decodes).
+  `BusStreamReducer` gains the asynchronous bulk fold
+  (`begin_async` / `end_async`). Every row's arithmetic is the one-block
+  walk's: logits and state bitwise, for one prompt and for a group's spans
+  (`dsv4_tp_test`; in a group the block boundary sits on the nearest
+  span's own block grid), and on the fabric prompts of 222 to 2,494
+  tokens sent together return the transcripts they return alone. Cold
+  prefill on four nodes 1,466 → 1,327 ms at 2K tokens and 6,056 → 5,394 ms
+  at 8K; on two nodes 2,150 → 2,021 ms and 8,651 → 7,926 ms. The decode
+  walks: the shared expert's gate and up projections on two side streams
+  ahead of the router with its SwiGLU fused into the down GEMV's staging
+  (`GlmMoeConfig::shared_mma_aside`, `launch_mma_gemv_fp8_swiglu_f32`):
+  a depth-3 pass 37.0 → 36.5 ms on four nodes and 61.9 → 59.8 ms on two;
+  the templates' schedule constants re-measured (3.7 / 22.0 ms and
+  7.2 / 31.2 ms).
+- **Prompts that arrive together are read in together**
+  (2026-10-02, DeepSeek-V4-Flash): concurrent long prompts were admitted
+  one whole prompt at a time — each a full read-in behind the last (a
+  prefix-cache snapshot plan kept a prompt out of the cold group prefill,
+  and two 2K prompts exceed one forward anyway), with every running
+  stream stalled through each. The family's prefill is now resumable
+  (`kResumablePrefill`: decode steps and cancellation between chunks),
+  and the in-flight prompts' next chunks ride ONE forward as its spans
+  (`session_prefill_advance_group`, `SchedulerEngine::advance_prefill_group`;
+  bitwise the one-shot prefill — `dsv4_model_test`). The scheduler, on
+  such an engine: reads every prompt past one aligned chunk in through
+  its cursor, begins every queued one in the same tick, splits the tick's
+  budget max-min fair (a short prompt finishes and is not held behind a
+  long one), levels the remainders within two ticks of the end so the
+  prompts finish — and start decoding — together, and takes the busy
+  budget as a quantum per reading prompt. Rank 0 holds the first arrival
+  at an idle engine `engine.admission_gather_ms` (3) for the rest of its
+  burst. The automatic budget is 256 tokens per reading prompt beside
+  decoding requests and the whole 4096-row forward with none. On four
+  nodes, llama-benchy pp2048/tg128: 88.9 tokens/s at two concurrent
+  requests (was 58.8) and 120.6 at five (was 56.5). Also: a group's
+  second and later requests had their draft windows filled from the
+  first request's rows (lower acceptance for the first ~128 tokens, never
+  a wrong token — the verify decides); the draft's projection now covers
+  only the rows its window keeps; and a slot count whose draft blocks
+  exceed the decode batch is refused at startup instead of seven minutes
+  into the warm-up.
+- Fix the sampling fallback of a reduced-depth batched replay
+  (2026-10-02): a batched replay snapshots its verify rows at the
+  replay's rows per request, and the host fallback read them at the full
+  block's stride, so a sampled slot past the first gathered another
+  slot's row — which the engine refuses (`the gathered fallback row is
+  not the row the device decided over`), ending the serve process.
+  Reachable since sampled requests follow the schedule
+  (`engine.mtp_schedule_sampled_scale`, DeepSeek-V4-Flash): any step with
+  two or more sampled requests at a reduced depth whose pick fell back.
+  `dsv4_engine_test` batches two sampled slots through every depth.
+- Fix `--no-mtp` on a template that sets `engine.mtp_depth` or
+  `engine.mtp_schedule` (2026-10-02): the plain world now drops the
+  template's draft depth and schedule unless the command line asked for
+  them; before, the launch failed with "--mtp-depth N needs --mtp".
 
 - **W4A4 NVFP4 expert prefill is opt-in** (2026-10-01): default to
   W4A16 with BF16 activations; `DGPP_MOE_W4A4=1` explicitly enables

@@ -194,6 +194,7 @@ struct MhcFinishArgs {
   float* pre_out = nullptr;
   float* post_f32 = nullptr;
   float* comb_f32 = nullptr;
+  int one_round_norm = 0;  // the fused norm applies its weight in fp32 (one rounding)
 };
 
 template <int kPerThread, int kRegVecs = 0>
@@ -316,8 +317,11 @@ __device__ __forceinline__ void mhc_finish_block(
     uint32_t packed[4];
 #pragma unroll
     for (int j = 0; j < 8; ++j) {
-      const uint16_t u = float_to_bf16_bits(kept[8 * i + j] * rstd);
-      const uint16_t y = float_to_bf16_bits(lw[j] * bf16_bits_to_float(u));
+      const float xn = kept[8 * i + j] * rstd;
+      // One rounding (the weight applied in fp32) or GLM's two.
+      const uint16_t y = fin.one_round_norm
+                             ? float_to_bf16_bits(__fmul_rn(lw[j], xn))
+                             : float_to_bf16_bits(lw[j] * bf16_bits_to_float(float_to_bf16_bits(xn)));
       if (j % 2 == 0) packed[j / 2] = y;
       else packed[j / 2] |= static_cast<uint32_t>(y) << 16;
     }
@@ -1053,6 +1057,7 @@ bool launch_mhc_compute_normed(const uint16_t* streams, const GlmMhcWeights& w,
     fin.pre_out = single_pass->pre_out;
     fin.post_f32 = single_pass->post_f32;
     fin.comb_f32 = single_pass->comb_f32;
+    fin.one_round_norm = single_pass->one_round_norm ? 1 : 0;
     if (defer_comb && fin.comb_f32 != nullptr)
       throw std::invalid_argument("mhc_compute: a deferred comb takes its fp32 export from launch_mhc_comb");
   }

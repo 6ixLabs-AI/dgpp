@@ -919,9 +919,12 @@ __global__ void gather_index_pools_kernel(const int32_t* block_table,
 // q stays FP8 in shared memory (4 KB/row instead of 16 KB as fp32) — the
 // dot loop converts on access and is memory-bound regardless; the saving
 // is what lets an 8-row MTP decode batch fit the 99 KB GB10 smem optin.
-template <bool kRelu>
+// kHG: the index heads in groups of 32 (1: 32 heads, every family before
+// DeepSeek-V4-Flash; 2: its 64 — a lane computes one head of each group,
+// the groups' warp sums added in group order, 2026-10-01).
+template <bool kRelu, int kHG = 1>
 struct DecodeKeyFn {  // warp computes one pool (lane per head)
-  const uint8_t* q8;   // smem [16 chunks][32 heads] x 8 fp8 bytes (this row)
+  const uint8_t* q8;   // smem [kHG][16 chunks][32 heads] x 8 fp8 bytes (this row)
   const float* w;      // smem [heads] (this row)
   const uint8_t* index_k;
   const float* index_scale;
@@ -956,32 +959,38 @@ struct DecodeKeyFn {  // warp computes one pool (lane per head)
     // The element order matches the scalar form exactly (d = 0..127); only
     // the fp8 decode is vectorized (native hardware, bit-exact — see the
     // conversion helpers above).
-    float partial = 0.0f;
-    // q8 is chunk-major in smem ([16 chunks][32 heads] uint2): for a chunk
-    // the lanes read consecutive words — conflict-free (head-major put
-    // every lane on one bank, a 32-way conflict on each of the 16 loads).
-    const uint2* q2 = reinterpret_cast<const uint2*>(q8);
+    // q8 is chunk-major in smem ([16 chunks][32 heads] uint2 per head
+    // group): for a chunk the lanes read consecutive words — conflict-free
+    // (head-major put every lane on one bank, a 32-way conflict on each of
+    // the 16 loads).
     const uint2* k2 = reinterpret_cast<const uint2*>(krow_s);
-#pragma unroll 8
-    for (int p = 0; p < 16; ++p) {
-      const uint2 qv = q2[p * 32 + lane];  // 8 fp8 values of this lane's head
-      const uint2 kv = k2[p];              // 8 fp8 values of the pool row
-      const uint16_t* qq = reinterpret_cast<const uint16_t*>(&qv);
-      const uint16_t* kk = reinterpret_cast<const uint16_t*>(&kv);
+    float total = 0.0f;
 #pragma unroll
-      for (int j = 0; j < 4; ++j) {
-        const float2 a = fp8x2_to_float2(qq[j]);
-        const float2 b = fp8x2_to_float2(kk[j]);
-        partial = __fadd_rn(partial, __fmul_rn(a.x, b.x));
-        partial = __fadd_rn(partial, __fmul_rn(a.y, b.y));
+    for (int g = 0; g < kHG; ++g) {
+      float partial = 0.0f;
+      const uint2* q2 = reinterpret_cast<const uint2*>(q8) + g * 512;
+#pragma unroll 8
+      for (int p = 0; p < 16; ++p) {
+        const uint2 qv = q2[p * 32 + lane];  // 8 fp8 values of this lane's head
+        const uint2 kv = k2[p];              // 8 fp8 values of the pool row
+        const uint16_t* qq = reinterpret_cast<const uint16_t*>(&qv);
+        const uint16_t* kk = reinterpret_cast<const uint16_t*>(&kv);
+#pragma unroll
+        for (int j = 0; j < 4; ++j) {
+          const float2 a = fp8x2_to_float2(qq[j]);
+          const float2 b = fp8x2_to_float2(kk[j]);
+          partial = __fadd_rn(partial, __fmul_rn(a.x, b.x));
+          partial = __fadd_rn(partial, __fmul_rn(a.y, b.y));
+        }
       }
+      // The full model's indexer clamps each head's score at zero before its
+      // weight (relu(q_h . k) — the scales are positive powers of two, so
+      // the clamp on the fp8 dot is the clamp on the score).
+      if (kRelu) partial = fmaxf(partial, 0.0f);
+      const float contrib = __fmul_rn(__fmul_rn(w[g * 32 + lane], ks), partial);
+      const float gsum = warp_sum(contrib);
+      total = g == 0 ? gsum : __fadd_rn(total, gsum);
     }
-    // The full model's indexer clamps each head's score at zero before its
-    // weight (relu(q_h . k) — the scales are positive powers of two, so
-    // the clamp on the fp8 dot is the clamp on the score).
-    if (kRelu) partial = fmaxf(partial, 0.0f);
-    const float contrib = __fmul_rn(__fmul_rn(w[lane], ks), partial);
-    const float total = warp_sum(contrib);
     // ~sortable reverses the ascending float order: the smallest composite
     // key is then the HIGHEST logit (ties -> lower pool index from the idx
     // bits). Without the inversion the selection picks the worst pools.
@@ -1129,7 +1138,40 @@ __device__ __forceinline__ void select_anomaly_record(int64_t visible, int lower
   }
 }
 
-template <bool kRelu>
+// ---- the tensor-core scoring of the 64-head indexer (2026-10-01) ------------
+// DeepSeek-V4-Flash scores every compressed entry with 64 heads x 128 dims:
+// the lane-per-head scalar chain above is 256 dependent FMAs per entry per
+// row (70 us a launch at 512 entries and four rows; linear in the context).
+// The 64-head instantiation scores a 16-entry tile per warp on the tensor
+// cores instead: keys and queries are e4m3 codes, every one of which is an
+// fp16 value, so both widen exactly (cvt e4m3x2 -> f16x2) and the dots run
+// as mma.m16n8k16 f16 -> f32 — A the tile's 16 keys, B eight heads, eight k
+// steps per head tile, eight head tiles. The head sum is a fixed order
+// (within a lane the two heads in index order, the head tiles in order,
+// then the quad's lanes pairwise), so every rank and every replay derives
+// the same keys; it is not the scalar chain's order — the two-pass prefill
+// select and this one already differ at rounding level.
+__device__ __forceinline__ uint32_t e4m3x2_to_f16x2(uint16_t two) {
+  const __half2_raw h = __nv_cvt_fp8x2_to_halfraw2(static_cast<__nv_fp8x2_storage_t>(two), __NV_E4M3);
+  return static_cast<uint32_t>(h.x) | (static_cast<uint32_t>(h.y) << 16);
+}
+__device__ __forceinline__ void mma_f16_16816(float (&c)[4], uint32_t a0, uint32_t a1, uint32_t a2,
+                                              uint32_t a3, uint32_t b0, uint32_t b1) {
+  asm volatile(
+      "mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 "
+      "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};\n"
+      : "+f"(c[0]), "+f"(c[1]), "+f"(c[2]), "+f"(c[3])
+      : "r"(a0), "r"(a1), "r"(a2), "r"(a3), "r"(b0), "r"(b1));
+}
+constexpr int kMmaSelTile = 16;                                     // entries per warp tile
+constexpr int kMmaSelWarps = 8;                                     // the kernel's 256 threads
+constexpr size_t kMmaSelTileBytes = size_t(kMmaSelTile) * 128 * 2;  // a tile's keys as f16
+// The scoring's shared memory: the current row's q as f16 [heads][128], the
+// warps' key tiles and their scales.
+constexpr size_t select_mma_q_bytes(int heads) { return size_t(heads) * 128 * 2; }
+constexpr size_t kMmaSelKeyBytes = kMmaSelWarps * (kMmaSelTileBytes + kMmaSelTile * sizeof(float));
+
+template <bool kRelu, int kHG = 1>
 __global__ void select_decode_kernel(
     const uint8_t* q_fp8, const float* w_folded, const int32_t* req_ids,
     const int64_t* pos, int rows, const int32_t* block_tables,
@@ -1144,9 +1186,15 @@ __global__ void select_decode_kernel(
   //         [cand_hi/cand_lo: kSelectStopCandidates each]
   //         [scratch: select_k + 1 i32].
   constexpr int kPoolsPerIter = 4;
+  // kHG == 2 scores on the tensor cores: its q area holds ONE row as f16 and
+  // its key area the warps' 16-entry tiles (see e4m3x2_to_f16x2 above).
+  constexpr bool kMma = kHG == 2;
   uint8_t* q8 = reinterpret_cast<uint8_t*>(smem_u64);
-  uint32_t* krow_s = reinterpret_cast<uint32_t*>(q8 + int64_t(rows) * heads * 128);
-  float* w = reinterpret_cast<float*>(krow_s + (256 / 32) * kPoolsPerIter * 32);
+  uint32_t* krow_s = reinterpret_cast<uint32_t*>(
+      q8 + (kMma ? int64_t(select_mma_q_bytes(heads)) : int64_t(rows) * heads * 128));
+  float* w = reinterpret_cast<float*>(
+      reinterpret_cast<uint8_t*>(krow_s) +
+      (kMma ? kMmaSelKeyBytes : size_t(256 / 32) * kPoolsPerIter * 32 * sizeof(uint32_t)));
   int32_t* hist = reinterpret_cast<int32_t*>(w + int64_t(rows) * heads);
   uint32_t* best_hi = reinterpret_cast<uint32_t*>(hist + kSelectHistBins);
   uint32_t* best_lo = best_hi + select_k;
@@ -1158,12 +1206,14 @@ __global__ void select_decode_kernel(
   const unsigned long long t_entry = select_now();
   // q to smem chunk-major per row ([16 chunks][32 heads] of 8 bytes): the
   // dot's per-lane reads are then conflict-free (see key_from_row).
-  for (int64_t c = threadIdx.x; c < int64_t(rows) * 32 * 16; c += blockDim.x) {
-    const int r = int(c / 512), rem = int(c % 512);
+  if constexpr (!kMma) {
+  for (int64_t c = threadIdx.x; c < int64_t(rows) * heads * 16; c += blockDim.x) {
+    const int r = int(c / (heads * 16)), rem = int(c % (heads * 16));
     const int h = rem / 16, p = rem % 16;
     const uint2 v = *reinterpret_cast<const uint2*>(
         q_fp8 + (int64_t(r) * heads + h) * 128 + p * 8);
-    reinterpret_cast<uint2*>(q8)[int64_t(r) * 512 + p * 32 + h] = v;
+    reinterpret_cast<uint2*>(q8)[int64_t(r) * heads * 16 + (h >> 5) * 512 + p * 32 + (h & 31)] = v;
+  }
   }
   for (int64_t i = threadIdx.x; i < int64_t(rows) * heads; i += blockDim.x)
     w[i] = w_folded[i];
@@ -1174,21 +1224,122 @@ __global__ void select_decode_kernel(
   // pool and need no keys (the last block writes them directly).
   const int warp = threadIdx.x >> 5;
   const int nwarp = int(blockDim.x) >> 5;
+  // The tensor-core form's grid is (stripes, rows): a block scores ONE row's
+  // stripe, so the rows of a launch score side by side (a four-row verify
+  // batch was four passes of every block: 35 us of a 48 us launch at 512
+  // entries). The scalar form's grid is (stripes, 1): every block, every row.
+  const int total_blocks = int(gridDim.x) * int(gridDim.y);
   for (int r = 0; r < rows; ++r) {
+    if (kMma && r != int(blockIdx.y)) continue;
     const int64_t visible = (pos[r] + 1) / kpool;
     if (visible <= select_k) continue;
-    const int64_t stripe = (visible + gridDim.x - 1) / gridDim.x;
+    // The tensor-core form's stripe is at least one tile per warp: a short
+    // context then runs in its first blocks alone (the others have nothing
+    // to stage: 48 blocks each converting the row's q for eleven entries was
+    // the 512-entry launch's scoring).
+    int64_t stripe = (visible + gridDim.x - 1) / gridDim.x;
+    if (kMma && stripe < kMmaSelWarps * kMmaSelTile) stripe = kMmaSelWarps * kMmaSelTile;
     const int64_t lo = min(visible, int64_t(blockIdx.x) * stripe);
     const int64_t hi = min(visible, lo + stripe);
+    if (kMma && lo >= hi) continue;  // uniform across the block
     for (int i = threadIdx.x; i < kSelectHistBins; i += blockDim.x) hist[i] = 0;
     __syncthreads();
-    DecodeKeyFn<kRelu> fn{q8 + int64_t(r) * heads * 128, w + int64_t(r) * heads,
+    uint64_t* krow = keys_ws + int64_t(r) * keys_stride;
+    const int lane = threadIdx.x & 31;
+    if constexpr (kMma) {
+      // The row's q as f16 [heads][128] (two codes per conversion).
+      uint32_t* q16 = reinterpret_cast<uint32_t*>(q8);
+      for (int c = threadIdx.x; c < heads * 64; c += blockDim.x)
+        q16[c] = e4m3x2_to_f16x2(
+            *reinterpret_cast<const uint16_t*>(q_fp8 + int64_t(r) * heads * 128 + int64_t(c) * 2));
+      __syncthreads();
+      const int32_t* bt = block_tables + int64_t(req_ids[r]) * blocks_per_request;
+      const float* wr = w + int64_t(r) * heads;
+      uint32_t* kt = reinterpret_cast<uint32_t*>(reinterpret_cast<uint8_t*>(krow_s) +
+                                                 size_t(warp) * (kMmaSelTileBytes + kMmaSelTile * sizeof(float)));
+      float* kscale = reinterpret_cast<float*>(reinterpret_cast<uint8_t*>(kt) + kMmaSelTileBytes);
+      // Whole tiles per warp.
+      const int64_t sub = ((hi - lo + nwarp - 1) / nwarp + kMmaSelTile - 1) / kMmaSelTile * kMmaSelTile;
+      const int64_t wlo = min(hi, lo + int64_t(warp) * sub);
+      const int64_t whi = min(hi, wlo + sub);
+      const int mr = lane >> 2, mt = lane & 3;  // the fragment's row / column pair
+      for (int64_t p = wlo; p < whi; p += kMmaSelTile) {
+        // The tile's keys: lane l converts half hf of entry e (64 codes), all
+        // four 16-byte loads in flight together; an entry past the stripe is
+        // zero and publishes nothing.
+        {
+          const int e = lane >> 1, hf = lane & 1;
+          const int64_t pool = p + e;
+          const bool live = pool < whi;
+          int64_t slot = 0;
+          if (live) slot = int64_t(bt[pool / pools_per_block]) * pools_per_block + (pool % pools_per_block);
+          uint4 raw[4];
+#pragma unroll
+          for (int v = 0; v < 4; ++v)
+            raw[v] = live ? reinterpret_cast<const uint4*>(index_k + slot * 128 + hf * 64)[v]
+                          : make_uint4(0u, 0u, 0u, 0u);
+          if (hf == 0) kscale[e] = live ? index_scale[slot] : 0.f;
+          uint32_t* dst = kt + e * 64 + hf * 32;  // 64 uint32 (128 f16) per entry
+#pragma unroll
+          for (int v = 0; v < 4; ++v) {
+            const uint32_t wd[4] = {raw[v].x, raw[v].y, raw[v].z, raw[v].w};
+#pragma unroll
+            for (int q = 0; q < 4; ++q) {
+              dst[v * 8 + q * 2] = e4m3x2_to_f16x2(static_cast<uint16_t>(wd[q] & 0xFFFFu));
+              dst[v * 8 + q * 2 + 1] = e4m3x2_to_f16x2(static_cast<uint16_t>(wd[q] >> 16));
+            }
+          }
+        }
+        __syncwarp();
+        float s_lo = 0.f, s_hi = 0.f;  // entries p + mr and p + mr + 8: the weighted head sum so far
+#pragma unroll 1
+        for (int ht = 0; ht < heads / 8; ++ht) {
+          float c[4] = {0.f, 0.f, 0.f, 0.f};
+          const uint32_t* qh = q16 + (ht * 8 + mr) * 64;  // head ht * 8 + mr: 64 uint32 of f16 pairs
+#pragma unroll
+          for (int ks = 0; ks < 8; ++ks) {
+            const int k0 = ks * 8 + mt;  // the pair (2t, 2t + 1) of this 16-k step
+            mma_f16_16816(c, kt[mr * 64 + k0], kt[(mr + 8) * 64 + k0], kt[mr * 64 + k0 + 4],
+                          kt[(mr + 8) * 64 + k0 + 4], qh[k0], qh[k0 + 4]);
+          }
+          if (kRelu) {
+            c[0] = fmaxf(c[0], 0.f);
+            c[1] = fmaxf(c[1], 0.f);
+            c[2] = fmaxf(c[2], 0.f);
+            c[3] = fmaxf(c[3], 0.f);
+          }
+          const float w0 = wr[ht * 8 + 2 * mt], w1 = wr[ht * 8 + 2 * mt + 1];
+          s_lo = __fadd_rn(s_lo, __fmul_rn(w0, c[0]));
+          s_lo = __fadd_rn(s_lo, __fmul_rn(w1, c[1]));
+          s_hi = __fadd_rn(s_hi, __fmul_rn(w0, c[2]));
+          s_hi = __fadd_rn(s_hi, __fmul_rn(w1, c[3]));
+        }
+        // The quad's four lanes hold the entry's eight column pairs: pairwise.
+        s_lo = __fadd_rn(s_lo, __shfl_xor_sync(0xffffffffu, s_lo, 1));
+        s_lo = __fadd_rn(s_lo, __shfl_xor_sync(0xffffffffu, s_lo, 2));
+        s_hi = __fadd_rn(s_hi, __shfl_xor_sync(0xffffffffu, s_hi, 1));
+        s_hi = __fadd_rn(s_hi, __shfl_xor_sync(0xffffffffu, s_hi, 2));
+        if (mt == 0) {
+#pragma unroll
+          for (int half = 0; half < 2; ++half) {
+            const int e = mr + half * 8;
+            const int64_t pool = p + e;
+            if (pool < whi) {
+              const float total = __fmul_rn(half == 0 ? s_lo : s_hi, kscale[e]);
+              const uint64_t key = (uint64_t(~sortable_f32_dev(total)) << kIdxBits) | uint64_t(pool);
+              krow[pool] = key;
+              atomicAdd(&hist[select_digit(key, kSelectTopShift, kSelectRadixBits)], 1);
+            }
+          }
+        }
+        __syncwarp();  // the tile is overwritten next iteration
+      }
+    } else {
+    DecodeKeyFn<kRelu, kHG> fn{q8 + int64_t(r) * heads * 128, w + int64_t(r) * heads,
                           index_k, index_scale,
                           block_tables + int64_t(req_ids[r]) * blocks_per_request,
                           pools_per_block, 128};
-    uint64_t* krow = keys_ws + int64_t(r) * keys_stride;
     uint32_t* rows_s = krow_s + warp * (kPoolsPerIter * 32);
-    const int lane = threadIdx.x & 31;
     // Each warp owns a contiguous sub-stripe (consecutive pools share a
     // block-table entry), four pools per iteration with every load — the
     // table entry, the row, the scale — in flight before the first dot
@@ -1223,6 +1374,7 @@ __global__ void select_decode_kernel(
       }
       __syncwarp();  // the rows are overwritten next iteration
     }
+    }
     __syncthreads();
     int32_t* ghist = hist_ws + int64_t(r) * kSelectHistBins;
     for (int i = threadIdx.x; i < kSelectHistBins; i += blockDim.x)
@@ -1238,13 +1390,13 @@ __global__ void select_decode_kernel(
   __threadfence();
   if (threadIdx.x == 0) {
     const int ticket = atomicAdd(counter_ws, 1);
-    s_bin = ticket - (int(gridDim.x) - rows);  // my row, or negative
+    s_bin = ticket - (total_blocks - rows);  // my row, or negative
   }
   __syncthreads();
   const int my_row = s_bin;
   if (my_row < 0) return;
   if (threadIdx.x == 0) {
-    while (*reinterpret_cast<volatile int32_t*>(counter_ws) < int32_t(gridDim.x)) {
+    while (*reinterpret_cast<volatile int32_t*>(counter_ws) < int32_t(total_blocks)) {
     }
   }
   __syncthreads();
@@ -2638,6 +2790,14 @@ void dsa_prepare_kernel_smem() {
     DGPP_CUDA_OK(cudaFuncSetAttribute(
         select_decode_kernel<true>, cudaFuncAttributeMaxDynamicSharedMemorySize,
         g_select_smem_cap));
+    // The 64-head instantiations (DeepSeek-V4's indexer): the opt-in is per
+    // kernel symbol, and four rows of 64 heads at select_k 512 pass 48 KB.
+    DGPP_CUDA_OK(cudaFuncSetAttribute(
+        select_decode_kernel<false, 2>, cudaFuncAttributeMaxDynamicSharedMemorySize,
+        g_select_smem_cap));
+    DGPP_CUDA_OK(cudaFuncSetAttribute(
+        select_decode_kernel<true, 2>, cudaFuncAttributeMaxDynamicSharedMemorySize,
+        g_select_smem_cap));
     // The prefill select at select_k 2048 (a 4096-key tile) needs ~56 KB.
     DGPP_CUDA_OK(cudaFuncSetAttribute(
         select_prefill_kernel<false, 2 * kSelectTile>,
@@ -2997,7 +3157,7 @@ void dsa_select_decode(const void* q_fp8, const float* w_folded,
                        int64_t ws_max_pools, int32_t* counter_ws,
                        int grid_blocks, cudaStream_t stream, bool relu) {
   if (rows <= 0) return;
-  if (heads != 32) DGPP_CUDA_OK(cudaErrorInvalidValue);
+  if (heads != 32 && heads != 64) DGPP_CUDA_OK(cudaErrorInvalidValue);
   // The radix path has no tile; the expansion bounds select_k.
   if (select_k <= 0 || select_k > kSelectMaxK) DGPP_CUDA_OK(cudaErrorInvalidValue);
   if (rows > kSelectLayoutRows) DGPP_CUDA_OK(cudaErrorInvalidValue);
@@ -3016,19 +3176,28 @@ void dsa_select_decode(const void* q_fp8, const float* w_folded,
   // groups run in stream order through the same counters (each launch's
   // last block resets them). Up to eight rows, every single-stream shape,
   // is the one launch it always was.
-  for (int g = 0; g < rows; g += kSelectMaxRows) {
-    const int grows = std::min(kSelectMaxRows, rows - g);
-    const size_t smem = size_t(grows) * heads * 128 + size_t(256 / 32) * 4 * 32 * 4 +
-                        size_t(grows) * heads * 4 + size_t(kSelectHistBins) * 4 +
+  // The 64-head form scores on the tensor cores: one row's q as f16 and the
+  // warps' key tiles in shared memory, whatever the rows of the launch.
+  const int max_rows = kSelectMaxRows;
+  for (int g = 0; g < rows; g += max_rows) {
+    const int grows = std::min(max_rows, rows - g);
+    const size_t score_smem = heads == 64 ? select_mma_q_bytes(heads) + kMmaSelKeyBytes
+                                          : size_t(grows) * heads * 128 + size_t(256 / 32) * 4 * 32 * 4;
+    const size_t smem = score_smem + size_t(grows) * heads * 4 + size_t(kSelectHistBins) * 4 +
                         size_t(select_k) * 8 + size_t(kSelectStopCandidates) * 8 +
                         (select_k + 1) * 4;
     if (smem > size_t(g_select_smem_cap)) DGPP_CUDA_OK(cudaErrorInvalidValue);
-    const int blocks = std::max(grid_blocks > 0 ? grid_blocks : kSelectDefaultGrid, grows);
+    // The tensor-core form's shared memory leaves one block per SM, and its
+    // grid is (stripes, rows): a row's stripes are the grid's x.
+    const int default_grid = heads == 64 ? kSelectDefaultGrid / 2 : kSelectDefaultGrid;
+    const int want_blocks = std::max(grid_blocks > 0 ? grid_blocks : default_grid, grows);
+    const int blocks = heads == 64 ? std::max(1, want_blocks / grows) : want_blocks;
+    const int grid_y = heads == 64 ? grows : 1;
     int32_t* ghist = hist_ws + int64_t(g) * kSelectHistBins;
     select_counter_reset_kernel<<<4, 256, 0, stream>>>(counter_ws, ghist,
                                                        grows * kSelectHistBins);
-    const auto launch = [&](auto tag) {
-      select_decode_kernel<decltype(tag)::value><<<blocks, 256, smem, stream>>>(
+    const auto launch = [&](auto tag, auto hg) {
+      select_decode_kernel<decltype(tag)::value, decltype(hg)::value><<<dim3(blocks, grid_y), 256, smem, stream>>>(
           static_cast<const uint8_t*>(q_fp8) + int64_t(g) * heads * 128,
           w_folded + int64_t(g) * heads, req_ids + g, pos + g, grows,
           block_tables, blocks_per_request,
@@ -3037,8 +3206,14 @@ void dsa_select_decode(const void* q_fp8, const float* w_folded,
           out_counts + g, keys_ws + int64_t(g) * ws_max_pools, ws_max_pools, ghist,
           counter_ws);
     };
-    if (relu) launch(std::true_type{});
-    else launch(std::false_type{});
+    if (heads == 64) {
+      if (relu) launch(std::true_type{}, std::integral_constant<int, 2>{});
+      else launch(std::false_type{}, std::integral_constant<int, 2>{});
+    } else if (relu) {
+      launch(std::true_type{}, std::integral_constant<int, 1>{});
+    } else {
+      launch(std::false_type{}, std::integral_constant<int, 1>{});
+    }
     DGPP_CUDA_OK(cudaGetLastError());
   }
 }

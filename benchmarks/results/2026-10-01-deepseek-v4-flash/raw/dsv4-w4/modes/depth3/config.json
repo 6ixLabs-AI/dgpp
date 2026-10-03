@@ -1,0 +1,26 @@
+{
+  "model": "deepseek-ai/DeepSeek-V4-Flash-0731",
+  "world_size": 4,
+  "release": "",
+  "engine": {
+    "max_concurrency": 6,
+    "kv_capacity": 1048576,
+    "default_max_tokens": 32768,
+    "queue_limit": 8,
+    "max_connections": 64,
+    "decode_graph": true,
+    "mtp": true,
+    "mtp_depth": 3,
+    "mtp_schedule": false,
+    "mtp_schedule_row_ms": 3.7,
+    "mtp_schedule_base_ms": 22.0,
+    "prefix_cache_gib": 14,
+    "admission": "full",
+    "admission_window": 256,
+    "sampling_candidates": 128,
+    "stats_interval_s": 10
+  },
+  "paths": {
+    "resident_cache": ""
+  }
+}

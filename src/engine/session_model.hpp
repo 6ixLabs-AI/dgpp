@@ -45,10 +45,12 @@
 #include <cuda_runtime.h>
 
 #include "common/cuda_check.hpp"
+#include "common/log.hpp"
 #include "common/prefill_progress.hpp"
 #include "engine/boundary_reducer.hpp"
 #include "engine/decode_outputs.hpp"
 #include "engine/logits_storage.hpp"
+#include "engine/pool_exhausted.hpp"
 #include "kernels/gemm.hpp"
 #include "kernels/glm_spec.hpp"
 #include "kernels/pick.hpp"
@@ -199,6 +201,17 @@ class SessionModel : public PrefillReporting {
   // -1 between calls so padded decode graphs cannot advance its state.
   // A positive override changes this chunk's budget; zero uses the begin budget.
   bool session_prefill_advance(PrefillCursor& cursor, int64_t chunk_tokens = 0);
+  // Several unfinished cursors' next chunks as the spans of ONE walk (a
+  // family advertising kPrefillGroupAdvance: its walk takes a span at any
+  // position, and its chunks are split-invariant). Each cursor advances
+  // as session_prefill_advance would — its cuts, its snapshots, its draft
+  // rows — by up to its own budget from where it stands (no budget grid:
+  // the scheduler re-splits a tick's budget among the prompts every
+  // tick), and the weights stream once for all of them. Returns each
+  // cursor's "done".
+  static constexpr bool kPrefillGroupAdvance = false;
+  std::vector<bool> session_prefill_advance_group(const std::vector<PrefillCursor*>& cursors,
+                                                  const std::vector<int64_t>& chunk_tokens);
   Outputs session_step(int req, int64_t token_id) { return session_verify(req, std::vector<int64_t>{token_id}); }
   Outputs session_verify(int req, const std::vector<int64_t>& token_ids);
   // Batched verify: slot-major rows (each slot's fed rows contiguous),
@@ -922,8 +935,13 @@ void SessionModel<D>::prefill_chunk(PrefillCursor& cursor, int64_t budget) {
   }
   for (auto* at = snap; at != nullptr; at = at->next) {
     if (!at->taken && at->position == c1) {
-      *at->meta = session_snapshot(req, at->dst);
-      at->taken = true;
+      try {
+        *at->meta = session_snapshot(req, at->dst);
+        at->taken = true;
+      } catch (const CachePoolExhausted& e) {
+        // Untaken: the scheduler gives the arena slot back (no cache entry).
+        DGPP_LOG_WARN("prefix cache: snapshot at {} skipped for slot {}: {}", c1, req, e.what());
+      }
     }
   }
   cursor.next = c1;
@@ -1000,6 +1018,110 @@ bool SessionModel<D>::session_prefill_advance(PrefillCursor& cursor, int64_t chu
     DGPP_CUDA_OK(cudaMemsetAsync(d_session_pos_ + cursor.req, 0xff, sizeof(int64_t), stream_));
     if (mtp_) DGPP_CUDA_OK(cudaMemsetAsync(d_mtp_pos_ + cursor.req, 0xff, sizeof(int64_t), stream_));
     cursor.suspended = true;
+  }
+  DGPP_CUDA_OK(cudaStreamSynchronize(stream_));
+  return done;
+}
+
+template <class D>
+std::vector<bool> SessionModel<D>::session_prefill_advance_group(const std::vector<PrefillCursor*>& cursors,
+                                                                 const std::vector<int64_t>& chunk_tokens) {
+  if constexpr (!D::kPrefillGroupAdvance)
+    throw std::logic_error("session_prefill_advance_group: family advances one prefill per walk");
+  const int n = static_cast<int>(cursors.size());
+  if (chunk_tokens.size() != cursors.size())
+    throw std::invalid_argument("session_prefill_advance_group: one budget per cursor");
+  if (n == 0) return {};
+  std::vector<int64_t> ids, span_pos0, ends;
+  std::vector<int32_t> span_reqs, span_lens;
+  for (int s = 0; s < n; ++s) {
+    PrefillCursor& c = *cursors[static_cast<size_t>(s)];
+    check_req(c.req, "session_prefill_advance_group");
+    for (int t = 0; t < s; ++t)
+      if (cursors[static_cast<size_t>(t)]->req == c.req)
+        throw std::invalid_argument("session_prefill_advance_group: a request twice in the group");
+    if (c.next >= c.end || session_pos_[static_cast<size_t>(c.req)] != c.next)
+      throw std::logic_error("session_prefill_advance_group: completed or stale cursor");
+    const int64_t budget = chunk_tokens[static_cast<size_t>(s)] == 0 ? c.budget_tokens : chunk_tokens[static_cast<size_t>(s)];
+    if (budget < snapshot_align_ || budget > max_tokens_ || budget % snapshot_align_ != 0)
+      throw std::invalid_argument("session_prefill_advance_group: chunk budget must fit max_tokens and snapshot alignment");
+    // Up to the next cut, within the budget from where the cursor stands.
+    const int64_t c0 = c.next;
+    int64_t c1 = c.cut_index < c.cuts.size() ? c.cuts[c.cut_index] : c.end;
+    c1 = std::min(c1, c0 + budget);
+    ids.insert(ids.end(), c.ids + (c0 - c.start), c.ids + (c1 - c.start));
+    span_reqs.push_back(c.req);
+    span_pos0.push_back(c0);
+    span_lens.push_back(static_cast<int32_t>(c1 - c0));
+    ends.push_back(c1);
+  }
+  if (static_cast<int64_t>(ids.size()) > max_tokens_)
+    throw std::invalid_argument("session_prefill_advance_group: the group's chunks exceed max_tokens");
+  for (PrefillCursor* c : cursors) {
+    if (!c->suspended) continue;
+    push_position(c->req);
+    if (mtp_) push_mtp_position(c->req);
+    c->suspended = false;
+  }
+  RowRun run;
+  run.req = cursors[0]->req;
+  run.ids = ids.data();
+  run.T = static_cast<int>(ids.size());
+  run.pos0 = 0;
+  run.decode = false;
+  run.all_rows = false;
+  run.first_chunk = true;
+  run.last_chunk = true;
+  run.span_reqs = span_reqs.data();
+  run.span_pos0 = span_pos0.data();
+  run.span_lens = span_lens.data();
+  run.num_spans = n;
+  Outputs all = derived().run_rows(run);
+  const size_t H = static_cast<size_t>(hidden_);
+  std::vector<bool> done(static_cast<size_t>(n));
+  for (int s = 0; s < n; ++s) {
+    PrefillCursor& c = *cursors[static_cast<size_t>(s)];
+    const int req = c.req;
+    const int64_t c0 = c.next, c1 = ends[static_cast<size_t>(s)];
+    if (c.cut_index < c.cuts.size() && c1 == c.cuts[c.cut_index]) ++c.cut_index;
+    Outputs& o = c.output;
+    o.lm_vocab_begin = all.lm_vocab_begin;
+    o.lm_vocab_count = all.lm_vocab_count;
+    o.logits.assign(all.logits.begin() + static_cast<std::ptrdiff_t>(s) * lm_vocab_count_,
+                    all.logits.begin() + static_cast<std::ptrdiff_t>(s + 1) * lm_vocab_count_);
+    o.final_hidden_bits.assign(all.final_hidden_bits.begin() + static_cast<std::ptrdiff_t>(s) * static_cast<std::ptrdiff_t>(H),
+                               all.final_hidden_bits.begin() + static_cast<std::ptrdiff_t>(s + 1) * static_cast<std::ptrdiff_t>(H));
+    session_pos_[static_cast<size_t>(req)] = c1;
+    push_position(req);
+    if (mtp_) {
+      // The draft block over this chunk's rows (row q embeds tok_{q+1}).
+      const int64_t r1 = std::min<int64_t>(c1, c.end - 1);
+      if (r1 > c0) mtp_prefill_rows(req, c0, r1, c.ids + (c0 + 1 - c.start));
+      mtp_pos_[static_cast<size_t>(req)] = std::max<int64_t>(mtp_pos_[static_cast<size_t>(req)], r1);
+      push_mtp_position(req);
+    }
+    bool closed = c1 == c.end;
+    for (auto* at = c.snap; at != nullptr; at = at->next) {
+      if (!at->taken && at->position == c1) {
+        try {
+          *at->meta = session_snapshot(req, at->dst);
+          at->taken = true;
+        } catch (const CachePoolExhausted& e) {
+          DGPP_LOG_WARN("prefix cache: snapshot at {} skipped for slot {}: {}", c1, req, e.what());
+        }
+        closed = true;
+      }
+    }
+    c.span_start = closed;
+    c.next = c1;
+    report_prefill_progress(req, c1);
+    done[static_cast<size_t>(s)] = c1 == c.end;
+    if (c1 != c.end) {
+      // As session_prefill_advance: an unfinished slot is inert to a replay.
+      DGPP_CUDA_OK(cudaMemsetAsync(d_session_pos_ + req, 0xff, sizeof(int64_t), stream_));
+      if (mtp_) DGPP_CUDA_OK(cudaMemsetAsync(d_mtp_pos_ + req, 0xff, sizeof(int64_t), stream_));
+      c.suspended = true;
+    }
   }
   DGPP_CUDA_OK(cudaStreamSynchronize(stream_));
   return done;
@@ -1377,7 +1499,7 @@ typename SessionModel<D>::SessionSnapshotMeta SessionModel<D>::pin_blocks_at(int
     const int32_t b = pool.acquire_pinned_block();
     if (b < 0) {
       pool.unpin_blocks(meta.full_blocks.data(), n_full);
-      throw std::runtime_error(std::string(what) + ": cache pool exhausted (the partial block)");
+      throw CachePoolExhausted(std::string(what) + ": cache pool exhausted (the partial block)");
     }
     pool.copy_block_contents(row[n_full], b, stream_);
     meta.partial_block = b;
@@ -1615,8 +1737,11 @@ void SessionModel<D>::session_graph_capture_batch(int rows_per_request, int requ
       requests * rows_per_request > max_decode_rows_)
     throw std::invalid_argument("session_graph_capture_batch: requests * rows_per_request must fit the decode-row ceiling (" +
                                 std::to_string(max_decode_rows_) + ")");
+  // (The feeds sit behind the decode rows at kSpecRows per request slot:
+  // a depth-capped family — every slot at fewer rows than the full block —
+  // has more feed rows than decode rows.)
   if (feed_rows < 0 || feed_rows > kSpecRows || (feed_rows > 0 && feed_rows < rows_per_request) ||
-      (feed_rows > 0 && requests * feed_rows > max_decode_rows_))
+      (feed_rows > 0 && requests * feed_rows > max_requests_ * kSpecRows))
     throw std::invalid_argument("session_graph_capture_batch: the feeds must hold at least the verified rows");
   if (std::none_of(session_pos_.begin(), session_pos_.end(), [](int64_t p) { return p > 0; }))
     throw std::logic_error("session_graph_capture_batch: capture needs one open request");

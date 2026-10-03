@@ -1,5 +1,15 @@
 # Tests
 
+`prefix_snapshot_test` forces a four-block K/V pool full at snapshot time in
+Qwen and GLM. It covers monolithic and resumable prefill, unchanged target/draft
+logits, full-block pin cleanup, skipped hop replacements, timer/slot reuse, and
+propagation of non-pool errors. Build it with `qwen_forward_test` and
+`glm_forward_test`, then run CTest with
+`-R '^(qwen_forward_fixture|glm_forward_fixture|prefix_snapshot_test)$'`.
+`scheduler_test` also checks that skipped hops never become cache entries,
+including replacements of older snapshots, and that skipped prefill slots and
+the `skipped_no_block` counter are handled correctly.
+
 The long-document prefix-cache regression is covered by `scheduler_test`
 (changed tails, lookahead identity, small arenas and cleanup), `qwen_decode_test`
 and `glm_tp_test` (two snapshots, resumed target/draft logits and budget changes).
@@ -9,6 +19,13 @@ The entry floor and the head cut (2026-09-28) are covered by `scheduler_test`
 `cluster_config_test` (the keys) and `fabric_serve_test` (the journal records).
 The [fabric record](../benchmarks/results/2026-09-21-prefix-document-reuse.md)
 covers real 32K/260K prompts, KV sharing and the recipe memory-plan audit.
+
+`serve_test` covers assistant thinking history with the
+`DGPP_TEST_FILTER=serve_thinkingParts_` cases: mixed visible and reasoning
+parts, redacted/empty thinking, explicit reasoning precedence, tool-call
+history, invalid field types and role restrictions. The UTF-8 case keeps
+heap-backed reasoning alive through later messages and template preparation;
+run these cases under the `asan` preset to check the owned-string lifetime.
 
 Release and testing builds use separate CMake presets and directories:
 
@@ -240,7 +257,40 @@ build. The suites cover:
   depths 1 and 2 and the scheduled depth; `mimo_tokenizer_test` and
   `mimo_chat_template_test` against the snapshot's own tokenizer and
   template, the compact `<tool_call>` dialect in `tool_parser_test` /
-  `tool_grammar_test`); the fp4 GEMV
+  `tool_grammar_test`); the DeepSeek-V4-Flash chain (2026-10-01:
+  `dsv4_config`/`dsv4_binding` units over the release's config and its
+  72,317 tensors, `dsv4_loader_test` — every class byte-exact at worlds 1,
+  2 and 4, the resident image round trip, a geometry the world does not
+  divide refused by name — `dsv4_model_test` — prefill == forward, a
+  chunked prefill bitwise the one-shot at any cut (128/256 and
+  101/133/290), hot == cold prefix snapshots, the group prefill bitwise the
+  prefills alone, the resumable prefill and its group advance (three
+  prompts read in through one walk per tick beside a decoding peer, a
+  cancelled cursor) bitwise the one-shot, verify and rollback with
+  certified selection and routing flips, the DSpark draft rows and chain,
+  the screened draft head's picks against the BF16 head's —
+  `dsv4_tp_test` worlds 2 and 4 on 29991–29998 / 30003–30004 (a 150-row
+  walk, grouped prefills through the stream-ordered reducer, the decode
+  rows) and the prefill's fold overlap on one rank with a reducer that
+  takes every asynchronous fold (a prompt and a group's spans in two row
+  blocks bitwise the one-block walk), `dsv4_engine_test` on
+  29986–29990 and 30005–30007 (graph == eager, DSpark depths == plain
+  decode, the scheduled verify depth, a sampled slot under the schedule and
+  two sampled slots batched through every depth with host fallbacks, six
+  slots batched at depth 4, at depth 5 on the depth-capped family and at a
+  fixed depth 5 split past the widest family), `dsv4_tokenizer_test` and
+  `dsv4_prompt_test` against the snapshot's own tokenizer and
+  `encoding_dsv4.py`; `dsa_test`'s 64-head release-shape decode select
+  certified against fp64 logits, `mma_gemv_test`'s dense bf16-weight tile
+  kernel (oracle budget, row-invariant across chunkings, the gated ring
+  form bitwise the plain rows), `glm_moe_test`'s
+  early shared-slot order bitwise the default one and the phased prefill
+  (the router and the accumulation per row block) bitwise the one-call
+  path, `scheduler_test`'s group advance (prompts queued together begin
+  together, max-min fair then levelled shares, the busy quantum per
+  reading prompt); the real checkpoint
+  against the release's own `inference/model.py`, layer by layer, with
+  `tools/dsv4_torch_reference.py`); the fp4 GEMV
   core at every compiled K (the MXFP4 set 2048 / 4096 included) and the
   MoE layer's NVFP4 shared expert;
 - the KDA operator suite: conv/recurrent kernel parity against host

@@ -10,6 +10,7 @@
 #include <charconv>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <stdexcept>
 
@@ -109,16 +110,47 @@ size_t utf8_length(std::string_view s) {
   return n;
 }
 
-// Python str(float): shortest round-trip with a mandatory '.'/exponent
-// ("1.0", "0.5", "1e+30").
+// Python repr(float) (str and json.dumps print the same): the shortest
+// round-trip digits, in positional notation with a mandatory fraction while
+// the decimal exponent lies in [-4, 16) ("1.0", "0.5", "100000.0", "0.0001",
+// "1000000000000000.0") and in exponent notation outside it ("1e+16",
+// "1e-05", "1.5e+30"). The choice is Python's — by the exponent, not by
+// which spelling is shorter (std::to_chars alone prints 100000.0 as
+// "1e+05" and 0.0001 as "1e-04"; fixed 2026-10-01).
 std::string format_double(double d) {
   char buf[64];
-  const auto res = std::to_chars(buf, buf + sizeof(buf), d);
-  std::string s(buf, res.ptr - buf);
-  if (s.find('.') == std::string::npos && s.find('e') == std::string::npos &&
-      s.find('E') == std::string::npos)
-    s += ".0";
-  return s;
+  if (!std::isfinite(d)) {
+    const auto res = std::to_chars(buf, buf + sizeof(buf), d);
+    return std::string(buf, res.ptr - buf);
+  }
+  // The shortest digits as D[.DDD]e±XX.
+  const auto res = std::to_chars(buf, buf + sizeof(buf), d, std::chars_format::scientific);
+  const std::string sci(buf, res.ptr - buf);
+  const size_t e = sci.find('e');
+  const int exponent = std::atoi(sci.c_str() + e + 1);
+  if (exponent < -4 || exponent >= 16) return sci;
+  const bool negative = sci[0] == '-';
+  std::string digits;
+  for (size_t i = negative ? 1 : 0; i < e; ++i)
+    if (sci[i] != '.') digits.push_back(sci[i]);
+  std::string out = negative ? "-" : "";
+  if (exponent < 0) {
+    out += "0.";
+    out.append(static_cast<size_t>(-exponent - 1), '0');
+    out += digits;
+    return out;
+  }
+  const size_t whole = static_cast<size_t>(exponent) + 1;
+  if (digits.size() <= whole) {
+    out += digits;
+    out.append(whole - digits.size(), '0');
+    out += ".0";
+  } else {
+    out.append(digits, 0, whole);
+    out.push_back('.');
+    out.append(digits, whole, std::string::npos);
+  }
+  return out;
 }
 
 bool is_all_digits(std::string_view s) {

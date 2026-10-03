@@ -20,7 +20,7 @@
 #include "common/log.hpp"
 #include "kernels/add_rmsnorm.hpp"
 #include "kernels/dflash2.hpp"
-#include "kernels/fp8_blockwise_dense.hpp"
+#include "kernels/fp8_per_tensor.hpp"
 #include "kernels/fp8_dequant.hpp"
 #include "kernels/gemm.hpp"
 #include "kernels/kernels.hpp"
@@ -308,12 +308,12 @@ Qwen35Model::Qwen35Model(const Qwen35TextConfig& cfg, const std::string& checkpo
   DGPP_CUDA_OK(cudaMalloc(&mlp_out_, M * H * 2));
   DGPP_CUDA_OK(cudaMalloc(&gate_tmp_, M * I * 2));
   DGPP_CUDA_OK(cudaMalloc(&up_tmp_, M * I * 2));
-  // Per-tensor FP8 prefill recipe (DGPP_FP8_PT_DENSE): Resident stacks
+  // Per-tensor FP8 prefill recipe (engine.prefill_fp8_per_tensor): Resident stacks
   // requantize every layer's MLP once at boot (dequant to the bridge, then
   // absmax + x/448 quantize). Streaming stacks keep the bridge: their
   // layers are not all resident, so there is nothing eager to build from.
-  pt_enabled_ = fp8_per_tensor_enabled() && loader_.residency() == LoaderResidency::Resident;
-  pt_attn_enabled_ = pt_enabled_ && fp8_pt_attn_enabled();
+  pt_enabled_ = prefill_fp8_per_tensor_ && loader_.residency() == LoaderResidency::Resident;
+  pt_attn_enabled_ = pt_enabled_;
   if (pt_enabled_) {
     const size_t IH = I * H;
     pt_slots_ = cfg_.num_hidden_layers + (mtp_ ? 1 : 0);
@@ -335,8 +335,7 @@ Qwen35Model::Qwen35Model(const Qwen35TextConfig& cfg, const std::string& checkpo
     // H] + in_proj_z [LV, H] + out_proj [H, LV] per GDN ordinal; Full q
     // [QW, H] + k/v [KW, H] + o [H, FH] per full ordinal (the MTP draft
     // layer takes the last full slot). The bridge is idle at boot, so it
-    // stages each dequant like the MLP requant above. DGPP_FP8_PT_ATTN=0
-    // skips this half (MLP-only ablation): the views stay disabled.
+    // stages each dequant like the MLP requant above.
     if (pt_attn_enabled_)
     {
       const int64_t lk = cfg_.gdn_key_heads, lv = cfg_.gdn_value_heads;
@@ -377,11 +376,11 @@ Qwen35Model::Qwen35Model(const Qwen35TextConfig& cfg, const std::string& checkpo
     }
     DGPP_CUDA_OK(cudaStreamSynchronize(stream_));
   }
-  // Blockwise-FP8 lm head (DGPP_FP8_HEAD, Resident only): the 248k-row BF16
+  // Blockwise-FP8 lm head (engine.dense_weights = fp8, Resident only): the 248k-row BF16
   // head is the only multi-GB BF16 weight left on the decode path. Host
   // requant (fp8_quant::encode_block128, the loader's own encoder) once;
   // decode rows read half the bytes through the F32 scale-GEMM path.
-  head_fp8_enabled_ = fp8_head_enabled() && loader_.residency() == LoaderResidency::Resident;
+  head_fp8_enabled_ = dense_weights_fp8_ && loader_.residency() == LoaderResidency::Resident;
   if (head_fp8_enabled_) {
     const int64_t V = lm_vocab_count_, Hh = cfg_.hidden_size;
     const int64_t sr = (V + 127) / 128, sc = (Hh + 127) / 128;
@@ -766,8 +765,17 @@ void Qwen35Model::dense_mlp(const uint16_t* x, uint16_t* out, int tokens,
   launch_scale_gemm_bf16(x, static_cast<size_t>(H), m.up_fp8.payload, m.up_fp8.scales, up_tmp_, tokens,
                          static_cast<int>(I), static_cast<int>(H), stream, 0, gw_.mma_from_rows);
   qwen35_swiglu_bf16(gate_tmp_, up_tmp_, gate_tmp_, static_cast<int64_t>(tokens) * I, stream);
+  // The down projection's k = I = 17408 fits one activation row in the GEMV's
+  // 48 KiB staging budget, so a 3-row MTP pass read this 89 MB matrix three
+  // times (nsys 2026-10-03: 199 single-row launches x 373 us = 74 ms of a
+  // 180 ms step). The streaming mma form reads it once at any row count, and
+  // its per-row chain is the same whatever m, so the T=1 world and the MTP
+  // verify stay bitwise (4/4 transcripts); it takes the C1 MTP pass from 197
+  // to 151 ms and costs the 1-row T=1 step 8 ms (119 vs 111: the form streams
+  // this matrix at ~215 GB/s against the GEMV's 240 — a kernel item).
   launch_scale_gemm_bf16(gate_tmp_, static_cast<size_t>(I), m.down_fp8.payload, m.down_fp8.scales, out,
-                         tokens, static_cast<int>(H), static_cast<int>(I), stream, 0, gw_.mma_from_rows);
+                         tokens, static_cast<int>(H), static_cast<int>(I), stream, 0,
+                         std::min(gw_.mma_from_rows, 1));
 }
 
 size_t Qwen35Model::session_snapshot_bytes(const Qwen35TextConfig& cfg, int world, bool mtp) {
@@ -853,17 +861,17 @@ MemoryPlan Qwen35Model::plan_memory(const Qwen35TextConfig& cfg, int max_tokens,
   // Dense FP8 prefill bridge: the largest dense matrix dequantized to BF16.
   plan.add("dense fp8 prefill bridge (largest dense matrix in BF16)",
            qwen35_dense_bridge_bytes(cfg));
-  // Per-tensor FP8 recipe (DGPP_FP8_PT_DENSE=0 disables, Resident only):
+  // Per-tensor FP8 recipe (engine.prefill_fp8_per_tensor, Resident only):
   // boot-time E4M3 gate/up/down per layer plus one scale each, activation
   // scratch. Streaming stacks keep the bridge (nothing eager to build).
-  if (fp8_per_tensor_enabled() && residency == LoaderResidency::Resident) {
+  if (prefill_fp8_per_tensor_ && residency == LoaderResidency::Resident) {
     const size_t slots = static_cast<size_t>(cfg.num_hidden_layers) + (mtp ? 1 : 0);
     const size_t IH = static_cast<size_t>(cfg.intermediate_size) * cfg.hidden_size;
     plan.add("per-tensor fp8 mlp (gate/up/down E4M3 + scales)", 3 * slots * IH + slots * 3 * 4);
     plan.add("per-tensor fp8 activation scratch", M * I + 8);
   }
-  if (fp8_per_tensor_enabled() && fp8_pt_attn_enabled() &&
-      residency == LoaderResidency::Resident) {    // Attention projections, the same recipe: GDN qkv/z/out per GDN layer,
+  if (prefill_fp8_per_tensor_ && residency == LoaderResidency::Resident) {
+    // Attention projections, the same recipe: GDN qkv/z/out per GDN layer,
     // Full q/k/v/o per full layer plus the MTP draft's. The activation
     // scratch above is shared (the sites run sequentially).
     int num_gdn = 0, num_full = 0;
@@ -882,9 +890,9 @@ MemoryPlan Qwen35Model::plan_memory(const Qwen35TextConfig& cfg, int max_tokens,
     plan.add("per-tensor fp8 full attention (q/k/v/o E4M3 + scales)",
              full_slots * (QW * Hp + 2 * KW * Hp + Hp * FH) + full_slots * 4 * 4);
   }
-  // Blockwise-FP8 lm head (DGPP_FP8_HEAD, Resident only): half the bytes
-  // per decode row.
-  if (fp8_head_enabled() && residency == LoaderResidency::Resident) {
+  // Blockwise-FP8 lm head (engine.dense_weights = fp8, Resident only): half
+  // the bytes per decode row.
+  if (dense_weights_fp8_ && residency == LoaderResidency::Resident) {
     const size_t Vv = static_cast<size_t>(cfg.vocab_size), Hh = static_cast<size_t>(cfg.hidden_size);
     plan.add("blockwise fp8 lm head (E4M3 + scales)", Vv * Hh + ((Vv + 127) / 128) * ((Hh + 127) / 128) * 4);
   }
@@ -1194,7 +1202,8 @@ Qwen35Model::Outputs Qwen35Model::run_rows(const RowRun& run) {
     // A resume chunk's short tail takes the per-tensor MLP like the
     // attention resume above; group spans start at pos0 (resume false).
     // Decode/verify walks (run.decode) keep their exact GEMV dispatch.
-    bool mlp_resume = false;    if (!run.decode) {
+    bool mlp_resume = false;
+    if (!run.decode) {
       if (run.num_spans > 0) {
         for (int sp = 0; sp < run.num_spans; ++sp)
           mlp_resume = mlp_resume || run.span_pos0[sp] > 0;

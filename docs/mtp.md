@@ -41,7 +41,7 @@ graph decode for MTP; the GLM diagnostic tool also has an eager speculative
 path. Graph serving works on one node when the model fits, using identity
 collectives.
 
-`engine.mtp_depth` accepts 1–7 and defaults to 1 (DeepSeek-V4.1 defaults
+`engine.mtp_depth` accepts 1–5 and defaults to 1 (DeepSeek-V4.1 defaults
 to its DSpark depth). Each step verifies `1 + depth` rows. GLM-5.3 uses
 scalar graphs beyond depth 1; Qwen and GLM-4.7 run batched draft chains at
 every depth within their row limits (Qwen: sixteen slots at depth 3, the

@@ -114,9 +114,17 @@ struct ClusterConfig {
     //     checkpoint's 128 x 128 weight scales, fp32 promotion per group —
     //     the reference stack's cutlass blockwise GEMM) instead of the
     //     dequantized bf16 GEMM. Requires engine.dense_weights = fp8.
+    //   prefill_fp8_per_tensor: the Qwen3.8-27B prefill recipe — every FP8
+    //     projection's prefill GEMM (rows above the decode GEMV band, and
+    //     every resumed chunk) on cuBLASLt's per-tensor-scale e4m3 kernels
+    //     from boot-requantized per-tensor weights and per-call per-tensor
+    //     activations: ~2x the dequantized bf16 GEMM's rate, +23 GiB
+    //     resident at the 27B's shape, and not transcript-preserving at
+    //     long context. Default: the dequantized bf16 GEMM (exact).
     bool prefill_bf16_partials = false;
     bool prefill_fold_scales = false;
     bool prefill_fp8_gemm = false;
+    bool prefill_fp8_per_tensor = false;
     // The packed expert GEMM's form and companions (2026-09-30; every
     // serving switch is a config key — no environment variable selects a
     // kernel). All bitwise the default chain.
@@ -154,12 +162,16 @@ struct ClusterConfig {
     int default_max_tokens = 256;
     FileInputConfig file_inputs;
     int queue_limit = 64;
+    // Rank 0 holds the first arrival at an idle engine this long for the
+    // rest of its burst (requests sent together land a few ms apart), so
+    // they are read in together. 0: tick at once.
+    int admission_gather_ms = 3;
     int max_connections = 64;
     bool no_eos = false;
     bool compact_batches = false;
     bool decode_graph = false;
     bool mtp = false;
-    int mtp_depth = 1;             // draft tokens per step (1..7); needs mtp
+    int mtp_depth = 1;             // draft tokens per step (1..5); needs mtp
     bool mtp_depth_set = false;    // the file named it (else a family may default it: DSpark's block is 5)
     // The DFlash2 block drafter (Qwen3.5-family, eager path only): a
     // checkpoint directory or HF id whose config.json names the drafter.
@@ -180,6 +192,15 @@ struct ClusterConfig {
     double mtp_schedule_lambda = 0.0;
     int mtp_schedule_min_depth = 1;
     bool mtp_schedule_adapt = true;  // lambda follows the modeled throughput, floored at mtp_schedule_lambda
+    // A sampled request's acceptance per position as a fraction of the
+    // confidence head's, when its drafts are the draft's argmax
+    // (mtp_draft greedy); 0: sampled requests verify the whole block.
+    double mtp_schedule_sampled_scale = 0.93;
+    // A sampled request's drafts: "sampled" (draws from the draft's own
+    // distribution, the ratio verify), "greedy" (the draft's argmax, accepted
+    // with probability P(draft)) or "auto" (the family's measured better
+    // rule: greedy for a DSpark block, sampled elsewhere). Exact either way.
+    std::string mtp_draft = "auto";
     int graph_batch_min_live = 0;  // 0 = min(2, max_concurrency) (the batch family, 2026-09-07)
     int sampling_candidates = 128;
     double prefix_cache_gib = 1.5;

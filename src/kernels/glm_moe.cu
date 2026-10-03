@@ -436,9 +436,20 @@ __device__ __forceinline__ SlotMatrix resolve_slot_matrix(
 // slot: 18-72 keys. (TRIED 2026-09-03 and reverted: ranking in the
 // consuming kernels' prologue instead — two barriers and a key loop per
 // block cost the 9216-block down launch +10 us, six times this kernel.)
+//
+// SHARED SLOTS EARLY (2026-10-01, `shared_early`): the shared expert's
+// slots are compute over L2-resident weights (the walk's prefetch window
+// holds them), the routed slots a DRAM stream. Sorted last, the shared
+// slots ran as the launch's tail with the DRAM idle — 12 us per row of a
+// verify pass behind the stream, and by then the stream had pushed the
+// prefetched lines out. Interleaved with the first routed slots (r0 s0 r1
+// s1 ... then the rest of the routed order) they run beside the stream
+// while their lines are still resident: about half the blocks in flight
+// stay DRAM-bound, which holds the stream within a few percent of its
+// rate (moe_dup_bench). The order alone moves; every bit stays.
 __global__ void moe_slot_order_kernel(const int32_t* __restrict__ ids,
                                       int32_t* __restrict__ order, int slots,
-                                      int top_k, int n_experts) {
+                                      int top_k, int n_experts, int shared_early) {
   extern __shared__ int32_t keys[];
   const int s = threadIdx.x;
   if (s < slots) {
@@ -451,6 +462,12 @@ __global__ void moe_slot_order_kernel(const int32_t* __restrict__ ids,
   int pos = 0;
   for (int o = 0; o < slots; ++o)
     pos += (keys[o] < keys[s]) || (keys[o] == keys[s] && o < s);
+  if (shared_early) {
+    // pos: the routed slots' ranks 0 .. routed-1, then the shared ones.
+    const int tokens = slots / (top_k + 1);
+    const int routed = tokens * top_k;
+    pos = pos < routed ? pos + (pos < tokens ? pos : tokens) : 2 * (pos - routed) + 1;
+  }
   order[pos] = s;
 }
 
@@ -839,6 +856,55 @@ void launch_moe_router(const uint16_t* hidden, const uint16_t* gate,
   else
     launch_router_mode<kRouterSigmoid>(hidden, gate, bias, ids, weights, scores, biased,
                                        cfg, tokens, stream, counters, allow_tiled);
+}
+
+namespace {
+// Hash routing (DeepSeek-V4-Flash's first layers, 2026-10-01; the reference
+// `Gate` with `hash`): a token's experts are tid2eid[token] (top_k ids,
+// ascending) instead of the top-k of its scores; the weights are the
+// scores at those ids normalized and scaled exactly as the select does
+// (the sum in ascending-id order, + 1e-20, a division per element).
+__global__ void moe_hash_routes_kernel(const int64_t* __restrict__ tokens,
+                                       const int32_t* __restrict__ tid2eid,
+                                       const float* __restrict__ scores,
+                                       int32_t* __restrict__ ids,
+                                       float* __restrict__ weights, int n_tokens,
+                                       int vocab, int n_experts, int top_k,
+                                       float routed_scaling_factor, int norm_topk) {
+  const int t = blockIdx.x * blockDim.x + threadIdx.x;
+  if (t >= n_tokens) return;
+  int64_t tok = tokens[t];
+  if (tok < 0 || tok >= vocab) tok = 0;  // a padding row: any table row (its output is never read)
+  const int32_t* row = tid2eid + tok * top_k;
+  float wsel[16];
+  float denom = 0.f;
+  for (int i = 0; i < top_k; ++i) {
+    wsel[i] = scores[static_cast<size_t>(t) * n_experts + row[i]];
+    denom = __fadd_rn(denom, wsel[i]);
+  }
+  denom = __fadd_rn(denom, 1e-20f);
+  for (int i = 0; i < top_k; ++i) {
+    ids[static_cast<size_t>(t) * top_k + i] = row[i];
+    weights[static_cast<size_t>(t) * top_k + i] =
+        norm_topk ? __fdiv_rn(wsel[i], denom) * routed_scaling_factor
+                  : wsel[i] * routed_scaling_factor;
+  }
+}
+}  // namespace
+
+void launch_moe_hash_routes(const int64_t* tokens, const int32_t* tid2eid,
+                            const float* scores, int32_t* ids, float* weights,
+                            const GlmMoeConfig& cfg, int vocab, int n_tokens,
+                            cudaStream_t stream) {
+  if (n_tokens <= 0) return;
+  if (!tokens || !tid2eid || !scores || !ids || !weights || vocab <= 0)
+    throw std::invalid_argument("moe_hash_routes: null pointer");
+  if (cfg.router_mode == MoeRouterMode::SoftmaxTopk)
+    throw std::invalid_argument("moe_hash_routes: the softmax router leaves logits, not scores");
+  moe_hash_routes_kernel<<<static_cast<unsigned>((n_tokens + 63) / 64), 64, 0, stream>>>(
+      tokens, tid2eid, scores, ids, weights, n_tokens, vocab, cfg.n_experts, cfg.top_k,
+      cfg.routed_scaling_factor, cfg.norm_topk_prob ? 1 : 0);
+  DGPP_CUDA_OK(cudaGetLastError());
 }
 
 void launch_moe_swiglu_clamp(const uint16_t* gate, const uint16_t* up,
@@ -1574,14 +1640,14 @@ void check_slot_args(const void* x, const int32_t* ids,
 }  // namespace
 
 void launch_moe_slot_order(const int32_t* ids, int32_t* order, int slots,
-                           int top_k, int n_experts, cudaStream_t stream) {
+                           int top_k, int n_experts, cudaStream_t stream, bool shared_early) {
   if (slots <= 0) return;
   if (!ids || !order) throw std::invalid_argument("moe_slot_order: null");
   if (slots > 1024)
     throw std::invalid_argument("moe_slot_order: more slots than one block");
   moe_slot_order_kernel<<<1, static_cast<unsigned>(slots),
                           static_cast<size_t>(slots) * sizeof(int32_t),
-                          stream>>>(ids, order, slots, top_k, n_experts);
+                          stream>>>(ids, order, slots, top_k, n_experts, shared_early ? 1 : 0);
   DGPP_CUDA_OK(cudaGetLastError());
 }
 
@@ -2889,6 +2955,13 @@ __device__ __forceinline__ uint32_t decode_pair_bf16_mx(uint32_t byte, float s) 
   const __nv_bfloat162 b = __floats2bfloat162_rn(__low2float(h) * s, __high2float(h) * s);
   return *reinterpret_cast<const uint32_t*>(&b);
 }
+// (TRIED 2026-10-02 and reverted: the MXFP4 pair from a 256-entry table in
+// shared memory with the scale's exponent added — a load, an and and an
+// add for ~30 instructions, bitwise the decode above over every code and
+// scale byte. Cold prefill on four nodes 1,327 -> 1,355 ms at 2K and
+// 5,394 -> 5,476 at 8K: the kernel is not bound by the decode. Per weight
+// byte from DRAM it moves two activation bytes from L2 — a 64-row tile
+// re-read by each of an expert's 128-column blocks.)
 }  // namespace fp4_ldm
 
 // kGroup: 16 = NVFP4 (e4m3 scales per 16 codes, the global divides the

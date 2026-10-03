@@ -1,0 +1,24 @@
+{
+  "command": [
+    "/usr/bin/python3",
+    "/home/stephen/workspace/dgpp/scripts/serve_prefill_probe.py",
+    "127.0.0.1",
+    "18080",
+    "2048",
+    "8192",
+    "32768",
+    "--repeat",
+    "3",
+    "--no-think",
+    "--seed",
+    "7",
+    "--tag",
+    "dsv4-20261001",
+    "--json-out",
+    "/home/stephen/workspace/dgpp/benchmarks/results/2026-10-01-deepseek-v4-flash/raw/dsv4-w4/performance/default/prefill.json"
+  ],
+  "cwd": "/home/stephen/workspace/dgpp",
+  "started_at": "2026-10-02T20:02:06.617082+00:00",
+  "returncode": 0,
+  "finished_at": "2026-10-02T20:03:52.026422+00:00"
+}

@@ -70,7 +70,8 @@ DGPP_TEST(qwen_group_rmsnorm_normalizes_every_branch_on_its_own) {
   require_bitwise("grouped == plain per group", want.data(), flat.data(), want.size() * 2);
 }
 
-DGPP_TEST(gdn_gated_rmsnorm_keeps_the_reference_roundings) {  const int dim = 128;
+DGPP_TEST(gdn_gated_rmsnorm_keeps_the_reference_roundings) {
+  const int dim = 128;
   const int64_t rows = 12 * 7;
   const std::vector<uint16_t> x = random_bf16_normal(5, rows * dim, 1.0f);
   const std::vector<uint16_t> g = random_bf16_normal(6, rows * dim, 2.0f);

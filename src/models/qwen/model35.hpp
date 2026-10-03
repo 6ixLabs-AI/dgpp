@@ -152,6 +152,15 @@ class Qwen35Model : public SessionModel<Qwen35Model> {
   ~Qwen35Model();
 
   static constexpr int decode_rows_cap() { return 32; }
+  // The two opt-in FP8 levers beyond the checkpoint, set from the cluster
+  // config before plan_memory and the constructor read them:
+  // engine.prefill_fp8_per_tensor (the per-tensor prefill recipe) and
+  // engine.dense_weights = fp8 (the BF16 lm head requantized to block FP8).
+  // Both change greedy transcripts; the defaults are the exact paths.
+  static void set_prefill_fp8_per_tensor(bool on) { prefill_fp8_per_tensor_ = on; }
+  static bool prefill_fp8_per_tensor() { return prefill_fp8_per_tensor_; }
+  static void set_dense_weights_fp8(bool on) { dense_weights_fp8_ = on; }
+  static bool dense_weights_fp8() { return dense_weights_fp8_; }
   // Group prefills (one walk, a span per request): spans share the
   // max_tokens activation rows; the scheduler only groups snapshot-free
   // members (admissible_group), so no snapshot plumbing is needed.
@@ -261,7 +270,7 @@ class Qwen35Model : public SessionModel<Qwen35Model> {
   void dense_mlp(const uint16_t* x, uint16_t* out, int tokens, const Qwen35DenseMlpResident& m,
                  cudaStream_t stream, int layer, bool resume = false);
   // The lm head over `rows` activation rows into F32 logits: the blockwise
-  // FP8 head when DGPP_FP8_HEAD is on (Resident), else the BF16 matmul.
+  // FP8 head under engine.dense_weights = fp8 (Resident), else the BF16 matmul.
   void head_gemv(const uint16_t* act, float* out, int rows, cudaStream_t stream);
   // Per-tensor FP8 boot requant of one layer's MLP into PT slot `layer`
   // (num_hidden_layers addresses the MTP draft layer).
@@ -298,7 +307,9 @@ class Qwen35Model : public SessionModel<Qwen35Model> {
   void* gemm_ws_ = nullptr;
   size_t gemm_ws_bytes_ = 0;
   size_t dense_bridge_bytes_ = 0;
-  // Per-tensor FP8 prefill recipe (DGPP_FP8_PT_DENSE, Resident only):
+  inline static bool prefill_fp8_per_tensor_ = false;
+  inline static bool dense_weights_fp8_ = false;
+  // Per-tensor FP8 prefill recipe (engine.prefill_fp8_per_tensor, Resident only):
   // gate/up/down requantized once at boot to E4M3 with one F32 scale each;
   // prefill calls quantize the activation once and run cuBLASLt FP8.
   uint8_t* pt_gate_ = nullptr;  // [slots][I, H] E4M3
@@ -309,9 +320,10 @@ class Qwen35Model : public SessionModel<Qwen35Model> {
   float* pt_act_scales_ = nullptr;  // [H-use, I-use] F32 (device)
   int pt_slots_ = 0;
   bool pt_enabled_ = false;
-  // The attention half of the recipe (DGPP_FP8_PT_ATTN, default on).
+  // The attention half of the recipe (always with the MLP half; the views
+  // stay disabled under the exact path).
   bool pt_attn_enabled_ = false;
-  // Per-tensor attention projections (DGPP_FP8_PT_DENSE, same recipe):
+  // Per-tensor attention projections (the same recipe):
   // GDN in_proj_qkv [C, H] + in_proj_z [LV, H] + out_proj [H, LV] per GDN
   // ordinal; Full q [QW, H] + k/v [KW, H] + o [H, FH] per full ordinal
   // (the MTP draft layer takes the last full slot).
@@ -327,7 +339,7 @@ class Qwen35Model : public SessionModel<Qwen35Model> {
   int pt_gdn_slots_ = 0, pt_full_slots_ = 0;
   int64_t pt_gdn_C_ = 0, pt_gdn_LV_ = 0;        // GDN projection widths
   int64_t pt_full_QW_ = 0, pt_full_KW_ = 0, pt_full_FH_ = 0;  // Full widths
-  // Blockwise-FP8 lm head (DGPP_FP8_HEAD, Resident only): boot-quantized
+  // Blockwise-FP8 lm head (engine.dense_weights = fp8, Resident only): boot-quantized
   // E4M3 + 128x128 scales; decode rows read half the bytes.
   uint8_t* head_fp8_ = nullptr;  // [V, H] E4M3
   float* head_scales_ = nullptr;  // [ceil(V/128), H/128] F32 (device)

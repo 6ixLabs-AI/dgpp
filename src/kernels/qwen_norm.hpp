@@ -33,8 +33,8 @@ void qwen_group_rmsnorm_bf16(const void* x, const void* weight, void* y,
 // The GDN output norm: y = bf16(bf16(bf16(x * rstd) * w) * sigmoid(gate)),
 // one row per (token, head) of width dim; w is the plain weight (init 1).
 void gdn_gated_rmsnorm_bf16(const void* x, const void* gate, const void* weight,
-                             void* y, int64_t rows, int dim, float eps,
-                             cudaStream_t stream);
+                            void* y, int64_t rows, int dim, float eps,
+                            cudaStream_t stream);
 
 // The swish-gated form (Qwen3.5): y = bf16(bf16(bf16(x * rstd) * w) *
 // (gate * sigmoid(gate))) — same three roundings, one extra fp32 multiply,

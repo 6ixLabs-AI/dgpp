@@ -1,0 +1,36 @@
+{
+  "model": "deepseek-ai/DeepSeek-V4-Flash-0731",
+  "settings": {
+    "max_tokens": 2048,
+    "reasoning_effort": "none",
+    "no_think": true,
+    "limit": 300,
+    "seed": 20260908
+  },
+  "tasks": {
+    "humaneval": {
+      "n": 164,
+      "passed": 141,
+      "rate": 0.8598,
+      "seconds": 297,
+      "mean_completion_tokens": 154,
+      "truncated": 0
+    },
+    "gsm8k": {
+      "n": 300,
+      "passed": 295,
+      "rate": 0.9833,
+      "seconds": 514,
+      "mean_completion_tokens": 136,
+      "truncated": 0
+    },
+    "extract": {
+      "n": 100,
+      "passed": 100,
+      "rate": 1.0,
+      "seconds": 64,
+      "mean_completion_tokens": 53,
+      "truncated": 0
+    }
+  }
+}

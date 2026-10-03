@@ -65,7 +65,7 @@ void qwen_mtp_hidden_projection(const QwenGemmWorkspace& gemm, const uint16_t* a
     const uint16_t* weight, uint16_t* out, int tokens, int hc, int hidden,
     bool decode, cudaStream_t stream);
 
-// Per-tensor FP8 prefill recipe (DGPP_FP8_PT_DENSE, qwen35 Resident only):
+// Per-tensor FP8 prefill recipe (engine.prefill_fp8_per_tensor, qwen35 Resident only):
 // one layer's x-side projections (all [xrows[i], H] off the same [M, H]
 // input) plus the single output projection [H, ocols]. Every address is
 // boot-fixed, so the branch replays under CUDA graphs; disabled views keep
@@ -159,11 +159,11 @@ class QwenGdnLayer {
   QwenGdnLayer(const QwenGdnResident& w, const QwenGemmWorkspace& gemm, const QwenTextConfig& cfg,
                int max_tokens, bool swish_gate = false);
   ~QwenGdnLayer();
-   QwenGdnLayer(const QwenGdnLayer&) = delete;
-   QwenGdnLayer& operator=(const QwenGdnLayer&) = delete;
-   void rebind(const QwenGdnResident& w);
-   // The model's per-tensor FP8 projection view for this bind (qwen35 only).
-   void set_pt_attn(const QwenPtAttnView& v) { pt_ = v; }
+  QwenGdnLayer(const QwenGdnLayer&) = delete;
+  QwenGdnLayer& operator=(const QwenGdnLayer&) = delete;
+  void rebind(const QwenGdnResident& w);
+  // The model's per-tensor FP8 projection view for this bind (qwen35 only).
+  void set_pt_attn(const QwenPtAttnView& v) { pt_ = v; }
   // out[T, H] = GDN(x[T, H]); recurrent_state fp32 [lv, V, K] and
   // conv_state bf16 [C, conv_width - 1] updated in place. Speculative rows
   // (the engine's verify) hand post-row snapshots of both states through
@@ -347,8 +347,8 @@ class QwenFullAttnLayer {
   int local_kv_heads() const { return lkv_; }
 
  private:
-   QwenPtAttnView pt_;  // disabled unless the model binds per-tensor weights
-   QwenFullAttnResident w_;
+  QwenPtAttnView pt_;  // disabled unless the model binds per-tensor weights
+  QwenFullAttnResident w_;
   QwenGemmWorkspace g_;
   int hidden_, lh_, lkv_, dim_, rotary_;
   int max_tokens_;
