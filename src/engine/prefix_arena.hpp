@@ -105,9 +105,9 @@ class PrefixArena {
           std::to_string(rows_after) + " past the position)");
     release(slot);
     Timer& t = begin_timer();
-    // A full pool skips the snapshot (left unfilled, as when a step accepts
-    // fewer than two rows) instead of failing the engine. The timer stays
-    // unarmed, so nothing is harvested from it.
+    // A full pool leaves the slot empty, including any previous snapshot
+    // released above. The scheduler must inspect the arena after the step
+    // before publishing a hop. The timer stays unarmed on failure.
     try {
       metas_[static_cast<size_t>(slot)] =
           model_->session_snapshot_post_row0(req, ptr(slot), spec_row, rows_after);

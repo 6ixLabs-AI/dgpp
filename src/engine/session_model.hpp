@@ -45,12 +45,12 @@
 #include <cuda_runtime.h>
 
 #include "common/cuda_check.hpp"
+#include "common/log.hpp"
 #include "common/prefill_progress.hpp"
 #include "engine/boundary_reducer.hpp"
 #include "engine/decode_outputs.hpp"
 #include "engine/logits_storage.hpp"
 #include "engine/pool_exhausted.hpp"
-#include "common/log.hpp"
 #include "kernels/gemm.hpp"
 #include "kernels/glm_spec.hpp"
 #include "kernels/pick.hpp"
@@ -1090,8 +1090,12 @@ std::vector<bool> SessionModel<D>::session_prefill_advance_group(const std::vect
     bool closed = c1 == c.end;
     for (auto* at = c.snap; at != nullptr; at = at->next) {
       if (!at->taken && at->position == c1) {
-        *at->meta = session_snapshot(req, at->dst);
-        at->taken = true;
+        try {
+          *at->meta = session_snapshot(req, at->dst);
+          at->taken = true;
+        } catch (const CachePoolExhausted& e) {
+          DGPP_LOG_WARN("prefix cache: snapshot at {} skipped for slot {}: {}", c1, req, e.what());
+        }
         closed = true;
       }
     }

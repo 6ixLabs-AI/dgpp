@@ -1366,6 +1366,9 @@ class GraphEngineAdapter final : public sched::SchedulerEngine {
     hop_position_[static_cast<size_t>(req)] = position;
   }
   void prefix_release(int slot) override { arena_.release(slot); }
+  int64_t prefix_position(int slot) const override {
+    return arena_.filled(slot) ? arena_.position(slot) : -1;
+  }
   sched::SchedulerEngine::PrefixEngineStats prefix_engine_stats() const override {
     sched::SchedulerEngine::PrefixEngineStats st;
     st.snapshots = arena_.snapshots();
