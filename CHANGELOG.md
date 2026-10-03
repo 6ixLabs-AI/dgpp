@@ -6,6 +6,34 @@ The history by milestone. The dated engineering record in
 
 ## Unreleased
 
+- **The DFlash2 block drafter on Qwen3.8-27B** (2026-10-02, #80):
+  `engine.dflash_model` serves `z-lab/Qwen3.8-27B-DFlash2` in place of the
+  MTP draft on the eager world-1 engine — five bidirectional draft layers
+  fed by target taps `[5, 19, 33, 47, 61]` through the split `fc`, 2-tap
+  dynamic grouped convolutions, the rank-256 top-16 selector walk, the
+  shared embedding and lm head, the drafter's K/V in five extra planes of
+  the main pool (kernels/dflash2, models/qwen/dflash2, the `dflash2_*`
+  methods of `Qwen35Model`, `DFlash2Speculator`). Every speculating slot's
+  verify rows ride one physical pass; the multi-slot verify replays as a
+  captured graph (`engine.dflash_verify_graph`), the redrafts stack across
+  slots (`engine.dflash_draft_batch`), and `engine.dflash_depth` caps the
+  verified width (exact at any value). `kSpecRows` 6 → 8 for the 8-row
+  block (the MTP families' `mtp_depth` stays 1–5). The step returns the
+  tokens it decided (the accepted drafts and the verify's next token) like
+  the plain step, so transcripts equal a plain world's of the same verify
+  width (4/4 identical to MTP depth 4); the selector's
+  unary term is the candidate's logit (vLLM `_score_edges`), which makes
+  the walk the proposal rule (+2–11 % tokens per step over a per-slot
+  top-1). The 27B family's own GEMM instance takes the streaming mma form
+  for 17..128-row decode batches (the drafter's weights read once per
+  step); other families' dispatch is unchanged. Template
+  `deploy/cluster_qwen3.8-27b_fp8_w1_dflash2.example.json`; references in
+  `dflash2_kernels_test`, the host contract in `dflash2_speculator_test`,
+  the config gates in `unit_tests`. Measured on one GB10 (greedy, exact
+  numerics): 164 ms/step at C1 for 2.5–6.4 tokens per step by class —
+  the author's bench 22–36 tok/s against MTP depth 2's 13.6–16.4; C4
+  41–84 tok/s wall. Thanks to AhmmedSamier for the lane.
+
 - **Serve Qwen3.8-27B-FP8 on the native engine, with MTP** (2026-10-01,
   #79): a new family, `qwen3_5` — the 27B dense model, 64 layers of
   Gated-Delta-Net (48, swish output gate) and full attention (16, GQA with
@@ -23,7 +51,8 @@ The history by milestone. The dated engineering record in
   default (block-scaled FP8 GEMV / streaming MMA at decode rows, the
   dequantized bf16 GEMM at prefill, the BF16 lm head); two opt-in keys
   trade exactness for speed and change greedy output —
-  `engine.dense_weights: "fp8"` (the lm head requantized to block FP8) and
+  `engine.dense_weights: "fp8"` (the lm head requantized to block FP8; the
+  templates ship it: −19 ms per MTP pass at the same acceptance and eval) and
   `engine.prefill_fp8_per_tensor` (prefill GEMMs on cuBLASLt's per-tensor
   e4m3 kernels, ~2x the prefill rate, +23 GiB). One template,
   `deploy/cluster_qwen3.8-27b_fp8_w1.example.json`; kernel references in

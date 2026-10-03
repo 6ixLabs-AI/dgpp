@@ -307,8 +307,12 @@ ClusterConfig parse_cluster_config(const std::string& json, const std::string& w
         else if (p.key == "no_eos") e.no_eos = boolean(x, ek, what);
         else if (p.key == "decode_graph") e.decode_graph = boolean(x, ek, what);
         else if (p.key == "mtp") e.mtp = boolean(x, ek, what);
+        else if (p.key == "dflash_model") e.dflash_model = text(x, ek, what);
+        else if (p.key == "dflash_verify_graph") e.dflash_verify_graph = boolean(x, ek, what);
+        else if (p.key == "dflash_draft_batch") e.dflash_draft_batch = boolean(x, ek, what);
+        else if (p.key == "dflash_depth") e.dflash_depth = static_cast<int>(integer(x, ek, what, 0, 7));
         else if (p.key == "mtp_depth") {
-          e.mtp_depth = static_cast<int>(integer(x, ek, what, 1, 5));  // kSpecRows - 1
+          e.mtp_depth = static_cast<int>(integer(x, ek, what, 1, 5));  // the MTP families' chains; the DFlash2 block is its checkpoint's
           e.mtp_depth_set = true;
         } else if (p.key == "compact_batches")
           e.compact_batches = boolean(x, ek, what);

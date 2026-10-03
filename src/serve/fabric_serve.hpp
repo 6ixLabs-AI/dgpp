@@ -130,6 +130,10 @@ struct WorldSettings {
   bool prefill_fold_scales = false;
   bool prefill_fp8_gemm = false;
   bool prefill_fp8_per_tensor = false;  // the Qwen3.8-27B per-tensor prefill recipe (opt-in)
+  std::string dflash_model;             // the DFlash2 drafter (Qwen3.8-27B, world 1); empty: none
+  bool dflash_verify_graph = true;
+  bool dflash_draft_batch = true;
+  int dflash_depth = 0;
   std::string expert_gemm = "wide";          // the packed expert GEMM's form (2026-09-30); absent legacy field = wide
   int expert_gemm_prefetch = 3;
   bool expert_tile_list = true;

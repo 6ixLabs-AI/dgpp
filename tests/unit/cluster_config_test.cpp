@@ -141,7 +141,9 @@ DGPP_TEST(cluster_config_parses_fills_defaults_and_derives_the_world) {
               c.engine.rendezvous_timeout_ms == 120000 && !c.engine.reasoning_in_content &&
               c.engine.kv_dtype == "bf16" && c.engine.bf16_weights == "checkpoint" &&
               c.engine.fp8_head == "gemv" && !c.engine.prefill_bf16_partials && !c.engine.prefill_fold_scales &&
-              !c.engine.prefill_fp8_gemm && !c.engine.prefill_fp8_per_tensor && c.engine.expert_gemm == "wide" && c.engine.expert_gemm_prefetch == 3 &&
+              !c.engine.prefill_fp8_gemm && !c.engine.prefill_fp8_per_tensor && c.engine.dflash_model.empty() &&
+              c.engine.dflash_verify_graph && c.engine.dflash_draft_batch && c.engine.dflash_depth == 0 &&
+              c.engine.expert_gemm == "wide" && c.engine.expert_gemm_prefetch == 3 &&
               c.engine.expert_tile_list && !c.engine.expert_gemm_pair && c.engine.ngram_prestage,
           "the engine defaults");
   // The expert GEMM's form and companions (2026-09-30): keys, not environment switches.
@@ -164,6 +166,12 @@ DGPP_TEST(cluster_config_parses_fills_defaults_and_derives_the_world) {
                        (on.engine.prefill_fp8_gemm ? 1 : 0) + (on.engine.prefill_fp8_per_tensor ? 1 : 0);
     require(got && others == 1, "engine." + key + " opt-in alone");
   }
+  // The DFlash2 drafter's keys (2026-10-03).
+  const auto df = dgpp::serve::parse_cluster_config(
+      R"({"model":"m","nodes":["h"],"engine":{"dflash_model":"z-lab/Qwen3.8-27B-DFlash2","dflash_verify_graph":false,"dflash_draft_batch":false,"dflash_depth":4}})", "t");
+  require(df.engine.dflash_model == "z-lab/Qwen3.8-27B-DFlash2" && !df.engine.dflash_verify_graph &&
+              !df.engine.dflash_draft_batch && df.engine.dflash_depth == 4,
+          "the dflash keys parse");
   const auto compact = dgpp::serve::parse_cluster_config(
       R"({"model":"m","nodes":["h"],"engine":{"compact_batches":true}})", "t");
   require(compact.engine.compact_batches, "compact_batches opt-in");
@@ -313,6 +321,10 @@ DGPP_TEST(cluster_config_refusesUnknownKeysAndBadValuesByName) {
        "'engine.mtp' must be true or false"},
       {R"({"model":"m","nodes":["h"],"engine":{"mtp_depth":6}})",
        "'engine.mtp_depth' must be in [1, 5]"},
+      {R"({"model":"m","nodes":["h"],"engine":{"dflash_depth":8}})",
+       "'engine.dflash_depth' must be in [0, 7]"},
+      {R"({"model":"m","nodes":["h"],"engine":{"dflash_verify_graph":"yes"}})",
+       "'engine.dflash_verify_graph' must be true or false"},
       {R"({"model":"m","nodes":["h"],"engine":{"mtp_depth":0}})",
        "'engine.mtp_depth' must be in [1, 5]"},
       {R"({"model":"m","nodes":["h"],"engine":{"mtp_draft":"beam"}})",

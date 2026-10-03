@@ -159,12 +159,14 @@ class CublasLtGemm : public IGemm {
   // for every row of the launch, each row's chain the same whatever m. The
   // two forms are tolerance-equal, not bitwise, so a model opts in for all
   // its calls through this instance. Shapes the mma form cannot take keep
-  // the GEMV chunks. max_rows bounds the form: 0 takes every row count
-  // (DeepSeek: its group prefill's spans are then bitwise their prefills
-  // alone), a bound hands wider calls to the Lt algorithm (the session-core
-  // families: Lt is ahead of the streaming form's 128-row groups from a
-  // dozen bf16 rows — bf16_gemv_test's table, 2026-09-14).
-  void set_decode_mma(bool on, int max_rows = 0);
+  // the GEMV chunks. min_rows leaves narrower calls on their existing
+  // dispatch (the C1 gate's m=1 GEMV row stays the GEMV's, not the mma's);
+  // max_rows bounds the form: 0 takes every row count (DeepSeek: its group
+  // prefill's spans are then bitwise their prefills alone), a bound hands
+  // wider calls to the Lt algorithm (the session-core families: Lt is ahead
+  // of the streaming form's 128-row groups from a dozen bf16 rows —
+  // bf16_gemv_test's table, 2026-09-14).
+  void set_decode_mma(bool on, int min_rows = 1, int max_rows = 0);
   bool decode_mma() const override;
   // The tensor-core form's split-K for the decode-shaped bf16 calls (m <=
   // kMmaGemvMaxRows; mma_gemv.hpp): the caller's matmul workspace holds the

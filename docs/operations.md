@@ -144,12 +144,20 @@ default: decode rows through the block-scaled FP8 GEMV / streaming MMA, prefill
 through the dequantized bf16 GEMM, the BF16 lm head as shipped. Two opt-in
 levers trade exactness for speed and must be named in the config:
 `engine.dense_weights: "fp8"` requantizes the lm head to block FP8 (half its
-bytes per decode row, 15 ms of a 3-row MTP pass), and
+bytes per decode row, 15 ms of a 3-row MTP pass; the templates ship it, the
+eval holds at 39/40 on HumanEval and GSM8K and the acceptance is unchanged), and
 `engine.prefill_fp8_per_tensor: true` runs the prefill GEMMs on cuBLASLt's
 per-tensor e4m3 kernels (about 2x the prefill rate, +23 GiB resident). Both
 change greedy transcripts (the head within the first tokens, the prefill
 recipe at long context), so a deployment that enables them is not the
 checkpoint's model. The family is world-1 only.
+
+Its DFlash2 drafter (`engine.dflash_model`, the `_dflash2` template) runs the
+eager world-1 engine with `mtp` and `decode_graph` off; its own options are
+`engine.dflash_verify_graph` (the multi-slot verify as a captured graph, the
+default), `engine.dflash_draft_batch` (stacked redrafts, the default) and
+`engine.dflash_depth` (a verify-depth cap, 0 = the block). None of them
+changes a transcript: the drafter only proposes, the greedy verify decides.
 
 Qwen FP8 and packed heads keep the full product's kernel selection and
 accumulation order. BF16 heads use the existing small-row projection, which

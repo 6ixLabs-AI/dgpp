@@ -312,6 +312,13 @@ struct ServeFamily {
   virtual std::unique_ptr<dgpp::sched::SchedulerEngine> make_eager_engine(
       int slots, dgpp::DecodePick pick, dgpp::DecodeSample sample,
       const dgpp::text::GrammarVocab* grammar, int prefix_slots) = 0;
+  // The block drafter's checkpoint directory (DFlash2; empty = none).
+  // Called after construction, before plan/build. Families without a
+  // drafter refuse it.
+  virtual void set_draft_model(const std::string& dir) {
+    if (!dir.empty())
+      throw std::invalid_argument(std::string(name()) + ": no block drafter (dflash_model) support");
+  }
 };
 
 // GLM-5.3-Flash: the DSA pool's block and pool-id geometry, the latent
@@ -871,6 +878,7 @@ struct MimoFamily final : ServeFamily {
 struct Qwen35Family final : ServeFamily {
   dgpp::Qwen35TextConfig cfg;
   std::string ckpt;
+  std::string dflash;  // the DFlash2 drafter's checkpoint dir (empty: off)
   std::vector<int64_t> eos_;
   std::unique_ptr<dgpp::Qwen35Model> model;
   Qwen35Family(const std::string& checkpoint)
@@ -894,8 +902,8 @@ struct Qwen35Family final : ServeFamily {
   dgpp::MemoryPlan plan(int forward_rows, int64_t context, int rank, int world_, bool fabric, int slots,
                         bool mtp, int decode_rows) const override {
     return dgpp::Qwen35Model::plan_memory(cfg, forward_rows, context, fabric ? rank : 0, fabric ? world_ : 1,
-                                          fabric ? dgpp::LoaderResidency::Resident : dgpp::LoaderResidency::Streaming,
-                                          slots, fabric && mtp, decode_rows);
+                                          fabric || !dflash.empty() ? dgpp::LoaderResidency::Resident : dgpp::LoaderResidency::Streaming,
+                                          slots, fabric && mtp, decode_rows, dflash);
   }
   size_t snapshot_bytes(int world_, bool mtp) const override {
     return dgpp::Qwen35Model::session_snapshot_bytes(cfg, world_, mtp);
@@ -907,9 +915,11 @@ struct Qwen35Family final : ServeFamily {
     dgpp::Qwen35LayerStream::set_resident_image_dir(dgpp::GlmLayerStream::resident_image_dir());
     model = std::make_unique<dgpp::Qwen35Model>(
         cfg, ckpt, forward_rows, pool_tokens,
-        fabric ? dgpp::LoaderResidency::Resident : dgpp::LoaderResidency::Streaming, reducer, fabric ? rank : 0,
-        fabric ? world_ : 1, slots, decode_rows, fabric && mtp);
+        fabric || !dflash.empty() ? dgpp::LoaderResidency::Resident : dgpp::LoaderResidency::Streaming,
+        reducer, fabric ? rank : 0,
+        fabric ? world_ : 1, slots, decode_rows, fabric && mtp, dflash);
   }
+  void set_draft_model(const std::string& dir) override { dflash = dir; }
   void destroy_model() override { model.reset(); }
   size_t model_snapshot_bytes() const override { return model ? model->session_snapshot_bytes() : 0; }
   std::unique_ptr<ServeGraphEngine> make_graph_engine(dgpp::net::CollectiveBus* bus, int rank,
@@ -1347,6 +1357,11 @@ int main(int argc, char** argv) {
       "    [--mtp-depth N]  draft tokens per step (1..5; the verify runs 1+N rows)\n"
       "    [--prefill-fp8-per-tensor]  Qwen3.8-27B: prefill GEMMs on cuBLASLt's per-tensor e4m3 kernels\n"
       "      (engine.prefill_fp8_per_tensor; ~2x the prefill rate, +23 GiB, changes greedy output)\n"
+      "    [--dflash-model DIR_OR_ID]  DFlash2 block drafter checkpoint (replaces --mtp; eager world-1)\n"
+      "    [--no-dflash]  run plain from a drafter template (the A/B knob)\n"
+      "    [--no-dflash-verify-graph]  the multi-slot verify as an eager batch (engine.dflash_verify_graph)\n"
+      "    [--no-dflash-draft-batch]  one block forward per slot (engine.dflash_draft_batch)\n"
+      "    [--dflash-depth N]  verify only the first N drafts per step, 0 = the block (engine.dflash_depth)\n"
       "    [--mtp-schedule]  the confidence-scheduled verify depth (DeepSeek-V4.1's\n"
       "      DSpark): a step verifies only the drafts whose prefix survival beats\n"
       "      the value of a verify row; exact\n"
@@ -1393,7 +1408,9 @@ int main(int argc, char** argv) {
       "    per-token, per-window and per-cache-decision lines sit at DEBUG\n"
       "    (DGPP_LOG_LEVEL=debug)\n";
 
-  std::string ckpt, model_id, peer;
+  std::string ckpt, model_id, peer, dflash_model;
+  bool dflash_verify_graph = true, dflash_draft_batch = true;
+  int dflash_depth = 0;
   uint16_t port = 8080, fabric_port = 29970, journal_port = 29971;
   int64_t kv_capacity = 8192;
   int64_t http_max_body_bytes = dgpp::serve::kDefaultHttpMaxBodyBytes;
@@ -1530,6 +1547,10 @@ int main(int argc, char** argv) {
     no_eos = e.no_eos;
     decode_graph = e.decode_graph;
     mtp = e.mtp;
+    if (dflash_model.empty()) dflash_model = e.dflash_model;  // the flag wins
+    dflash_verify_graph = e.dflash_verify_graph;
+    dflash_draft_batch = e.dflash_draft_batch;
+    dflash_depth = e.dflash_depth;
     mtp_depth = e.mtp_depth;
     mtp_depth_explicit = e.mtp_depth_set;
     mtp_schedule = e.mtp_schedule;
@@ -1624,6 +1645,11 @@ int main(int argc, char** argv) {
     else if (a == "--graph-batch-min-live")
       graph_batch_min_live = std::stoi(next());
     else if (a == "--mtp") mtp = true;
+    else if (a == "--dflash-model") dflash_model = next();
+    else if (a == "--no-dflash") dflash_model.clear();  // the plain path from a drafter template (the A/B knob)
+    else if (a == "--no-dflash-verify-graph") dflash_verify_graph = false;
+    else if (a == "--no-dflash-draft-batch") dflash_draft_batch = false;
+    else if (a == "--dflash-depth") dflash_depth = std::stoi(next());
     else if (a == "--no-mtp") {  // the plain T=1 world from an MTP template (the A/B knob)
       mtp = false;
       no_mtp_cli = true;
@@ -1712,6 +1738,33 @@ int main(int argc, char** argv) {
     }
     if (!mtp_schedule_cli) mtp_schedule = false;
   }
+  // The DFlash2 block drafter (models/qwen/dflash2.hpp): a standalone
+  // checkpoint (a directory or a cached HF id) that replaces the MTP
+  // draft. v1 is the eager world-1 path (graph capture refuses).
+  std::string dflash_dir;
+  if (!dflash_model.empty()) {
+    if (mtp) {
+      DGPP_LOG_ERROR("engine.dflash_model replaces engine.mtp: enable one or the other, not both");
+      return 2;
+    }
+    if (world > 1 || decode_graph) {
+      DGPP_LOG_ERROR("engine.dflash_model is the eager world-1 path: no fabric (world 1) and no --decode-graph");
+      return 2;
+    }
+    if (std::filesystem::is_directory(dflash_model)) {
+      dflash_dir = dflash_model;
+    } else {
+      std::string err;
+      dflash_dir = dgpp::hf::model_dir(dflash_model, &err);
+      if (dflash_dir.empty()) {
+        DGPP_LOG_ERROR("dflash_model {}: {}", dflash_model, err);
+        return 1;
+      }
+    }
+    DGPP_LOG_INFO("dflash2 drafter -> {} (verify graph {}, draft batch {}, depth {})", dflash_dir,
+                  dflash_verify_graph ? "on" : "off", dflash_draft_batch ? "on" : "off",
+                  dflash_depth == 0 ? "block" : std::to_string(dflash_depth));
+  }
   // The MTP depth a family defaults (DeepSeek-V4.1's DSpark block verifies
   // five drafts): resolved on every rank before the settings record leaves
   // rank 0, from the checkpoint's architecture alone.
@@ -1750,7 +1803,7 @@ int main(int argc, char** argv) {
         "batchmin={} cand={} "
         "pcgib={} adm={} win={} pfbudget={} pfidle={} pmin={} phead={} pace={} inflight={} "
         "reasoning_in_content={} "
-        "rs={}",
+        "rs={} dflash={}",
         model_id.empty() ? ckpt : model_id, world, fabric_port, journal_port, max_concurrency,
         kv_capacity, kv_dtype, ngram_table, dense_weights, mtp_expert_format, bf16_weights, fp8_head, prefill,
         embed_sharding, default_max_tokens, queue_limit, no_eos ? 0 : 1, decode_graph ? 1 : 0,
@@ -1765,7 +1818,8 @@ int main(int argc, char** argv) {
                                    rope_scaling->original_max_position_embeddings,
                                    rope_scaling->beta_fast, rope_scaling->beta_slow,
                                    rope_scaling->attn_factor, rope_scaling->mrope_cache_factor)
-                     : "off");
+                     : "off",
+        dflash_model.empty() ? "off" : dflash_model);
   };
   if ((world > 1 || rank > 0) && !memory_plan_only) {
     try {
@@ -1800,6 +1854,10 @@ int main(int argc, char** argv) {
         ws.prefill_fold_scales = prefill_fold_scales;
         ws.prefill_fp8_gemm = prefill_fp8_gemm;
         ws.prefill_fp8_per_tensor = prefill_fp8_per_tensor;
+        ws.dflash_model = dflash_model;
+        ws.dflash_verify_graph = dflash_verify_graph;
+        ws.dflash_draft_batch = dflash_draft_batch;
+        ws.dflash_depth = dflash_depth;
         ws.expert_gemm = expert_gemm;
         ws.expert_gemm_prefetch = expert_gemm_prefetch;
         ws.expert_tile_list = expert_tile_list;
@@ -1868,6 +1926,10 @@ int main(int argc, char** argv) {
         prefill_fold_scales = ws.prefill_fold_scales;
         prefill_fp8_gemm = ws.prefill_fp8_gemm;
         prefill_fp8_per_tensor = ws.prefill_fp8_per_tensor;
+        dflash_model = ws.dflash_model;
+        dflash_verify_graph = ws.dflash_verify_graph;
+        dflash_draft_batch = ws.dflash_draft_batch;
+        dflash_depth = ws.dflash_depth;
         expert_gemm = ws.expert_gemm;
         expert_gemm_prefetch = ws.expert_gemm_prefetch;
         expert_tile_list = ws.expert_tile_list;
@@ -2017,6 +2079,11 @@ int main(int argc, char** argv) {
   // prefill recipe and the BF16 lm head requantized to block FP8.
   dgpp::Qwen35Model::set_prefill_fp8_per_tensor(prefill_fp8_per_tensor);
   dgpp::Qwen35Model::set_dense_weights_fp8(dense_weights == "fp8");
+  if (dflash_depth < 0 || dflash_depth > 7) {
+    DGPP_LOG_ERROR("engine.dflash_depth (--dflash-depth) must be in [0, 7], got {}", dflash_depth);
+    return 2;
+  }
+  dgpp::Qwen35Model::set_dflash_options(dflash_verify_graph, dflash_draft_batch, dflash_depth);
   if (prefill_fp8_per_tensor)
     DGPP_LOG_INFO("serve: engine.prefill_fp8_per_tensor on — prefill GEMMs on per-tensor e4m3 (not transcript-preserving)");
   dgpp::QwenLayerStream::set_ngram_prestage(ngram_prestage);
@@ -2189,6 +2256,14 @@ int main(int argc, char** argv) {
     // everything below the engine interface comes from it.
     std::unique_ptr<ServeFamily> family =
         make_family(ckpt, world, kv_format, rope_scaling, fp8_head == "mma");
+    if (!dflash_dir.empty()) {
+      try {
+        family->set_draft_model(dflash_dir);
+      } catch (const std::exception& e) {
+        DGPP_LOG_ERROR("{}", e.what());
+        return 2;
+      }
+    }
     if (fp8_head == "mma" && std::string(family->name()) != "qwen4_exp") {
       DGPP_LOG_ERROR("engine.fp8_head mma requires the Qwen family and engine.dense_weights fp8");
       return 1;
@@ -2226,10 +2301,17 @@ int main(int argc, char** argv) {
     // GLM-5.3 up to 16. Fitting batch families remain available when
     // a deeper configuration exceeds the full-batch ceiling.
     // Reject configurations whose depth-1 batch already exceeds the cap.
-    const int graph_rows_per_request = mtp ? 1 + mtp_depth : 1;
+    // The DFlash2 eager path verifies a full block per slot per step: the
+    // fixed batch must hold max_concurrency blocks (the engine's batched
+    // speculative pass caps itself to what the rows allow).
+    const int graph_rows_per_request = !dflash_dir.empty()
+                                           ? dgpp::kSpecRows
+                                           : (mtp ? 1 + mtp_depth : 1);
     int decode_rows = std::max(dgpp::kDecodeRows, max_concurrency * graph_rows_per_request);
-    if (decode_graph && decode_rows > family->decode_rows_cap()) {
-      if (mtp_depth > 1 && max_concurrency * 2 <= family->decode_rows_cap()) {
+    if (decode_rows > family->decode_rows_cap()) {
+      if (!decode_graph) {
+        decode_rows = family->decode_rows_cap();  // eager: a narrower spec batch
+      } else if (mtp_depth > 1 && max_concurrency * 2 <= family->decode_rows_cap()) {
         DGPP_LOG_INFO(
             "serve: {} slots x {} rows exceed the {} family's {}-row decode ceiling; "
             "depth {} uses fitting batch families where supported, otherwise scalar graphs",
@@ -2500,7 +2582,7 @@ int main(int argc, char** argv) {
     knobs.fixed_seed = fixed_seed;
     knobs.reasoning_in_content = reasoning_in_content;
     knobs.default_chat_template_kwargs = default_chat_template_kwargs;
-    knobs.mtp = mtp;
+    knobs.mtp = mtp || !dflash_dir.empty();  // the throughput line's MTP group (the drafter reports through it)
     knobs.stats_interval_s = stats_interval_s;
     knobs.position_ceiling = position_ceiling;
     knobs.kv_pool_tokens = pool_tokens;
