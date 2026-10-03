@@ -335,9 +335,9 @@ class QwenFullAttnLayer {
   void set_pt_attn(const QwenPtAttnView& v) { pt_ = v; }
 
   // out[T, H] = FullAttn(x[T, H]): projections, norm + RoPE, the K/V
-  // appends, dense causal attention per row, the gated output projection.
-  // The warp kernel serves prefill chunks and decode rows alike (correct at
-  // any T; a dedicated decode kernel is a later perf item, not correctness).
+  // appends, dense causal attention (the tile form over a prefill chunk's
+  // rows of one request; the split row form over decode rows), the gated
+  // output projection.
   void enqueue(const uint16_t* x, int tokens, const QwenQsaRows& rows, QwenFullAttnCache& cache,
                uint16_t* out, cudaStream_t stream);
 
@@ -362,6 +362,10 @@ class QwenFullAttnLayer {
   uint16_t* kn_ = nullptr;       // [M, lkv * D]
   float* c_out_ = nullptr;       // [M, lh * D]
   uint16_t* o_ = nullptr;        // [M, lh * D]
+  // The decode form's split-walk partials (kernels/full_attn.hpp), sized
+  // for kPartRows rows; wider decode batches walk unsplit.
+  static constexpr int kPartRows = 64;
+  float* part_ = nullptr;
 };
 
 // ---- the n-gram embedding layer -----------------------------------------------------

@@ -890,6 +890,7 @@ QwenFullAttnLayer::QwenFullAttnLayer(const QwenFullAttnResident& w, const QwenGe
   kn_ = dev_alloc<uint16_t>(M * static_cast<size_t>(lkv_) * dim_);
   c_out_ = dev_alloc<float>(M * static_cast<size_t>(lh_) * dim_);
   o_ = dev_alloc<uint16_t>(M * static_cast<size_t>(lh_) * dim_);
+  part_ = dev_alloc<float>(full_attn_partials_bytes(kPartRows, lkv_) / sizeof(float));
 }
 
 QwenFullAttnLayer::~QwenFullAttnLayer() {
@@ -901,6 +902,7 @@ QwenFullAttnLayer::~QwenFullAttnLayer() {
   cudaFree(kn_);
   cudaFree(c_out_);
   cudaFree(o_);
+  cudaFree(part_);
 }
 
 void QwenFullAttnLayer::rebind(const QwenFullAttnResident& w) {
@@ -964,10 +966,19 @@ void QwenFullAttnLayer::enqueue(const uint16_t* x, int tokens, const QwenQsaRows
   // The caches: K/V rows (no compressed keys, no ring).
   qsa_kv_append(kn_, KW, v_, KW, d_req, d_pos, T, cache.block_tables, cache.blocks_per_request,
                 cache.block_tokens, lkv_, D, cache.k_cache, cache.v_cache, stream);
-  // Dense causal attention over [0, pos] per row (kernels/full_attn.cu).
-  full_attn_prefill_warp(qn_, static_cast<int64_t>(lh_) * D, cache.k_cache, cache.v_cache, d_req,
-                         d_pos, T, lh_, lkv_, cache.block_tokens, cache.block_tables,
-                         cache.blocks_per_request, scale_, c_out_, stream);
+  // Dense causal attention over [0, pos] per row (kernels/full_attn.cu):
+  // decode rows (arbitrary requests) through the split row walk, a prefill
+  // chunk (one request, consecutive rows) through the query-tiled form.
+  if (rows.decode) {
+    full_attn_decode(qn_, static_cast<int64_t>(lh_) * D, cache.k_cache, cache.v_cache, d_req, d_pos, T, lh_,
+                     lkv_, cache.block_tokens, cache.block_tables, cache.blocks_per_request, scale_, c_out_,
+                     T <= kPartRows ? part_ : nullptr, stream);
+  } else {
+    full_attn_prefill(qn_, static_cast<int64_t>(lh_) * D, cache.k_cache, cache.v_cache,
+                      cache.block_tables + static_cast<int64_t>(rows.request) * cache.blocks_per_request, d_req,
+                      d_pos, T, lh_, lkv_, cache.block_tokens, cache.block_tables, cache.blocks_per_request,
+                      scale_, c_out_, stream);
+  }
   qsa_gate_out(c_out_, q_ + D, QW, 2 * D, o_, T, lh_, D, stream);
   if (pt_.enabled && (T > 128 || resume)) {
     pt_quant_input(pt_, o_, T, lh_ * D, stream);
@@ -986,6 +997,7 @@ size_t QwenFullAttnLayer::scratch_bytes(const QwenTextConfig& cfg, int local_hea
   size_t b = 0;
   b += M * (lh * 2 * D + 2 * lkv * D + lh * D + lkv * D) * 2;  // q, k, v, qn, kn
   b += M * lh * D * 4 + M * lh * D * 2;                        // c_out, o
+  b += full_attn_partials_bytes(kPartRows, local_kv_heads);     // the split walk's partials
   return b;
 }
 

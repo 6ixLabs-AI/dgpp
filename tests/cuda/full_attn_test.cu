@@ -31,7 +31,8 @@ void require(bool cond, const std::string& what) {
 }
 
 constexpr int D = 256;
-constexpr int kTileTok = 16;
+constexpr int kTileTok = 16;   // the row form's tile
+constexpr int kTileTok32 = 32; // the tile form's
 
 struct Geo {
   int local_heads = 4, kv_heads = 1;
@@ -194,6 +195,171 @@ DGPP_TEST(full_attention_second_run_is_bitwise) {
   };
   const std::vector<float> first = run();
   require(run() == first, "second run bitwise the first");
+}
+
+// The reference for one query head over its causal range with an FA2 chain
+// of `tile` tokens (per-tile max, bf16-rounded P, unrounded denominator).
+static void ref_head(const std::vector<uint16_t>& q, int row, int h, int req, int64_t p, const Geo& g,
+                     const std::vector<uint16_t>& kh, const std::vector<uint16_t>& vh, float sl2, int tile,
+                     float* out) {
+  const int qw = g.local_heads * D;
+  const int group = g.local_heads / g.kv_heads;
+  const uint16_t* qh = q.data() + static_cast<size_t>(row) * qw + h * D;
+  const int kv_h = h / group;
+  float m = -INFINITY, l = 0.f;
+  std::vector<float> acc(D, 0.f);
+  std::vector<float> sv(tile);
+  for (int64_t t0 = 0; t0 <= p; t0 += tile) {
+    const int n = static_cast<int>(std::min<int64_t>(tile, p + 1 - t0));
+    float tile_max = -INFINITY;
+    for (int j = 0; j < n; ++j) {
+      const uint16_t* kj = kh.data() + (phys(g, req, t0 + j) * g.width() + kv_h * D);
+      sv[j] = dot_bf16(qh, kj, D) * sl2;
+      tile_max = std::max(tile_max, sv[j]);
+    }
+    const float nm = std::max(m, tile_max);
+    const float resc = exp2f(m - nm);
+    float lnew = l * resc;
+    std::vector<float> anew(D, 0.f);
+    for (int d = 0; d < D; ++d) anew[static_cast<size_t>(d)] = acc[static_cast<size_t>(d)] * resc;
+    for (int j = 0; j < n; ++j) {
+      const float pj = exp2f(sv[j] - nm);
+      lnew += pj;
+      const float pb = dgpp::bf16_bits_to_float(dgpp::float_to_bf16_bits(pj));
+      const uint16_t* vj = vh.data() + (phys(g, req, t0 + j) * g.width() + kv_h * D);
+      for (int d = 0; d < D; ++d) anew[static_cast<size_t>(d)] += pb * dgpp::bf16_bits_to_float(vj[d]);
+    }
+    m = nm;
+    l = lnew;
+    acc = anew;
+  }
+  const float inv = l > 0.f ? 1.f / l : 0.f;
+  for (int d = 0; d < D; ++d) out[d] = acc[static_cast<size_t>(d)] * inv;
+}
+
+// The split walk (kMaxSplits key ranges + the combine) over the same mixed
+// rows: every range rescales at its own boundaries, so the result is
+// tolerance-equal to the 16-token-tile reference like the unsplit form.
+DGPP_TEST(full_attention_split_walk_matches_the_reference) {
+  Geo g;
+  cudaStream_t st = test_stream();
+  const int lens[2] = {700, 10};
+  g.blocks_per_request = 32;  // 1024 slots per request
+  const size_t cache_bytes = static_cast<size_t>(g.max_requests) * g.slots() * g.width() * 2;
+  std::vector<uint16_t> kh(cache_bytes / 2, 0x7F7F), vh(cache_bytes / 2, 0x7F7F);
+  for (int q = 0; q < 2; ++q) {
+    const std::vector<uint16_t> k = random_bf16_normal(80 + q, static_cast<int64_t>(lens[q]) * g.width(), 1.0f);
+    const std::vector<uint16_t> v = random_bf16_normal(90 + q, static_cast<int64_t>(lens[q]) * g.width(), 1.0f);
+    for (int t = 0; t < lens[q]; ++t) {
+      std::copy(k.begin() + static_cast<size_t>(t) * g.width(), k.begin() + static_cast<size_t>(t + 1) * g.width(),
+                kh.begin() + phys(g, q, t) * g.width());
+      std::copy(v.begin() + static_cast<size_t>(t) * g.width(), v.begin() + static_cast<size_t>(t + 1) * g.width(),
+                vh.begin() + phys(g, q, t) * g.width());
+    }
+  }
+  DevBuf kc = up(kh), vc = up(vh), dtbl = up(tables(g));
+  const std::vector<int32_t> req_ids = {0, 0, 0, 1, 0, 0};
+  const std::vector<int64_t> pos = {0, 17, 699, 9, 511, -1};
+  const int rows = static_cast<int>(pos.size());
+  const int qw = g.local_heads * D;
+  const std::vector<uint16_t> q = random_bf16_normal(100, static_cast<int64_t>(rows) * qw, 1.0f);
+  DevBuf dq = up(q), dpos = up(pos), dreq = up(req_ids);
+  const float scale = 1.0f / std::sqrt(static_cast<float>(D));
+  const float sl2 = scale * 1.4426950408889634f;
+  std::vector<float> ref(static_cast<size_t>(rows) * qw, 0.f);
+  for (int r = 0; r < rows; ++r) {
+    if (pos[static_cast<size_t>(r)] < 0) continue;
+    for (int h = 0; h < g.local_heads; ++h)
+      ref_head(q, r, h, req_ids[static_cast<size_t>(r)], pos[static_cast<size_t>(r)], g, kh, vh, sl2, kTileTok,
+               ref.data() + static_cast<size_t>(r) * qw + h * D);
+  }
+  DevBuf out(ref.size() * 4), part(dgpp::full_attn_partials_bytes(rows, g.kv_heads));
+  DGPP_CUDA_OK(cudaMemset(out.p, 0x7F, ref.size() * 4));
+  dgpp::full_attn_decode(ptr<uint16_t>(dq), qw, ptr<uint16_t>(kc), ptr<uint16_t>(vc), ptr<int32_t>(dreq),
+                         ptr<int64_t>(dpos), rows, g.local_heads, g.kv_heads, g.block_tokens, ptr<int32_t>(dtbl),
+                         g.blocks_per_request, scale, mptr<float>(out), mptr<float>(part), st);
+  DGPP_CUDA_OK(cudaStreamSynchronize(st));
+  const std::vector<float> got = down<float>(out, ref.size());
+  double rms = 0;
+  for (size_t i = 0; i < got.size(); ++i) rms += static_cast<double>(ref[i]) * ref[i];
+  rms = std::sqrt(rms / static_cast<double>(ref.size()));
+  const Stats s = compare_abs_rel(got.data(), ref.data(), static_cast<long>(got.size()), 2 * std::pow(2.0, -7.0),
+                                  0.005 * rms);
+  std::printf("[ .. ] split walk: max_abs %.3g l2_rel %.3g mismatches %ld/%ld (rms %.3g)\n", s.max_abs, s.l2_rel,
+              s.mismatches, s.n, rms);
+  require_bf16("split walk", s, 2e-3, 0.01);
+  for (int i = 0; i < qw; ++i) require(got[static_cast<size_t>(rows - 1) * qw + i] == 0.f, "padding row is zero");
+  // The unsplit form over the same rows agrees with the split one to the same tolerance.
+  DevBuf out1(ref.size() * 4);
+  dgpp::full_attn_prefill_warp(ptr<uint16_t>(dq), qw, ptr<uint16_t>(kc), ptr<uint16_t>(vc), ptr<int32_t>(dreq),
+                               ptr<int64_t>(dpos), rows, g.local_heads, g.kv_heads, g.block_tokens,
+                               ptr<int32_t>(dtbl), g.blocks_per_request, scale, mptr<float>(out1), st);
+  DGPP_CUDA_OK(cudaStreamSynchronize(st));
+  const std::vector<float> got1 = down<float>(out1, ref.size());
+  const Stats s1 = compare_abs_rel(got.data(), got1.data(), static_cast<long>(got.size()), 2 * std::pow(2.0, -7.0),
+                                   0.005 * rms);
+  require_bf16("split vs unsplit", s1, 2e-3, 0.01);
+}
+
+// The tile form: 100 consecutive rows of one request (seven 16-row tiles, the
+// last partial), 32-token K/V tiles, against the 32-token-tile reference.
+DGPP_TEST(full_attention_tile_form_matches_the_reference) {
+  Geo g;
+  g.local_heads = 6;  // the 27B's group (24 heads / 4 kv heads), one kv head here
+  g.kv_heads = 1;
+  cudaStream_t st = test_stream();
+  const int len = 100;
+  const size_t cache_bytes = static_cast<size_t>(g.max_requests) * g.slots() * g.width() * 2;
+  std::vector<uint16_t> kh(cache_bytes / 2, 0x7F7F), vh(cache_bytes / 2, 0x7F7F);
+  {
+    const std::vector<uint16_t> k = random_bf16_normal(110, static_cast<int64_t>(len) * g.width(), 1.0f);
+    const std::vector<uint16_t> v = random_bf16_normal(111, static_cast<int64_t>(len) * g.width(), 1.0f);
+    for (int t = 0; t < len; ++t) {
+      std::copy(k.begin() + static_cast<size_t>(t) * g.width(), k.begin() + static_cast<size_t>(t + 1) * g.width(),
+                kh.begin() + phys(g, 1, t) * g.width());  // request 1: a non-identity block table row
+      std::copy(v.begin() + static_cast<size_t>(t) * g.width(), v.begin() + static_cast<size_t>(t + 1) * g.width(),
+                vh.begin() + phys(g, 1, t) * g.width());
+    }
+  }
+  DevBuf kc = up(kh), vc = up(vh), dtbl = up(tables(g));
+  const int rows = len;
+  std::vector<int64_t> pos(static_cast<size_t>(rows));
+  std::vector<int32_t> req_ids(static_cast<size_t>(rows), 1);
+  for (int r = 0; r < rows; ++r) pos[static_cast<size_t>(r)] = r;
+  const int qw = g.local_heads * D;
+  const std::vector<uint16_t> q = random_bf16_normal(120, static_cast<int64_t>(rows) * qw, 1.0f);
+  DevBuf dq = up(q), dpos = up(pos), dreq = up(req_ids);
+  const float scale = 1.0f / std::sqrt(static_cast<float>(D));
+  const float sl2 = scale * 1.4426950408889634f;
+  std::vector<float> ref(static_cast<size_t>(rows) * qw, 0.f);
+  for (int r = 0; r < rows; ++r)
+    for (int h = 0; h < g.local_heads; ++h)
+      ref_head(q, r, h, 1, pos[static_cast<size_t>(r)], g, kh, vh, sl2, kTileTok32,
+               ref.data() + static_cast<size_t>(r) * qw + h * D);
+  DevBuf out(ref.size() * 4);
+  DGPP_CUDA_OK(cudaMemset(out.p, 0x7F, ref.size() * 4));
+  dgpp::full_attn_prefill(ptr<uint16_t>(dq), qw, ptr<uint16_t>(kc), ptr<uint16_t>(vc),
+                          ptr<int32_t>(dtbl) + g.blocks_per_request, ptr<int32_t>(dreq), ptr<int64_t>(dpos), rows,
+                          g.local_heads, g.kv_heads, g.block_tokens, ptr<int32_t>(dtbl), g.blocks_per_request, scale,
+                          mptr<float>(out), st);
+  DGPP_CUDA_OK(cudaStreamSynchronize(st));
+  const std::vector<float> got = down<float>(out, ref.size());
+  double rms = 0;
+  for (size_t i = 0; i < got.size(); ++i) rms += static_cast<double>(ref[i]) * ref[i];
+  rms = std::sqrt(rms / static_cast<double>(ref.size()));
+  const Stats s = compare_abs_rel(got.data(), ref.data(), static_cast<long>(got.size()), 2 * std::pow(2.0, -7.0),
+                                  0.005 * rms);
+  std::printf("[ .. ] tile form: max_abs %.3g l2_rel %.3g mismatches %ld/%ld (rms %.3g)\n", s.max_abs, s.l2_rel,
+              s.mismatches, s.n, rms);
+  require_bf16("tile form", s, 2e-3, 0.01);
+  // Twice: bitwise.
+  DevBuf out2(ref.size() * 4);
+  dgpp::full_attn_prefill(ptr<uint16_t>(dq), qw, ptr<uint16_t>(kc), ptr<uint16_t>(vc),
+                          ptr<int32_t>(dtbl) + g.blocks_per_request, ptr<int32_t>(dreq), ptr<int64_t>(dpos), rows,
+                          g.local_heads, g.kv_heads, g.block_tokens, ptr<int32_t>(dtbl), g.blocks_per_request, scale,
+                          mptr<float>(out2), st);
+  DGPP_CUDA_OK(cudaStreamSynchronize(st));
+  require(down<float>(out2, ref.size()) == got, "tile form: second run bitwise the first");
 }
 
 int main() {
