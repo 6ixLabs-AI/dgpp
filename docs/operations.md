@@ -144,7 +144,8 @@ default: decode rows through the block-scaled FP8 GEMV / streaming MMA, prefill
 through the dequantized bf16 GEMM, the BF16 lm head as shipped. Two opt-in
 levers trade exactness for speed and must be named in the config:
 `engine.dense_weights: "fp8"` requantizes the lm head to block FP8 (half its
-bytes per decode row, 15 ms of a 3-row MTP pass), and
+bytes per decode row, 15 ms of a 3-row MTP pass; the templates ship it, the
+eval holds at 39/40 on HumanEval and GSM8K and the acceptance is unchanged), and
 `engine.prefill_fp8_per_tensor: true` runs the prefill GEMMs on cuBLASLt's
 per-tensor e4m3 kernels (about 2x the prefill rate, +23 GiB resident). Both
 change greedy transcripts (the head within the first tokens, the prefill

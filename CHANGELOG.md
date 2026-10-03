@@ -51,7 +51,8 @@ The history by milestone. The dated engineering record in
   default (block-scaled FP8 GEMV / streaming MMA at decode rows, the
   dequantized bf16 GEMM at prefill, the BF16 lm head); two opt-in keys
   trade exactness for speed and change greedy output —
-  `engine.dense_weights: "fp8"` (the lm head requantized to block FP8) and
+  `engine.dense_weights: "fp8"` (the lm head requantized to block FP8; the
+  templates ship it: −19 ms per MTP pass at the same acceptance and eval) and
   `engine.prefill_fp8_per_tensor` (prefill GEMMs on cuBLASLt's per-tensor
   e4m3 kernels, ~2x the prefill rate, +23 GiB). One template,
   `deploy/cluster_qwen3.8-27b_fp8_w1.example.json`; kernel references in
