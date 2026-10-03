@@ -220,6 +220,10 @@ class Qwen35Model : public SessionModel<Qwen35Model> {
   void mtp_run_rows(int req, const int64_t* tokens, int64_t first_pos, int T, bool decode_row,
                     bool capture, int head_rows, int batch_requests);
   Outputs mtp_forward(const std::vector<int64_t>& token_ids);
+  // The cold diagnostic forward (the fixture gates): slot 0, fresh state,
+  // every row's logits and final hidden; capture_layers leaves every
+  // layer's residual output [T, H] in layer_states.
+  Outputs forward(const std::vector<int64_t>& token_ids, bool capture_layers = false);
 
   // ---- the DFlash2 drafter --------------------------------------------------
   // With a drafter loaded, every run_rows pass also feeds the draft planes:

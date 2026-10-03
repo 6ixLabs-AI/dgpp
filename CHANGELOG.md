@@ -6,6 +6,24 @@ The history by milestone. The dated engineering record in
 
 ## Unreleased
 
+- **Qwen3.8-27B: the review's follow-ups** (2026-10-03, #84 / #85 / #87):
+  the full-attention layers' kernels rewritten (`kernels/full_attn`: a
+  query-tiled prefill form — sixteen queries by one head a warp over
+  32-token K/V tiles — and a split-KV decode walk with a combine pass; 30K
+  decode 187 → 146 ms a step, the 2K prefill's attention 87.5 → 29.9 ms,
+  the 30K prefill 40.9 → 29.2 s, transcripts unchanged); the family's
+  forward fixture gate (`qwen35_forward_test` over a tiny synthetic block-FP8
+  checkpoint from the binding table, `tools/qwen35_reference_dump.py`'s
+  numpy reference of the GDN / full-attention / MLP stack and the draft
+  block, the smoke → end-to-end → teacher-forced strict chain, the MiMo
+  gate's budgets); and the exact prefill measured against its floor — the
+  dequant bridge stays (its dequant runs at line rate and cuBLASLt at the
+  bf16 pipe's rate; a side-stream dequant never overlaps nvjet's persistent
+  grid, and a fused fp8-weight GEMM lands at parity because the decode's
+  instructions share the mma pipe's issue slots), with `kernels/fp8w_gemm`
+  (63–66 TF, both scale forms, `fp8w_gemm_test`) kept for the scale GEMM's
+  26 TF tile route (#89) and `fp8_gemm_bench --27b` reporting every lever.
+
 - **The DFlash2 block drafter on Qwen3.8-27B** (2026-10-02, #80):
   `engine.dflash_model` serves `z-lab/Qwen3.8-27B-DFlash2` in place of the
   MTP draft on the eager world-1 engine — five bidirectional draft layers

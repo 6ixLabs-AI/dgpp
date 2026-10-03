@@ -1224,6 +1224,38 @@ target_link_libraries(qwen_full_attn_test PRIVATE dgpp_models_qwen_layers dgpp_m
 dgpp_set_common(qwen_full_attn_test)
 add_test(NAME qwen_full_attn_test COMMAND qwen_full_attn_test)
 
+# The Qwen3.8-27B forward gate (#84): fixture -> smoke; the python reference
+# end to end (relaxed, the engine's states written) -> the reference
+# teacher-forced on them -> the strict parity.
+add_executable(qwen35_forward_test tests/cuda/qwen35_forward_test.cpp)
+target_include_directories(qwen35_forward_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/tests/cuda)
+target_link_libraries(qwen35_forward_test PRIVATE dgpp_models_qwen_layers dgpp_models_qwen_loader dgpp_models_qwen dgpp_kernels CUDA::cudart Threads::Threads)
+dgpp_set_common(qwen35_forward_test)
+set(QWEN35_FORWARD_FIXTURE ${CMAKE_CURRENT_BINARY_DIR}/qwen35_forward_fixture)
+add_test(NAME qwen35_forward_fixture COMMAND qwen35_forward_test --write-fixture ${QWEN35_FORWARD_FIXTURE})
+add_test(NAME qwen35_forward_smoke COMMAND qwen35_forward_test --smoke ${QWEN35_FORWARD_FIXTURE})
+set_tests_properties(qwen35_forward_smoke PROPERTIES DEPENDS qwen35_forward_fixture)
+add_test(NAME qwen35_forward_generate
+  COMMAND ${DSV41_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/tools/qwen35_reference_dump.py
+          gen-pure --checkpoint-dir ${QWEN35_FORWARD_FIXTURE}
+          --out ${CMAKE_CURRENT_BINARY_DIR}/qwen35_pure_ref.q35dump)
+set_tests_properties(qwen35_forward_generate PROPERTIES DEPENDS qwen35_forward_fixture)
+add_test(NAME qwen35_forward_test_e2e
+  COMMAND qwen35_forward_test --checkpoint-dir ${QWEN35_FORWARD_FIXTURE}
+          --dump-file ${CMAKE_CURRENT_BINARY_DIR}/qwen35_pure_ref.q35dump --relaxed
+          --engine-states ${CMAKE_CURRENT_BINARY_DIR}/qwen35_engine_states.bin)
+set_tests_properties(qwen35_forward_test_e2e PROPERTIES DEPENDS qwen35_forward_generate)
+add_test(NAME qwen35_forward_generate_teacher
+  COMMAND ${DSV41_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/tools/qwen35_reference_dump.py
+          gen-pure --checkpoint-dir ${QWEN35_FORWARD_FIXTURE}
+          --out ${CMAKE_CURRENT_BINARY_DIR}/qwen35_teacher_ref.q35dump
+          --teacher ${CMAKE_CURRENT_BINARY_DIR}/qwen35_engine_states.bin)
+set_tests_properties(qwen35_forward_generate_teacher PROPERTIES DEPENDS qwen35_forward_test_e2e)
+add_test(NAME qwen35_forward_test
+  COMMAND qwen35_forward_test --checkpoint-dir ${QWEN35_FORWARD_FIXTURE}
+          --dump-file ${CMAKE_CURRENT_BINARY_DIR}/qwen35_teacher_ref.q35dump)
+set_tests_properties(qwen35_forward_test PROPERTIES DEPENDS qwen35_forward_generate_teacher)
+
 add_executable(qwen35_loader_smoke tests/cuda/qwen35_loader_smoke.cpp)
 target_include_directories(qwen35_loader_smoke PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/tests/cuda)
 target_link_libraries(qwen35_loader_smoke PRIVATE dgpp_models_qwen_loader dgpp_models_qwen dgpp_kernels CUDA::cudart Threads::Threads)

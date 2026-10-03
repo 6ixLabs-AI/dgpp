@@ -9,6 +9,7 @@
 #include "models/qwen/model35.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -1080,6 +1081,30 @@ void Qwen35Model::mtp_run_rows(int req, const int64_t* tokens, int64_t first_pos
                                  cudaMemcpyDeviceToHost, stream_));
 }
 
+Qwen35Model::Outputs Qwen35Model::forward(const std::vector<int64_t>& token_ids, bool capture_layers) {
+  const int T = static_cast<int>(token_ids.size());
+  if (T <= 0) throw std::invalid_argument("forward: empty token batch");
+  if (T > max_tokens_) throw std::invalid_argument("forward: tokens exceed max_tokens");
+  if (T > max_context_) throw std::invalid_argument("forward: tokens exceed the context bound");
+  for (int64_t id : token_ids)
+    if (id < 0 || id >= cfg_.vocab_size) throw std::invalid_argument("forward: token id out of range");
+  if (session_pos_[0] != 0) throw std::logic_error("forward: slot 0 holds an open session");
+  open_slot(0);
+  if (!pool_.ensure_request_blocks(0, T, stream_))
+    throw std::runtime_error("forward: the cache pool cannot cover the batch");
+  RowRun run;
+  run.req = 0;
+  run.ids = token_ids.data();
+  run.T = T;
+  run.pos0 = 0;
+  run.decode = false;
+  run.all_rows = true;
+  run.capture_layers = capture_layers;
+  Outputs out = run_rows(run);
+  session_close(0);
+  return out;
+}
+
 // The cold diagnostic forward: slot 0, fresh state, every row through the
 // main stack, then the draft block over the shifted tokens.
 Qwen35Model::Outputs Qwen35Model::mtp_forward(const std::vector<int64_t>& token_ids) {
@@ -1225,6 +1250,14 @@ Qwen35Model::Outputs Qwen35Model::run_rows(const RowRun& run) {
     }
     dense_mlp(x_, mlp_out_, T, r.mlp, stream_, layer, mlp_resume);
     add_inplace_bf16(resid_, mlp_out_, static_cast<size_t>(T) * H, stream_);
+    if (run.capture_layers) {
+      // The fixture gates' per-layer residual read (never under a graph
+      // capture: the diagnostic forward only).
+      DGPP_CUDA_OK(cudaStreamSynchronize(stream_));
+      std::vector<uint16_t> snap(static_cast<size_t>(T) * H);
+      DGPP_CUDA_OK(cudaMemcpy(snap.data(), resid_, snap.size() * 2, cudaMemcpyDeviceToHost));
+      out.layer_states.push_back(std::move(snap));
+    }
     // The drafter's tap: the layer's OUTPUT residual stream through that
     // tap's fc slice, fp32-accumulated (the reference's one wide cat-GEMM
     // with the weight split columnwise — the same bytes, five roundings
