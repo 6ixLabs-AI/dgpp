@@ -632,8 +632,17 @@ void Qwen35Model::dense_mlp(const uint16_t* x, uint16_t* out, int tokens,
   launch_scale_gemm_bf16(x, static_cast<size_t>(H), m.up_fp8.payload, m.up_fp8.scales, up_tmp_, tokens,
                          static_cast<int>(I), static_cast<int>(H), stream, 0, gw_.mma_from_rows);
   qwen35_swiglu_bf16(gate_tmp_, up_tmp_, gate_tmp_, static_cast<int64_t>(tokens) * I, stream);
+  // The down projection's k = I = 17408 fits one activation row in the GEMV's
+  // 48 KiB staging budget, so a 3-row MTP pass read this 89 MB matrix three
+  // times (nsys 2026-10-03: 199 single-row launches x 373 us = 74 ms of a
+  // 180 ms step). The streaming mma form reads it once at any row count, and
+  // its per-row chain is the same whatever m, so the T=1 world and the MTP
+  // verify stay bitwise (4/4 transcripts); it takes the C1 MTP pass from 197
+  // to 151 ms and costs the 1-row T=1 step 8 ms (119 vs 111: the form streams
+  // this matrix at ~215 GB/s against the GEMV's 240 — a kernel item).
   launch_scale_gemm_bf16(gate_tmp_, static_cast<size_t>(I), m.down_fp8.payload, m.down_fp8.scales, out,
-                         tokens, static_cast<int>(H), static_cast<int>(I), stream, 0, gw_.mma_from_rows);
+                         tokens, static_cast<int>(H), static_cast<int>(I), stream, 0,
+                         std::min(gw_.mma_from_rows, 1));
 }
 
 size_t Qwen35Model::session_snapshot_bytes(const Qwen35TextConfig& cfg, int world, bool mtp) {
