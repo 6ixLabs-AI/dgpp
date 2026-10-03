@@ -6,24 +6,36 @@ The history by milestone. The dated engineering record in
 
 ## Unreleased
 
-- **Serve Qwen3.8-27B-FP8 on the native engine, with MTP**
-  (2026-10-01): a new family, `qwen3_5` — the 27B dense model, 64 layers
-  of Gated-Delta-Net (48) and full-attention (16) — served from its native
-  blockwise-FP8 checkpoint `Qwen/Qwen3.8-27B-FP8`. The streaming loader
-  (`loader35`) reads the GDN in_proj (qkv/z) + out and the full-attention
-  q/k/v/o projections and the dense gate/up/down MLPs as blockwise FP8
-  (E4M3 + 128×128 scales), keeps the norms BF16, and loads the MTP draft
-  head (BF16) onto the last full-attention slot. `Qwen35Model` adds the
-  per-tensor FP8 prefill recipe (`DGPP_FP8_PT_DENSE`, Resident only —
-  every MLP and attention projection is boot-requantized into per-tensor
-  slots) and the blockwise-FP8 lm head (`DGPP_FP8_HEAD`) over the packed
-  decode batching. MTP speculative decoding (`engine.mtp` / `--mtp`)
-  drafts on the MTP head and verifies/rolls back on the shared greedy
-  path, so transcripts stay exact. Recipe
-  `deploy/cluster_qwen3.8-27b-fp8_w1_mtp2.example.json` (plain:
-  `..._w1.example.json`); kernel references in `qwen_full_attn_test` /
-  `full_attn_test` / `qwen_norm_test`, the config gates in
-  `qwen35_config_test`, and the loader smoke in `qwen35_loader_smoke`.
+- **Serve Qwen3.8-27B-FP8 on the native engine, with MTP** (2026-10-01,
+  #79): a new family, `qwen3_5` — the 27B dense model, 64 layers of
+  Gated-Delta-Net (48, swish output gate) and full attention (16, GQA with
+  the partial rotary and the per-head output gate) — served from its native
+  blockwise-FP8 checkpoint `Qwen/Qwen3.8-27B-FP8` on one Spark. The
+  streaming loader (`loader35`) reads the GDN in_proj (qkv/z) + out and
+  the full-attention q/k/v/o projections and the dense gate/up/down MLPs
+  as blockwise FP8 (E4M3 + 128×128 scales, widened to F32 at load), keeps
+  the norms BF16, and loads the MTP draft layer onto the last full-attention
+  slot; `Qwen35Model` runs the shared session core (paged K/V over the
+  full-attention layers, model-owned GDN state per slot, the speculative
+  verify/rollback, the decode graphs). MTP (`engine.mtp`, depth 2 in the
+  template) drafts on the MTP head and verifies on the greedy path, so
+  transcripts equal the plain world's. Numerics are the checkpoint's by
+  default (block-scaled FP8 GEMV / streaming MMA at decode rows, the
+  dequantized bf16 GEMM at prefill, the BF16 lm head); two opt-in keys
+  trade exactness for speed and change greedy output —
+  `engine.dense_weights: "fp8"` (the lm head requantized to block FP8) and
+  `engine.prefill_fp8_per_tensor` (prefill GEMMs on cuBLASLt's per-tensor
+  e4m3 kernels, ~2x the prefill rate, +23 GiB). One template,
+  `deploy/cluster_qwen3.8-27b_fp8_w1.example.json`; kernel references in
+  `qwen_full_attn_test` / `full_attn_test` / `qwen_norm_test`, the config
+  and binding gates in `unit_tests`. Measured on one GB10 (greedy, the
+  exact defaults): T=1 119 ms/step (the byte floor is 105), MTP depth 2
+  151 ms/pass at 2.1–2.9 tokens per pass, T=1 and MTP transcripts
+  identical; with both FP8 levers 132 ms/pass. The dense MLP's k=17408
+  down projection runs the streaming mma form at every row count (the
+  GEMV's 48 KiB staging holds one row of it, so a 3-row pass read it three
+  times: 74 ms of a 180 ms step). Thanks to AhmmedSamier for the port.
+
 - **Assistant thinking history through LiteLLM** (2026-10-03): accept
   Anthropic-style assistant thinking parts by folding their text into
   `reasoning_content`, preserving explicit reasoning strings and dropping
