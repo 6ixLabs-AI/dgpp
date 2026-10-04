@@ -33,9 +33,14 @@ namespace dgpp::serve {
 
 class TextFrontend : public ModelFrontend {
  public:
+  // `instruct_only` (6ixServe): the checkpoint never reasons (Qwen3-Next-80B
+  // Instruct), so a request's reasoning_effort has nothing to switch and is
+  // accepted as a no-op — "none" is already true, and agent clients send the
+  // field to every model. Without it the base rule answers 400 to both.
   TextFrontend(const dgpp::text::Tokenizer* tok,
-              const dgpp::text::ChatTemplate* tpl, bool json_calls = false)
-      : tok_(tok), tpl_(tpl) {
+              const dgpp::text::ChatTemplate* tpl, bool json_calls = false,
+              bool instruct_only = false)
+      : tok_(tok), tpl_(tpl), instruct_only_(instruct_only) {
     if (tok_ == nullptr || tpl_ == nullptr)
       throw std::invalid_argument(
           "TextFrontend: tokenizer and chat template must both be loaded");
@@ -56,6 +61,7 @@ class TextFrontend : public ModelFrontend {
   bool template_reads(std::string_view name) const override { return tpl_->reads(name); }
 
   ReasoningSettings reasoning_settings(std::string_view effort) const override {
+    if (instruct_only_) return {};
     auto out = ModelFrontend::reasoning_settings(effort);
     if (!out.effort) return out;
     // The checkpoint contracts differ: Qwen exposes low/medium/xhigh;
@@ -91,6 +97,7 @@ class TextFrontend : public ModelFrontend {
  private:
   const dgpp::text::Tokenizer* tok_;
   const dgpp::text::ChatTemplate* tpl_;
+  bool instruct_only_ = false;
   dgpp::text::ChatMarkers markers_;
 };
 

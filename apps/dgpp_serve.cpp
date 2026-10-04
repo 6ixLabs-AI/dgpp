@@ -1091,6 +1091,9 @@ int prefix_arena_slots(size_t bytes, double gib) {
 // family states it, to the frontend's markers (which the parser reads) and
 // to the grammar vocabulary alike (ChatMarkers::json_calls).
 bool family_json_calls(std::string_view family) { return family == "qwen3_next"; }
+// Families whose checkpoint is an Instruct model with no reasoning to control: a request's
+// reasoning_effort is accepted and does nothing (TextFrontend's instruct_only).
+bool family_instruct_only(std::string_view family) { return family == "qwen3_next"; }
 
 int serve_openai(dgpp::sched::SchedulerEngine* engine, int64_t vocab_size,
                  const std::vector<int64_t>& eos_ids, const std::string& ckpt,
@@ -1135,7 +1138,8 @@ int serve_openai(dgpp::sched::SchedulerEngine* engine, int64_t vocab_size,
     }
     frontend = vision_frontend ? std::move(vision_frontend)
                                : std::make_unique<dgpp::serve::TextFrontend>(
-                                     &tok, &*tpl, family_json_calls(family_name));
+                                     &tok, &*tpl, family_json_calls(family_name),
+                                     family_instruct_only(family_name));
     if (engine->supports_images())
       DGPP_LOG_INFO("serve: image inputs enabled ({} visual tokens per image max)",
                     dgpp::kMaxImageTokens);
