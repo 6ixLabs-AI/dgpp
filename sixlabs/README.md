@@ -14,6 +14,7 @@ DGPP's own tree is untouched outside the files the port changes; our tooling liv
 | `bench/compare_forward_check.py` | One `qwen35_forward_check` run against the reference's `score` of the same ids (no capture needed): the first numerical gate of a new checkpoint. |
 | `bench/build_dgpp.py` | Configure + build a checkout as a logged job. |
 | `upstream-issue-77-draft.md` | The feature request as first drafted (its checkpoint section was corrected in the issue thread). |
+| `registry/` | The model registry: `models.json` says which family serves each model, which checkpoints it takes, how it is launched and how far it has been verified (working / upstream / compiled / groundwork / refused); `registry.py` checks it against the tree, prints the status and speed table, and resolves an entry into a deployment config. |
 
 ## Where things run (2026-10-03)
 

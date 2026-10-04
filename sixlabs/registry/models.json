@@ -1,0 +1,434 @@
+{
+  "schema": 1,
+  "engine": "6ixInfer",
+  "updated": "2026-10-04",
+
+  "statuses": {
+    "working": "Verified on a GPU on this fleet: bound, passed the forward-check gate, served, measured. Has a record.",
+    "upstream": "Served by upstream DGPP with a template and published measurements; not verified on this fleet by 6ixLabs.",
+    "compiled": "The code is on main and builds on a Spark. Never loaded weights or produced a token. Launch only to verify.",
+    "groundwork": "Config, tensor table and references exist; there is no kernel, loader or assembly. Cannot be served.",
+    "refused": "A checkpoint the engine refuses by name, with the reason."
+  },
+
+  "formats": [
+    "nvfp4-modelopt", "nvfp4-compressed-tensors", "nvfp4-fp8-hybrid", "fp8-block", "bf16",
+    "mxfp4-fp8", "int4-int8-rtn", "int4-autoround", "native"
+  ],
+
+  "families": {
+    "qwen3_next": {
+      "architectures": ["Qwen3Next"],
+      "served": true,
+      "on_main": true,
+      "tokenizer": "bpe",
+      "engine_defaults": {
+        "prefill_budget_tokens": 1024,
+        "prefill_idle_budget_tokens": 4096,
+        "decode_passes_per_prefill": 8,
+        "prefill_order": "shortest"
+      },
+      "notes": "GDN + full attention + routed MoE, flat config. Left automatic, prefill reads 256 tokens a tick even when idle; these four keys are the 2026-10-04 sweep's choice (sixlabs/bench/results/prefill_sweep_2026-10-04.md)."
+    },
+    "qwen3_5": {
+      "architectures": ["Qwen3_5"],
+      "served": true,
+      "on_main": true,
+      "tokenizer": "bpe",
+      "engine_defaults": {
+        "prefill_budget_tokens": 1024,
+        "prefill_idle_budget_tokens": 4096,
+        "decode_passes_per_prefill": 8,
+        "prefill_order": "shortest"
+      },
+      "notes": "GDN + full attention, dense MLP or routed MoE, nested text_config. Same prefill defaults as qwen3_next."
+    },
+    "qwen4_exp": {"architectures": ["Qwen4Exp"], "served": true, "on_main": true, "tokenizer": "bpe", "engine_defaults": {}, "notes": "Qwen3.8-Flash-Next."},
+    "glm5": {"architectures": ["Glm5"], "served": true, "on_main": true, "tokenizer": "bpe", "engine_defaults": {}, "notes": "GLM-5.3-Flash."},
+    "glm_moe_dsa": {"architectures": ["GlmMoeDsa"], "served": true, "on_main": true, "tokenizer": "bpe", "engine_defaults": {}, "notes": "Full GLM-5.3 (and the GLM-5.2 class). Four Sparks."},
+    "glm4_moe": {"architectures": ["Glm4Moe"], "served": true, "on_main": true, "tokenizer": "bpe", "engine_defaults": {}, "notes": "GLM-4.7."},
+    "deepseek_v4": {"architectures": ["DeepseekV4For"], "served": true, "on_main": true, "tokenizer": "bpe", "engine_defaults": {}, "notes": "DeepSeek-V4-Flash (0731)."},
+    "deepseek_v41": {"architectures": ["DeepseekV41"], "served": true, "on_main": true, "tokenizer": "bpe", "engine_defaults": {}, "notes": "DeepSeek-V4.1-Flash."},
+    "mimo_v2": {"architectures": ["MiMoV2"], "served": true, "on_main": true, "tokenizer": "bpe", "engine_defaults": {}, "notes": "MiMo-V2.6-Flash, text only."},
+    "nemotron_h": {"architectures": ["NemotronH"], "served": false, "on_main": true, "tokenizer": "bpe", "engine_defaults": {}, "notes": "Recognised and refused by name. Mamba2 kernel, loader and assembly not written."},
+    "gemma4": {"architectures": ["Gemma4"], "served": false, "on_main": false, "tokenizer": "spm", "engine_defaults": {}, "notes": "Branch ports/gemma-4. Needs its own tokenizer path and attention kernels."},
+    "mistral4": {"architectures": ["Mistral4"], "served": false, "on_main": false, "tokenizer": "bpe-mistral", "engine_defaults": {}, "notes": "Branch ports/mistral-minimax. Latent attention; Mistral-native checkpoint layout (params.json)."},
+    "minimax": {"architectures": ["MiniMax"], "served": false, "on_main": false, "tokenizer": "bpe-minimax", "engine_defaults": {}, "notes": "Branch ports/mistral-minimax. Needs two Sparks."},
+    "qwen3": {"architectures": ["Qwen3For", "Qwen3Moe", "Qwen3VL"], "served": false, "on_main": false, "tokenizer": "bpe", "engine_defaults": {}, "notes": "Branch ports/qwen3-plain. Qwen3 without GDN layers."}
+  },
+
+  "models": {
+    "qwen3-next-80b": {
+      "title": "Qwen3-Next-80B-A3B Instruct",
+      "family": "qwen3_next",
+      "text": {"tool_calls": "json", "thinking": false, "vision": "none"},
+      "fleet": {"alias": "qwen3-next-80b-6ix"},
+      "checkpoints": [
+        {
+          "repo": "nvidia/Qwen3-Next-80B-A3B-Instruct-NVFP4",
+          "revision": "8fb2682f136cf94d932a498f18cb1e428832a912",
+          "format": "nvfp4-modelopt",
+          "status": "working",
+          "default": true,
+          "tensors": 297728,
+          "verified": {"date": "2026-10-03", "box": "DGXone", "engine_commit": "f288d60", "record": "6IXSERVE.md"},
+          "worlds": {
+            "1": {
+              "template": "deploy/cluster_qwen3-next-80b_nvfp4_w1.example.json",
+              "variants": {"yarn512k": "deploy/cluster_qwen3-next-80b_nvfp4_w1_yarn512k.example.json"},
+              "measured": {
+                "date": "2026-10-04", "box": "DGXtwo", "source": "sixlabs/bench/results/dgxtwo_clean_2026-10-04.md",
+                "load_cold_s": 80, "load_warm_s": 12, "plan_gib": 57.9,
+                "tok_s": {"single_prose": 82.2, "single_code": 103.6, "c2": 118.5, "c4": 185.4, "c8": 253.4},
+                "notes": "Load and plan are the 2026-10-03 figures (6IXSERVE.md, 262,144-token pool); the tok/s run used a 524,288-token pool."
+              }
+            }
+          }
+        }
+      ],
+      "baselines": [
+        {"engine": "atlas", "date": "2026-10-04", "box": "DGXtwo", "source": "measured with sixlabs/bench/bench_decode.py before Atlas was retired; raw output DGXtwo ~/6ix-bench/atlas-80b-decode.log",
+         "load_cold_s": 96, "gpu_gib": 98.8, "tok_s": {"single_prose": 80.9, "single_code": 115.5, "c2": 108.4, "c4": 120.1},
+         "notes": "Load is an upper bound (container start to first request). Atlas was set to 4 seats."},
+        {"engine": "vllm", "date": "2026-09", "box": "DGXtwo", "source": "6ixlabs cluster/serving/loadouts.json and cluster/recipes/qwen3-next-80b",
+         "load_cold_s": 473, "gpu_gib": 60.1, "tok_s": {"single_prose": 35},
+         "notes": "Fleet record, not re-measured. MTP off (it crashed on this checkpoint)."}
+      ]
+    },
+
+    "qwen3.6-35b-a3b": {
+      "title": "Qwen3.6-35B-A3B",
+      "family": "qwen3_5",
+      "text": {"tool_calls": "checkpoint-template", "thinking": true, "vision": "bound-not-served"},
+      "checkpoints": [
+        {
+          "repo": "nvidia/Qwen3.6-35B-A3B-NVFP4",
+          "revision": "1355db6a052410cfd62085d94b58866fd0f2c3c5",
+          "format": "nvfp4-modelopt",
+          "status": "working",
+          "default": true,
+          "tensors": 124135,
+          "verified": {"date": "2026-10-04", "box": "DGXone", "engine_commit": "89955e0", "record": "sixlabs/ports/qwen3.6-35b-a3b/results-2026-10-04-dgxone.md"},
+          "worlds": {
+            "1": {
+              "template": "deploy/cluster_qwen3.6-35b-a3b_nvfp4_w1.example.json",
+              "measured": {
+                "date": "2026-10-04", "box": "DGXone", "source": "sixlabs/ports/qwen3.6-35b-a3b/results-2026-10-04-dgxone.md",
+                "load_cold_s": 47.5, "load_warm_s": 9.0, "plan_gib": 36.0, "gpu_gib": 38.55,
+                "tok_s": {"single_prose": 97.7, "single_code": 120.1, "c2": 128.8, "c4": 194.6, "c8": 271.3},
+                "notes": "One run each. Taken with prefill settings left automatic; prompt reading under concurrency is behind vLLM (see the record)."
+              }
+            }
+          }
+        },
+        {
+          "repo": "Qwen/Qwen3.6-35B-A3B-FP8",
+          "revision": "95a723d08a9490559dae23d0cff1d9466213d989",
+          "format": "fp8-block",
+          "status": "compiled",
+          "tensors": 63863,
+          "gpu_steps": "sixlabs/ports/qwen3.6-35b-a3b/gpu-steps.md",
+          "notes": "Binds and plans. Misses the forward-check gate on one of two texts (a greedy miss at a 1.31 nat margin; every layer passes the one-step check). Not served.",
+          "worlds": {"1": {"template": "deploy/cluster_qwen3.6-35b-a3b_fp8_w1.example.json"}}
+        },
+        {
+          "repo": "RedHatAI/Qwen3.6-35B-A3B-NVFP4",
+          "format": "nvfp4-compressed-tensors",
+          "status": "refused",
+          "notes": "Refused by name at config parse (group_1.weights missing). The copy in DGXone's cache is an incomplete download."
+        }
+      ],
+      "baselines": [
+        {"engine": "vllm", "checkpoint": "Qwen/Qwen3.6-35B-A3B-FP8", "date": "2026-10-04", "box": "DGXone", "source": "sixlabs/ports/qwen3.6-35b-a3b/results-2026-10-04-dgxone.md",
+         "load_cold_s": 404, "gpu_gib": 44.51, "tok_s": {"single_prose": 50.1, "single_code": 50.1, "c2": 62.6, "c4": 105.9, "c8": 190.0},
+         "notes": "The fleet's slot qwen3.6-35b@dgxone, same box and tools, one run. A different quantization from the 6ixInfer row."},
+        {"engine": "atlas", "checkpoint": "nvidia/Qwen3.6-35B-A3B-NVFP4", "source": "Atlas recipes README (published, not measured here)", "tok_s": {"single_prose": 116.5}}
+      ]
+    },
+
+    "qwen3-coder-next": {
+      "title": "Qwen3-Coder-Next",
+      "family": "qwen3_next",
+      "text": {"tool_calls": "xml-function", "thinking": false, "vision": "none"},
+      "checkpoints": [
+        {
+          "repo": "RedHatAI/Qwen3-Coder-Next-NVFP4",
+          "revision": "27a8f16f463b9a13c91c332c40cf93e09717347e",
+          "format": "nvfp4-compressed-tensors",
+          "status": "compiled",
+          "default": true,
+          "tensors": 296151,
+          "gpu_steps": "sixlabs/ports/qwen3-coder-next/gpu-steps.md",
+          "notes": "No draft layer in this checkpoint: no speculative decoding. Bind check against the real checkpoint passed on DGXone 2026-10-04 (296,151 of 296,151); bring-up in progress.",
+          "worlds": {"1": {"template": "deploy/cluster_qwen3-coder-next_nvfp4_w1.example.json"}}
+        },
+        {
+          "repo": "Intel/Qwen3-Coder-Next-int4-AutoRound",
+          "format": "int4-autoround",
+          "status": "refused",
+          "notes": "Refused by name. 6,407 tensor names are duplicated across two shards and every dense projection is GPTQ int4 with no exact resident form. This is the checkpoint the fleet's vLLM slot serves."
+        }
+      ],
+      "baselines": [
+        {"engine": "vllm", "checkpoint": "Intel/Qwen3-Coder-Next-int4-AutoRound", "date": "2026-09", "box": "DGXone", "source": "6ixlabs cluster/serving/loadouts.json and CONTINUATION-2026-09-28-agent-loadout.md",
+         "load_cold_s": 332, "gpu_gib": 59.3, "tok_s": {"single_prose": [80, 93]}, "notes": "Fleet record, not re-measured. MTP depth 2."},
+        {"engine": "atlas", "checkpoint": "Qwen/Qwen3-Coder-Next-FP8", "source": "Atlas recipes README (published, not measured here)", "tok_s": {"single_prose": 58}}
+      ]
+    },
+
+    "qwen3.5-0.8b": {
+      "title": "Qwen3.5-0.8B",
+      "family": "qwen3_5",
+      "text": {"tool_calls": "checkpoint-template", "thinking": true, "vision": "bound-not-served"},
+      "checkpoints": [
+        {
+          "repo": "Qwen/Qwen3.5-0.8B",
+          "revision": "2fc06364715b967f1860aea9cf38778875588b17",
+          "format": "bf16",
+          "status": "compiled",
+          "default": true,
+          "tensors": 335,
+          "gpu_steps": "sixlabs/ports/qwen3.5-0.8b/gpu-steps.md",
+          "notes": "The BF16 dense-MLP branch in Qwen35Model::dense_mlp has never executed. dense_weights fp8 puts the model on the 27B's kernels instead.",
+          "worlds": {"1": {"template": "deploy/cluster_qwen3.5-0.8b_bf16_w1.example.json"}}
+        }
+      ],
+      "baselines": [
+        {"engine": "vllm", "date": "2026-09", "box": "DGXone", "source": "6ixlabs cluster/serving/loadouts.json", "load_cold_s": 131, "gpu_gib": 5.0, "notes": "Fleet record. The always-resident Fast model."}
+      ]
+    },
+
+    "qwen3.5-122b-a10b": {
+      "title": "Qwen3.5-122B-A10B",
+      "family": "qwen3_5",
+      "text": {"tool_calls": "checkpoint-template", "thinking": true, "vision": "bound-not-served"},
+      "checkpoints": [
+        {
+          "repo": "nvidia/Qwen3.5-122B-A10B-NVFP4",
+          "revision": "98915d83",
+          "format": "nvfp4-modelopt",
+          "status": "compiled",
+          "default": true,
+          "tensors": 148976,
+          "gpu_steps": "sixlabs/ports/qwen3.5-122b-a10b/gpu-steps.md",
+          "notes": "70.33 GiB resident by the loader's formulas, about 82 GiB with a 262,144-token pool and the prefix cache. 32 query heads on 2 KV heads sends prefill down the row-kernel branch, which no served model has used.",
+          "worlds": {"1": {"template": "deploy/cluster_qwen3.5-122b-a10b_nvfp4_w1.example.json"}}
+        },
+        {
+          "repo": "Sehyo/Qwen3.5-122B-A10B-NVFP4",
+          "revision": "56a6bdda",
+          "format": "nvfp4-compressed-tensors",
+          "status": "compiled",
+          "tensors": 149552,
+          "gpu_steps": "sixlabs/ports/qwen3.5-122b-a10b/gpu-steps.md",
+          "notes": "Binds. No template of its own; use the nvidia template with this repo as the model."
+        },
+        {
+          "repo": "Qwen/Qwen3.5-122B-A10B-FP8",
+          "revision": "a099dee7",
+          "format": "fp8-block",
+          "status": "compiled",
+          "tensors": 76323,
+          "gpu_steps": "sixlabs/ports/qwen3.5-122b-a10b/gpu-steps.md",
+          "notes": "117.59 GiB resident: does not fit one Spark with a K/V pool. Bind-checkable only until this family has world 2."
+        },
+        {"repo": "Intel/Qwen3.5-122B-A10B-int4-AutoRound", "format": "int4-autoround", "status": "refused", "notes": "Refused by name at config parse."}
+      ],
+      "baselines": [
+        {"engine": "vllm", "date": "2026-09", "box": "DGXone + DGXtwo", "source": "6ixlabs cluster/serving/loadouts.json", "load_cold_s": 395, "gpu_gib": 47.6, "notes": "Fleet record: tensor parallel over both boxes, 47.6 GiB on each."},
+        {"engine": "atlas", "checkpoint": "Sehyo/Qwen3.5-122B-A10B-NVFP4", "source": "Atlas README (published, not measured here)", "tok_s": {"single_prose": 46}, "notes": "Two Sparks."}
+      ]
+    },
+
+    "qwen3.8-27b": {
+      "title": "Qwen3.8-27B",
+      "family": "qwen3_5",
+      "text": {"tool_calls": "checkpoint-template", "thinking": true, "vision": "bound-not-served"},
+      "checkpoints": [
+        {
+          "repo": "Qwen/Qwen3.8-27B-FP8", "format": "fp8-block", "status": "upstream", "default": true,
+          "worlds": {"1": {"template": "deploy/cluster_qwen3.8-27b_fp8_w1.example.json",
+                           "variants": {"dflash2": "deploy/cluster_qwen3.8-27b_fp8_w1_dflash2.example.json"}}}
+        }
+      ]
+    },
+
+    "qwen3.8-flash-next": {
+      "title": "Qwen3.8-Flash-Next",
+      "family": "qwen4_exp",
+      "text": {"tool_calls": "checkpoint-template", "thinking": true, "vision": "served"},
+      "checkpoints": [
+        {
+          "repo": "nvidia/Qwen3.8-Flash-Next-NVFP4", "format": "nvfp4-modelopt", "status": "upstream", "default": true,
+          "worlds": {
+            "1": {"template": "deploy/cluster_qwen-3.8-flash-next_nvfp4_w1.example.json",
+                  "measured": {"source": "docs/benchmarks.md", "tok_s": {"single_prose": [42.3, 50.0], "c4": [83.4, 95.4]}}},
+            "2": {"template": "deploy/cluster_qwen-3.8-flash-next_nvfp4_w2.example.json",
+                  "variants": {"yarn512k": "deploy/cluster_qwen-3.8-flash-next_nvfp4_w2_yarn512k.example.json"},
+                  "measured": {"source": "docs/benchmarks.md", "tok_s": {"single_prose": [62.6, 74.6], "c4": [124.5, 143.8]}}}
+          }
+        },
+        {
+          "repo": "RadixArk/Qwen3.8-Flash-Next-NVFP4", "format": "nvfp4-modelopt", "status": "upstream",
+          "worlds": {"1": {"template": "deploy/cluster_qwen-3.8-flash-next_nvfp4-radixark_w1.example.json"},
+                     "2": {"template": "deploy/cluster_qwen-3.8-flash-next_nvfp4-radixark_w2.example.json"}}
+        },
+        {
+          "repo": "Qwen/Qwen3.8-Flash-Next-FP8", "format": "fp8-block", "status": "upstream",
+          "worlds": {"2": {"template": "deploy/cluster_qwen-3.8-flash-next_fp8_w2.example.json"},
+                     "4": {"template": "deploy/cluster_qwen-3.8-flash-next_fp8_w4.example.json"}}
+        },
+        {
+          "repo": "Saren/Qwen3.8-Flash-Next-W4A16-AutoRound-hybrid-MTP_int4RTN", "format": "int4-autoround", "status": "upstream",
+          "worlds": {"1": {"template": "deploy/cluster_qwen-3.8-flash-next_autoround-int4_w1.example.json",
+                           "measured": {"source": "docs/benchmarks.md", "tok_s": {"single_prose": [44.7, 71.5], "c4": [77.3, 118.6]}}}}
+        }
+      ],
+      "baselines": [
+        {"engine": "sglang", "date": "2026-08-28", "box": "DGXone + DGXtwo", "source": "6ixlabs cluster/recipes/qwen3.8-flash-next/results", "tok_s": {"single_prose": 43.5, "c4": 122.3}, "notes": "Fleet record: tensor parallel over both boxes."}
+      ]
+    },
+
+    "glm-5.3-flash": {
+      "title": "GLM-5.3-Flash",
+      "family": "glm5",
+      "text": {"tool_calls": "checkpoint-template", "thinking": true, "vision": "served"},
+      "checkpoints": [
+        {
+          "repo": "HawkBearPig/GLM-5.3-Flash-NVFP4-FP8", "format": "nvfp4-fp8-hybrid", "status": "upstream", "default": true,
+          "notes": "195.1 GB. Being downloaded to DGXone's cache on 2026-10-04.",
+          "worlds": {
+            "2": {"template": "deploy/cluster_glm-5.3-flash_nvfp4-fp8_w2.example.json",
+                  "measured": {"source": "docs/benchmarks.md", "tok_s": {"single_prose": [31.3, 36.0], "c4": [56.3, 61.8]}}},
+            "4": {"template": "deploy/cluster_glm-5.3-flash_nvfp4-fp8_w4.example.json"}
+          }
+        }
+      ]
+    },
+
+    "glm-5.3": {
+      "title": "GLM-5.3 (full)",
+      "family": "glm_moe_dsa",
+      "text": {"tool_calls": "checkpoint-template", "thinking": true, "vision": "none"},
+      "checkpoints": [
+        {"repo": "HawkBearPig/GLM-5.3-Int4-Int8Mix-RTN-g64", "format": "int4-int8-rtn", "status": "upstream", "default": true,
+         "worlds": {"4": {"template": "deploy/cluster_glm-5.3_int4-int8_w4.example.json"}}}
+      ]
+    },
+
+    "glm-4.7": {
+      "title": "GLM-4.7",
+      "family": "glm4_moe",
+      "text": {"tool_calls": "checkpoint-template", "thinking": true, "vision": "none"},
+      "checkpoints": [
+        {"repo": "nvidia/GLM-4.7-NVFP4", "format": "nvfp4-modelopt", "status": "upstream", "default": true,
+         "worlds": {"4": {"template": "deploy/cluster_glm-4.7_nvfp4_w4.example.json"}}}
+      ]
+    },
+
+    "deepseek-v4-flash": {
+      "title": "DeepSeek-V4-Flash (0731)",
+      "family": "deepseek_v4",
+      "text": {"tool_calls": "checkpoint-template", "thinking": true, "vision": "none"},
+      "checkpoints": [
+        {"repo": "deepseek-ai/DeepSeek-V4-Flash-0731", "format": "mxfp4-fp8", "status": "upstream", "default": true,
+         "worlds": {
+           "2": {"template": "deploy/cluster_deepseek-v4-flash_mxfp4-fp8_w2.example.json",
+                 "measured": {"source": "docs/benchmarks.md", "tok_s": {"single_prose": [40.4, 72.8], "c4": [67.5, 101.1]}}},
+           "4": {"template": "deploy/cluster_deepseek-v4-flash_mxfp4-fp8_w4.example.json"}
+         }}
+      ],
+      "baselines": [
+        {"engine": "vllm", "date": "2026-09-01", "box": "DGXone + DGXtwo", "source": "6ixlabs cluster/recipes/deepseek-v4-flash/results", "tok_s": {"single_prose": 67.6}, "notes": "Fleet record: tensor parallel over both boxes at 1M context."}
+      ]
+    },
+
+    "deepseek-v4.1-flash": {
+      "title": "DeepSeek-V4.1-Flash",
+      "family": "deepseek_v41",
+      "text": {"tool_calls": "checkpoint-template", "thinking": true, "vision": "none"},
+      "checkpoints": [
+        {"repo": "deepseek-ai/DeepSeek-V4.1-Flash", "format": "mxfp4-fp8", "status": "upstream", "default": true,
+         "worlds": {"4": {"template": "deploy/cluster_deepseek-v4.1-flash_mxfp4-fp8_w4.example.json"}}}
+      ]
+    },
+
+    "mimo-v2.6-flash": {
+      "title": "MiMo-V2.6-Flash",
+      "family": "mimo_v2",
+      "text": {"tool_calls": "checkpoint-template", "thinking": true, "vision": "bound-not-served"},
+      "checkpoints": [
+        {"repo": "XiaomiMiMo/MiMo-V2.6-Flash-RL", "format": "mxfp4-fp8", "status": "upstream", "default": true,
+         "worlds": {
+           "2": {"template": "deploy/cluster_mimo-v2.6-flash_mxfp4-fp8_w2.example.json",
+                 "measured": {"source": "docs/benchmarks.md", "tok_s": {"single_prose": [42.3, 49.2], "c4": [70.1, 78.5]}}},
+           "4": {"template": "deploy/cluster_mimo-v2.6-flash_mxfp4-fp8_w4.example.json"}
+         }}
+      ]
+    },
+
+    "nemotron-3-nano": {
+      "title": "Nemotron-3 Nano 30B-A3B",
+      "family": "nemotron_h",
+      "text": {"tool_calls": "checkpoint-template", "thinking": true, "vision": "none"},
+      "checkpoints": [
+        {"repo": "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4", "revision": "6efb4a2a1c1fa277ce7b3df7a1416255011b1c99", "format": "nvfp4-modelopt",
+         "status": "groundwork", "default": true, "tensors": 24147, "gpu_steps": "sixlabs/ports/nemotron-3/gpu-steps.md",
+         "notes": "18.0 GiB. Config, tensor table, numpy and host references. No kernel, loader or assembly."}
+      ],
+      "baselines": [{"engine": "atlas", "source": "Atlas recipes README (published, not measured here)", "tok_s": {"single_prose": 88}}]
+    },
+
+    "nemotron-3-super": {
+      "title": "Nemotron-3 Super 120B-A12B",
+      "family": "nemotron_h",
+      "text": {"tool_calls": "checkpoint-template", "thinking": true, "vision": "none"},
+      "checkpoints": [
+        {"repo": "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4", "revision": "4f0cf9daaeb7a4d5e23f80a00e7ed15f0e03caf6", "format": "nvfp4-modelopt",
+         "status": "groundwork", "default": true, "tensors": 165860, "gpu_steps": "sixlabs/ports/nemotron-3/gpu-steps.md",
+         "notes": "74.8 GiB. Same groundwork as Nano."}
+      ],
+      "baselines": [{"engine": "atlas", "source": "Atlas recipes README (published, not measured here)", "tok_s": {"single_prose": 24}}]
+    },
+
+    "gemma-4-31b": {
+      "title": "Gemma-4 31B", "family": "gemma4", "branch": "ports/gemma-4",
+      "text": {"tool_calls": "checkpoint-template", "thinking": true, "vision": "bound-not-served"},
+      "checkpoints": [{"repo": "nvidia/Gemma-4-31B-IT-NVFP4", "format": "nvfp4-modelopt", "status": "groundwork", "default": true, "tensors": 1372,
+                       "notes": "On a branch, not on main. 1,372 text tensors + 356 encoder tensors ignored."}]
+    },
+    "gemma-4-26b-a4b": {
+      "title": "Gemma-4 26B-A4B", "family": "gemma4", "branch": "ports/gemma-4",
+      "text": {"tool_calls": "checkpoint-template", "thinking": true, "vision": "bound-not-served"},
+      "checkpoints": [{"repo": "bg-digitalservices/Gemma-4-26B-A4B-it-NVFP4A16", "format": "nvfp4-compressed-tensors", "status": "groundwork", "default": true, "tensors": 35567,
+                       "notes": "On a branch, not on main. A community quantization.",
+                       "format_note": "container as described by its author; not verified on real weights"}],
+      "baselines": [{"engine": "atlas", "source": "Atlas recipes README (published, not measured here)", "tok_s": {"single_prose": 67}}]
+    },
+    "mistral-small-4": {
+      "title": "Mistral-Small-4 119B", "family": "mistral4", "branch": "ports/mistral-minimax",
+      "text": {"tool_calls": "checkpoint-template", "thinking": true, "vision": "bound-not-served"},
+      "checkpoints": [{"repo": "mistralai/Mistral-Small-4-119B-2603-NVFP4", "revision": "45331841b631f4e281df8e959ea3cc9beb84298a", "format": "native", "status": "groundwork", "default": true, "tensors": 56313,
+                       "notes": "On a branch, not on main. 65.1 GiB of text weights; about 75 GiB planned with a 262,144-token cache."}]
+    },
+    "minimax-m2.7": {
+      "title": "MiniMax-M2.7", "family": "minimax", "branch": "ports/mistral-minimax",
+      "text": {"tool_calls": "checkpoint-template", "thinking": true, "vision": "none"},
+      "checkpoints": [{"repo": "lukealonso/MiniMax-M2.7-NVFP4", "revision": "db821d7a3ce29ee96d80a1cae88d878d8586b54e", "format": "nvfp4-modelopt", "status": "groundwork", "default": true, "tensors": 143471,
+                       "notes": "On a branch, not on main. 125.2 GiB: needs two Sparks (about 64 GiB each by the sharding plan). No draft head in the checkpoint."}]
+    },
+    "qwen3-vl-30b-a3b": {
+      "title": "Qwen3-VL-30B-A3B (text path)", "family": "qwen3", "branch": "ports/qwen3-plain",
+      "text": {"tool_calls": "checkpoint-template", "thinking": false, "vision": "bound-not-served"},
+      "checkpoints": [{"repo": "ig1/Qwen3-VL-30B-A3B-Instruct-NVFP4", "revision": "3c6162d5", "format": "nvfp4-compressed-tensors", "status": "groundwork", "default": true, "tensors": 75090,
+                       "notes": "On a branch, not on main. 18.06 GiB resident. The loader and model walk are an unverified draft behind DGPP_BUILD_QWEN3_PLAIN_DRAFT."}],
+      "baselines": [{"engine": "atlas", "source": "Atlas recipes README (published, not measured here)", "tok_s": {"single_prose": 97}}]
+    },
+    "qwen3-235b-a22b": {
+      "title": "Qwen3-235B-A22B", "family": "qwen3", "branch": "ports/qwen3-plain",
+      "text": {"tool_calls": "checkpoint-template", "thinking": false, "vision": "none"},
+      "checkpoints": [{"repo": "nvidia/Qwen3-235B-A22B-Instruct-2507-NVFP4", "revision": "1c4ec358", "format": "nvfp4-modelopt", "status": "groundwork", "default": true, "tensors": 145703,
+                       "notes": "On a branch, not on main. 133.86 GiB resident: needs two Sparks (67.56 GiB each by the sharding plan)."}]
+    }
+  }
+}
