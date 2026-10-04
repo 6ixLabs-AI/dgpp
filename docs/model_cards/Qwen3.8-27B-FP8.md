@@ -62,11 +62,12 @@ Sparks, eight slots. The DFlash2 drafter is each template's mode since
 --bf16-weights bf12`): the block proposal recorded inside the graph step on
 every rank, the drafter's heads and MLP rows sharded across the ranks, the
 ranks' top-16 lists merged through one fold ([#92](https://github.com/HawkBearPig/dgpp/issues/92)).
-On the arena harness (llama-benchy pp2048 tg128 at the checkpoint's
-sampling) the MTP templates read 32.2 tok/s on two nodes and 55.0 on four
-(the public cards: 46.55 and 58.48), the drafter 31.3 and 50.1; by class the
-drafter leads code, JSON and math by 27–55 % on four nodes and ties prose
-and chat ([docs/mtp.md](../mtp.md#on-the-graph-worlds-2026-10-04-92)).
+Greedy C1 by class (prose / code / json / math / chat), the MTP templates
+read 34.0 / 40.5 / 46.4 / 42.6 / 30.9 tok/s on two nodes at 80 ms a pass and
+57.9 / 69.9 / 79.9 / 73.3 / 50.4 on four at 46 ms; the drafter mode 32.1 /
+50.3 / 71.0 / 57.6 / 30.3 at 94 ms and 54.9 / 86.3 / 120.8 / 101.2 / 52.6 at
+52 ms — ahead on code, JSON and math by 29–58 % on four nodes, level on
+prose and chat ([docs/mtp.md](../mtp.md#on-the-graph-worlds-2026-10-04-92)).
 
 Both worlds decode through the family's own kernels: the DeltaNet chunked
 and recurrent forms, the query-tiled prefill attention and split-KV decode

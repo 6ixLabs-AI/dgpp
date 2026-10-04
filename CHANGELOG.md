@@ -102,18 +102,18 @@ The history by milestone. The dated engineering record in
   replays scalar graphs beyond. Gates: `dflash2_kernels_test` (the merge at
   worlds 2 and 4, the staging, the split attention), greedy transcripts
   identical 4/4 to the same world's MTP depth-5 world at worlds 1, 2 and 4.
-  Measured C1 on the arena harness (llama-benchy pp2048 tg128, the
-  checkpoint's sampling): two nodes MTP depth 3 32.2 tok/s at 84 ms a pass,
-  the drafter 31.3 at 94; four nodes MTP 55.0 at 49 ms (the public TP=4 card
-  58.48), the drafter 50.1 at 56; greedy by class the drafter leads code /
-  JSON / math by 27–55 % on four nodes (82.5 / 115.9 / 97.1 against 65.1 /
-  74.6 / 68.6) and ties prose and chat, so MTP stays the two- and four-node
+  Measured greedy C1 (`timed_load`, prose / code / json / math / chat): two
+  nodes MTP depth 3 at 84 ms a pass, the drafter 32.1 / 50.3 / 71.0 / 57.6 /
+  30.3 at 94; four nodes MTP 54.7 / 65.1 / 74.6 / 68.6 / 47.8 at 49 ms, the
+  drafter 52.4 / 82.5 / 115.9 / 97.1 / 50.2 at 56 — the drafter leads code /
+  JSON / math by 27–55 % and ties prose and chat, the MTP template's 4-row
+  verify keeps the shorter pass, so MTP stays the two- and four-node
   template and the drafter is its mode (`--no-mtp --dflash-model
   z-lab/Qwen3.8-27B-DFlash2 --bf16-weights bf12`); the drafter recipes pack
   the drafter bf12 (+4.5 %, lossless). The nsys node trace of rank 0 at four
   nodes puts the target's fp8 GEMV at 35–38 ms a step for both recipes
   (6.9 GB a rank at 187 GB/s at four-node shard widths): the shared lever
-  toward the cards.
+  (#93).
 
 - **The DFlash2 block drafter on Qwen3.8-27B** (2026-10-02, #80):
   `engine.dflash_model` serves `z-lab/Qwen3.8-27B-DFlash2` in place of the

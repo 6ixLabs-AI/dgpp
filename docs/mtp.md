@@ -191,28 +191,27 @@ the family's row-count dispatch class (as at world 1 against a 3-row MTP
 verify). World 1's graph engine equals the eager engine 4/4 and runs the
 same tokens faster (chat 70.9 against 95.2 ms a token).
 
-Measured 2026-10-04 (`benchmarks/results/2026-10-04-qwen3.8-27b/raw/drafter-tp`),
-C1, the arena harness (`llama-benchy --pp 2048 --tg 128`, the checkpoint's
-sampling) and greedy `timed_load` by class (prose / code / json / math / chat):
+Measured 2026-10-04 (`benchmarks/results/2026-10-04-qwen3.8-27b/raw/drafter-tp`
+and `raw/prefetch`, the repository's `timed_load` workload, greedy C1, the
+pass time from the engine's counters), prose / code / json / math / chat:
 
-| world | recipe | benchy tg128 | ms/pass | greedy C1 tok/s |
-|---|---|---:|---:|---|
-| 1 | drafter, graph engine | 16.4 | 176 | 17.9 / 28.6 / 40.4 / 32.5 / 17.1 |
-| 2 | MTP depth 3 (the template) | 32.2 | 84 | 30.4 / 39.8 / 45.7 / 42.0 / 33.4 |
-| 2 | drafter (bf12, sharded) | 31.3 | 94 | 32.1 / 50.3 / 71.0 / 57.6 / 30.3 |
-| 4 | MTP depth 3 (the template) | 55.0 | 49 | 54.7 / 65.1 / 74.6 / 68.6 / 47.8 |
-| 4 | drafter (bf12, sharded) | 50.1 | 56 | 52.4 / 82.5 / 115.9 / 97.1 / 50.2 |
+| world | recipe | ms/pass | greedy C1 tok/s |
+|---|---|---:|---|
+| 1 | drafter, graph engine | 176 | 17.9 / 28.6 / 40.4 / 32.5 / 17.1 |
+| 2 | MTP depth 3 (the template) | 80 | 34.0 / 40.5 / 46.4 / 42.6 / 30.9 |
+| 2 | drafter (bf12, sharded) | 94 | 32.1 / 50.3 / 71.0 / 57.6 / 30.3 |
+| 4 | MTP depth 3 (the template) | 46 | 57.9 / 69.9 / 79.9 / 73.3 / 50.4 |
+| 4 | drafter (bf12, sharded) | 52 | 54.9 / 86.3 / 120.8 / 101.2 / 52.6 |
 
-The public cards are 58.48 (four nodes, vLLM TP=4 MTP 3) and 46.55 (two
-nodes, SGLang TP=2 with a DSpark block drafter). The drafter leads on code,
-JSON and math by 27–55 % at four nodes and ties prose and chat; on the
-arena's book text the MTP template's 4-row verify keeps a 7 ms shorter
-pass, so MTP stays the two- and four-node template and the drafter is its
-mode. The nsys node trace of rank 0 at four nodes puts the target's fp8
-GEMV at 35–38 ms a step for both recipes (6.9 GB a rank at 187 GB/s — the
-kernel at four-node shard widths, split-K already on), the 128–140 bus
-folds at 7–10 ms, the sharded drafter's bf12 GEMMs at 3.8 ms: the GEMV's
-rate at these shard widths is the shared lever toward the cards.
+The drafter leads on code, JSON and math by 29–58 % at four nodes and ties
+prose and chat; the MTP template's 4-row verify keeps a 6 ms shorter pass,
+so on prose-like traffic the two recipes are level and MTP stays the two-
+and four-node template, the drafter its mode. The nsys node trace of rank 0
+at four nodes puts the target's fp8 GEMV at 35–38 ms a step for both
+recipes before the prefetch windows (6.9 GB a rank; the GB10 reads at
+233.6 GB/s and the kernels reach 89–97 % of that in isolation), the 128–140
+bus folds at 7–10 ms, the sharded drafter's bf12 GEMMs at 3.8 ms. The
+boundary prefetch windows (#93) hide part of the folds' idle DRAM time.
 
 ## Recorded GLM-5.3 result
 
