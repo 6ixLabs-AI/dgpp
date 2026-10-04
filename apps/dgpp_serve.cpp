@@ -2657,9 +2657,15 @@ int main(int argc, char** argv) {
       DGPP_LOG_WARN("engine.embed_sharding = vocab applies to the full GLM-5.3 and the DeepSeek families; {} keeps its "
                     "embedding replicated", family->name());
     DGPP_LOG_INFO("serve: model family {} ({})", family->name(), ckpt);
+    // qwen3_5 (the 27B, the 35B, the 122B, the 0.8B) is the same Qwen35Model as qwen3_next and
+    // already reads its prompts in chunks at the automatic budget; an explicit budget only
+    // changes the chunk size and the scratch the memory plan sizes for it. Without it that
+    // family reads 256 tokens a tick even with nothing decoding (2026-10-04: the 35B and the
+    // 122B's first token under load). Checked on the 80B only: run sixlabs/bench/group_check.py
+    // and mixed_load.py against a checkpoint before serving it with a larger budget.
     if (prefill_budget_tokens > 0 && (!decode_graph ||
         (std::string(family->name()) != "qwen4_exp" && std::string(family->name()) != "glm5" &&
-         std::string(family->name()) != "qwen3_next"))) {
+         std::string(family->name()) != "qwen3_next" && std::string(family->name()) != "qwen3_5"))) {
       DGPP_LOG_ERROR("--prefill-budget-tokens requires a Qwen or GLM-5.3-Flash graph engine");
       return 1;
     }
