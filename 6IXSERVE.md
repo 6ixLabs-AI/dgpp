@@ -28,7 +28,8 @@ walk with the routed MoE in the dense MLP's place — on one Spark today:
 **In the shared engine** (every model family gets these):
 
 - the server process is `6ix-Serve` (`dgpp-serve` stays beside it as a link);
-- the Prometheus exposition at `/metrics/prometheus` (upstream PR #81's branch, merged here);
+- the Prometheus exposition at `/metrics/prometheus` (upstream PR #81, merged upstream on 2026-10-04
+  with peer metrics configured through the deployment JSON: `"ports": {"metrics": N}`);
 - interleaved prefill for the `qwen3_5` family (`engine.prefill_budget_tokens`);
 - two scheduler fixes for a K/V pool full of cached prefixes: a live request evicts idle cache
   entries before anything is shed, and the block arithmetic counts the draft rows a reserve takes
@@ -53,7 +54,9 @@ walk with the routed MoE in the dense MLP's place — on one Spark today:
 
 ## Not done yet
 
-Two or more boxes for this model (the `qwen3_5` path is single-node upstream too); the FP8 release
+Two or more boxes for this model: upstream's `qwen3_5` family runs on two and four Sparks since
+2026-10-04 (#86), but only its dense dialect (Qwen3.8-27B); the routed-MoE dialects (this model, the
+35B, the 122B) are refused above one box (`Qwen35Model`: "run at world 1 only"); the FP8 release
 of the same model as a second format; a deployment template in `deploy/`; a model-level fixture test.
 
 ## Running it
