@@ -376,13 +376,19 @@ collectives) and `dgpp_rank_snapshot_age_seconds`. Ranks run every step
 together, so step time per step that is higher on one rank than on the others
 points at that rank's GPU or link. Rank 0 appends its own (`rank="0"`) to
 `/metrics/prometheus` in a multi-rank world. A peer serves no HTTP API; with
-`DGPP_METRICS_PORT` set in `.env` (config `ports.metrics`, `--metrics-port`)
+`ports.metrics` set in the deployment JSON (`--metrics-port` overrides it)
 each peer serves its families at `GET /metrics/prometheus` on its node
 address (an IPv4 address; `--metrics-bind` overrides it), adding
 `dgpp_rank_ticks_total`, the journal records it applied. A peer publishes
 after every tick it applies, so `dgpp_rank_snapshot_age_seconds` also grows
 while the world is idle. The bus's per-lane traffic counters are not exported:
 the bus updates them outside its stats lock.
+
+For example, add `"ports": {"metrics": 29972}` to the deployment JSON to
+enable peer listeners. An omitted port or `0` disables them. The metrics
+port must differ from the fabric and journal ports; it may match rank 0's
+HTTP port because the peers run on separate nodes. This setting belongs to
+the deployment and is preserved by `dgpp-cluster resolve`.
 
 Request histograms count choices, as the TTFT counters do, and observe at the
 first token or at retire. A request shed before admission observes none of

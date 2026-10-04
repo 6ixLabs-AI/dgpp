@@ -8,7 +8,11 @@ engine setting rather than in its size — today
 NVFP4 deployment with the YaRN rope ramp switched on. Base shapes stay unique;
 a variant may repeat a base only with that suffix. Local copies use the same name
 without `.example` and stay Git-ignored; the launcher fills the nodes, the SSH
-user and the ports from the site's `.env` (`scripts/site_env.py`).
+user and the HTTP/fabric/journal port defaults from the site's `.env`
+(`scripts/site_env.py`). Set `"ports": {"metrics": 29972}` in a deployment
+to enable each peer's Prometheus listener; an omitted port or `0` disables
+it. Rank 0 serves metrics on its HTTP endpoint. See the
+[per-rank metrics](../docs/openai-compatibility.md#per-rank-families).
 
 - Model names are `glm-5.3-flash`, `glm-5.3` (the full model), `glm-4.7`,
   `qwen-3.8-flash-next`, `qwen3.8-27b`, `deepseek-v4.1-flash` and `mimo-v2.6-flash`.

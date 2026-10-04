@@ -13,7 +13,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 SITE_KEYS = (
     "DGPP_NODES", "DGPP_SSH_USER", "DGPP_CLUSTER_CONFIG",
-    "DGPP_HTTP_PORT", "DGPP_FABRIC_PORT", "DGPP_JOURNAL_PORT", "DGPP_METRICS_PORT",
+    "DGPP_HTTP_PORT", "DGPP_FABRIC_PORT", "DGPP_JOURNAL_PORT",
     "DGPP_LOG_DIR", "DGPP_STAGE_DIR", "DGPP_RELEASE_DIR",
     "DGPP_HTTP_BIND", "DGPP_ROCE_DEVICES", "DGPP_ROCE_GID_INDICES",
     "HF_HOME", "HF_HUB_CACHE", "DGPP_RESIDENT_CACHE_DIR", "DGPP_NODE_OVERRIDES",
@@ -38,7 +38,7 @@ NODE_KEYS = ("DGPP_ROCE_DEVICES", "DGPP_ROCE_GID_INDICES", "HF_HUB_CACHE", "DGPP
 )
 DEFAULTS = {
     "DGPP_HTTP_PORT": "18080", "DGPP_FABRIC_PORT": "29970",
-    "DGPP_JOURNAL_PORT": "29971", "DGPP_METRICS_PORT": "0", "DGPP_LOG_DIR": "~/dgpp/log",
+    "DGPP_JOURNAL_PORT": "29971", "DGPP_LOG_DIR": "~/dgpp/log",
     "DGPP_STAGE_DIR": "/tmp/bus4", "DGPP_RELEASE_DIR": "~/dgpp/releases",
     "DGPP_HTTP_BIND": "127.0.0.1",
 }
@@ -129,14 +129,6 @@ def ssh_user(values):
     return user
 
 
-def metrics_port(values):
-    """The peers' metrics listener port; 0 (the default) turns it off."""
-    value = values["DGPP_METRICS_PORT"]
-    if not value.isdigit() or not 0 <= int(value) <= 65535:
-        raise ValueError("DGPP_METRICS_PORT must be 0 (off) or an integer in [1, 65535]")
-    return int(value)
-
-
 def port(values, name):
     value = values[f"DGPP_{name.upper()}_PORT"]
     if not value.isdigit() or not 1 <= int(value) <= 65535:
@@ -160,9 +152,9 @@ def deployment(path):
     cfg = json.loads(Path(path).read_text())
     if not isinstance(cfg, dict):
         raise ValueError("deployment config must be an object")
-    if set(cfg) & {"nodes", "ssh_user", "ports"}:
-        raise ValueError("move nodes, ssh_user, and ports out of the deployment JSON into .env; use world_size")
-    unknown = set(cfg) - {"model", "world_size", "release", "engine", "paths", "http"}
+    if set(cfg) & {"nodes", "ssh_user"}:
+        raise ValueError("move nodes and ssh_user out of the deployment JSON into .env; use world_size")
+    unknown = set(cfg) - {"model", "world_size", "release", "engine", "paths", "http", "ports"}
     if unknown:
         raise ValueError("unknown deployment keys: " + ", ".join(sorted(unknown)))
     if not isinstance(cfg.get("model"), str) or not cfg["model"]:
@@ -175,6 +167,11 @@ def deployment(path):
     # forbid worlds that would have worked.
     if type(cfg.get("world_size")) is not int or cfg["world_size"] < 1:
         raise ValueError("deployment world_size must be a positive integer")
+    ports = cfg.get("ports", {})
+    if not isinstance(ports, dict) or set(ports) - {"metrics"}:
+        raise ValueError("deployment ports may only contain metrics; set fabric and journal ports in .env and HTTP in http.port")
+    if "metrics" in ports and (type(ports["metrics"]) is not int or not 0 <= ports["metrics"] <= 65535):
+        raise ValueError("ports.metrics must be 0 (off) or an integer in [1, 65535]")
     paths = cfg.get("paths", {})
     if not isinstance(paths, dict) or set(paths) - {"resident_cache"}:
         raise ValueError("deployment paths may only contain resident_cache; move site paths into .env")
@@ -284,6 +281,7 @@ def resolve_config(path, values=None):
     cfg = deployment(path)
     cfg["nodes"] = selected_nodes(values, cfg.pop("world_size"))
     cfg["ssh_user"] = ssh_user(values)
+    deployment_ports = cfg.get("ports", {})
     cfg["ports"] = {name: port(values, name) for name in ("http", "fabric", "journal")}
     if cfg["ports"]["fabric"] == cfg["ports"]["journal"]:
         raise ValueError("DGPP_FABRIC_PORT and DGPP_JOURNAL_PORT must differ")
@@ -292,10 +290,10 @@ def resolve_config(path, values=None):
     cfg["ports"]["http"] = cfg["http"]["port"]
     if len(cfg["nodes"]) > 1 and len(set(cfg["ports"].values())) != 3:
         raise ValueError("HTTP, fabric, and journal ports must differ for multi-node deployments")
-    metrics = metrics_port(values)
-    if metrics:
+    if "metrics" in deployment_ports:
+        metrics = deployment_ports["metrics"]
         if metrics in (cfg["ports"]["fabric"], cfg["ports"]["journal"]):
-            raise ValueError("DGPP_METRICS_PORT must differ from DGPP_FABRIC_PORT and DGPP_JOURNAL_PORT")
+            raise ValueError("ports.metrics must differ from the fabric and journal ports")
         cfg["ports"]["metrics"] = metrics
     cfg["node_env"] = node_environments(values, cfg["nodes"])
     return cfg
@@ -346,7 +344,6 @@ def main():
         ssh_user(values)
         http_bind(values)
         ports = {name: port(values, name) for name in ("http", "fabric", "journal")}
-        metrics_port(values)
         if ports["fabric"] == ports["journal"]:
             raise ValueError("DGPP_FABRIC_PORT and DGPP_JOURNAL_PORT must differ")
         if "DGPP_CLUSTER_CONFIG" in values:

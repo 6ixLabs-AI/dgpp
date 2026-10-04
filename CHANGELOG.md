@@ -17,7 +17,7 @@ The history by milestone. The dated engineering record in
 - **Per-rank metrics**: every rank reports `dgpp_rank_*` (step and prefill
   wall time, generated tokens, pool, completed collectives, snapshot age);
   rank 0 on `/metrics/prometheus`, each peer on an optional listener
-  (`DGPP_METRICS_PORT` / `ports.metrics` / `--metrics-port`, off by default)
+  (deployment JSON `ports.metrics` / `--metrics-port`, off by default)
   on its node address.
 - **Qwen3.8-27B: the review's follow-ups** (2026-10-03, #84 / #85 / #87):
   the full-attention layers' kernels rewritten (`kernels/full_attn`: a
