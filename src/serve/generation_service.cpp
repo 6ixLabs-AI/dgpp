@@ -2064,27 +2064,15 @@ void GenerationService::route_chat_completions(const HttpRequest& req,
     images = std::move(input.images);
     validate_image_inputs(images, prompt.size());
   };
+  // OpenAI's array-of-text-parts content means its texts joined, and the
+  // templates disagree on it: Qwen3-Coder-Next's throws on the array,
+  // Qwen3-Next's renders nothing for it and the model answers an empty
+  // message. So a text-only array is always rendered as its joined string;
+  // the request as sent is rendered when it has no such content. An array
+  // with any other part (image_url) is left to the template.
   try {
-    try {
-      render(plan.globals);
-    } catch (const ImageInputError&) {
-      throw;
-    } catch (const std::exception&) {
-      // A template written for string content (Qwen3-Coder-Next's
-      // concatenates message.content) throws on OpenAI's array-of-parts
-      // form. A text-only array means its texts joined, so render that once;
-      // if that fails too, the answer is the template's first complaint.
-      const std::exception_ptr first = std::current_exception();
-      const auto flat = flatten_text_content(plan.globals);
-      if (!flat) throw;
-      try {
-        render(*flat);
-      } catch (const ImageInputError&) {
-        throw;
-      } catch (const std::exception&) {
-        std::rethrow_exception(first);
-      }
-    }
+    const auto flat = flatten_text_content(plan.globals);
+    render(flat ? *flat : plan.globals);
   } catch (const ImageInputError& e) {
     respond_error(w, 400, e.what(), "invalid_request_error", e.param, "invalid_image");
     return;

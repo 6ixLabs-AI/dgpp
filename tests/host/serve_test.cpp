@@ -1113,8 +1113,9 @@ DGPP_TEST(serve_chatContentParts_aStringOnlyTemplateGetsTheTextsJoined) {
           "the template was handed a string: " + rig.frontend.last_globals());
 }
 
-DGPP_TEST(serve_chatContentParts_aTemplateThatReadsPartsStillGetsThem) {
-  // GIVEN a template that reads content parts itself (the default fake),
+DGPP_TEST(serve_chatContentParts_aTemplateThatAcceptsTheArrayGetsTheTextsJoinedToo) {
+  // GIVEN a template that does not throw on a content array (the default
+  // fake reads the parts; Qwen3-Next's renders nothing for them),
   ServiceRig rig;
   Client c(rig.port());
 
@@ -1123,17 +1124,18 @@ DGPP_TEST(serve_chatContentParts_aTemplateThatReadsPartsStillGetsThem) {
       c, chat_body_with_content("[{\"type\":\"text\",\"text\":\"ab\"},{\"type\":\"text\",\"text\":\"cd\"}]", 3),
       "usage");
 
-  // THEN the array reaches the template as sent: it renders "abcd", 4 tokens.
+  // THEN it is still served as the string "ab\ncd" (5 tokens), not left to
+  // what the template makes of an array.
   require(resp.find("200 OK") != std::string::npos, "status: " + resp);
-  require(resp.find("\"prompt_tokens\":4,\"completion_tokens\":3") != std::string::npos,
-          "the parts were rendered by the template: " + resp);
-  require(rig.frontend.last_globals().find("\"content\":[") != std::string::npos,
-          "the template was handed the array: " + rig.frontend.last_globals());
+  require(resp.find("\"prompt_tokens\":5,\"completion_tokens\":3") != std::string::npos,
+          "the joined text is the prompt: " + resp);
+  require(rig.frontend.last_globals().find("\"content\":\"ab\ncd\"") != std::string::npos,
+          "the template was handed a string: " + rig.frontend.last_globals());
 }
 
-DGPP_TEST(serve_chatContentParts_stringContentIsNeverRetried) {
-  // GIVEN a string-only template and a request whose content is a string
-  // the fake cannot fault, the render is the ordinary one: 4 tokens.
+DGPP_TEST(serve_chatContentParts_stringContentIsRenderedAsSent) {
+  // GIVEN a string-only template and a request whose content is a string,
+  // the render is the ordinary one: 4 tokens.
   ServiceRig rig;
   rig.frontend.string_content_only = true;
   Client c(rig.port());

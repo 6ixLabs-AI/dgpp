@@ -13,11 +13,11 @@ namespace dgpp::serve {
 // carry the parts' texts joined by "\n" as one string. nullopt when no
 // message has such content: there is nothing to render differently.
 //
-// OpenAI allows either form, and they mean the same. A template written for
-// string content (Qwen3-Coder-Next's concatenates message.content) throws on
-// the array, so the service renders this form when the template rejected
-// the request as sent. An array with any other part (image_url) is left as
-// it is: only the template can place that.
+// OpenAI allows either form, and they mean the same, but the templates do
+// not agree on the array: Qwen3-Coder-Next's concatenates message.content
+// and throws, Qwen3-Next's renders nothing for it (the model then answers an
+// empty message). So the service always renders this form. An array with any
+// other part (image_url) is left as it is: only the template can place that.
 //
 // The strings of the result that were not joined here still view the
 // storage `globals` views; keep that alive while the result is in use.
