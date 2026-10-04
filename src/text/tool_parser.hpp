@@ -76,8 +76,12 @@ struct ChatMarker {
 // parameter>\n</｜DSML｜ invoke>\n</｜DSML｜ calls>" — where only the ｜DSML｜
 // tag token is an id (a special one: the service's decode skips it) and
 // every bracket and tag name is text; the block opens at the tag token
-// after a "<" and closes at the text "</｜DSML｜ calls>", parsed then.
-enum class ToolFormat { kNone, kGlmMarkers, kQwenXml, kDsml };
+// after a "<" and closes at the text "</｜DSML｜ calls>", parsed then;
+// Qwen3-Next writes one JSON object between the same two <tool_call>
+// tokens Qwen3.8 fills with XML — "\n{\"name\": \"NAME\", \"arguments\":
+// {...}}\n", the Hermes form its template asks for — parsed from the
+// block's decoded text when it closes, like the XML one.
+enum class ToolFormat { kNone, kGlmMarkers, kQwenXml, kDsml, kQwenJson };
 
 // The DSML dialect (kDsml): the two DeepSeek encoders share the ｜DSML｜ tag
 // token and the block's grammar but not its spelling, so the tokenizer
@@ -114,6 +118,14 @@ struct ChatMarkers {
   // the tokenizer (the MiMo tokenizers carry the <|mimo_audio_start|>
   // marker).
   bool xml_compact = false;
+  // The body between the two <tool_call> tokens when the GLM argument
+  // markers are absent: false, the XML tags (kQwenXml); true, one JSON
+  // object {"name": NAME, "arguments": {...}} (kQwenJson — Qwen3-Next).
+  // from_tokenizer leaves the default — the Qwen3-Next tokenizer carries
+  // the same two tokens as the XML families' and nothing that tells the
+  // templates apart — so the family's frontend states it, and the grammar
+  // vocabulary built beside it states the same.
+  bool json_calls = false;
   // The template's role markers (<|system|>, <|user|>, <|assistant|>,
   // <|observation|>; <|im_start|>, <|im_end|>), the ones the tokenizer
   // has: their positions in a prompt are the prefix cache's structural
@@ -167,7 +179,7 @@ struct ChatMarkers {
         arg_value_open.available() && arg_value_close.available())
       return ToolFormat::kGlmMarkers;
     if (tool_call_open.available() && tool_call_close.available())
-      return ToolFormat::kQwenXml;
+      return json_calls ? ToolFormat::kQwenJson : ToolFormat::kQwenXml;
     if (dsml.available()) return ToolFormat::kDsml;
     return ToolFormat::kNone;
   }
@@ -289,6 +301,10 @@ class ToolCallParser {
   // The Qwen format: the closed block's text into name_/args_ (false when
   // malformed — the caller aborts the block as content).
   bool parse_qwen_block(const std::string& text);
+  // The JSON format (kQwenJson): the closed block's text — one object with
+  // a string "name" and an object "arguments", in either order — into
+  // name_/args_ (false when it is anything else).
+  bool parse_qwen_json_block(const std::string& text);
   // The DSML format (DeepSeek-V4.1 and V4, the tag names per
   // markers_.dsml_dialect): the content run with the block's
   // possible prefix ("\n\n<" or "<") held back until the next id decides;
@@ -325,9 +341,10 @@ class ToolCallParser {
   std::vector<int64_t> name_ids_, key_ids_, value_ids_;
   std::string name_, key_;
   std::vector<std::pair<std::string, std::string>> args_;  // key, text
-  // The XML block carried one JSON object instead of parameter tags (the
-  // MiMo template's rendering of pre-serialized arguments): args_ holds
-  // the members' JSON texts, emitted verbatim.
+  // The block carried its arguments as one JSON object — the MiMo
+  // template's rendering of pre-serialized arguments inside the function
+  // tags, or the JSON format's "arguments" member: args_ holds the
+  // members' JSON texts, emitted verbatim.
   bool args_json_ = false;
 
   // DSML: the content run's emitted length (the held prefix follows it),

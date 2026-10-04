@@ -607,6 +607,9 @@ dgpp_set_common(glm_dsa_bind_check)
 add_executable(dsv41_bind_check apps/dsv41_bind_check.cpp)
 target_link_libraries(dsv41_bind_check PRIVATE dgpp_models_dsv41 dgpp_loaders)
 dgpp_set_common(dsv41_bind_check)
+add_executable(qwen35_bind_check apps/qwen35_bind_check.cpp)
+target_link_libraries(qwen35_bind_check PRIVATE dgpp_models_qwen dgpp_loaders)
+dgpp_set_common(qwen35_bind_check)
 add_executable(dsv4_forward_check apps/dsv4_forward_check.cpp)
 target_include_directories(dsv4_forward_check PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/tests/cuda)
 target_link_libraries(dsv4_forward_check PRIVATE dgpp_models_dsv4_layers dgpp_bus dgpp_loaders dgpp_sched dgpp_text CUDA::cudart Threads::Threads)
@@ -809,6 +812,8 @@ add_executable(unit_tests
   tests/unit/qwen_binding_test.cpp
   tests/unit/qwen35_config_test.cpp
   tests/unit/qwen35_binding_test.cpp
+  tests/unit/qwen3next_config_test.cpp
+  tests/unit/qwen3next_loader_test.cpp
   tests/unit/qwen_dflash2_config_test.cpp
   tests/unit/dflash2_speculator_test.cpp
   tests/unit/qwen_rope_scaling_test.cpp
@@ -923,6 +928,16 @@ set_tests_properties(glm_dsa_chat_template_test PROPERTIES SKIP_RETURN_CODE 2)
 add_test(NAME mimo_chat_template_test
   COMMAND chat_template_test ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/mimo_chat_template_goldens.jsonl)
 set_tests_properties(mimo_chat_template_test PROPERTIES SKIP_RETURN_CODE 2)
+# The Qwen3-Next JSON tool-call form over the real tokenizer and template
+# (host): the renders against the corpus, the parser and the grammar over
+# the tokenizer's own pieces. Skips with rc 2 when the model cache is absent.
+add_executable(qwen3next_tool_calls_test tests/host/qwen3next_tool_calls_test.cpp)
+target_include_directories(qwen3next_tool_calls_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(qwen3next_tool_calls_test PRIVATE dgpp_models_glm Threads::Threads)
+dgpp_set_common(qwen3next_tool_calls_test)
+add_test(NAME qwen3next_tool_calls_test
+  COMMAND qwen3next_tool_calls_test ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/qwen3next_chat_template_goldens.jsonl)
+set_tests_properties(qwen3next_tool_calls_test PROPERTIES SKIP_RETURN_CODE 2 LABELS "host;checkpoint")
 
 # M6 Stage 4: the serving capstone — HTTP/SSE over epoll + the OpenAI
 # generation service (host-only; the engine adapters live in the apps,
@@ -1260,6 +1275,22 @@ add_executable(qwen35_loader_smoke tests/cuda/qwen35_loader_smoke.cpp)
 target_include_directories(qwen35_loader_smoke PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/tests/cuda)
 target_link_libraries(qwen35_loader_smoke PRIVATE dgpp_models_qwen_loader dgpp_models_qwen dgpp_kernels CUDA::cudart Threads::Threads)
 dgpp_set_common(qwen35_loader_smoke)
+
+# The Qwen3Next dialect's loader against the release checkpoint (not a ctest:
+# it needs nvidia/Qwen3-Next-80B-A3B-Instruct-NVFP4 in the hub cache).
+add_executable(qwen3next_loader_smoke tests/cuda/qwen3next_loader_smoke.cpp)
+target_include_directories(qwen3next_loader_smoke PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/tests/cuda)
+target_link_libraries(qwen3next_loader_smoke PRIVATE dgpp_models_qwen_loader dgpp_models_qwen dgpp_loaders dgpp_kernels CUDA::cudart Threads::Threads)
+dgpp_set_common(qwen3next_loader_smoke)
+
+# The same loader on a synthetic fixture: both forms of the dense stack
+# (BF16, block FP8), the rank slices, the resident image round trip.
+add_executable(qwen3next_loader_test tests/cuda/qwen3next_loader_test.cpp)
+target_include_directories(qwen3next_loader_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/tests/cuda)
+target_link_libraries(qwen3next_loader_test PRIVATE dgpp_models_qwen_loader dgpp_models_qwen dgpp_loaders CUDA::cudart Threads::Threads)
+dgpp_set_common(qwen3next_loader_test)
+add_test(NAME qwen3next_loader_test COMMAND qwen3next_loader_test)
+set_tests_properties(qwen3next_loader_test PROPERTIES LABELS "gpu")
 
 add_executable(mimo_attn_test tests/cuda/mimo_attn_test.cu)
 target_include_directories(mimo_attn_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/tests/cuda)
@@ -1657,6 +1688,9 @@ set_tests_properties(qwen_engine_compact_fallback_mtp3_rows64
 add_executable(qwen_forward_check apps/qwen_forward_check.cpp)
 target_link_libraries(qwen_forward_check PRIVATE dgpp_models_qwen_layers dgpp_bus dgpp_loaders CUDA::cudart Threads::Threads)
 dgpp_set_common(qwen_forward_check)
+add_executable(qwen35_forward_check apps/qwen35_forward_check.cpp)
+target_link_libraries(qwen35_forward_check PRIVATE dgpp_models_qwen_layers dgpp_bus dgpp_loaders CUDA::cudart Threads::Threads)
+dgpp_set_common(qwen35_forward_check)
 
 add_executable(qwen_head_check apps/qwen_head_check.cpp)
 target_link_libraries(qwen_head_check PRIVATE dgpp_models_qwen_layers dgpp_bus dgpp_loaders dgpp_text CUDA::cudart Threads::Threads)

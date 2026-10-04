@@ -26,6 +26,20 @@
 
 namespace dgpp {
 
+// The Qwen3Next dialect (Qwen3-Next-80B-A3B, nvidia/...-NVFP4 @ 8fb2682f)
+// names its tensors flat — `model.layers.L.`, `model.embed_tokens.weight`,
+// `model.norm.weight` — fuses the GDN projections (`in_proj_qkvz`,
+// `in_proj_ba`, interleaved per key head), carries the routed MoE under
+// `mlp.` (`gate`, `shared_expert_gate`, `shared_expert.*`, `experts.E.*`)
+// and ships the modelopt NVFP4 set (`weight` U8 [N, K/2], `weight_scale`
+// e4m3 [N, K/16], F32 `weight_scale_2`, F32 `input_scale`) for the routed
+// experts, the shared expert, the attention o_proj and the GDN out_proj;
+// every other matrix is BF16, the draft layer (`mtp.*`) entirely.
+
+// "model.language_model." (Qwen3.5) or "model." (the flat Qwen3Next names):
+// the prefix of `layers.L.`, `embed_tokens.weight` and `norm.weight`.
+std::string qwen35_model_prefix(const Qwen35TextConfig& cfg);
+
 // The checkpoint name prefix of a layer ("model.language_model.layers.L."
 // or "mtp.layers.0." for the draft layer).
 std::string qwen35_layer_prefix(const Qwen35TextConfig& cfg, int layer);

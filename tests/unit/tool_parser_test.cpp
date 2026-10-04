@@ -938,6 +938,336 @@ DGPP_TEST(tool_parser_mimo_modelOpensItsOwnThinking) {
   require(late.reasoning.empty() && late.content == "Hi <think>x</think>", "a late opener is content: '" + late.content + "'");
 }
 
+// ---- the Qwen3-Next JSON format: the same two markers as the XML format,
+// the block one JSON object {"name": NAME, "arguments": {...}} (the Hermes
+// form its template asks for). The tokenizer cannot tell the two apart —
+// the markers state it — and the prompt opens no reasoning block.
+ChatMarkers json_markers() {
+  ChatMarkers m = qwen_markers();
+  m.json_calls = true;
+  return m;
+}
+Run run_of(const ToolCallParser& parser, const std::vector<Event>& events) {
+  Run run;
+  for (const Event& ev : events) {
+    run.order.push_back(ev.kind);
+    switch (ev.kind) {
+      case Kind::kReasoning: run.reasoning += ev.text; break;
+      case Kind::kReasoningClosed: ++run.reasoning_closed; break;
+      case Kind::kContent: run.content += ev.text; break;
+      case Kind::kToolCall: run.calls.push_back(ev.call); break;
+    }
+  }
+  require(static_cast<int>(run.calls.size()) == parser.calls(), "calls() counts the emitted calls");
+  return run;
+}
+Run drive_json(const std::string& text) {
+  ToolCallParser::Options plain;
+  plain.start_in_reasoning = false;
+  ToolCallParser parser(json_markers(), fake_decode, weather_schemas(), plain);
+  std::vector<Event> events;
+  for (const int64_t id : qwen_ids_of(text)) parser.feed(id, &events);
+  parser.finish(&events);
+  return run_of(parser, events);
+}
+
+DGPP_TEST(tool_parser_json_format_isStatedNotInferred) {
+  // The two-marker set is the XML format unless the markers say otherwise;
+  // the flag changes nothing where the tokenizer already decides.
+  using dgpp::text::ToolFormat;
+  require(json_markers().tool_format() == ToolFormat::kQwenJson, "the stated JSON form");
+  require(json_markers().tool_calls_available(), "JSON tool calls are available");
+  require(qwen_markers().tool_format() == ToolFormat::kQwenXml, "Qwen3.8's two markers stay the XML format");
+  require(mimo_markers().tool_format() == ToolFormat::kQwenXml, "MiMo's compact dialect stays the XML format");
+  require(!ChatMarkers{}.json_calls, "the default is the XML reading");
+  ChatMarkers glm = fake_markers();
+  glm.json_calls = true;
+  require(glm.tool_format() == ToolFormat::kGlmMarkers, "the six GLM markers decide first");
+  ChatMarkers dsml = dsml_markers();
+  dsml.json_calls = true;
+  require(dsml.tool_format() == ToolFormat::kDsml, "the DSML tag token is unaffected");
+  ChatMarkers none;
+  none.json_calls = true;
+  require(none.tool_format() == ToolFormat::kNone && !none.tool_calls_available(),
+          "without the two markers there is no format to state");
+  // The same block under each reading: a call for the one that owns it,
+  // literal content for the other.
+  const std::string json = "<tool_call>\n{\"name\": \"get_weather\", \"arguments\": {\"city\": \"Paris\"}}\n</tool_call>";
+  const std::string xml =
+      "<tool_call>\n<function=get_weather>\n<parameter=city>\nParis\n</parameter>\n</function>\n</tool_call>";
+  ToolCallParser::Options plain;
+  plain.start_in_reasoning = false;
+  require(drive_json(json).calls.size() == 1 && drive_qwen(xml, plain).calls.size() == 1, "each reads its own form");
+  const Run a = drive_json(xml);
+  require(a.calls.empty() && a.content == xml, "the XML body under the JSON format is content: '" + a.content + "'");
+  const Run b = drive_qwen(json, plain);
+  require(b.calls.empty() && b.content == json, "the JSON body under the XML format is content: '" + b.content + "'");
+  const Run c = drive_mimo(json, plain);
+  require(c.calls.empty() && c.content == json, "and under the compact dialect: '" + c.content + "'");
+}
+
+DGPP_TEST(tool_parser_json_format_oneCall) {
+  // The template's exact shape. The arguments are already JSON: nothing is
+  // typed from the schema (city is declared a string and stays the number
+  // the model wrote; the XML format would have made the text a string).
+  const Run run = drive_json("<tool_call>\n{\"name\": \"get_weather\", \"arguments\": {\"city\": \"Paris\", \"days\": 3}}\n</tool_call>");
+  require(run.content.empty() && run.reasoning.empty(), "nothing but the call: '" + run.content + "'");
+  require(run.calls.size() == 1 && run.calls[0].name == "get_weather", "one call to get_weather");
+  require(run.calls[0].arguments == "{\"city\": \"Paris\", \"days\": 3}", "arguments: " + run.calls[0].arguments);
+  require(run.order.size() == 1 && run.order[0] == Kind::kToolCall, "one event");
+  const Run typed = drive_json("<tool_call>\n{\"name\": \"get_weather\", \"arguments\": {\"city\": 123}}\n</tool_call>");
+  require(typed.calls.size() == 1 && typed.calls[0].arguments == "{\"city\": 123}",
+          "a value keeps the JSON type it was written with: " + typed.calls[0].arguments);
+}
+
+DGPP_TEST(tool_parser_json_format_proseTwoCallsAndTrailingContent) {
+  // Text before the first call, the template's "\n" between two blocks, and
+  // text after the last: content in order around the two calls.
+  const Run run = drive_json(
+      "Let me check both.\n\n<tool_call>\n{\"name\": \"get_weather\", \"arguments\": {\"city\": \"Paris\"}}\n</tool_call>\n"
+      "<tool_call>\n{\"name\": \"flat_tool\", \"arguments\": {\"x\": 0.5}}\n</tool_call>Done.");
+  require(run.content == "Let me check both.\n\n\nDone.", "content: '" + run.content + "'");
+  require(run.calls.size() == 2, "two calls");
+  require(run.calls[0].name == "get_weather" && run.calls[0].arguments == "{\"city\": \"Paris\"}",
+          "first: " + run.calls[0].arguments);
+  require(run.calls[1].name == "flat_tool" && run.calls[1].arguments == "{\"x\": 0.5}",
+          "second: " + run.calls[1].arguments);
+  // In arrival order: the prose, a call, the newline, a call, the tail.
+  std::vector<Kind> order;
+  for (const Kind k : run.order)
+    if (order.empty() || order.back() != k || k == Kind::kToolCall) order.push_back(k);
+  require(order == std::vector<Kind>{Kind::kContent, Kind::kToolCall, Kind::kContent, Kind::kToolCall, Kind::kContent},
+          "content and calls interleave in arrival order");
+  // A reasoning block the model was given (a template that opens one) still
+  // splits off before the content and the call.
+  ToolCallParser parser(json_markers(), fake_decode, weather_schemas(), {});
+  std::vector<Event> events;
+  for (const int64_t id : qwen_ids_of("plan</think>\n\n<tool_call>\n{\"name\": \"flat_tool\", \"arguments\": {}}\n</tool_call>"))
+    parser.feed(id, &events);
+  parser.finish(&events);
+  const Run thought = run_of(parser, events);
+  require(thought.reasoning == "plan" && thought.reasoning_closed == 1 && thought.content == "\n\n",
+          "the reasoning split: '" + thought.reasoning + "' / '" + thought.content + "'");
+  require(thought.calls.size() == 1 && thought.calls[0].arguments == "{}", "the call after the block");
+}
+
+DGPP_TEST(tool_parser_json_format_lenientAboutLayoutStrictAboutMembers) {
+  const auto one = [](const std::string& body) {
+    const Run run = drive_json("<tool_call>" + body + "</tool_call>");
+    require(run.calls.size() == 1 && run.content.empty(), "one call from: " + body + " (content '" + run.content + "')");
+    return run.calls[0];
+  };
+  // No newlines, extra whitespace, a pretty-printed object.
+  require(one("{\"name\":\"get_weather\",\"arguments\":{\"city\":\"Oslo\"}}").arguments == "{\"city\": \"Oslo\"}",
+          "the compact spelling is re-serialized in json.dumps form");
+  require(one(" \n\t{ \"name\" : \"get_weather\" ,\r\n \"arguments\" : { \"city\" : \"Oslo\" } } \n\n").arguments ==
+              "{\"city\": \"Oslo\"}",
+          "whitespace around and inside");
+  require(one("\n{\n  \"name\": \"get_weather\",\n  \"arguments\": {\n    \"city\": \"Oslo\",\n    \"days\": 2\n  }\n}\n")
+                  .arguments == "{\"city\": \"Oslo\", \"days\": 2}",
+          "a pretty-printed block");
+  // The arguments first.
+  const ToolCallParser::Call swapped = one("\n{\"arguments\": {\"days\": 2}, \"name\": \"get_weather\"}\n");
+  require(swapped.name == "get_weather" && swapped.arguments == "{\"days\": 2}", "either member order");
+  // The arguments as a JSON string holding the object (the OpenAI wire form).
+  const ToolCallParser::Call wire =
+      one("\n{\"name\": \"get_weather\", \"arguments\": \"{\\\"city\\\": \\\"Rome\\\", \\\"days\\\": 1}\"}\n");
+  require(wire.arguments == "{\"city\": \"Rome\", \"days\": 1}", "a string holding the object: " + wire.arguments);
+  // No arguments, nested values, every scalar, a name the request never declared.
+  require(one("\n{\"name\": \"flat_tool\", \"arguments\": {}}\n").arguments == "{}", "an empty object");
+  require(one("\n{\"name\": \"other\", \"arguments\": {\"opts\": {\"a\": [1, 2, {\"b\": null}], \"c\": \"x\"}, "
+              "\"ok\": true, \"no\": false, \"n\": -1.5e3, \"s\": \"\"}}\n")
+                  .arguments ==
+              "{\"opts\": {\"a\": [1, 2, {\"b\": null}], \"c\": \"x\"}, \"ok\": true, \"no\": false, \"n\": -1500.0, \"s\": \"\"}",
+          "nested values and scalars");
+  // Braces, brackets, quotes and the markers' own text inside strings do
+  // not end anything.
+  const ToolCallParser::Call tricky = one(
+      "\n{\"name\": \"get_weather\", \"arguments\": {\"code\": \"if (a) { b[0] = \\\"}\\\"; } // </tool_call\", "
+      "\"city\": \"Zürich, \\\\ 東京\"}}\n");
+  require(tricky.arguments ==
+              "{\"code\": \"if (a) { b[0] = \\\"}\\\"; } // </tool_call\", \"city\": \"Zürich, \\\\ 東京\"}",
+          "structure inside strings: " + tricky.arguments);
+  // A raw newline inside a string — a model that did not escape it — is
+  // read as the newline (the reader's leniency, shared with the other
+  // formats' JSON values) and comes back escaped.
+  require(one("\n{\"name\": \"get_weather\", \"arguments\": {\"code\": \"a\nb\"}}\n").arguments ==
+              "{\"code\": \"a\\nb\"}",
+          "an unescaped newline in a string");
+  // Numbers the DOM would move keep their spelling, as in the other formats.
+  for (const std::string value : {"0.100000000000000000001", "1e-5000", "1e5000", "9223372036854775809",
+                                  "{\"n\":[0.100000000000000000001],\"s\":\"123\"}"})
+    require(one("\n{\"name\": \"flat_tool\", \"arguments\": {\"x\": " + value + "}}\n").arguments ==
+                "{\"x\": " + value + "}",
+            "the numeric value is preserved: " + value);
+}
+
+DGPP_TEST(tool_parser_json_format_malformedBlocksFallBackToContent) {
+  // Anything but one object with a string name and an object of arguments
+  // is literal content, in full, and no call.
+  for (const char* body : {
+           "\n{\"name\": \"get_weather\", \"arguments\": {\"city\": \"Paris\"}\n",          // the object never closes
+           "\n{\"name\": \"get_weather\", \"arguments\": {\"city\": }}\n",                  // a missing value
+           "\n{\"name\": \"get_weather\", \"arguments\": {\"city\": \"Paris\",}}\n",        // a trailing comma
+           "\n{\"name\": \"get_weather\", \"arguments\": {\"city\": Paris}}\n",             // a bare word
+           "\n{\"name\": \"get_weather\", \"arguments\": {city: \"Paris\"}}\n",             // an unquoted key
+           "\n{'name': 'get_weather', 'arguments': {}}\n",                                  // single quotes
+           "\n{\"name\": \"get_weather\", \"arguments\": {\"city\": \"Par\n",               // an open string
+           "\n{\"arguments\": {\"city\": \"Paris\"}}\n",                                    // no name
+           "\n{\"name\": 7, \"arguments\": {}}\n",                                          // a name that is not a string
+           "\n{\"name\": \"\", \"arguments\": {}}\n",                                       // an empty name
+           "\n{\"name\": null, \"arguments\": {}}\n",
+           "\n{\"name\": \"get_weather\"}\n",                                               // no arguments
+           "\n{\"name\": \"get_weather\", \"arguments\": [\"Paris\"]}\n",                   // arguments not an object
+           "\n{\"name\": \"get_weather\", \"arguments\": 3}\n",
+           "\n{\"name\": \"get_weather\", \"arguments\": null}\n",
+           "\n{\"name\": \"get_weather\", \"arguments\": \"Paris\"}\n",                     // a string that holds no object
+           "\n{\"name\": \"get_weather\", \"arguments\": \"\"}\n",
+           "\n{\"name\": \"get_weather\", \"arguments\": \"[1]\"}\n",
+           "\n{\"name\": \"get_weather\", \"arguments\": {}, \"id\": \"call_1\"}\n",        // a third member
+           "\n{\"name\": \"get_weather\", \"name\": \"flat_tool\", \"arguments\": {}}\n",   // a repeated member
+           "\n{\"name\": \"get_weather\", \"arguments\": {\"city\": \"Rome\", \"city\": \"Oslo\"}}\n",  // a repeated argument
+           "\n{\"name\": \"get_weather\", \"arguments\": {}} trailing\n",                   // text after the object
+           "\n{\"name\": \"get_weather\", \"arguments\": {}}\n{\"name\": \"flat_tool\", \"arguments\": {}}\n",
+           "\n[{\"name\": \"get_weather\", \"arguments\": {}}]\n",                          // not an object
+           "\nget_weather\n",
+           "",
+           "\n<function=get_weather>\n<parameter=city>\nParis\n</parameter>\n</function>\n",  // the XML form
+       }) {
+    const std::string text = std::string("Before<tool_call>") + body + "</tool_call>After";
+    const Run run = drive_json(text);
+    require(run.calls.empty(), std::string("malformed block parsed as a call: ") + body);
+    require(run.content == text, std::string("literal fallback differs for ") + body + ": '" + run.content + "'");
+  }
+  // The stream ending inside a block (the steps cap): content, no call.
+  const std::string open = "Sure.<tool_call>\n{\"name\": \"get_weather\", \"arguments\": {\"city\": \"Par";
+  const Run cut = drive_json(open);
+  require(cut.calls.empty() && cut.content == open, "unterminated: '" + cut.content + "'");
+  // A nested opener restarts the block; a malformed block does not poison
+  // the calls around it.
+  const std::string good = "<tool_call>\n{\"name\": \"get_weather\", \"arguments\": {\"city\": \"Oslo\"}}\n</tool_call>";
+  const Run nested = drive_json("<tool_call>\n{\"name\": \"get_weather\", " + good);
+  require(nested.content == "<tool_call>\n{\"name\": \"get_weather\", ", "the aborted block is content: " + nested.content);
+  require(nested.calls.size() == 1 && nested.calls[0].arguments == "{\"city\": \"Oslo\"}", "the restarted block parses");
+  const std::string bad = "<tool_call>\n{\"name\": \"get_weather\", \"arguments\": [1]}\n</tool_call>";
+  const Run mixed = drive_json(good + bad + good);
+  require(mixed.calls.size() == 2 && mixed.content == bad, "valid calls before and after a malformed one survive");
+  // An EOS id inside a block decodes to nothing and leaves it open.
+  std::vector<int64_t> ids = qwen_ids_of("<tool_call>\n{\"name\": \"flat_tool\"");
+  ids.push_back(kEos);
+  ToolCallParser::Options plain;
+  plain.start_in_reasoning = false;
+  ToolCallParser parser(json_markers(), fake_decode, weather_schemas(), plain);
+  std::vector<Event> events;
+  for (const int64_t id : ids) parser.feed(id, &events);
+  parser.finish(&events);
+  const Run eos = run_of(parser, events);
+  require(eos.calls.empty() && eos.content == "<tool_call>\n{\"name\": \"flat_tool\"", "EOS inside a block: " + eos.content);
+}
+
+// Streaming, one id at a time. The fake tokenizer's ids are bytes, so every
+// byte boundary is a token boundary: inside a key, inside a string's
+// escapes, between the bytes of a \uXXXX escape and of a UTF-8 character.
+// The contract is the XML format's: content streams as it arrives, a block
+// is silent until its closing id, and that id yields the whole call.
+DGPP_TEST(tool_parser_json_format_streamsLikeTheXmlFormat) {
+  const std::string before = "Checking café… ";
+  const std::string body =
+      "\n{\"name\": \"get_weather\", \"arguments\": {\"city\": \"S\\u00e3o \\\"Paulo\\\" \\ud83d\\ude00 naïve\\n\\t\\\\\", "
+      "\"days\": 3}}\n";
+  const std::string after = " done";
+  const std::vector<int64_t> ids = qwen_ids_of(before + "<tool_call>" + body + "</tool_call>" + after);
+  ToolCallParser::Options plain;
+  plain.start_in_reasoning = false;
+  ToolCallParser parser(json_markers(), fake_decode, weather_schemas(), plain);
+  std::string content;
+  std::vector<ToolCallParser::Call> calls;
+  size_t opened_at = 0, closed_at = 0;
+  for (size_t i = 0; i < ids.size(); ++i) {
+    std::vector<Event> events;
+    const bool was_open = parser.in_tool_call();
+    parser.feed(ids[i], &events);
+    if (ids[i] == kToolOpen) {
+      opened_at = i;
+      require(events.empty() && parser.in_tool_call(), "the opening id starts a silent block");
+      require(content == before, "the prose streamed before the block opened: '" + content + "'");
+    } else if (ids[i] == kToolClose) {
+      closed_at = i;
+      require(was_open && !parser.in_tool_call(), "the closing id ends the block");
+      require(events.size() == 1 && events[0].kind == Kind::kToolCall, "the closing id yields the call, whole");
+      calls.push_back(events[0].call);
+    } else if (was_open) {
+      require(events.empty() && parser.in_tool_call(),
+              "nothing is surfaced from inside a block (byte " + std::to_string(i - opened_at) + ")");
+    } else {
+      for (const Event& ev : events) {
+        require(ev.kind == Kind::kContent, "only content outside the block");
+        content += ev.text;
+      }
+    }
+  }
+  std::vector<Event> rest;
+  parser.finish(&rest);
+  require(rest.empty(), "nothing is left at the end");
+  require(opened_at > 0 && closed_at > opened_at && parser.calls() == 1 && calls.size() == 1, "one block, one call");
+  require(content == before + after, "content around the block: '" + content + "'");
+  require(calls[0].name == "get_weather", "the name: " + calls[0].name);
+  // The escapes decoded and re-serialized (ensure_ascii off): the ã and
+  // the surrogate pair are the characters themselves, the rest stay escapes.
+  require(calls[0].arguments == "{\"city\": \"São \\\"Paulo\\\" 😀 naïve\\n\\t\\\\\", \"days\": 3}",
+          "arguments: " + calls[0].arguments);
+  // The steps cap at every byte of the block: whatever was produced comes
+  // back as content, byte for byte, and never as a call.
+  const std::string block = "<tool_call>" + body;
+  for (size_t cut = 0; cut <= body.size(); ++cut) {
+    const std::string partial = before + "<tool_call>" + body.substr(0, cut);
+    const Run run = drive_json(partial);
+    require(run.calls.empty() && run.content == partial,
+            "a block cut after " + std::to_string(cut) + " bytes is content: '" + run.content + "'");
+  }
+  // The tag spelled as ordinary text is not the tag: only the marker ids
+  // open and close a block (the XML format's rule), so a split "inside the
+  // tag" cannot happen — its bytes are content.
+  std::vector<int64_t> spelled;
+  for (const char c : block + "</tool_call>") spelled.push_back(static_cast<unsigned char>(c));
+  ToolCallParser text_only(json_markers(), fake_decode, weather_schemas(), plain);
+  std::vector<Event> events;
+  for (const int64_t id : spelled) text_only.feed(id, &events);
+  text_only.finish(&events);
+  const Run literal = run_of(text_only, events);
+  require(literal.calls.empty() && literal.content == block + "</tool_call>", "a spelled-out tag is content");
+}
+
+DGPP_TEST(tool_parser_json_format_malformedBlockKeepsTokenProvenance) {
+  // Logprobs: a block that becomes visible text attributes every byte to
+  // the token that produced it, the markers included.
+  const std::string text = "ok <tool_call>\n{\"name\": \"get_weather\", \"arguments\": [1]}\n</tool_call> end";
+  const std::vector<int64_t> ids = qwen_ids_of(text);
+  ToolCallParser::Options opts;
+  opts.start_in_reasoning = false;
+  opts.track_tokens = true;
+  ToolCallParser parser(json_markers(), fake_decode, weather_schemas(), opts);
+  std::vector<Event> events;
+  for (const int64_t id : ids) parser.feed(id, &events);
+  parser.finish(&events);
+  std::string content, attributed;
+  for (const Event& ev : events) {
+    require(ev.kind == Kind::kContent, "content only");
+    content += ev.text;
+    size_t end = 0;
+    for (const auto& span : ev.tokens) {
+      require(span.begin == end && span.end <= ev.text.size(), "complete, ordered byte attribution");
+      require(span.token < ids.size(), "source token index");
+      const std::string decoded = fake_decode({ids[span.token]});
+      require(decoded == ev.text.substr(span.begin, span.end - span.begin), "attributed bytes match source");
+      attributed += decoded;
+      end = span.end;
+    }
+    require(end == ev.text.size(), "no unattributed content bytes");
+  }
+  require(content == text && attributed == text, "the malformed JSON block retains token provenance");
+}
+
 DGPP_TEST(tool_parser_schemasReadBothToolForms) {
   const ToolSchemas s = weather_schemas();
   require(s.has("get_weather") && s.has("flat_tool") && !s.has("none"),

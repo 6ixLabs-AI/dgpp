@@ -10,8 +10,17 @@
 namespace dgpp {
 namespace {
 
+// The object a refusal names: the Qwen3.5 text_config, or the Qwen3-Next
+// flat config while parse_qwen3_next() runs (the helpers below are shared).
+thread_local const char* g_scope = "Qwen3.5 text_config";
+struct ScopeGuard {
+  const char* saved;
+  explicit ScopeGuard(const char* s) : saved(g_scope) { g_scope = s; }
+  ~ScopeGuard() { g_scope = saved; }
+};
+
 [[noreturn]] void reject(std::string_view field, std::string_view why) {
-  throw std::runtime_error(std::format("Qwen3.5 text_config.{}: {}", field, why));
+  throw std::runtime_error(std::format("{}.{}: {}", g_scope, field, why));
 }
 
 const minijson::Value& require(const minijson::Value& v, std::string_view field) {
@@ -267,12 +276,187 @@ Qwen35TextConfig Qwen35TextConfig::parse(const minijson::Value& tc,
   return c;
 }
 
+Qwen35TextConfig Qwen35TextConfig::parse_qwen3_next(const minijson::Value& root) {
+  const ScopeGuard scope("Qwen3-Next config");
+  if (!root.is_object()) reject("config", "not an object");
+  Qwen35TextConfig c;
+  c.dialect = Qwen35Dialect::Qwen3Next;
+  const std::string model_type = optional_string(root, "model_type", "qwen3_next");
+  if (model_type != "qwen3_next") reject("model_type", "expected qwen3_next, got " + model_type);
+
+  c.hidden_size = require_int(root, "hidden_size");
+  c.vocab_size = require_int(root, "vocab_size");
+  c.num_hidden_layers = require_int(root, "num_hidden_layers");
+  c.rms_norm_eps = static_cast<float>(require_double(root, "rms_norm_eps"));
+  c.tie_word_embeddings = optional_bool(root, "tie_word_embeddings", false);
+  c.hidden_act = require_string(root, "hidden_act");
+  c.max_position_embeddings = require_int(root, "max_position_embeddings");
+  if (c.hidden_size <= 0 || c.hidden_size % 8 != 0)
+    reject("hidden_size", "must be a positive multiple of 8");
+  if (c.vocab_size <= 0) reject("vocab_size", "must be positive");
+  if (c.num_hidden_layers <= 0) reject("num_hidden_layers", "must be positive");
+  if (c.hidden_act != "silu")
+    reject("hidden_act", "only silu is implemented, got " + c.hidden_act);
+  if (c.tie_word_embeddings)
+    reject("tie_word_embeddings", "tied embeddings are not implemented");
+  if (optional_bool(root, "attention_bias", false))
+    reject("attention_bias", "biased attention projections are not implemented");
+  if (optional_bool(root, "use_sliding_window", false))
+    reject("use_sliding_window", "sliding-window attention is not implemented");
+
+  // --- layer kinds ------------------------------------------------------------
+  // The transformers config derives layer_types from the interval when the
+  // list is absent; the released config.json writes both, and they must agree.
+  {
+    const int interval = optional_int(root, "full_attention_interval", 4);
+    if (interval <= 0) reject("full_attention_interval", "must be positive");
+    const minijson::Value* lt = root.find("layer_types");
+    if (lt != nullptr && !lt->is_null()) {
+      if (!lt->is_array()) reject("layer_types", "not an array");
+      for (const auto& item : lt->items()) {
+        const std::string s = item.is_string() ? std::string(item.as_string()) : "";
+        if (s == "linear_attention") c.layers.push_back(Qwen35LayerKind::Gdn);
+        else if (s == "full_attention") c.layers.push_back(Qwen35LayerKind::Full);
+        else reject("layer_types", "unsupported layer type '" + s + "'");
+      }
+      if (static_cast<int>(c.layers.size()) != c.num_hidden_layers)
+        reject("layer_types", "length does not match num_hidden_layers");
+      for (int i = 0; i < c.num_hidden_layers; ++i)
+        if (((i + 1) % interval == 0) != (c.layers[i] == Qwen35LayerKind::Full))
+          reject("full_attention_interval",
+                 "disagrees with layer_types at layer " + std::to_string(i));
+    } else {
+      for (int i = 0; i < c.num_hidden_layers; ++i)
+        c.layers.push_back((i + 1) % interval == 0 ? Qwen35LayerKind::Full : Qwen35LayerKind::Gdn);
+    }
+  }
+
+  // --- tokens -----------------------------------------------------------------
+  if (const minijson::Value* eos = root.find("eos_token_id"); eos && !eos->is_null()) {
+    if (eos->is_array()) {
+      for (const auto& item : eos->items()) {
+        if (!item.is_number()) reject("eos_token_id", "non-numeric element");
+        c.eos_token_ids.push_back(item.as_int());
+      }
+    } else if (eos->is_number()) {
+      c.eos_token_ids.push_back(eos->as_int());
+    } else {
+      reject("eos_token_id", "not a number or array");
+    }
+    for (int64_t id : c.eos_token_ids)
+      if (id < 0 || id >= c.vocab_size) reject("eos_token_id", "id outside [0, vocab_size)");
+  }
+  c.bos_token_id = optional_int64(root, "bos_token_id", -1);
+
+  // --- Gated DeltaNet ---------------------------------------------------------
+  c.gdn_key_heads = require_int(root, "linear_num_key_heads");
+  c.gdn_value_heads = require_int(root, "linear_num_value_heads");
+  c.gdn_key_head_dim = require_int(root, "linear_key_head_dim");
+  c.gdn_value_head_dim = require_int(root, "linear_value_head_dim");
+  c.gdn_conv_width = require_int(root, "linear_conv_kernel_dim");
+  // Qwen3NextRMSNormGated multiplies by silu(z): the swish gate. The config
+  // carries no field for it; one that names another gate is refused.
+  c.output_gate_type = optional_string(root, "output_gate_type", "swish");
+  if (c.output_gate_type == "silu") c.output_gate_type = "swish";
+  if (c.gdn_key_heads <= 0 || c.gdn_value_heads <= 0 ||
+      c.gdn_value_heads % c.gdn_key_heads != 0)
+    reject("linear_num_value_heads", "must be a positive multiple of linear_num_key_heads");
+  if (c.gdn_key_head_dim != 128 || c.gdn_value_head_dim != 128)
+    reject("linear_key_head_dim", "the GDN kernels implement 128-wide heads");
+  if (c.gdn_conv_width < 2 || c.gdn_conv_width > 8)
+    reject("linear_conv_kernel_dim", "must be in [2, 8]");
+  if (c.output_gate_type != "swish")
+    reject("output_gate_type", "only the swish output gate is implemented, got " +
+                                   c.output_gate_type);
+  if (const std::string dt = optional_string(root, "mamba_ssm_dtype", "float32");
+      dt != "float32")
+    reject("mamba_ssm_dtype", "the recurrent state is float32, got " + dt);
+
+  // --- full attention -----------------------------------------------------------
+  c.num_attention_heads = require_int(root, "num_attention_heads");
+  c.num_key_value_heads = require_int(root, "num_key_value_heads");
+  c.head_dim = require_int(root, "head_dim");
+  if (c.num_attention_heads <= 0 || c.num_key_value_heads <= 0 ||
+      c.num_attention_heads % c.num_key_value_heads != 0)
+    reject("num_key_value_heads", "must divide num_attention_heads");
+  if (c.head_dim != 256) reject("head_dim", "the full-attention kernels implement 256-wide heads");
+  {
+    // Flat rope fields (no rope_parameters object, no MROPE: text only).
+    c.rope_theta = require_double(root, "rope_theta");
+    const double factor = require_double(root, "partial_rotary_factor");
+    const double rd = c.head_dim * factor;
+    if (!(rd > 0) || rd != std::floor(rd) || static_cast<int>(rd) % 2 != 0)
+      reject("partial_rotary_factor", "rotary dim must be a positive even integer");
+    c.rotary_dim = static_cast<int>(rd);
+    if (const minijson::Value* rs = root.find("rope_scaling"); rs && !rs->is_null())
+      reject("rope_scaling", "the checkpoint's rope must be unscaled (null)");
+    c.mrope_interleaved = false;
+  }
+  c.attn_output_gate = true;  // Qwen3NextAttention always stacks [q | gate] in q_proj
+
+  // --- routed MoE ---------------------------------------------------------------
+  c.intermediate_size = optional_int(root, "intermediate_size", 0);  // unused: no dense layer
+  c.num_experts = require_int(root, "num_experts");
+  c.num_experts_per_tok = require_int(root, "num_experts_per_tok");
+  c.moe_intermediate_size = require_int(root, "moe_intermediate_size");
+  c.shared_expert_intermediate_size = require_int(root, "shared_expert_intermediate_size");
+  c.norm_topk_prob = optional_bool(root, "norm_topk_prob", true);
+  if (c.num_experts <= 0 || c.num_experts > 4096) reject("num_experts", "must be in [1, 4096]");
+  if (c.num_experts_per_tok <= 0 || c.num_experts_per_tok > c.num_experts ||
+      c.num_experts_per_tok > 16)
+    reject("num_experts_per_tok", "must be in [1, min(num_experts, 16)]");
+  if (c.moe_intermediate_size <= 0 || c.moe_intermediate_size % 16 != 0)
+    reject("moe_intermediate_size", "must be a positive multiple of 16");
+  if (c.shared_expert_intermediate_size <= 0 || c.shared_expert_intermediate_size % 16 != 0)
+    reject("shared_expert_intermediate_size", "must be a positive multiple of 16");
+  if (!c.norm_topk_prob) reject("norm_topk_prob", "the router renormalizes the top-k (true)");
+  if (optional_int(root, "decoder_sparse_step", 1) != 1)
+    reject("decoder_sparse_step", "every layer is a routed MoE (1)");
+  if (const minijson::Value* mo = root.find("mlp_only_layers"); mo && !mo->is_null()) {
+    if (!mo->is_array()) reject("mlp_only_layers", "not an array");
+    if (!mo->items().empty()) reject("mlp_only_layers", "dense-MLP layers are not implemented");
+  }
+
+  // --- MTP ----------------------------------------------------------------------
+  c.mtp_num_layers = optional_int(root, "mtp_num_hidden_layers", 1);
+  if (c.mtp_num_layers != 0 && c.mtp_num_layers != 1)
+    reject("mtp_num_hidden_layers", "only the single draft layer is implemented");
+  if (optional_bool(root, "mtp_use_dedicated_embeddings", false))
+    reject("mtp_use_dedicated_embeddings", "the draft shares the embeddings");
+
+  // --- quantization ---------------------------------------------------------------
+  {
+    const minijson::Value* q = root.find("quantization_config");
+    const minijson::Value* groups = q != nullptr && q->is_object() ? q->find("config_groups") : nullptr;
+    const minijson::Value* g0 = groups != nullptr && groups->is_object() ? groups->find("group_0") : nullptr;
+    const minijson::Value* w = g0 != nullptr && g0->is_object() ? g0->find("weights") : nullptr;
+    if (w == nullptr || !w->is_object())
+      throw std::runtime_error(
+          "Qwen3-Next quantization_config: config_groups.group_0.weights missing — the engine "
+          "implements the NVIDIA NVFP4 release (nvidia/Qwen3-Next-80B-A3B-Instruct-NVFP4)");
+    const int64_t bits = require_int(*w, "num_bits");
+    const int64_t group = require_int(*w, "group_size");
+    if (bits != 4 || group != 16 || optional_string(*w, "type", "float") != "float")
+      throw std::runtime_error(
+          "Qwen3-Next quantization_config.config_groups.group_0.weights: only NVFP4 "
+          "(4-bit float, group 16) is implemented");
+    c.quant_kind = Qwen35QuantKind::Nvfp4Modelopt;
+  }
+  return c;
+}
+
 Qwen35TextConfig Qwen35TextConfig::from_json_file(const std::string& path) {
   // The parsed values view the text: it must outlive the parse.
   const std::string json = read_file(path);
   const auto parsed = minijson::parse(json);
   const minijson::Value* tc = parsed.root.find("text_config");
-  if (!tc) throw std::runtime_error("config " + path + ": missing text_config object");
+  if (tc == nullptr) {
+    // The Qwen3Next dialect is flat: the root is the text config.
+    if (const minijson::Value* mt = parsed.root.find("model_type");
+        mt != nullptr && mt->is_string() && mt->as_string() == "qwen3_next")
+      return parse_qwen3_next(parsed.root);
+    throw std::runtime_error("config " + path + ": missing text_config object");
+  }
   return parse(*tc, parsed.root.find("quantization_config"));
 }
 

@@ -34,6 +34,7 @@
 #include "models/qwen/layers.hpp"
 #include "models/qwen/loader.hpp"
 #include "models/qwen/loader35.hpp"
+#include "models/qwen/moe_layer.hpp"
 #include "engine/memory_plan.hpp"
 
 namespace dgpp {
@@ -285,6 +286,11 @@ class Qwen35Model : public SessionModel<Qwen35Model> {
   void configure_gemm_rows(int rows, bool decode);
   void dense_mlp(const uint16_t* x, uint16_t* out, int tokens, const Qwen35DenseMlpResident& m,
                  cudaStream_t stream, int layer, bool resume = false);
+  // The routed MoE in the dense MLP's place: decode rows take the device
+  // route (a capture reads graph table slot `table_slot`), prefill rows the
+  // device-segmented tensor-core chain.
+  void moe_mlp(const uint16_t* x, uint16_t* out, int tokens, bool decode, int table_slot,
+               cudaStream_t stream);
   // The lm head over `rows` activation rows into F32 logits: the blockwise
   // FP8 head under engine.dense_weights = fp8 (Resident), else the BF16 matmul.
   void head_gemv(const uint16_t* act, float* out, int rows, cudaStream_t stream);
@@ -327,6 +333,12 @@ class Qwen35Model : public SessionModel<Qwen35Model> {
   QwenTextConfig qcfg_;  // adapter: the fields the qwen4_exp layer ctors read
   std::unique_ptr<QwenFullAttnLayer> full_;
   std::unique_ptr<QwenGdnLayer> gdn_;
+  // The Qwen3Next dialect's MLP (cfg.moe()): Flash-Next's routed MoE on the
+  // plain residual — one object, its weight views rebound per layer, with a
+  // graph table slot per layer (the draft layer's after the stack's) on a
+  // resident stack. Null for the dense dialect.
+  std::unique_ptr<QwenMoeLayer> moe_;
+  GlmMoeConfig moe_cfg_{};
   Qwen35KvPool pool_;
   void* gemm_ws_ = nullptr;
   size_t gemm_ws_bytes_ = 0;

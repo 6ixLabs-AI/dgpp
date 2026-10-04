@@ -625,6 +625,66 @@ MIMO_CASES = [c for c in QWEN_CASES if c[0] not in MIMO_SKIP] + [
 ]
 
 
+# The Qwen3-Next-80B-A3B-Instruct template: ChatML roles, no reasoning
+# block, the tools one JSON line each inside <tools> in the system turn,
+# and tool calls in the JSON form —
+#   <tool_call>\n{"name": NAME, "arguments": {...}}\n</tool_call>
+# one block per call with a newline between blocks — with tool responses
+# grouped into one user turn as <tool_response> blocks.
+def wrapped(tool):
+    return {"type": "function", "function": tool}
+
+
+RUN_TOOL = {"name": "run", "description": "Run code.",
+            "parameters": {"type": "object",
+                           "properties": {"code": {"type": "string"}, "opts": {"type": "object"}},
+                           "required": ["code"]}}
+
+QWEN3_NEXT_CASES = [
+    ("simple_user_gen", {
+        "messages": [{"role": "user", "content": "The capital of France is"}],
+        "add_generation_prompt": True,
+    }),
+    ("system_user_gen", {
+        "messages": [{"role": "system", "content": "Be brief."},
+                     {"role": "user", "content": "写一首关于秋天的诗。"}],
+        "add_generation_prompt": True,
+    }),
+    ("tools_no_system", {
+        "messages": [{"role": "user", "content": "What's the weather in Paris?"}],
+        "tools": [weather_tool()], "add_generation_prompt": True,
+    }),
+    ("tools_two_calls_and_results", {
+        "messages": [
+            {"role": "system", "content": "You are a concise assistant."},
+            {"role": "user", "content": "Weather in Paris and Rome? 巴黎呢?"},
+            {"role": "assistant", "content": "Let me check both.",
+             "tool_calls": [qwen_call("c1", "get_weather", {"city": "Paris", "days": 3}),
+                            qwen_call("c2", "get_weather", {"city": "Rome"})]},
+            {"role": "tool", "tool_call_id": "c1", "content": "sunny"},
+            {"role": "tool", "tool_call_id": "c2", "content": "rain"},
+            {"role": "assistant", "content": "",
+             "tool_calls": [qwen_call("c3", "run", {"code": "print(\"hi\")\nprint(2)\n",
+                                                    "opts": {"a": 1, "b": [1, 2]}})]},
+            {"role": "tool", "tool_call_id": "c3", "content": "hi\n2"},
+            {"role": "assistant", "content": "Paris is sunny; Rome has rain."},
+            {"role": "user", "content": "And Zürich?"},
+        ],
+        "tools": [wrapped(weather_tool()), wrapped(RUN_TOOL)], "add_generation_prompt": True,
+    }),
+    ("tool_call_no_arguments_then_generation", {
+        "messages": [
+            {"role": "user", "content": "Ping it."},
+            {"role": "assistant", "content": "", "tool_calls": [qwen_call("c1", "ping", {})]},
+            {"role": "tool", "tool_call_id": "c1", "content": "pong"},
+        ],
+        "tools": [wrapped({"name": "ping", "description": "Ping.",
+                           "parameters": {"type": "object", "properties": {}}})],
+        "add_generation_prompt": True,
+    }),
+]
+
+
 def main():
     import argparse
     ap = argparse.ArgumentParser()
@@ -633,13 +693,20 @@ def main():
     ap.add_argument("--template", default=None)
     ap.add_argument("--tokenizer-json", default=None)
     ap.add_argument("--out", dest="out_opt", default=None)
+    # Renders only: the corpus carries no "ids" and its header says so.
+    # For a host without the tokenizers package; the gate that reads the
+    # corpus compares ids only where a case has them.
+    ap.add_argument("--render-only", action="store_true")
     args = ap.parse_args()
     model = args.model
-    is_qwen = "Qwen" in model
+    is_qwen3_next = "Qwen3-Next" in model
+    is_qwen = "Qwen" in model and not is_qwen3_next
     is_glm4 = "GLM-4" in model
     is_mimo = "MiMo" in model
-    cases = MIMO_CASES if is_mimo else QWEN_CASES if is_qwen else GLM4_CASES if is_glm4 else CASES
+    cases = (QWEN3_NEXT_CASES if is_qwen3_next else
+             MIMO_CASES if is_mimo else QWEN_CASES if is_qwen else GLM4_CASES if is_glm4 else CASES)
     out_path = args.out_opt or args.out or (
+        "tests/data/qwen3next_chat_template_goldens.jsonl" if is_qwen3_next else
         "tests/data/mimo_chat_template_goldens.jsonl" if is_mimo else
         "tests/data/qwen_chat_template_goldens.jsonl" if is_qwen else
         "tests/data/glm4_chat_template_goldens.jsonl" if is_glm4 else "tests/data/glm_chat_template_goldens.jsonl")
@@ -653,14 +720,16 @@ def main():
     tok_raw = pathlib.Path(tok_path).read_bytes()
     template_hash = f"{fnv1a64(tpl_raw):016x}"
     tok_hash = f"{fnv1a64(tok_raw):016x}"
-    if not is_qwen and not is_glm4 and not is_mimo and tok_hash != "700b4469fc43f23b":
+    if not is_qwen3_next and not is_qwen and not is_glm4 and not is_mimo and tok_hash != "700b4469fc43f23b":
         sys.exit(f"unexpected tokenizer revision {tok_hash} — the tokenizer "
                  "goldens are keyed to 700b4469fc43f23b")
 
     jinja_env = env()
     template = jinja_env.from_string(tpl_raw.decode("utf-8"))
-    import tokenizers
-    tok = tokenizers.Tokenizer.from_file(tok_path)
+    tok = None
+    if not args.render_only:
+        import tokenizers
+        tok = tokenizers.Tokenizer.from_file(tok_path)
 
     with open(out_path, "w", encoding="utf-8") as f:
         header = {
@@ -671,15 +740,18 @@ def main():
             "tokenizer_revision": tok_hash,
             "cases": len(cases),
         }
+        if tok is None:
+            header["ids"] = False
         f.write(json.dumps(header, ensure_ascii=False) + "\n")
         for name, kwargs in cases:
             rendered = template.render(**kwargs)
             if not rendered:
                 sys.exit(f"case {name} rendered empty — generator bug")
-            ids = tok.encode(rendered).ids
-            f.write(json.dumps({"name": name, "kwargs": kwargs,
-                                "render": rendered, "ids": ids},
-                               ensure_ascii=False) + "\n")
+            case = {"name": name, "kwargs": kwargs, "render": rendered}
+            ids = tok.encode(rendered).ids if tok is not None else []
+            if tok is not None:
+                case["ids"] = ids
+            f.write(json.dumps(case, ensure_ascii=False) + "\n")
             print(f"{name:42s} {len(rendered):5d} chars  {len(ids):4d} ids")
     print(f"wrote {out_path}: {len(cases)} cases, template {template_hash}")
 

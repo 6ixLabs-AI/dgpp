@@ -50,6 +50,23 @@
 // free-text values stay the parser's schema typing and the client's
 // validation. MiMo compact calls also retain required keys for non-strict
 // schemas, avoiding empty calls from its unconstrained XML dialect.
+//
+// THE JSON CALL FORMAT (ToolFormat::kQwenJson — Qwen3-Next). The block is
+// text between the two <tool_call> ids, spelled as the template spells it:
+//   call     := <tool_call> "\n{\"name\": \"" NAME "\", \"arguments\": " ARGS
+//               "}\n" </tool_call>
+//   ARGS     := one JSON object under the 6h machine: the tool's key set
+//               (closed as above), every declared property under its own
+//               schema — a string is a JSON string here like any other
+//               value, so nothing is free text — and the required keys
+//               required under `strict`
+// The frame is exact (the name first, one space before the object, nothing
+// between its brace and the frame's); inside ARGS the machine's own
+// whitespace latitude applies. The three parts are one byte stream to a
+// token: the tokenizer's natural pieces run across both seams (" {\"" ends
+// the head and opens the object; "\"}}\n" closes a string, the object and
+// the frame), so a token is allowed iff its bytes carry through the parts
+// in order.
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -112,9 +129,15 @@ struct GrammarTool {
 // `notes`, "not enforced" — and only a schema outside the subset in shape
 // ($ref, oneOf, ...) leaves the value free, with a line in `warnings`.
 // Either vector may be null.
+// `format` is the template's call format (ChatMarkers::tool_format): under
+// kQwenJson the arguments are one JSON object, so a string property is a
+// JSON text too and every declared property that compiles is kJson under
+// its own schema (a string enum included — its values are quoted there);
+// every other format writes a string argument raw, as above.
 GrammarTool grammar_tool_from_function(const minijson::Value& def,
                                        std::vector<std::string>* warnings,
-                                       std::vector<std::string>* notes = nullptr);
+                                       std::vector<std::string>* notes = nullptr,
+                                       ToolFormat format = ToolFormat::kNone);
 
 // The request's constraint — what rides the journal (fabric_serve.cpp) and
 // reaches every rank's engine through SchedulerEngine::configure_constraint.
@@ -173,11 +196,13 @@ class GrammarVocab {
   // markers are ChatMarkers::from_tokenizer's with `dsml_dialect` stated —
   // the DSML spelling is the family's, not the tokenizer's (a DeepSeek-V4
   // checkpoint passes DsmlDialect::kV4; it must agree with the frontend's
-  // markers, which the parser reads).
+  // markers, which the parser reads) — and `json_calls` likewise
+  // (ChatMarkers::json_calls: a Qwen3-Next checkpoint passes true).
   static GrammarVocab from_tokenizer(const Tokenizer& tok,
                                      const std::vector<int64_t>& eos_ids,
                                      int vocab_size,
-                                     DsmlDialect dsml_dialect = DsmlDialect::kV41);
+                                     DsmlDialect dsml_dialect = DsmlDialect::kV41,
+                                     bool json_calls = false);
 
   int vocab_size() const { return vocab_size_; }
   const ChatMarkers& markers() const { return markers_; }
@@ -197,6 +222,10 @@ class GrammarVocab {
   // The structural ids free text may never contain: the eight markers.
   const std::vector<int64_t>& marker_ids() const { return marker_ids_; }
   const std::vector<int32_t>& xml_end_ids() const { return xml_end_ids_; }
+  // The JSON call format: the ids whose text carries bytes past a '}' — the
+  // only ones that can close the arguments object and run on, which the
+  // object's machine cannot judge alone (empty under every other format).
+  const std::vector<int32_t>& json_call_end_ids() const { return json_call_end_ids_; }
   bool is_eos(int64_t id) const;
   bool usable() const { return markers_.tool_calls_available() && !eos_.empty(); }
   // The JSON grammar's per-vocabulary tables (M6 6h), built once on first
@@ -211,6 +240,7 @@ class GrammarVocab {
   std::vector<std::string> texts_;
   std::vector<int32_t> by_first_[256];
   std::vector<int32_t> xml_end_ids_;
+  std::vector<int32_t> json_call_end_ids_;
   ChatMarkers markers_;
   std::vector<int64_t> marker_ids_;
   std::vector<int64_t> eos_;
@@ -306,6 +336,12 @@ class GrammarState {
     kDFlag,           // "true\">" | "false\">" (the value's kind decides)
     kDValue,          // the typed value, then "</" TAG " parameter>\n"
     kDInvokeOrClose,  // another invoke | "</" TAG " calls>"
+    // The Qwen3-Next JSON format: the block is text between the
+    // <tool_call> ids, one JSON object in the template's spelling. The head
+    // is a target of the text automaton, the arguments object runs under a
+    // JSON machine, the tail is a literal; kQClose then closes the block.
+    kJHead,  // "\n{\"name\": \"" NAME "\", \"arguments\": "
+    kJArgs,  // the arguments object, then "}\n"
   };
   // The automaton over token texts: the targets still consistent with the
   // bytes emitted so far, and those bytes.
@@ -346,7 +382,24 @@ class GrammarState {
   bool compact_xml_text(const std::string& text);
   void compact_xml_mask(TokenMask* out) const;
   bool qwen() const;
+  bool qwen_json() const;
   bool dsml() const;
+  // The JSON call format (kJHead / kJArgs). The call's body is one byte
+  // stream — head, arguments, tail — and a token may run across either
+  // seam: json_call_text commits a token's bytes through the parts,
+  // json_head_allows / json_args_allows ask the same of the state as it
+  // stands (json_head_continues: of one head target), and json_call_end
+  // settles a token with bytes past a '}' (1 allowed, 0 refused, -1: it
+  // does not close the object before its last byte, the machine's own
+  // answer stands).
+  bool json_call_text(const std::string& text);
+  bool json_head_continues(const std::string& target, const std::string& text) const;
+  bool json_head_allows(int64_t id) const;
+  bool json_args_allows(int64_t id) const;
+  int json_call_end(const std::string& text) const;
+  int json_head_tool(const std::string& head) const;
+  // An EOS id, a tool marker or a reasoning marker: never a call's text.
+  bool reserved_id(int64_t id) const;
   // The ids that continue `target` from `emitted`.
   std::vector<int64_t> literal_ids(const std::string& target, const std::string& emitted) const;
   void list_mask(TokenMask* out, const std::vector<int64_t>& ids) const;
@@ -367,17 +420,20 @@ class GrammarState {
   int tool_ = -1;          // the open call's tool (index into spec_.tools)
   TextMatch match_;        // kName / kKey / a kText value
   std::string key_;        // the open argument's key (kAfterKey / kValue)
-  std::string term_;       // kQValue / kDValue (JSON, or a free DSML value past its "</" tag): the terminator emitted so far
+  std::string term_;       // kQValue / kDValue (JSON, or a free DSML value past its "</" tag): the terminator emitted so far; kJArgs: the tail
   bool top_lt_ = false;    // DSML top: the last committed text ended in "<" (the tag may follow)
   bool think_openable_ = false;  // the first id may be <think> (model_may_open_thinking, until the first advance)
   bool flag_string_ = true;  // DSML: the open parameter's string="true" (a raw value) or "false" (JSON)
   std::vector<std::string> used_keys_;  // the open call's keys so far
   int arg_ = -1;           // the open argument (index into the tool's args)
   JsonMachine json_;       // kJson: the body's machine (inactive otherwise)
-  JsonMachine value_json_; // a kJson argument's machine
+  JsonMachine value_json_; // a kJson argument's machine; kJArgs: the arguments object's
   // The compiled schemas of every kJson argument, [tool][arg] (null
   // where the argument is not kJson).
   std::vector<std::vector<std::shared_ptr<const JsonSchema>>> arg_schemas_;
+  // The JSON call format: every tool's arguments object as one compiled
+  // schema, [tool] (arg_schemas_ stays empty there).
+  std::vector<std::shared_ptr<const JsonSchema>> call_schemas_;
 };
 
 }  // namespace dgpp::text

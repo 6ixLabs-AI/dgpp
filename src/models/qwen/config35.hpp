@@ -24,6 +24,22 @@ enum class Qwen35LayerKind : int { Gdn, Full };
 enum class Qwen35QuantKind : int {
   Fp8Block,   // e4m3 + BF16 128x128 block scales, dynamic activations
   Nvfp4Mixed, // compressed-tensors mixed: MLP nvfp4 group16, attn FP8, kv 8b hint
+  // The NVIDIA Qwen3-Next release (modelopt): the routed experts, the shared
+  // expert, the attention o_proj and the GDN out_proj as e2m1 codes x e4m3
+  // scales per 16 x an F32 per-tensor scale; every other matrix BF16.
+  Nvfp4Modelopt,
+};
+
+// Which checkpoint layout the config describes. Both run the same walk
+// (pre-norm residual, swish-gated GDN, gated GQA, one draft layer); the
+// dialect picks the tensor names, the fused or split GDN projections and
+// the MLP (dense SwiGLU or the routed MoE).
+enum class Qwen35Dialect : int {
+  Qwen35,     // Qwen3_5ForConditionalGeneration: text_config, model.language_model.*
+  // Qwen3NextForCausalLM (Qwen3-Next-80B-A3B, 2026-10-03): a flat config,
+  // `model.layers.L.*`, the GDN projections fused and interleaved per key
+  // head (`in_proj_qkvz`, `in_proj_ba`), a routed MoE in every layer.
+  Qwen3Next,
 };
 
 struct Qwen35TextConfig {
@@ -64,16 +80,37 @@ struct Qwen35TextConfig {
   // --- dense SwiGLU MLP ----------------------------------------------------
   int intermediate_size = 17408;
 
+  // --- routed MoE (the Qwen3Next dialect; 0 experts = the dense MLP) ---------
+  // Softmax top-k routed experts plus a shared expert weighted by
+  // sigmoid(x . g): Flash-Next's block (models/qwen/moe_layer.hpp) on the
+  // plain residual. Every layer is sparse (decoder_sparse_step 1, no
+  // mlp_only_layers), the draft layer included.
+  int num_experts = 0;
+  int num_experts_per_tok = 0;
+  int moe_intermediate_size = 0;
+  int shared_expert_intermediate_size = 0;
+  bool norm_topk_prob = true;
+
   // --- MTP ------------------------------------------------------------------
   int mtp_num_layers = 1;  // 0 or 1; the draft layer is a Full layer
 
   // --- weight formats -------------------------------------------------------
   Qwen35QuantKind quant_kind = Qwen35QuantKind::Fp8Block;
+  Qwen35Dialect dialect = Qwen35Dialect::Qwen35;
 
   static Qwen35TextConfig parse(const minijson::Value& text_config,
                                 const minijson::Value* quantization_config);
-  // Reads config.json from disk (the root object) and dispatches to parse().
+  // The Qwen3Next dialect: `root` is the whole (flat) config.json object,
+  // its quantization_config included. The config names no draft layer; the
+  // released checkpoints carry one (`mtp.*`), so mtp_num_layers defaults to
+  // 1 and the binding refuses a checkpoint without it by name.
+  static Qwen35TextConfig parse_qwen3_next(const minijson::Value& root);
+  // Reads config.json from disk (the root object) and dispatches to parse()
+  // (a text_config object) or parse_qwen3_next() (model_type qwen3_next).
   static Qwen35TextConfig from_json_file(const std::string& path);
+
+  bool next() const { return dialect == Qwen35Dialect::Qwen3Next; }
+  bool moe() const { return num_experts > 0; }
 
   int num_gdn_layers() const;
   int num_full_layers() const;

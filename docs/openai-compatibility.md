@@ -149,6 +149,45 @@ names and descriptions agree with constrained decoding. Set
 `DGPP_TOOLS_RAW=1` in the server environment before startup if a client
 needs additional tool metadata rendered verbatim.
 
+## Tool-call formats
+
+The model writes a call in its checkpoint template's own format. DGPP parses
+that format into OpenAI `tool_calls` and, with constrained decoding, uses the
+same format as the decoding grammar. GLM delimits the name, keys and values
+with marker tokens; Qwen3.8 and MiMo write `<function=NAME>` and
+`<parameter=KEY>` tags inside `<tool_call>`; DeepSeek writes DSML. Qwen3-Next
+writes one JSON object inside the same `<tool_call>` tokens:
+
+```text
+<tool_call>
+{"name": "lookup", "arguments": {"city": "Paris"}}
+</tool_call>
+```
+
+The Qwen3-Next tokenizer carries the same two `<tool_call>` tokens as the
+XML checkpoints, so this form is selected by the model family (`qwen3_next`)
+rather than inferred from the tokenizer. No request field or server option
+selects it.
+
+The parser accepts the object with its two members in either order, any JSON
+whitespace, and `arguments` as an object or as a JSON string holding one.
+Values keep the JSON types the model wrote; numbers outside the 64-bit and
+double ranges keep their spelling. Anything else — malformed JSON, a missing,
+empty or non-string `name`, `arguments` that is not an object, a third member,
+a repeated member or argument key, text after the object — is not a call: the
+block is returned as literal `content`, its `<tool_call>` markers included,
+and does not by itself produce `finish_reason: "tool_calls"`. Only the marker
+tokens open and close a block; the same text spelled out as ordinary tokens is
+content. A call is reported when its block closes: streaming sends one delta
+with the call id and name and one with the complete `arguments`, as for the
+other formats.
+
+With constrained decoding the block is spelled as the template shows it, the
+name first, and `arguments` is one JSON object under the function's parameter
+schema. Every declared property is typed, strings included, because a string
+is a JSON string in this form; the declared names close the key set as in the
+other formats, and required properties are enforced for `strict` functions.
+
 ## Custom tools
 
 Tools accept OpenAI's `{ "type": "custom", "custom": { "name": "code_exec",
@@ -370,7 +409,10 @@ Host tests exercise real HTTP/SSE transport with a deterministic engine:
 nullable options and numeric bounds, unsupported capabilities, developer/text
 messages, streaming usage and obfuscation, visible-content logprobs, multiple
 choices, request counters and metrics while a synchronous prefill is blocked.
-Parser tests cover buffered and malformed DSML token attribution. Scheduler,
+Parser tests cover buffered and malformed DSML token attribution and the
+Qwen3-Next JSON call form; `qwen3next_tool_calls_test` checks that form's
+renders, parser and grammar against the checkpoint's own tokenizer and
+template. Scheduler,
 fabric-serving and HTTP tests cover lifecycle and failure paths. The release
 build compiles the GLM and shared session-model progress hooks. These checks
 do not substitute for a multi-rank GPU run after deployment.

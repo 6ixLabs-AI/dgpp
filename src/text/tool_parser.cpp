@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstring>
 #include <stdexcept>
+#include <string_view>
 
 #include <utility>
 
@@ -363,6 +364,160 @@ bool ToolCallParser::parse_qwen_block(const std::string& text) {
   if (!accept("</function>")) return false;
   skip_ws();
   return i == text.size();
+}
+
+// ---- the JSON format ------------------------------------------------------------
+
+namespace {
+
+bool json_ws(char c) { return c == ' ' || c == '\n' || c == '\r' || c == '\t'; }
+
+// The end of the JSON value that starts at text[i]: a string through its
+// closing quote, a container through its matching closer (strings inside
+// skipped), a scalar up to the next delimiter. npos when it never ends.
+// Only the extent is decided here — the value's own syntax is checked by
+// whoever reads the span (minijson for a string, normalized_json for the
+// rest).
+size_t json_value_end(std::string_view text, size_t i) {
+  const auto string_end = [&](size_t q) {
+    for (size_t k = q + 1; k < text.size(); ++k) {
+      if (text[k] == '\\') ++k;
+      else if (text[k] == '"') return k + 1;
+    }
+    return std::string_view::npos;
+  };
+  if (i >= text.size()) return std::string_view::npos;
+  if (text[i] == '"') return string_end(i);
+  if (text[i] == '{' || text[i] == '[') {
+    int depth = 0;
+    for (size_t k = i; k < text.size(); ++k) {
+      const char c = text[k];
+      if (c == '"') {
+        k = string_end(k);
+        if (k == std::string_view::npos) return k;
+        --k;
+      } else if (c == '{' || c == '[') {
+        ++depth;
+      } else if (c == '}' || c == ']') {
+        if (--depth == 0) return k + 1;
+      }
+    }
+    return std::string_view::npos;
+  }
+  size_t k = i;
+  while (k < text.size() && !json_ws(text[k]) && text[k] != ',' && text[k] != '}' &&
+         text[k] != ']')
+    ++k;
+  return k == i ? std::string_view::npos : k;
+}
+
+// The members of the JSON object that is all of `text` (whitespace around
+// it aside): each key decoded, each value as its raw text. false when the
+// text is not one object — a duplicate key included, which is never a
+// valid object here (tool_grammar.hpp).
+using JsonMembers = std::vector<std::pair<std::string, std::string_view>>;
+bool json_object_members(std::string_view text, JsonMembers* out) {
+  size_t i = 0;
+  const auto skip_ws = [&] {
+    while (i < text.size() && json_ws(text[i])) ++i;
+  };
+  out->clear();
+  skip_ws();
+  if (i >= text.size() || text[i] != '{') return false;
+  ++i;
+  skip_ws();
+  if (i < text.size() && text[i] == '}') {
+    ++i;
+  } else {
+    for (;;) {
+      if (i >= text.size() || text[i] != '"') return false;
+      const size_t key_end = json_value_end(text, i);
+      if (key_end == std::string_view::npos) return false;
+      std::string key;
+      try {
+        const minijson::ParseResult parsed = minijson::parse(text.substr(i, key_end - i));
+        if (!parsed.root.is_string() || parsed.consumed != key_end - i) return false;
+        key = std::string(parsed.root.as_string());
+      } catch (const std::exception&) {
+        return false;
+      }
+      for (const auto& seen : *out)
+        if (seen.first == key) return false;
+      i = key_end;
+      skip_ws();
+      if (i >= text.size() || text[i] != ':') return false;
+      ++i;
+      skip_ws();
+      const size_t value_end = json_value_end(text, i);
+      if (value_end == std::string_view::npos) return false;
+      out->emplace_back(std::move(key), text.substr(i, value_end - i));
+      i = value_end;
+      skip_ws();
+      if (i < text.size() && text[i] == ',') {
+        ++i;
+        skip_ws();
+        continue;
+      }
+      if (i < text.size() && text[i] == '}') {
+        ++i;
+        break;
+      }
+      return false;
+    }
+  }
+  skip_ws();
+  return i == text.size();
+}
+
+}  // namespace
+
+// "\n{\"name\": \"NAME\", \"arguments\": {...}}\n" — the block is one JSON
+// object and nothing else: lenient about the whitespace around and inside
+// it and about the order of its two members (the template shows the name
+// first; a model may write the arguments first), strict about the members
+// themselves — a string name, an object of arguments, no third member.
+// The arguments may also arrive as a JSON string holding the object (the
+// OpenAI wire form, which a model that has read such a transcript
+// imitates). Every value is already JSON, so nothing is typed from the
+// schema: each argument is re-serialized as the other formats' JSON values
+// are, its numbers kept as written where the DOM would move them.
+bool ToolCallParser::parse_qwen_json_block(const std::string& text) {
+  JsonMembers call, members;
+  if (!json_object_members(text, &call) || call.size() != 2) return false;
+  const std::string_view* name = nullptr;
+  const std::string_view* arguments = nullptr;
+  for (const auto& m : call) {
+    if (m.first == "name") name = &m.second;
+    else if (m.first == "arguments") arguments = &m.second;
+  }
+  if (name == nullptr || arguments == nullptr) return false;
+  std::string object;  // the arguments' text when they came as a string
+  try {
+    const minijson::ParseResult parsed = minijson::parse(*name);
+    if (!parsed.root.is_string() || parsed.consumed != name->size() ||
+        parsed.root.as_string().empty())
+      return false;
+    name_ = std::string(parsed.root.as_string());
+    if (!arguments->empty() && arguments->front() == '"') {
+      const minijson::ParseResult inner = minijson::parse(*arguments);
+      if (!inner.root.is_string() || inner.consumed != arguments->size()) return false;
+      object = std::string(inner.root.as_string());
+    }
+  } catch (const std::exception&) {
+    return false;
+  }
+  if (!json_object_members(object.empty() ? *arguments : std::string_view(object), &members))
+    return false;
+  args_.clear();
+  args_json_ = true;
+  for (const auto& m : members) {
+    try {
+      args_.emplace_back(m.first, normalized_json(std::string(m.second)));
+    } catch (const std::exception&) {
+      return false;  // a member's value is not JSON
+    }
+  }
+  return true;
 }
 
 // ---- the DSML format ------------------------------------------------------------
@@ -744,8 +899,9 @@ void ToolCallParser::feed(int64_t id, std::vector<Event>* out) {
   raw_indices_.push_back(current_token_);
   const bool open = is_marker(id, markers_.tool_call_open);
   const bool close = is_marker(id, markers_.tool_call_close);
-  if (markers_.tool_format() == ToolFormat::kQwenXml) {
-    // The Qwen format: the block's ids buffer until it closes; the text
+  const ToolFormat format = markers_.tool_format();
+  if (format == ToolFormat::kQwenXml || format == ToolFormat::kQwenJson) {
+    // The Qwen formats: the block's ids buffer until it closes; the text
     // between the markers is parsed then (a nested opener restarts).
     if (open) {
       raw_.pop_back();
@@ -758,8 +914,10 @@ void ToolCallParser::feed(int64_t id, std::vector<Event>* out) {
     std::vector<int64_t> inner(raw_.begin() + (raw_has_prefix_ ? 1 : 0), raw_.end() - 1);
     std::string text = raw_has_prefix_ ? "" : options_.forced_prefix_text;
     text += decode_(inner);
-    if (parse_qwen_block(text)) complete_block(out);
-    else abort_block(out);
+    if (format == ToolFormat::kQwenJson ? parse_qwen_json_block(text) : parse_qwen_block(text))
+      complete_block(out);
+    else
+      abort_block(out);
     return;
   }
   const bool key_open = is_marker(id, markers_.arg_key_open);

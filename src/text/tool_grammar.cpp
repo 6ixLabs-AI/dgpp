@@ -31,10 +31,14 @@ GrammarVocab::GrammarVocab(std::vector<std::string> texts, ChatMarkers markers,
       vocab_size_(vocab_size) {
   if (vocab_size_ < 1)
     throw std::invalid_argument("GrammarVocab: vocab_size must be positive");
+  const bool json_calls = markers_.tool_format() == ToolFormat::kQwenJson;
   for (size_t id = 0; id < texts_.size(); ++id) {
     if (texts_[id].empty() || static_cast<int64_t>(id) >= vocab_size_) continue;
     if (markers_.xml_compact && texts_[id].find_first_of("<>\n\r") != std::string::npos)
       xml_end_ids_.push_back(static_cast<int32_t>(id));
+    if (const size_t brace = texts_[id].find('}');
+        json_calls && brace != std::string::npos && brace + 1 < texts_[id].size())
+      json_call_end_ids_.push_back(static_cast<int32_t>(id));
     by_first_[static_cast<unsigned char>(texts_[id][0])].push_back(
         static_cast<int32_t>(id));
   }
@@ -48,7 +52,8 @@ GrammarVocab::GrammarVocab(std::vector<std::string> texts, ChatMarkers markers,
 
 GrammarVocab GrammarVocab::from_tokenizer(const Tokenizer& tok,
                                           const std::vector<int64_t>& eos_ids,
-                                          int vocab_size, DsmlDialect dsml_dialect) {
+                                          int vocab_size, DsmlDialect dsml_dialect,
+                                          bool json_calls) {
   const int64_t max_id = tok.max_id();
   std::vector<std::string> texts(
       static_cast<size_t>(std::max<int64_t>(max_id + 1, 0)));
@@ -66,6 +71,7 @@ GrammarVocab GrammarVocab::from_tokenizer(const Tokenizer& tok,
   }
   ChatMarkers markers = ChatMarkers::from_tokenizer(tok);
   markers.dsml_dialect = dsml_dialect;
+  markers.json_calls = json_calls;
   return GrammarVocab(std::move(texts), std::move(markers), eos_ids, vocab_size, call_eos);
 }
 
@@ -125,11 +131,13 @@ bool string_possible(const minijson::Value& prop) {
 }
 
 // Keep local references relative to the complete parameter schema, including
-// root recursion, when an argument is decoded by its own JSON machine.
-minijson::Value relocate_refs(const minijson::Value& v) {
+// root recursion, when an argument is decoded by its own JSON machine. `base`
+// is where the schema's root now sits.
+minijson::Value relocate_refs(const minijson::Value& v,
+                              const std::string& base = "#/$defs/__dgpp_parameters") {
   if (v.is_array()) {
     std::vector<minijson::Value> items;
-    for (const auto& item : v.items()) items.push_back(relocate_refs(item));
+    for (const auto& item : v.items()) items.push_back(relocate_refs(item, base));
     return minijson::Value::make_array(std::move(items));
   }
   if (!v.is_object()) return v;
@@ -137,8 +145,8 @@ minijson::Value relocate_refs(const minijson::Value& v) {
   for (const auto& m : v.members()) {
     if (m.key == "$ref" && m.value.is_string() && m.value.as_string().starts_with("#"))
       members.push_back({m.key, minijson::Value::make_owned_string(
-          "#/$defs/__dgpp_parameters" + std::string(m.value.as_string().substr(1)))});
-    else members.push_back({m.key, relocate_refs(m.value)});
+          base + std::string(m.value.as_string().substr(1)))});
+    else members.push_back({m.key, relocate_refs(m.value, base)});
   }
   return minijson::Value::make_object(std::move(members));
 }
@@ -152,11 +160,71 @@ minijson::Value argument_schema(const minijson::Value& params, const std::string
     {"$ref", V::make_owned_string("#/$defs/__dgpp_parameters/properties/" + pointer)}});
 }
 
+// The JSON call format's arguments object as one schema, from the tool's
+// grammar entry — what rides the journal, so every rank composes the same:
+// the key set closed where the entry's is, every typed argument under its
+// own schema, a key without one any JSON value, and the required keys
+// required under `strict` (the gate the other formats keep at the call's
+// close). A kJson argument's schema is a document of its own ({$defs, $ref}
+// — argument_schema), so each moves under $defs with its local references
+// re-rooted there. The values view the entry's schema texts: `tool` must
+// outlive the result.
+minijson::Value json_call_arguments_schema(const GrammarTool& tool) {
+  using V = minijson::Value;
+  std::vector<std::string> names;
+  const auto declare = [&](const std::string& key) {
+    if (std::find(names.begin(), names.end(), key) == names.end()) names.push_back(key);
+  };
+  if (tool.constrain_keys)
+    for (const std::string& k : tool.keys) declare(k);
+  for (const GrammarArg& a : tool.args)
+    if (a.kind != GrammarArg::Kind::kFree) declare(a.key);
+  if (tool.strict)
+    for (const std::string& k : tool.required_keys) declare(k);
+  std::vector<minijson::Member> defs, properties;
+  for (const std::string& name : names) {
+    const GrammarArg* arg = nullptr;
+    for (const GrammarArg& a : tool.args)
+      if (a.key == name && a.kind != GrammarArg::Kind::kFree) arg = &a;
+    if (arg == nullptr) {
+      properties.push_back({name, V::make_object({})});
+    } else if (arg->kind == GrammarArg::Kind::kText) {
+      std::vector<V> texts;
+      for (const std::string& text : arg->texts) texts.push_back(V::make_string(text));
+      properties.push_back({name, V::make_object({{"enum", V::make_array(std::move(texts))}})});
+    } else {
+      minijson::ParseResult parsed;
+      try {
+        parsed = minijson::parse(arg->schema);
+      } catch (const std::exception& e) {
+        throw std::invalid_argument("GrammarState: the schema text of argument '" + arg->key +
+                                    "' of '" + tool.name + "' does not parse: " + e.what());
+      }
+      const std::string at = "#/$defs/__dgpp_argument_" + std::to_string(defs.size());
+      defs.push_back({at.substr(std::strlen("#/$defs/")), relocate_refs(parsed.root, at)});
+      properties.push_back({name, V::make_object({{"$ref", V::make_owned_string(at)}})});
+    }
+  }
+  std::vector<minijson::Member> schema;
+  schema.push_back({"type", V::make_string("object")});
+  schema.push_back({"properties", V::make_object(std::move(properties))});
+  if (tool.strict && !tool.required_keys.empty()) {
+    std::vector<V> required;
+    for (const std::string& k : tool.required_keys) required.push_back(V::make_string(k));
+    schema.push_back({"required", V::make_array(std::move(required))});
+  }
+  if (tool.constrain_keys) schema.push_back({"additionalProperties", V::make_bool(false)});
+  if (!defs.empty()) schema.push_back({"$defs", V::make_object(std::move(defs))});
+  return V::make_object(std::move(schema));
+}
+
 }  // namespace
 
 GrammarTool grammar_tool_from_function(const minijson::Value& def,
                                        std::vector<std::string>* warnings,
-                                       std::vector<std::string>* notes) {
+                                       std::vector<std::string>* notes, ToolFormat format) {
+  // The JSON call format writes every argument through tojson: no raw text.
+  const bool json_arguments = format == ToolFormat::kQwenJson;
   GrammarTool tool;
   if (const minijson::Value* name = def.find("name"))
     tool.name = std::string(name->as_string());
@@ -227,7 +295,7 @@ GrammarTool grammar_tool_from_function(const minijson::Value& def,
     }
     const minijson::Value* en = prop.find("enum");
     const minijson::Value* cs = prop.find("const");
-    if (string_possible(prop) && !prop.find("pattern") && !prop.find("format") &&
+    if (!json_arguments && string_possible(prop) && !prop.find("pattern") && !prop.find("format") &&
         !prop.find("$ref") && !prop.find("anyOf") && !prop.find("x-dgpp-grammar")) {
       // Raw text — typable only through an enum's exact texts.
       if (en != nullptr && en->is_array() && !en->items().empty() &&
@@ -269,7 +337,8 @@ GrammarTool grammar_tool_from_function(const minijson::Value& def,
       if (warnings != nullptr)
         warnings->push_back("argument '" + pm.key + "' of '" + tool.name +
                             "' is outside the constrained subset (" + e.what() +
-                            "); its value stays free text");
+                            (json_arguments ? "); its value is any JSON value"
+                                            : "); its value stays free text"));
     }
     tool.args.push_back(std::move(arg));
   }
@@ -329,6 +398,14 @@ GrammarState::GrammarState(const GrammarVocab* vocab, GrammarSpec spec,
   arg_schemas_.resize(spec_.tools.size());
   for (size_t t = 0; t < spec_.tools.size(); ++t) {
     const GrammarTool& tool = spec_.tools[t];
+    if (qwen_json()) {
+      // The JSON call format: one machine reads the whole arguments object,
+      // so the tool's arguments compile as one schema.
+      std::vector<std::string> unenforced;
+      call_schemas_.push_back(std::make_shared<const JsonSchema>(
+          compile_json_schema(json_call_arguments_schema(tool), &unenforced)));
+      continue;
+    }
     arg_schemas_[t].resize(tool.args.size());
     for (size_t a = 0; a < tool.args.size(); ++a) {
       const GrammarArg& arg = tool.args[a];
@@ -386,6 +463,8 @@ const char* GrammarState::state_name() const {
     case State::kQFreeKey: return "q-free-key";
     case State::kQValue: return "q-value";
     case State::kQClose: return "q-close";
+    case State::kJHead: return "j-head";
+    case State::kJArgs: return "j-args";
   }
   return "?";
 }
@@ -436,6 +515,25 @@ const DsmlLiterals& dsml_literals(const GrammarVocab* vocab) {
   static const DsmlLiterals v41(" calls", " invoke", " parameter", /*blank_line_close=*/false);
   static const DsmlLiterals v4("tool_calls", "invoke", "parameter", /*blank_line_close=*/true);
   return vocab != nullptr && vocab->markers().dsml_dialect == DsmlDialect::kV4 ? v4 : v41;
+}
+// The JSON call format's frame around the arguments object, as the
+// Qwen3-Next template writes it: the head through the space after
+// "arguments": (the name as its JSON text), and the tail.
+const std::string kJTail = "}\n";
+std::string json_call_head(const std::string& name) {
+  return "\n{\"name\": " + json_text_of(minijson::Value::make_string(name)) + ", \"arguments\": ";
+}
+// One byte of a JSON call past its head: of the arguments object under its
+// machine or, once that has closed, of the tail. The object opens right
+// after the head's space and the tail follows its brace — no whitespace on
+// either side of it.
+bool json_call_byte(JsonMachine* machine, std::string* term, char ch) {
+  if (!term->empty() || machine->done()) {
+    *term += ch;
+    return term->size() <= kJTail.size() && kJTail.compare(0, term->size(), *term) == 0;
+  }
+  if (machine->lexer().depth() == 0 && JsonLexer::is_ws(static_cast<uint8_t>(ch))) return false;
+  return machine->feed(static_cast<uint8_t>(ch));
 }
 }  // namespace
 
@@ -622,6 +720,106 @@ bool GrammarState::dsml() const {
   return vocab_ != nullptr && vocab_->markers().tool_format() == ToolFormat::kDsml;
 }
 
+bool GrammarState::qwen_json() const {
+  return vocab_ != nullptr && vocab_->markers().tool_format() == ToolFormat::kQwenJson;
+}
+
+int GrammarState::json_head_tool(const std::string& head) const {
+  for (size_t i = 0; i < spec_.tools.size(); ++i)
+    if (json_call_head(spec_.tools[i].name) == head) return static_cast<int>(i);
+  return -1;
+}
+
+bool GrammarState::json_call_text(const std::string& text) {
+  for (const char ch : text) {
+    if (state_ == State::kJHead) {
+      match_.emitted += ch;
+      bool live = false;
+      for (const std::string& target : match_.targets)
+        live = live || target.compare(0, match_.emitted.size(), match_.emitted) == 0;
+      if (!live) return false;
+      if (match_.complete()) {
+        // The head is whole: bind the tool; its arguments object opens.
+        tool_ = json_head_tool(match_.emitted);
+        used_keys_.clear();
+        if (tool_ < 0) return false;
+        enter(State::kJArgs);
+      }
+      continue;
+    }
+    // Past the tail nothing follows inside a token: the closing id is next.
+    if (state_ != State::kJArgs || !json_call_byte(&value_json_, &term_, ch)) return false;
+    if (term_ == kJTail) enter(State::kQClose);
+  }
+  return true;
+}
+
+bool GrammarState::reserved_id(int64_t id) const {
+  const ChatMarkers& m = vocab_->markers();
+  return vocab_->is_eos(id) || id == m.think_open.id || id == m.think_close.id ||
+         std::find(vocab_->marker_ids().begin(), vocab_->marker_ids().end(), id) !=
+             vocab_->marker_ids().end();
+}
+
+bool GrammarState::json_head_continues(const std::string& target, const std::string& text) const {
+  if (text.empty() || target.size() <= match_.emitted.size() ||
+      target.compare(0, match_.emitted.size(), match_.emitted) != 0)
+    return false;
+  const size_t rest = target.size() - match_.emitted.size();
+  const size_t inside = std::min(rest, text.size());
+  if (target.compare(match_.emitted.size(), inside, text, 0, inside) != 0) return false;
+  if (text.size() <= rest) return true;
+  // The token ends the head and runs on (" {\"" on the Qwen2 tokenizers):
+  // its remaining bytes open this tool's arguments.
+  const int tool = text[rest] == '{' ? json_head_tool(target) : -1;
+  if (tool < 0) return false;
+  JsonMachine machine(call_schemas_[static_cast<size_t>(tool)], &vocab_->json_tables());
+  std::string term;
+  for (size_t i = rest; i < text.size(); ++i)
+    if (term == kJTail || !json_call_byte(&machine, &term, text[i])) return false;
+  return true;
+}
+
+bool GrammarState::json_head_allows(int64_t id) const {
+  for (const std::string& target : match_.targets)
+    if (json_head_continues(target, vocab_->text(id))) return true;
+  return false;
+}
+
+int GrammarState::json_call_end(const std::string& text) const {
+  // Lexically first (a lexer copies cheaply; most tokens stop here): where
+  // does the token close the arguments object, if at all?
+  JsonLexer lexer = value_json_.lexer();
+  size_t close = 0;
+  for (; close < text.size(); ++close) {
+    if (!lexer.feed(static_cast<uint8_t>(text[close])).ok) return 0;
+    if (lexer.state() == JsonLexer::State::kDone) break;
+  }
+  if (close + 1 >= text.size()) return -1;
+  // It does, with bytes to spare: they are the tail's or the token is
+  // refused, and the object itself must satisfy the machine.
+  if (text.size() - close - 1 > kJTail.size() ||
+      kJTail.compare(0, text.size() - close - 1, text, close + 1, std::string::npos) != 0)
+    return 0;
+  JsonMachine machine = value_json_;
+  for (size_t i = 0; i <= close; ++i)
+    if (!machine.feed(static_cast<uint8_t>(text[i]))) return 0;
+  return machine.done() ? 1 : 0;
+}
+
+bool GrammarState::json_args_allows(int64_t id) const {
+  const std::string& text = vocab_->text(id);
+  if (text.empty()) return false;
+  if (!term_.empty() || value_json_.done())
+    return term_.size() + text.size() <= kJTail.size() &&
+           kJTail.compare(term_.size(), text.size(), text) == 0;
+  if (value_json_.lexer().depth() == 0 && JsonLexer::is_ws(static_cast<uint8_t>(text[0])))
+    return false;
+  if (const size_t brace = text.find('}'); brace != std::string::npos && brace + 1 < text.size())
+    if (const int end = json_call_end(text); end >= 0) return end == 1;
+  return value_json_.allows(*vocab_, id);
+}
+
 std::vector<int64_t> GrammarState::literal_ids(const std::string& target,
                                                const std::string& emitted) const {
   TextMatch m;
@@ -715,6 +913,19 @@ void GrammarState::enter(State s) {
         match_.targets.push_back(std::string(xml_function_open()) + t.name + xml_header_end());
     }
     tool_ = -1;
+    return;
+  }
+  if (s == State::kJHead) {
+    if (spec_.mode == GrammarSpec::Mode::kNamed) {
+      match_.targets.push_back(json_call_head(spec_.named));
+    } else {
+      for (const GrammarTool& t : spec_.tools) match_.targets.push_back(json_call_head(t.name));
+    }
+    tool_ = -1;
+    return;
+  }
+  if (s == State::kJArgs) {
+    value_json_ = JsonMachine(call_schemas_[static_cast<size_t>(tool_)], &vocab_->json_tables());
     return;
   }
   if (s == State::kDCalls) {
@@ -1004,9 +1215,11 @@ void GrammarState::mask(TokenMask* out) const {
       // MiMo's compact dialect keeps it too: its template leaves the
       // opening to the model (it opens <think> itself), pinned by
       // tool_grammar_mimo_modelOpensThinkingAndStraddledTerminator.
+      // The JSON call format shares the Qwen top: the same opener id, the
+      // same prose before a call.
       const bool free_top = dsml() || spec_.mode == GrammarSpec::Mode::kAuto ||
                             spec_.mode == GrammarSpec::Mode::kForbidCalls ||
-                            (qwen() && (!obligation_open() || m.xml_compact));
+                            ((qwen() || qwen_json()) && (!obligation_open() || m.xml_compact));
       if (free_top) {
         // DSML: the text may carry on; the tag opens a block right after a
         // "<" (content runs before "\n\n<" in the format).
@@ -1104,6 +1317,54 @@ void GrammarState::mask(TokenMask* out) const {
     case State::kQClose:
       list_mask(out, {m.tool_call_close.id});
       return;
+    case State::kJHead: {
+      // The tokens inside a head, and the ones that end it and open the
+      // arguments.
+      std::vector<int64_t> ids;
+      for (const std::string& target : match_.targets) {
+        if (target.size() <= match_.emitted.size() ||
+            target.compare(0, match_.emitted.size(), match_.emitted) != 0)
+          continue;
+        const unsigned char first = static_cast<unsigned char>(target[match_.emitted.size()]);
+        for (const int32_t id : vocab_->ids_starting_with(first))
+          if (json_head_continues(target, vocab_->text(id)) && !reserved_id(id)) ids.push_back(id);
+      }
+      list_mask(out, ids);
+      return;
+    }
+    case State::kJArgs: {
+      if (!term_.empty() || value_json_.done()) {
+        list_mask(out, literal_ids(kJTail, term_));
+        return;
+      }
+      json_mask(value_json_, /*closer=*/-2, out);
+      const auto set = [&](int64_t id, bool on) {
+        if (id < 0 || id >= vocab_->vocab_size()) return;
+        uint32_t& w = out->words[static_cast<size_t>(id >> 5)];
+        const uint32_t bit = 1u << (id & 31);
+        if (on && !(w & bit)) {
+          w |= bit;
+          ++out->allowed;
+        } else if (!on && (w & bit)) {
+          w &= ~bit;
+          --out->allowed;
+        }
+      };
+      for (const int64_t e : vocab_->eos_ids()) set(e, false);
+      // A token with bytes past a '}' may close the object and run into the
+      // tail, or trail whitespace the tail does not have: the machine's
+      // answer is replaced where the token closes the object early.
+      for (const int32_t id : vocab_->json_call_end_ids())
+        if (const int end = json_call_end(vocab_->text(id)); end >= 0)
+          set(id, end == 1 && !reserved_id(id));
+      // The object opens at the head's space: no whitespace before its brace.
+      if (value_json_.lexer().depth() == 0)
+        for (const unsigned char ws : {' ', '\n', '\r', '\t'})
+          for (const int32_t id : vocab_->ids_starting_with(ws)) set(id, false);
+      if (out->allowed == 0)
+        throw std::logic_error("GrammarState: a JSON call position with no allowed id");
+      return;
+    }
     case State::kDCalls:
     case State::kDInvoke:
     case State::kDParamOrClose:
@@ -1223,6 +1484,8 @@ bool GrammarState::allows(int64_t id) const {
     return settled.allows(id);
   }
   if (state_ == State::kJsonBody) return json_allows(json_, -1, id);
+  if (state_ == State::kJHead) return !reserved_id(id) && json_head_allows(id);
+  if (state_ == State::kJArgs) return !reserved_id(id) && json_args_allows(id);
   if (state_ == State::kValue) {
     const GrammarArg* a = current_arg();
     if (a != nullptr && a->kind == GrammarArg::Kind::kJson)
@@ -1328,7 +1591,7 @@ void GrammarState::advance(int64_t id) {
         return;
       }
       if (id == m.tool_call_open.id) {
-        enter(qwen() ? State::kQName : State::kName);
+        enter(qwen() ? State::kQName : qwen_json() ? State::kJHead : State::kName);
       } else if (vocab_->is_eos(id)) {
         state_ = State::kDone;
       }
@@ -1513,6 +1776,10 @@ void GrammarState::advance(int64_t id) {
     }
     case State::kQClose:
       after_call();
+      return;
+    case State::kJHead:
+    case State::kJArgs:
+      if (!json_call_text(vocab_->text(id))) dead_ = true;
       return;
     case State::kName:
       if (id == m.arg_key_open.id || id == m.tool_call_close.id) {

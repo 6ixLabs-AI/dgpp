@@ -13,7 +13,11 @@
 // Markers (M6 6f): the template's reasoning and tool-call tokens looked
 // up by text among the tokenizer's added tokens at construction — the
 // service's parser keys on their ids, the forced tool_choice prefix on
-// their text.
+// their text. What the tokenizer cannot say the family states: `json_calls`
+// (ChatMarkers::json_calls) is true for a template that writes its calls
+// as one JSON object between the <tool_call> tokens — Qwen3-Next — and the
+// grammar vocabulary the engine builds must state the same
+// (GrammarVocab::from_tokenizer's json_calls argument).
 #include <string>
 #include <vector>
 
@@ -30,12 +34,13 @@ namespace dgpp::serve {
 class TextFrontend : public ModelFrontend {
  public:
   TextFrontend(const dgpp::text::Tokenizer* tok,
-              const dgpp::text::ChatTemplate* tpl)
+              const dgpp::text::ChatTemplate* tpl, bool json_calls = false)
       : tok_(tok), tpl_(tpl) {
     if (tok_ == nullptr || tpl_ == nullptr)
       throw std::invalid_argument(
           "TextFrontend: tokenizer and chat template must both be loaded");
     markers_ = dgpp::text::ChatMarkers::from_tokenizer(*tok_);
+    markers_.json_calls = json_calls;
   }
 
   std::vector<int64_t> encode_text(std::string_view text) const override {

@@ -3,6 +3,25 @@
 // e4m3 payload + BF16 scales — no BF16→FP8 re-encode at load), text-only,
 // dense SwiGLU MLP, standard pre-norm residual
 // (input_layernorm/post_attention_layernorm).
+//
+// The Qwen3Next dialect (Qwen3-Next-80B-A3B, the modelopt NVFP4 release)
+// fills the same residents in their BF16 forms, every `_fp8` member empty:
+//   GDN:  the fused, per-key-head interleaved in_proj_qkvz / in_proj_ba
+//         gathered into the split head-major in_proj_qkv, in_proj_z,
+//         in_proj_a and in_proj_b; the NVFP4 out_proj dequantized to BF16.
+//   Full: q/k/v BF16 row slices; the NVFP4 o_proj dequantized to BF16 (the
+//         draft layer's is BF16 already); the recipe's K/V-cache scales kept.
+//   MoE:  Flash-Next's resident (`moe`, `mlp` empty) — router and shared
+//         gate replicated, the shared expert BF16 (dequantized in the
+//         backbone), the routed experts NVFP4 as shipped in the backbone
+//         and block FP8 encoded from BF16 in the draft layer.
+// Its slices follow the family's rules at every world: key and value heads,
+// query heads and their kv head(s), I/W rows of gate/up and columns of down.
+// Under Qwen35LayerStream::set_dense_weights_fp8 the same dialect binds its
+// dense projections through the `_fp8` members instead (the BF16 pointers
+// null), encoded to block FP8 at load from the BF16 form's values: the GDN
+// in_proj_qkv / in_proj_z / out_proj, the attention q/k/v/o and the shared
+// expert. Everything else is unchanged.
 #include <cstdint>
 #include <string>
 #include <unordered_map>
@@ -33,7 +52,18 @@ struct Qwen35LayerResident {
   const uint16_t* post_norm = nullptr;   // BF16 [H]
   QwenGdnResident gdn;                   // kind == Gdn
   QwenFullAttnResident full;             // kind == Full
-  Qwen35DenseMlpResident mlp;            // every layer
+  Qwen35DenseMlpResident mlp;            // every layer (the dense dialect)
+  // The Qwen3Next dialect's routed MoE (cfg.moe()): the Flash-Next block's
+  // resident, `mlp` left empty. Backbone layers carry the NVFP4 experts
+  // (experts_fp4); the draft layer's BF16 experts are encoded to block FP8
+  // at load (experts), as Flash-Next's bf16_fused draft experts are.
+  QwenMoeResident moe;
+  // The Qwen3Next recipe's FP8 K/V-cache scales of a backbone attention
+  // layer (`k_proj.k_scale`, `v_proj.v_scale`): [k, v] in the layer image
+  // and their host copies. Nothing reads them yet. Null and 0 on GDN
+  // layers, the draft layer and the Qwen3.5 dialect.
+  const float* kv_cache_scales = nullptr;  // F32 [2], device
+  float k_cache_scale = 0.0f, v_cache_scale = 0.0f;
   size_t bytes = 0;  // set by the stream (bump cursor after build)
 };
 
@@ -59,10 +89,45 @@ struct Qwen35LocalGeometry {
   int local_heads = 0, head_begin = 0;             // Full query heads
   int local_kv_heads = 0, kv_head_begin = 0;       // Full kv heads
   int64_t local_inter = 0;                         // MLP I/W
+  int64_t local_moe_inter = 0;                     // routed experts' I/W (the MoE dialect)
+  int64_t local_shared_inter = 0;                  // shared expert's S/W
   int lm_vocab_begin = 0, lm_vocab_count = 0;      // lm head slice
   static Qwen35LocalGeometry from_config(const Qwen35TextConfig& cfg, int rank, int world,
                                           LoaderHeadSharding head);
 };
+
+// The Qwen3Next dialect's GDN gather. The checkpoint fuses the input
+// projections and interleaves their rows per key head: in_proj_qkvz is one
+// group per key head g of [q(g) dk | k(g) dk | v(g*r ..) r*dv | z(g*r ..) r*dv]
+// rows (r = value heads per key head), in_proj_ba one group of
+// [b(g*r ..) r | a(g*r ..) r] rows. The layer binds the split, head-major
+// matrices, so the loader gathers them: each run is a contiguous source row
+// range and the destination row it lands on, for this rank's key heads
+// [rank * lk, +lk) and their value heads.
+struct Qwen35RowRun {
+  int64_t src_row = 0, rows = 0, dst_row = 0;
+};
+struct Qwen3NextGdnGather {
+  std::vector<Qwen35RowRun> qkv;  // in_proj_qkvz -> in_proj_qkv [lk*dk | lk*dk | lv*dv]
+  std::vector<Qwen35RowRun> z;    // in_proj_qkvz -> in_proj_z [lv*dv]
+  std::vector<Qwen35RowRun> a;    // in_proj_ba -> in_proj_a [lv]
+  std::vector<Qwen35RowRun> b;    // in_proj_ba -> in_proj_b [lv]
+};
+Qwen3NextGdnGather qwen3next_gdn_gather(const Qwen35TextConfig& cfg, int rank, int world);
+
+// A [rows, cols] block of a modelopt NVFP4 matrix dequantized to BF16 (the
+// Qwen3Next dialect's out_proj, o_proj and shared expert, which the dense
+// BF16 kernels read). `payload` and `scales` point at the block's first
+// byte — two e2m1 codes a byte, the low nibble the even column; one e4m3
+// scale per 16 columns — with the source's row strides in bytes; the block
+// starts on a 16-column boundary and cols is a multiple of 16. Element
+// (n, k) is bf16(e2m1(code) * e4m3(scale[n][k / 16]) * weight_scale_2): the
+// code x block-scale product is exact in fp32, the per-tensor scale
+// multiplies it (one fp32 rounding), and the result rounds to bf16, both to
+// nearest even.
+void qwen3next_fp4_dequant_bf16(const uint8_t* payload, size_t payload_stride,
+                                const uint8_t* scales, size_t scale_stride, float weight_scale_2,
+                                int64_t rows, int64_t cols, uint16_t* out);
 
 // The family behind the shared stream (loaders/resident_stream.hpp).
 struct Qwen35LoaderFamily {
@@ -103,6 +168,15 @@ struct Qwen35LayerStream : ResidentLayerStream<Qwen35LoaderFamily> {
   static void set_resident_image_dir(const std::string& dir);
   static const std::string& resident_image_dir();
   const std::string& image_dir() const override;
+  // The Qwen3Next dialect's dense stack form (engine.dense_weights): false =
+  // BF16 (the default); true = every dense projection (GDN qkv/z/out, the
+  // attention q/k/v/o, the shared expert) encoded to block FP8 at load, the
+  // form the Qwen3.5 release ships and the model's fp8 paths read. Process-
+  // wide; set before the stream is built — the byte formulas follow it, and
+  // it is part of loader_format(), so a resident image of one form is never
+  // restored for the other. The Qwen3.5 dialect is FP8 as shipped either way.
+  static void set_dense_weights_fp8(bool on);
+  static bool dense_weights_fp8();
 };
 
 extern template class ResidentLayerStream<Qwen35LoaderFamily>;

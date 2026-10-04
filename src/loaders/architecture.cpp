@@ -49,9 +49,14 @@ ModelArchitecture detect_architecture(const minijson::Value& root) {
   // (its text_config's type is `qwen3_5_text`).
   if (arch.rfind("Qwen3_5", 0) == 0 || (arch.empty() && type == "qwen3_5"))
     return ModelArchitecture::Qwen3_5;
+  // Qwen3-Next-80B-A3B (2026-10-03): `Qwen3NextForCausalLM` / `qwen3_next`
+  // — a flat config (no text_config), served by the qwen3_5 stack with the
+  // Flash-Next routed MoE in place of the dense MLP.
+  if (arch.rfind("Qwen3Next", 0) == 0 || (arch.empty() && type == "qwen3_next"))
+    return ModelArchitecture::Qwen3Next;
   throw std::runtime_error(
       "config.json: unsupported architecture '" + arch + "' (model_type '" +
-      type + "'); the engine implements Glm5*, Qwen4Exp*, Glm4Moe*, GlmMoeDsa*, DeepseekV41*, DeepseekV4*, MiMoV2* and Qwen3_5*");
+      type + "'); the engine implements Glm5*, Qwen4Exp*, Glm4Moe*, GlmMoeDsa*, DeepseekV41*, DeepseekV4*, MiMoV2*, Qwen3_5* and Qwen3Next*");
 }
 
 ModelArchitecture detect_architecture_file(const std::string& path) {

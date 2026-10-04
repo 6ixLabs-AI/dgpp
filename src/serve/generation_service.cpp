@@ -1121,10 +1121,12 @@ bool GenerationService::parse_chat(const dgpp::minijson::Value& body,
         // The closed key set and the typed arguments (M6 6g / 6i); a
         // strict function outside the enforceable subset is a 400 naming
         // the keyword path, a non-strict one leaves that value free.
+        // The template's call format decides what a value is: raw text for
+        // a string argument, or (the JSON format) a JSON text throughout.
         std::vector<std::string> warnings, notes;
         try {
-          g.tools.push_back(
-              dgpp::text::grammar_tool_from_function(def, &warnings, &notes));
+          g.tools.push_back(dgpp::text::grammar_tool_from_function(def, &warnings, &notes,
+                                                                   markers_.tool_format()));
         } catch (const std::invalid_argument& e) {
           const std::string prefix =
               "tools[" + std::to_string(i) + "]" + (fn != nullptr ? ".function." : ".");

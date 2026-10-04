@@ -266,6 +266,10 @@ struct ServeFamily {
   virtual const char* name() const = 0;
   virtual int64_t vocab_size() const = 0;
   virtual const std::vector<int64_t>& eos_token_ids() const = 0;
+  // Token ids that end a generation besides the stop list (the checkpoint's
+  // generation_config.json, else the family's EOS): a turn boundary the
+  // model must never write inside its own turn. Empty for most families.
+  virtual std::vector<int64_t> extra_stop_token_ids() const { return {}; }
   virtual int64_t block_tokens() const = 0;
   virtual int prefill_chunk_tokens() const = 0;
   // Empty when a pool of `pool_tokens` fits the family's id spaces.
@@ -880,6 +884,7 @@ struct Qwen35Family final : ServeFamily {
   std::string ckpt;
   std::string dflash;  // the DFlash2 drafter's checkpoint dir (empty: off)
   std::vector<int64_t> eos_;
+  std::vector<int64_t> extra_stops_;
   std::unique_ptr<dgpp::Qwen35Model> model;
   Qwen35Family(const std::string& checkpoint)
       : cfg(dgpp::Qwen35TextConfig::from_json_file((fs::path(checkpoint) / "config.json").string())),
@@ -887,8 +892,33 @@ struct Qwen35Family final : ServeFamily {
     if (cfg.eos_token_ids.empty())
       throw std::invalid_argument("Qwen3.5: the config names no EOS token");
     for (int64_t id : cfg.eos_token_ids) eos_.push_back(id);
+    // engine.dense_weights = fp8 on the Qwen3Next dialect also encodes the
+    // checkpoint's BF16 / NVFP4 dense projections to block FP8 at load (the
+    // form this stack's decode paths are built around; the Qwen3.8-27B
+    // release ships FP8 already, so its stream keeps its image identity).
+    // Set before the memory plan and the loader read it.
+    if (cfg.next())
+      dgpp::Qwen35LayerStream::set_dense_weights_fp8(dgpp::Qwen35Model::dense_weights_fp8());
+    // Qwen3-Next-80B-Instruct can run past its answer into a fabricated next
+    // turn; `<|im_start|>` opens one, so it ends the generation like an EOS
+    // (the id from the checkpoint's added_tokens.json; absent: no extra stop).
+    if (cfg.next()) {
+      std::ifstream f(fs::path(checkpoint) / "added_tokens.json");
+      if (f) {
+        std::stringstream ss;
+        ss << f.rdbuf();
+        const std::string text = ss.str();  // the parsed values view the text
+        const auto parsed = dgpp::minijson::parse(text);
+        if (const dgpp::minijson::Value* v = parsed.root.find("<|im_start|>"); v != nullptr && v->is_number())
+          extra_stops_.push_back(v->as_int());
+      }
+    }
   }
-  const char* name() const override { return "qwen3_5"; }
+  std::vector<int64_t> extra_stop_token_ids() const override { return extra_stops_; }
+  // The Qwen3Next dialect (Qwen3-Next-80B-A3B) is its own name: the option
+  // gates below are per family, and its levers differ (no per-tensor recipe,
+  // no drafter).
+  const char* name() const override { return cfg.next() ? "qwen3_next" : "qwen3_5"; }
   int64_t vocab_size() const override { return cfg.vocab_size; }
   const std::vector<int64_t>& eos_token_ids() const override { return eos_; }
   int64_t block_tokens() const override { return dgpp::Qwen35Model::kv_block_tokens_static(); }
@@ -953,7 +983,8 @@ std::unique_ptr<ServeFamily> make_family(const std::string& ckpt, int world,
   if (arch == dgpp::ModelArchitecture::MimoV2) return std::make_unique<MimoFamily>(ckpt, kv_format);
   if (arch == dgpp::ModelArchitecture::Qwen4Exp)
     return std::make_unique<QwenFamily>(ckpt, rope_scaling, fp8_head_mma);
-  if (arch == dgpp::ModelArchitecture::Qwen3_5) return std::make_unique<Qwen35Family>(ckpt);
+  if (arch == dgpp::ModelArchitecture::Qwen3_5 || arch == dgpp::ModelArchitecture::Qwen3Next)
+    return std::make_unique<Qwen35Family>(ckpt);
   if (arch == dgpp::ModelArchitecture::Glm4Moe) return std::make_unique<Glm4Family>(ckpt);
   if (arch == dgpp::ModelArchitecture::GlmMoeDsa) return std::make_unique<GlmDsaFamily>(ckpt, world, kv_format);
   return std::make_unique<GlmFamily>(ckpt, world, kv_format);
@@ -1044,6 +1075,13 @@ int prefix_arena_slots(size_t bytes, double gib) {
   return static_cast<int>(std::min(slots, 4096.0));
 }
 
+// The <tool_call> block's body is the family's: Qwen3-Next's template asks
+// for one JSON object between the two tokens the Qwen3.8 and MiMo templates
+// fill with XML tags, and the tokenizers carry the same two tokens — so the
+// family states it, to the frontend's markers (which the parser reads) and
+// to the grammar vocabulary alike (ChatMarkers::json_calls).
+bool family_json_calls(std::string_view family) { return family == "qwen3_next"; }
+
 int serve_openai(dgpp::sched::SchedulerEngine* engine, int64_t vocab_size,
                  const std::vector<int64_t>& eos_ids, const std::string& ckpt,
                  const std::string& model_display, const ServeKnobs& k,
@@ -1086,7 +1124,8 @@ int serve_openai(dgpp::sched::SchedulerEngine* engine, int64_t vocab_size,
         vision_frontend = std::make_unique<dgpp::serve::QwenVisionFrontend>(&tok, &*tpl, ids);
     }
     frontend = vision_frontend ? std::move(vision_frontend)
-                               : std::make_unique<dgpp::serve::TextFrontend>(&tok, &*tpl);
+                               : std::make_unique<dgpp::serve::TextFrontend>(
+                                     &tok, &*tpl, family_json_calls(family_name));
     if (engine->supports_images())
       DGPP_LOG_INFO("serve: image inputs enabled ({} visual tokens per image max)",
                     dgpp::kMaxImageTokens);
@@ -2360,7 +2399,7 @@ int main(int argc, char** argv) {
       return 1;
     }
     if (std::string(family->name()) != "qwen4_exp" && std::string(family->name()) != "qwen3_5" &&
-        dense_weights != "checkpoint")
+        std::string(family->name()) != "qwen3_next" && dense_weights != "checkpoint")
       DGPP_LOG_WARN("serve: --dense-weights {} applies to the Qwen dense stack only; the {} family loads as shipped",
                     dense_weights, family->name());
     if (std::string(family->name()) != "qwen4_exp" && mtp_expert_format != "fp8")
@@ -2386,8 +2425,13 @@ int main(int argc, char** argv) {
         dgpp::GlmGenerationDefaults::from_checkpoint_dir(ckpt, family->vocab_size());
     // Stop policy must not mutate the model's trained token semantics:
     // Qwen PLE uses config.json's EOS to pad and reset n-gram history.
-    const auto generation_eos =
+    auto generation_eos =
         generation_defaults.effective_eos_token_ids(family->eos_token_ids());
+    // A family's turn-boundary stops, appended: the list's first id stays
+    // the call-turn EOS the grammar closes a forced call with.
+    for (int64_t id : family->extra_stop_token_ids())
+      if (std::find(generation_eos.begin(), generation_eos.end(), id) == generation_eos.end())
+        generation_eos.push_back(id);
 
     // The served sampling defaults: the file's values, then the process
     // overrides (DESIGN §10 — defaults from the model, overrides from the
@@ -2540,11 +2584,13 @@ int main(int argc, char** argv) {
       const dgpp::text::Tokenizer tok = dgpp::text::Tokenizer::load(
           (fs::path(ckpt) / "tokenizer.json").string());
       // The DSML tag spelling is the family's (the two DeepSeek families
-      // share the tag token; the tokenizer cannot tell them apart).
+      // share the tag token; the tokenizer cannot tell them apart), and so
+      // is the JSON call form (family_json_calls).
       dgpp::text::GrammarVocab v = dgpp::text::GrammarVocab::from_tokenizer(
           tok, generation_eos, static_cast<int>(family->vocab_size()),
           std::string(family->name()) == "deepseek_v4" ? dgpp::text::DsmlDialect::kV4
-                                                       : dgpp::text::DsmlDialect::kV41);
+                                                       : dgpp::text::DsmlDialect::kV41,
+          family_json_calls(family->name()));
       DGPP_LOG_INFO(
           "serve: grammar vocabulary built ({} ids, tool markers {}, "
           "call-turn EOS {})",

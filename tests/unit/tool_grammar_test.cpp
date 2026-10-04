@@ -1453,6 +1453,512 @@ DGPP_TEST(tool_grammar_keyClosureLeavesNestedJsonOpen) {
   require(state.allows(kToolClose), "a nested object retains JSON Schema's open default");
 }
 
+// ---- the Qwen3-Next JSON format -----------------------------------
+// The same two marker ids as the XML format, the block one JSON object in
+// the template's spelling: "\n{\"name\": \"NAME\", \"arguments\": " ARGS "}\n".
+// The vocabulary carries the Qwen2 tokenizer's pieces around the frame's
+// seams (each is an id of the real vocabulary): " {\"" ends the head and
+// opens the arguments, "\"}}\n" closes a string, the arguments and the
+// frame at once.
+constexpr int64_t kJBraceQuote = 270, kJName = 271, kJQuoteColon = 272, kJSpaceQuote = 273,
+                  kJQuoteComma = 274, kJArguments = 275, kJSpaceBraceQuote = 276, kJSpaceEmpty = 277,
+                  kJQuoteCloseAll = 278, kJCloseBoth = 279, kJCloseBothNl = 280, kJCloseNl = 281,
+                  kJColonSpaceBrace = 282, kJSpaceBraceNl = 283, kJTwoSpaces = 284, kJCloseBothNlNl = 285,
+                  kJSpaceBrace = 286, kJQuoteClose = 287, kJSpaceEmptyNl = 288;
+GrammarVocab json_vocab() {
+  std::vector<std::string> texts(static_cast<size_t>(kVocab));
+  for (int b = 0; b < 256; ++b) texts[static_cast<size_t>(b)] = std::string(1, static_cast<char>(b));
+  texts[kGet] = "get";
+  texts[kWeather] = "_weather";
+  texts[kGetWeather] = "get_weather";
+  texts[kUnderscore] = "_";
+  texts[kWea] = "wea";
+  texts[kTher] = "ther";
+  texts[kCity] = "city";
+  texts[kGetT] = "get_t";
+  texts[kIme] = "ime";
+  texts[kThinkOpen] = "<think>";
+  texts[kThinkClose] = "</think>";
+  texts[kToolOpen] = "<tool_call>";
+  texts[kToolClose] = "</tool_call>";
+  texts[kJBraceQuote] = "{\"";
+  texts[kJName] = "name";
+  texts[kJQuoteColon] = "\":";
+  texts[kJSpaceQuote] = " \"";
+  texts[kJQuoteComma] = "\",";
+  texts[kJArguments] = "arguments";
+  texts[kJSpaceBraceQuote] = " {\"";
+  texts[kJSpaceEmpty] = " {}";
+  texts[kJQuoteCloseAll] = "\"}}\n";
+  texts[kJCloseBoth] = "}}";
+  texts[kJCloseBothNl] = "}}\n";
+  texts[kJCloseNl] = "}\n";
+  texts[kJColonSpaceBrace] = "\": {\"";
+  texts[kJSpaceBraceNl] = " {\n";
+  texts[kJTwoSpaces] = "  ";
+  texts[kJCloseBothNlNl] = "}}\n\n";
+  texts[kJSpaceBrace] = " {";
+  texts[kJQuoteClose] = "\"}";
+  texts[kJSpaceEmptyNl] = " {}\n";
+  ChatMarkers m;
+  m.think_open = ChatMarker{kThinkOpen, "<think>"};
+  m.think_close = ChatMarker{kThinkClose, "</think>"};
+  m.tool_call_open = ChatMarker{kToolOpen, "<tool_call>"};
+  m.tool_call_close = ChatMarker{kToolClose, "</tool_call>"};
+  m.json_calls = true;  // the family's statement: the tokenizer cannot tell
+  return GrammarVocab(std::move(texts), m, {kEosText, kEosUser}, kVocab, kEosUser);
+}
+
+// The mask, the pointwise rule and the commit agree at this position: the
+// same ids either way, and every allowed id leaves the grammar alive.
+void require_consistent(const GrammarState& g, const std::string& where) {
+  TokenMask m;
+  g.mask(&m);
+  for (int64_t id = 0; id < kVocab; ++id) {
+    const bool pointwise = g.allows(id);
+    require(m.allows(id) == pointwise, where + ": mask and allows() disagree on id " + std::to_string(id) +
+                                           " in state " + g.state_name());
+    if (!m.constrained() || !pointwise) continue;
+    GrammarState next = g;
+    next.advance(id);
+    require(next.active(), where + ": allowed id " + std::to_string(id) + " killed the grammar in state " +
+                               g.state_name());
+  }
+}
+void feed_consistent(GrammarState& g, const std::vector<int64_t>& ids, const std::string& where) {
+  for (const int64_t id : ids) {
+    require_consistent(g, where);
+    require(g.allows(id), where + ": id " + std::to_string(id) + " allowed in state " + g.state_name());
+    g.advance(id);
+  }
+  require_consistent(g, where);
+}
+
+// What the grammar let through, as the parser reads it.
+std::vector<dgpp::text::ToolCallParser::Call> parse_json_calls(const GrammarVocab& vocab,
+                                                               const std::vector<int64_t>& ids,
+                                                               std::string* content) {
+  dgpp::text::ToolCallParser::Options plain;
+  plain.start_in_reasoning = false;
+  dgpp::text::ToolCallParser parser(
+      vocab.markers(),
+      [&](const std::vector<int64_t>& run) {
+        std::string out;
+        for (const int64_t id : run) out += vocab.text(id);
+        return out;
+      },
+      dgpp::text::ToolSchemas(), plain);
+  std::vector<dgpp::text::ToolCallParser::Event> events;
+  for (const int64_t id : ids) parser.feed(id, &events);
+  parser.finish(&events);
+  std::vector<dgpp::text::ToolCallParser::Call> calls;
+  for (const auto& ev : events) {
+    if (ev.kind == dgpp::text::ToolCallParser::Event::Kind::kToolCall) calls.push_back(ev.call);
+    if (ev.kind == dgpp::text::ToolCallParser::Event::Kind::kContent) *content += ev.text;
+  }
+  return calls;
+}
+
+DGPP_TEST(tool_grammar_json_format_isTheVocabularysStatement) {
+  // The same marker ids select the XML grammar or the JSON one by the
+  // markers' statement alone; the existing families keep theirs.
+  using dgpp::text::ToolFormat;
+  const GrammarVocab json = json_vocab();
+  require(json.usable() && json.markers().tool_format() == ToolFormat::kQwenJson, "the stated JSON form");
+  require(!json.json_call_end_ids().empty(), "the JSON form indexes the ids that can close the arguments and run on");
+  const GrammarVocab xml = qwen_vocab();
+  require(xml.markers().tool_format() == ToolFormat::kQwenXml && xml.json_call_end_ids().empty(),
+          "Qwen3.8's vocabulary stays the XML format");
+  require(qwen_vocab(/*compact=*/true).markers().tool_format() == ToolFormat::kQwenXml,
+          "MiMo's vocabulary stays the XML format");
+  require(fake_vocab().markers().tool_format() == ToolFormat::kGlmMarkers, "the GLM vocabulary is unaffected");
+  // The first bytes of a block under each: the JSON grammar refuses the XML
+  // form, the XML grammar the JSON one.
+  GrammarState j(&json, spec_of(GrammarSpec::Mode::kRequired), false);
+  GrammarState x(&xml, spec_of(GrammarSpec::Mode::kRequired), false);
+  j.advance(kToolOpen);
+  x.advance(kToolOpen);
+  require(std::string(j.state_name()) == "j-head" && std::string(x.state_name()) == "q-name",
+          std::string("each format's own block: ") + j.state_name() + " / " + x.state_name());
+  feed(j, bytes_of("\n"));
+  feed(x, bytes_of("\n"));
+  require(j.allows('{') && !j.allows('<'), "the JSON block opens with its brace, never <function=");
+  require(x.allows('<') && !x.allows('{'), "the XML block opens with <function=, never a brace");
+  j.advance('<');  // a disallowed id kills the grammar
+  require(!j.active() && std::string(j.state_name()) == "dead", "the XML form is outside the JSON grammar");
+}
+
+DGPP_TEST(tool_grammar_json_required_call_walks_the_canonical_shape) {
+  const GrammarVocab vocab = json_vocab();
+  GrammarState g(&vocab, spec_of(GrammarSpec::Mode::kRequired), /*prompt_opens_thinking=*/false);
+  // A call is owed: the opener alone, as under the XML format.
+  require(!g.allows('H') && g.allows(kToolOpen) && !g.allows(kEosUser) && !g.allows(kEosText) && !g.allows(kToolClose),
+          "top: <tool_call> only, never prose or EOS while owed");
+  g.advance(kToolOpen);
+  require(std::string(g.state_name()) == "j-head", std::string("the head follows the opener: ") + g.state_name());
+  // The head is the template's spelling, byte for byte: a newline, the
+  // brace, "name" first.
+  require(same(allowed_ids(g), {'\n'}), "the head starts with the template's newline: " + show(allowed_ids(g)));
+  feed(g, bytes_of("\n"));
+  require(same(allowed_ids(g), {'{', kJBraceQuote}), "then the brace: " + show(allowed_ids(g)));
+  feed(g, bytes_of("{\""));
+  require(g.allows('n') && g.allows(kJName) && !g.allows('a') && !g.allows(kJArguments),
+          "the name comes first, the arguments second");
+  feed(g, bytes_of("name\": \""));
+  // The name: get_weather / get_time / ping over token texts.
+  require(g.allows(kGet) && g.allows(kGetWeather) && g.allows('p') && g.allows(kGetT) && !g.allows('x') &&
+              !g.allows('"'),
+          "names over token texts");
+  feed(g, {kGet, kWeather});
+  require(same(allowed_ids(g), {'"', kJQuoteComma}), "the name closes with its quote: " + show(allowed_ids(g)));
+  feed(g, bytes_of("\", \"arguments\":"));
+  // The head's last byte is one space; the tokens that carry it into the
+  // object are offered with it, two spaces or a newline are not.
+  require(same(allowed_ids(g), {' ', kJSpaceBraceQuote, kJSpaceEmpty, kJSpaceBraceNl, kJSpaceBrace}),
+          "the head's space, alone or with the object's first bytes: " + show(allowed_ids(g)));
+  feed(g, bytes_of(" "));
+  require(std::string(g.state_name()) == "j-args", std::string("the arguments follow the head: ") + g.state_name());
+  // The object opens at once: no whitespace before its brace, no other value.
+  require(same(allowed_ids(g), {'{', kJBraceQuote}), "the arguments are an object: " + show(allowed_ids(g)));
+  feed(g, bytes_of("{\""));
+  // get_weather's keys are closed: city / days.
+  require(g.allows('c') && g.allows('d') && g.allows(kCity) && !g.allows('x') && !g.allows('"'), "closed keys city/days");
+  feed(g, {kCity});
+  feed(g, bytes_of("\": \"Paris\""));
+  // The value closed: another key, or the object's end — alone, or with the
+  // frame's brace and newline behind it. A newline right after the object's
+  // brace is not the tail.
+  require(g.allows(',') && g.allows('}') && g.allows(kJCloseBoth) && g.allows(kJCloseBothNl) && !g.allows(kJCloseNl) &&
+              !g.allows(kJCloseBothNlNl) && !g.allows(kToolClose) && !g.allows(kEosUser),
+          "after a value: a comma, or the close with the frame's tail");
+  feed(g, bytes_of(", \""));
+  require(g.allows('d') && !g.allows('c') && !g.allows(kCity), "a closed key is offered once");
+  feed(g, bytes_of("days\": 3"));
+  feed(g, bytes_of("}"));
+  // The object is whole: the tail and nothing else, no whitespace before it.
+  require(std::string(g.state_name()) == "j-args" && same(allowed_ids(g), {'}', kJCloseNl}),
+          "only the frame's brace follows the object: " + show(allowed_ids(g)));
+  feed(g, bytes_of("}"));
+  require(same(allowed_ids(g), {'\n'}), "then the template's newline: " + show(allowed_ids(g)));
+  feed(g, bytes_of("\n"));
+  require(std::string(g.state_name()) == "q-close" && same(allowed_ids(g), {kToolClose}),
+          "then </tool_call> only: " + show(allowed_ids(g)));
+  g.advance(kToolClose);
+  // Required (parallel): free text, another call, or the turn's end.
+  require(g.allows(kToolOpen) && g.allows(kEosUser) && g.allows('x') && !g.allows(kToolClose),
+          "after the call: text, another call or EOS");
+  g.advance(kEosUser);
+  require(std::string(g.state_name()) == "done", "done after EOS");
+}
+
+DGPP_TEST(tool_grammar_json_naturalTokenizationCrossesBothSeams) {
+  const GrammarVocab vocab = json_vocab();
+  // The Qwen2 tokenizer's own pieces for the template's block: " {\"" spans
+  // the head's space and the object's first two bytes; "\"}}\n" closes the
+  // string, the object and the frame. Every id is allowed in turn, the
+  // mask, allows() and the commit agree at every position, and the parser
+  // reads the result as the call.
+  const std::vector<int64_t> call = {
+      kToolOpen, '\n', kJBraceQuote, kJName, kJQuoteColon, kJSpaceQuote, kGet, kWeather, kJQuoteComma, kJSpaceQuote,
+      kJArguments, kJQuoteColon, kJSpaceBraceQuote, kCity, kJQuoteColon, kJSpaceQuote, 'P', 'a', 'r', 'i', 's',
+      kJQuoteCloseAll, kToolClose, kEosUser};
+  GrammarState g(&vocab, spec_of(GrammarSpec::Mode::kRequired, /*parallel=*/false), false);
+  feed_consistent(g, call, "natural tokens");
+  require(std::string(g.state_name()) == "done", std::string("the turn ended: ") + g.state_name());
+  std::string content;
+  auto calls = parse_json_calls(vocab, call, &content);
+  require(calls.size() == 1 && calls[0].name == "get_weather" && calls[0].arguments == "{\"city\": \"Paris\"}" &&
+              content.empty(),
+          "the parser reads what the grammar wrote");
+  // No arguments: " {}" ends the head and is the whole object, "}\n" the tail.
+  const std::vector<int64_t> empty = {kToolOpen, '\n',       kJBraceQuote, kJName,      kJQuoteColon, kJSpaceQuote,
+                                      'p',       'i',        'n',          'g',         kJQuoteComma, kJSpaceQuote,
+                                      kJArguments, kJQuoteColon, kJSpaceEmpty, kJCloseNl, kToolClose,   kEosUser};
+  GrammarState e(&vocab, spec_of(GrammarSpec::Mode::kRequired, false), false);
+  feed_consistent(e, empty, "no arguments");
+  content.clear();
+  calls = parse_json_calls(vocab, empty, &content);
+  require(calls.size() == 1 && calls[0].name == "ping" && calls[0].arguments == "{}", "the empty call parses");
+  // A piece across three bytes of the head and two of the object, a
+  // separate close, and two calls with the template's newline between them.
+  const std::vector<int64_t> two = {
+      kToolOpen, '\n', kJBraceQuote, kJName, kJQuoteColon, kJSpaceQuote, kGetT, kIme, kJQuoteComma, kJSpaceQuote,
+      kJArguments, kJColonSpaceBrace, 't', 'z', kJQuoteColon, kJSpaceQuote, 'U', 'T', 'C', kJQuoteClose, kJCloseNl,
+      kToolClose, '\n',
+      kToolOpen, '\n', kJBraceQuote, kJName, kJQuoteColon, kJSpaceQuote, kGetWeather, kJQuoteComma, kJSpaceQuote,
+      kJArguments, kJQuoteColon, kJSpaceBrace, '"', 'd', 'a', 'y', 's', kJQuoteColon, ' ', '3', kJCloseBothNl,
+      kToolClose, kEosUser};
+  GrammarState t(&vocab, spec_of(GrammarSpec::Mode::kRequired), false);
+  feed_consistent(t, two, "two calls");
+  require(std::string(t.state_name()) == "done", "two calls, then the end");
+  content.clear();
+  calls = parse_json_calls(vocab, two, &content);
+  require(calls.size() == 2 && calls[0].name == "get_time" && calls[0].arguments == "{\"tz\": \"UTC\"}" &&
+              calls[1].name == "get_weather" && calls[1].arguments == "{\"days\": 3}" && content == "\n",
+          "both calls parse, the newline between them is content");
+}
+
+DGPP_TEST(tool_grammar_json_frameIsExactArgumentsAreJson) {
+  const GrammarVocab vocab = json_vocab();
+  const auto at = [&](const std::string& bytes) {
+    GrammarState g(&vocab, spec_of(GrammarSpec::Mode::kRequired), false);
+    g.advance(kToolOpen);
+    feed(g, bytes_of(bytes));
+    return g;
+  };
+  // The frame has no latitude: the template's bytes or nothing.
+  require(!at("").allows('{') && !at("").allows(' '), "no brace before the newline, no other whitespace");
+  require(!at("\n").allows('\n') && !at("\n").allows(' '), "one newline only");
+  require(!at("\n{").allows(' ') && !at("\n{\"name\"").allows(' '), "no space the template does not write");
+  require(!at("\n{\"").allows('a'), "the arguments never come first");
+  GrammarState head = at("\n{\"name\": \"ping\", \"arguments\":");
+  require(head.allows(' ') && !head.allows(kJTwoSpaces) && !head.allows('\n') && !head.allows('{'),
+          "exactly one space before the object");
+  // ping declares no parameters at all: its object is empty. An id may
+  // carry the head's space and the whole object, but not a newline after
+  // it: the frame's brace comes first.
+  require(head.allows(kJSpaceEmpty) && !head.allows(kJSpaceBraceQuote), "a closed, empty key set: {} only");
+  require(!head.allows(kJSpaceEmptyNl), "an id that runs past the object must run into the tail");
+  GrammarState open = at("\n{\"name\": \"ping\", \"arguments\": ");
+  require(!open.allows(' ') && !open.allows('\n') && !open.allows('[') && !open.allows('"') && !open.allows('1') &&
+              open.allows('{'),
+          "an object, at once");
+  feed(open, bytes_of("{"));
+  require(open.allows('}') && !open.allows('"'), "no key to offer");
+  feed(open, bytes_of("}"));
+  require(!open.allows(' ') && !open.allows('\n') && !open.allows(',') && open.allows('}'),
+          "nothing between the object's brace and the frame's");
+  feed(open, bytes_of("}"));
+  require(!open.allows(' ') && !open.allows('}') && !open.allows(kToolClose) && open.allows('\n'),
+          "the newline before </tool_call>");
+  // Inside the arguments the JSON machine's own whitespace applies, as for
+  // any JSON-typed value.
+  GrammarState loose = at("\n{\"name\": \"get_weather\", \"arguments\": {");
+  require(loose.allows(' ') && loose.allows('\n') && loose.allows('"') && loose.allows('}'),
+          "whitespace inside the object is the machine's");
+  feed(loose, bytes_of("\n  \"city\" :\t\"Oslo\"\n"));
+  // The object's own close may carry a newline only as the tail's: "}\n"
+  // here would put it between the two braces.
+  require(loose.allows('}') && loose.allows(kJCloseBoth) && loose.allows(kJCloseBothNl) && !loose.allows(kJCloseNl) &&
+              !loose.allows(kJCloseBothNlNl),
+          "the close, with the tail or without, never past it");
+  loose.advance(kJCloseBothNl);
+  require(std::string(loose.state_name()) == "q-close", "one id closed the object and the frame");
+  // A marker or an EOS never rides inside the block, not even as string
+  // content.
+  GrammarState str = at("\n{\"name\": \"get_weather\", \"arguments\": {\"city\": \"Par");
+  require(str.allows('i') && !str.allows(kThinkOpen) && !str.allows(kThinkClose) && !str.allows(kToolOpen) &&
+              !str.allows(kToolClose) && !str.allows(kEosUser) && !str.allows(kEosText),
+          "inside a string: text only");
+  // A structural piece that would close the object from inside a string does
+  // not: it is the string's content (and a raw newline is not JSON there).
+  feed(str, bytes_of("is"));
+  require(str.allows(kJQuoteCloseAll) && str.allows(kJQuoteClose) && str.allows(kJCloseBoth) && !str.allows(kJCloseBothNl),
+          "the quote ends the string; braces without it are content");
+  GrammarState content = str;
+  content.advance(kJCloseBoth);
+  require(std::string(content.state_name()) == "j-args" && content.allows('"') && content.allows(kJQuoteCloseAll),
+          "the braces were string content");
+  str.advance(kJQuoteCloseAll);
+  require(std::string(str.state_name()) == "q-close", "the quote, both braces and the newline in one id");
+}
+
+// The arguments from a function definition. Under the JSON format every
+// declared property is a JSON text — a string is quoted like any other
+// value — so each rides as kJson under its own schema and the whole object
+// is one machine; under the other formats the derivation is what it was.
+DGPP_TEST(tool_grammar_json_typesEveryDeclaredProperty) {
+  const dgpp::minijson::ParseResult def = dgpp::minijson::parse(
+      R"({"name":"get_weather","strict":true,"parameters":{"type":"object","properties":{)"
+      R"("city":{"type":"string"},"days":{"type":"integer","minimum":1},)"
+      R"("unit":{"type":"string","enum":["celsius","fahrenheit"]},)"
+      R"("opts":{"type":"object","properties":{"metric":{"type":"boolean"}},"additionalProperties":false}},)"
+      R"("required":["city","days"],"additionalProperties":false}})");
+  const GrammarTool raw = dgpp::text::grammar_tool_from_function(def.root, nullptr);
+  require(raw.args.size() == 4 && raw.args[0].kind == GrammarArg::Kind::kFree &&
+              raw.args[1].kind == GrammarArg::Kind::kJson && raw.args[2].kind == GrammarArg::Kind::kText &&
+              raw.args[2].texts == std::vector<std::string>{"celsius", "fahrenheit"},
+          "the raw-string formats: a string is free text, a string enum its raw texts");
+  const GrammarTool xml =
+      dgpp::text::grammar_tool_from_function(def.root, nullptr, nullptr, dgpp::text::ToolFormat::kQwenXml);
+  require(xml.args == raw.args && xml.keys == raw.keys, "stating the XML format changes nothing");
+  const GrammarTool tool =
+      dgpp::text::grammar_tool_from_function(def.root, nullptr, nullptr, dgpp::text::ToolFormat::kQwenJson);
+  require(tool.strict && tool.constrain_keys && tool.keys == raw.keys && tool.required_keys == raw.required_keys,
+          "the key set, the required keys and strict are the format's to share");
+  for (const GrammarArg& a : tool.args)
+    require(a.kind == GrammarArg::Kind::kJson && !a.schema.empty(), "the JSON format types '" + a.key + "' by its schema");
+
+  const GrammarVocab vocab = json_vocab();
+  GrammarSpec spec;
+  spec.mode = GrammarSpec::Mode::kNamed;
+  spec.named = "get_weather";
+  spec.parallel = false;
+  spec.tools.push_back(tool);
+  GrammarState g(&vocab, spec, false);
+  g.advance(kToolOpen);
+  feed(g, bytes_of("\n{\"name\": \"get_weather\", \"arguments\":"));
+  // Strict: the required keys gate the close, so the empty object is not on
+  // offer, with the head's space or after it.
+  require(g.allows(kJSpaceBraceQuote) && !g.allows(kJSpaceEmpty), "strict: {} is refused while keys are required");
+  feed(g, bytes_of(" {"));
+  require(g.allows('"') && !g.allows('}'), "strict: the object cannot close empty");
+  feed(g, bytes_of("\"city\": "));
+  require(g.allows('"') && !g.allows('1') && !g.allows('{') && !g.allows('t') && !g.allows('n') && !g.allows('['),
+          "a string property is a JSON string");
+  feed(g, bytes_of("\"Rome\""));
+  require(g.allows(',') && !g.allows('}') && !g.allows(kJCloseBoth), "strict: days is still required");
+  feed(g, bytes_of(", \"days\": "));
+  require(g.allows('3') && !g.allows('0') && !g.allows('"') && !g.allows('-'), "an integer under its minimum");
+  feed(g, bytes_of("3"));
+  require(g.allows('}') && g.allows(kJCloseBoth) && g.allows(kJCloseBothNl) && g.allows(','),
+          "every required key present: the object may close");
+  feed(g, bytes_of(", \"unit\": "));
+  require(g.allows('"') && !g.allows('c'), "a string enum is quoted here");
+  feed(g, bytes_of("\""));
+  require(g.allows('c') && g.allows('f') && !g.allows('k') && !g.allows('"'), "one of the enum's texts");
+  feed(g, bytes_of("celsius\", \"opts\": {\"metric\": "));
+  require(g.allows('t') && g.allows('f') && !g.allows('"') && !g.allows('1'), "a nested object under its own schema");
+  feed(g, bytes_of("true}"));
+  require(g.allows('}') && !g.allows(','), "every declared key used: only the close");
+  feed(g, bytes_of("}}\n"));
+  g.advance(kToolClose);
+  require(same(allowed_ids(g), {kEosUser}), "named: exactly one call, then the turn ends: " + show(allowed_ids(g)));
+
+  // Not strict: the same definition closes at will, as the other formats'
+  // non-strict calls do.
+  const dgpp::minijson::ParseResult lax = dgpp::minijson::parse(
+      R"({"name":"get_weather","parameters":{"type":"object","properties":{"city":{"type":"string"}},)"
+      R"("required":["city"]}})");
+  GrammarSpec lax_spec = spec;
+  lax_spec.tools = {dgpp::text::grammar_tool_from_function(lax.root, nullptr, nullptr, dgpp::text::ToolFormat::kQwenJson)};
+  GrammarState l(&vocab, lax_spec, false);
+  l.advance(kToolOpen);
+  feed(l, bytes_of("\n{\"name\": \"get_weather\", \"arguments\":"));
+  require(l.allows(kJSpaceEmpty), "not strict: the required key is the client's to check");
+  feed(l, bytes_of(" {\""));
+  require(l.allows('c') && !l.allows('d'), "the declared names still close the key set");
+
+  // A property outside the constrained subset stays any JSON value, with
+  // the warning saying so.
+  const dgpp::minijson::ParseResult odd = dgpp::minijson::parse(
+      R"({"name":"f","parameters":{"type":"object","properties":{"a":{"oneOf":[{"type":"string"}]},"b":{"type":"string"}}}})");
+  std::vector<std::string> warnings;
+  const GrammarTool o =
+      dgpp::text::grammar_tool_from_function(odd.root, &warnings, nullptr, dgpp::text::ToolFormat::kQwenJson);
+  require(o.args[0].kind == GrammarArg::Kind::kFree && o.args[1].kind == GrammarArg::Kind::kJson && warnings.size() == 1 &&
+              warnings[0].find("any JSON value") != std::string::npos,
+          "outside the subset: free, and said so");
+  GrammarSpec odd_spec = spec;
+  odd_spec.named = "f";
+  odd_spec.tools = {o};
+  GrammarState f(&vocab, odd_spec, false);
+  f.advance(kToolOpen);
+  feed(f, bytes_of("\n{\"name\": \"f\", \"arguments\": {\"a\": "));
+  require(f.allows('"') && f.allows('1') && f.allows('[') && f.allows('{') && f.allows('t'), "any JSON value");
+  feed(f, bytes_of("[1, {\"k\": null}], \"b\": "));
+  require(f.allows('"') && !f.allows('1'), "beside a typed one");
+}
+
+DGPP_TEST(tool_grammar_json_modes) {
+  const GrammarVocab vocab = json_vocab();
+  // Named: the one function, an open key set (get_time), exactly one call.
+  GrammarState named(&vocab, spec_of(GrammarSpec::Mode::kNamed, false, "get_time"), false);
+  require(same(allowed_ids(named), {kToolOpen}), "named: the opener alone: " + show(allowed_ids(named)));
+  named.advance(kToolOpen);
+  feed(named, bytes_of("\n{\"name\": \""));
+  require(!named.allows(kGetWeather) && !named.allows('p') && named.allows(kGetT) && named.allows(kGet),
+          "named: only get_time");
+  feed(named, {kGetT, kIme});
+  feed(named, bytes_of("\", \"arguments\": {\""));
+  require(named.allows('t') && named.allows('x') && !named.allows(kToolClose) && !named.allows(kEosUser),
+          "an open key set: any key");
+  feed(named, bytes_of("tz\": \"UTC\"}}\n"));
+  named.advance(kToolClose);
+  require(same(allowed_ids(named), {kEosUser}), "named: EOS only: " + show(allowed_ids(named)));
+  // Required, parallel calls off: one call, then the end.
+  GrammarState single(&vocab, spec_of(GrammarSpec::Mode::kRequired, /*parallel=*/false), false);
+  single.advance(kToolOpen);
+  feed(single, bytes_of("\n{\"name\": \"ping\", \"arguments\": {}}\n"));
+  single.advance(kToolClose);
+  require(same(allowed_ids(single), {kEosUser}), "one call when parallel calls are off: " + show(allowed_ids(single)));
+  // Auto: prose, a call when the model opens one — well-formed then — and
+  // the end at will.
+  GrammarState autos(&vocab, spec_of(GrammarSpec::Mode::kAuto), false);
+  require(autos.allows('H') && autos.allows(kToolOpen) && autos.allows(kEosUser) && !autos.allows(kToolClose),
+          "auto: free text, the opener, or the end");
+  feed(autos, bytes_of("Sure."));
+  autos.advance(kToolOpen);
+  require(std::string(autos.state_name()) == "j-head" && same(allowed_ids(autos), {'\n'}),
+          "auto: an opened block is the template's");
+  feed(autos, bytes_of("\n{\"name\": \"ping\", \"arguments\": {}}\n"));
+  autos.advance(kToolClose);
+  require(autos.allows(kToolOpen) && autos.allows(kEosUser) && autos.allows('x'), "auto: more text, another call, or the end");
+  // None: the opener never.
+  GrammarState none(&vocab, spec_of(GrammarSpec::Mode::kForbidCalls), false);
+  require(none.allows('H') && none.allows(kEosUser) && !none.allows(kToolOpen), "none: no block opens");
+  // Tools beside response_format: a JSON answer or a call, the call in the
+  // JSON call format.
+  GrammarSpec both = spec_of(GrammarSpec::Mode::kJsonOrTools);
+  GrammarState either(&vocab, both, false);
+  require(either.allows('{') && either.allows(kToolOpen) && !either.allows('H'), "a JSON answer or a call");
+  either.advance(kToolOpen);
+  require(std::string(either.state_name()) == "j-head", std::string("the call's head: ") + either.state_name());
+  // A reasoning block the prompt opened runs free first; the call is still owed.
+  GrammarState thinks(&vocab, spec_of(GrammarSpec::Mode::kRequired), /*prompt_opens_thinking=*/true);
+  require(std::string(thinks.state_name()) == "think" && thinks.allows('x') && !thinks.allows(kEosUser),
+          "reasoning first, the turn cannot end");
+  thinks.advance(kThinkClose);
+  require(same(allowed_ids(thinks), {kToolOpen}), "then the owed call");
+}
+
+// The entry as it rides the journal: the untyped arguments are dropped
+// (fabric_serve.cpp), a string enum built for a raw-string format may still
+// arrive as kText. Every rank composes the same arguments schema from what
+// arrives.
+DGPP_TEST(tool_grammar_json_sameMasksFromTheJournalsEntry) {
+  const GrammarVocab vocab = json_vocab();
+  GrammarSpec head = spec_of(GrammarSpec::Mode::kRequired);
+  GrammarArg city, days, unit;
+  city.key = "city";  // kFree: listed on rank 0, absent on the peers
+  days.key = "days";
+  days.kind = GrammarArg::Kind::kJson;
+  days.schema = R"({"type": "integer"})";
+  unit.key = "unit";
+  unit.kind = GrammarArg::Kind::kText;
+  unit.texts = {"celsius", "fahrenheit"};
+  head.tools[0].keys = {"city", "days", "unit"};
+  head.tools[0].args = {city, days, unit};
+  GrammarSpec peer = head;
+  peer.tools[0].args = {days, unit};
+  GrammarState a(&vocab, head, false), b(&vocab, peer, false);
+  const std::vector<int64_t> ids = [&] {
+    std::vector<int64_t> out = {kToolOpen};
+    for (const int64_t id : bytes_of("\n{\"name\": \"get_weather\", \"arguments\": {\"city\": [\"x\"], \"days\": 3, "
+                                     "\"unit\": \"celsius\"}}\n"))
+      out.push_back(id);
+    out.push_back(kToolClose);
+    return out;
+  }();
+  for (const int64_t id : ids) {
+    require(same(allowed_ids(a), allowed_ids(b)), std::string("the same mask on every rank in state ") + a.state_name());
+    require_consistent(a, "journal entry");
+    require(a.allows(id), "id " + std::to_string(id) + " allowed in state " + a.state_name());
+    a.advance(id);
+    b.advance(id);
+  }
+  require(a.active() && std::string(a.state_name()) == "top" && std::string(b.state_name()) == "top", "both closed the call");
+  // The typed entries held: an integer for days, a quoted enum text for unit.
+  GrammarState t(&vocab, peer, false);
+  t.advance(kToolOpen);
+  feed(t, bytes_of("\n{\"name\": \"get_weather\", \"arguments\": {\"days\": "));
+  require(t.allows('3') && !t.allows('"'), "the kJson entry types its value");
+  feed(t, bytes_of("3, \"unit\": "));
+  require(t.allows('"') && !t.allows('c'), "the kText entry's texts are JSON strings here");
+  feed(t, bytes_of("\"f"));
+  require(t.allows('a') && !t.allows('c'), "one of its texts");
+}
+
 }  // namespace
 
 DGPP_TEST(tool_grammar_mimo_compact_calls_empty_text_and_typed_values) {
