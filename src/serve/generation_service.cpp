@@ -1,4 +1,5 @@
 #include "serve/generation_service.hpp"
+#include "serve/chat_content.hpp"
 #include "serve/image_inputs.hpp"
 #include "text/dsv41_prompt.hpp"
 
@@ -8,6 +9,7 @@
 #include <cstring>
 
 #include <algorithm>
+#include <exception>
 #include <cstdlib>
 #include <cmath>
 #include <cstdio>
@@ -2055,11 +2057,33 @@ void GenerationService::route_chat_completions(const HttpRequest& req,
   // scheduler request and masks the pick on every rank (M6 6g).
   std::vector<int64_t> prompt;
   std::vector<ImageInput> images;
-  try {
-    auto input = frontend_->prepare_chat(plan.globals);
+  const auto render = [&](const dgpp::minijson::Value& globals) {
+    auto input = frontend_->prepare_chat(globals);
     prompt = std::move(input.tokens);
     images = std::move(input.images);
     validate_image_inputs(images, prompt.size());
+  };
+  try {
+    try {
+      render(plan.globals);
+    } catch (const ImageInputError&) {
+      throw;
+    } catch (const std::exception&) {
+      // A template written for string content (Qwen3-Coder-Next's
+      // concatenates message.content) throws on OpenAI's array-of-parts
+      // form. A text-only array means its texts joined, so render that once;
+      // if that fails too, the answer is the template's first complaint.
+      const std::exception_ptr first = std::current_exception();
+      const auto flat = flatten_text_content(plan.globals);
+      if (!flat) throw;
+      try {
+        render(*flat);
+      } catch (const ImageInputError&) {
+        throw;
+      } catch (const std::exception&) {
+        std::rethrow_exception(first);
+      }
+    }
   } catch (const ImageInputError& e) {
     respond_error(w, 400, e.what(), "invalid_request_error", e.param, "invalid_image");
     return;

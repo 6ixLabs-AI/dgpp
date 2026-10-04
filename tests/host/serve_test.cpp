@@ -41,6 +41,7 @@
 #include "common/test.hpp"
 #include "../common/utf8.hpp"
 #include "sched/scheduler.hpp"
+#include "serve/chat_content.hpp"
 #include "serve/generation_service.hpp"
 #include "serve/image_inputs.hpp"
 #include "serve/http_server.hpp"
@@ -530,6 +531,9 @@ class FakeFrontend : public ModelFrontend {
     }
     return out;
   }
+  // A template written for string content: it throws on a content array, the
+  // way Qwen3-Coder-Next's does (it concatenates message.content).
+  std::atomic<bool> string_content_only{false};
   std::string render_chat(const dgpp::minijson::Value& globals) const override {
     {
       std::lock_guard<std::mutex> lock(mu_);
@@ -539,6 +543,8 @@ class FakeFrontend : public ModelFrontend {
     for (const auto& msg : globals.at("messages").items()) {
       const auto* content = msg.find("content");
       if (content == nullptr) continue;
+      if (string_content_only && content->is_array())
+        throw std::runtime_error("chat-template: line 98: '+' needs two numbers (or, for '+', two strings)");
       if (content->is_string()) {
         out.append(content->as_string());
       } else {
@@ -1071,6 +1077,108 @@ DGPP_TEST(serve_chatNonStream_exactCompletionShape) {
   require(resp.find("\"prompt_tokens\":4,\"completion_tokens\":3,"
                     "\"total_tokens\":7") != std::string::npos,
           "usage arithmetic: " + resp);
+}
+
+// The body of a chat request whose one user message carries `content` as
+// given JSON (a string literal or an array of parts).
+std::string chat_body_with_content(const std::string& content_json, int max_tokens) {
+  return "{\"model\":\"" + kModel + "\",\"messages\":[{\"role\":\"user\",\"content\":" +
+         content_json + "}],\"max_tokens\":" + std::to_string(max_tokens) + "}";
+}
+
+std::string post_chat(Client& c, const std::string& body, const std::string& until) {
+  c.send_all("POST /v1/chat/completions HTTP/1.1\r\nHost: t\r\n"
+             "Content-Type: application/json\r\nContent-Length: " +
+             std::to_string(body.size()) + "\r\n\r\n" + body);
+  return c.read_until(until, 5000);
+}
+
+DGPP_TEST(serve_chatContentParts_aStringOnlyTemplateGetsTheTextsJoined) {
+  // GIVEN a template that throws on a content array (Qwen3-Coder-Next's),
+  ServiceRig rig;
+  rig.frontend.string_content_only = true;
+  Client c(rig.port());
+
+  // WHEN the user message is two text parts,
+  const std::string resp = post_chat(
+      c, chat_body_with_content("[{\"type\":\"text\",\"text\":\"ab\"},{\"type\":\"text\",\"text\":\"cd\"}]", 3),
+      "usage");
+
+  // THEN it is served as the string "ab\ncd": 5 prompt tokens, and the
+  // template saw string content.
+  require(resp.find("200 OK") != std::string::npos, "status: " + resp);
+  require(resp.find("\"prompt_tokens\":5,\"completion_tokens\":3") != std::string::npos,
+          "the joined text is the prompt: " + resp);
+  require(rig.frontend.last_globals().find("\"content\":\"ab\ncd\"") != std::string::npos,
+          "the template was handed a string: " + rig.frontend.last_globals());
+}
+
+DGPP_TEST(serve_chatContentParts_aTemplateThatReadsPartsStillGetsThem) {
+  // GIVEN a template that reads content parts itself (the default fake),
+  ServiceRig rig;
+  Client c(rig.port());
+
+  // WHEN the user message is two text parts,
+  const std::string resp = post_chat(
+      c, chat_body_with_content("[{\"type\":\"text\",\"text\":\"ab\"},{\"type\":\"text\",\"text\":\"cd\"}]", 3),
+      "usage");
+
+  // THEN the array reaches the template as sent: it renders "abcd", 4 tokens.
+  require(resp.find("200 OK") != std::string::npos, "status: " + resp);
+  require(resp.find("\"prompt_tokens\":4,\"completion_tokens\":3") != std::string::npos,
+          "the parts were rendered by the template: " + resp);
+  require(rig.frontend.last_globals().find("\"content\":[") != std::string::npos,
+          "the template was handed the array: " + rig.frontend.last_globals());
+}
+
+DGPP_TEST(serve_chatContentParts_stringContentIsNeverRetried) {
+  // GIVEN a string-only template and a request whose content is a string
+  // the fake cannot fault, the render is the ordinary one: 4 tokens.
+  ServiceRig rig;
+  rig.frontend.string_content_only = true;
+  Client c(rig.port());
+  const std::string resp = post_chat(c, chat_body("abcd", 3), "usage");
+  require(resp.find("200 OK") != std::string::npos, "status: " + resp);
+  require(resp.find("\"prompt_tokens\":4,\"completion_tokens\":3") != std::string::npos,
+          "usage: " + resp);
+}
+
+DGPP_TEST(serve_flattenTextContent_onlyTextOnlyArrays) {
+  using dgpp::minijson::parse;
+  using dgpp::serve::flatten_text_content;
+
+  // An all-text array becomes the texts joined by a newline; the message's
+  // other members and the other globals are kept.
+  const std::string a =
+      "{\"messages\":[{\"role\":\"system\",\"content\":\"s\"},"
+      "{\"role\":\"user\",\"name\":\"n\",\"content\":[{\"type\":\"text\",\"text\":\"x\"},{\"type\":\"text\",\"text\":\"y\"}]}],"
+      "\"add_generation_prompt\":true}";
+  const auto ga = parse(a);
+  const auto fa = flatten_text_content(ga);
+  require(fa.has_value(), "an all-text array is flattened");
+  require(json_of(*fa) ==
+              "{\"messages\":[{\"role\":\"system\",\"content\":\"s\"},"
+              "{\"role\":\"user\",\"name\":\"n\",\"content\":\"x\ny\"}],\"add_generation_prompt\":true}",
+          "flattened form: " + json_of(*fa));
+
+  // An empty array is the empty string.
+  const std::string e = "{\"messages\":[{\"role\":\"user\",\"content\":[]}]}";
+  const auto ge = parse(e);
+  const auto fe = flatten_text_content(ge);
+  require(fe.has_value() && json_of(*fe) == "{\"messages\":[{\"role\":\"user\",\"content\":\"\"}]}",
+          "an empty array is the empty string");
+
+  // A text part beside an image part is left to the template.
+  const std::string m =
+      "{\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"x\"},"
+      "{\"type\":\"image_url\",\"image_url\":{\"url\":\"u\"}}]}]}";
+  const auto gm = parse(m);
+  require(!flatten_text_content(gm).has_value(), "a mixed array is not flattened");
+
+  // String content: nothing to do.
+  const std::string s2 = "{\"messages\":[{\"role\":\"user\",\"content\":\"x\"}]}";
+  const auto gs = parse(s2);
+  require(!flatten_text_content(gs).has_value(), "string content is not touched");
 }
 
 DGPP_TEST(serve_chatOneTokenLimit_returnsExactlyOneToken) {
