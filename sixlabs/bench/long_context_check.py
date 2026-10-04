@@ -70,10 +70,20 @@ def main():
                 answer = "".join(text)
                 wall = time.time() - t0
                 found = [c for _, c in facts if c in answer]
+                # A code under the wrong room is not a retrieval: score the pairs. (2026-10-04, at
+                # 511,820 tokens the model dropped the middle code and shifted the next one up a
+                # line; four of the five codes were "in the answer", three under the right room.)
+                lines = {}
+                for ln in answer.splitlines():
+                    if ":" in ln:
+                        k, v = ln.split(":", 1)
+                        lines[k.strip().strip("*-• ").lower()] = v.strip()
+                pairs = [lines.get(nm.lower(), "").startswith(c) or c in lines.get(nm.lower(), "") for nm, c in facts]
                 pt, ct = usage.get("prompt_tokens"), usage.get("completion_tokens")
                 row.update({"prompt_tokens": pt, "completion_tokens": ct, "ttft_s": ttft and round(ttft, 1),
                             "wall_s": round(wall, 1), "found": len(found), "of": len(facts),
                             "found_by_depth": [c in answer for _, c in facts],
+                            "correct_pairs": sum(pairs), "pairs_by_depth": pairs,
                             "prefill_tok_s": pt and ttft and round(pt / ttft),
                             "decode_tok_s": ct and ttft and wall > ttft and round((ct - 1) / (wall - ttft), 1),
                             "answer": answer[:600]})
@@ -88,8 +98,8 @@ def main():
             out.write(json.dumps(row, ensure_ascii=False) + "\n")
             out.flush()
             n += 1
-            brief = row.get("error") or (f"{row['prompt_tokens']} prompt tokens, {row['found']}/{row['of']} facts "
-                                         f"{row['found_by_depth']}, first token {row['ttft_s']} s, "
+            brief = row.get("error") or (f"{row['prompt_tokens']} prompt tokens, {row['correct_pairs']}/{row['of']} room:code pairs right "
+                                         f"{row['pairs_by_depth']} ({row['found']} codes present), first token {row['ttft_s']} s, "
                                          f"prefill {row['prefill_tok_s']} tok/s, decode {row['decode_tok_s']} tok/s")
             print(f"[1/1] {n}/{len(sizes)} err={err} elapsed={int(time.time() - t00)}s :: {target}: {brief}", flush=True)
     print("DONE", flush=True)
