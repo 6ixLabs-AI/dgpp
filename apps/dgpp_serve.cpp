@@ -249,6 +249,8 @@ struct ServeGraphEngine {
   virtual void set_sampled_schedule_scale(float scale) = 0;
   // engine.logprobs_mode raw, before the warm capture (GraphEngineAdapter::set_raw_logprobs).
   virtual void set_raw_logprobs(bool on) = 0;
+  // engine.prefill_group, before the admission policy is resolved.
+  virtual void set_prefill_group_mode(const std::string& mode) = 0;
 };
 
 template <class Model>
@@ -265,6 +267,7 @@ struct ServeGraphEngineOf final : ServeGraphEngine {
   void set_proposal_drafts(bool on) override { eng.set_proposal_drafts(on); }
   void set_sampled_schedule_scale(float scale) override { eng.set_sampled_schedule_scale(scale); }
   void set_raw_logprobs(bool on) override { eng.set_raw_logprobs(on); }
+  void set_prefill_group_mode(const std::string& mode) override { eng.set_prefill_group_mode(mode); }
 };
 
 struct ServeFamily {
@@ -1579,6 +1582,7 @@ int main(int argc, char** argv) {
   int prefill_idle_budget_tokens = 0;
   int decode_passes_per_prefill = 1;
   std::string prefill_order = "fair";
+  std::string prefill_group = "auto";
   std::string max_tokens_overflow = "refuse";
   // The prefix cache's entry policy (2026-09-28): no entry below the floor,
   // and a cold prompt keeps the cut at its first structural boundary.
@@ -1707,6 +1711,7 @@ int main(int argc, char** argv) {
     prefill_idle_budget_tokens = e.prefill_idle_budget_tokens;
     decode_passes_per_prefill = e.decode_passes_per_prefill;
     prefill_order = e.prefill_order;
+    prefill_group = e.prefill_group;
     prefix_min_tokens = e.prefix_min_tokens;
     prefix_head_snapshots = e.prefix_head_snapshots;
     bulk_pace_gbps = e.bulk_pace_gbps;
@@ -1818,6 +1823,7 @@ int main(int argc, char** argv) {
     else if (a == "--prefill-idle-budget-tokens") prefill_idle_budget_tokens = std::stoi(next());
     else if (a == "--decode-passes-per-prefill") decode_passes_per_prefill = std::stoi(next());
     else if (a == "--prefill-order") prefill_order = next();
+    else if (a == "--prefill-group") prefill_group = next();
     else if (a == "--prefix-min-tokens") prefix_min_tokens = std::stoi(next());
     else if (a == "--prefix-head-snapshots") prefix_head_snapshots = true;
     else if (a == "--no-prefix-head-snapshots") prefix_head_snapshots = false;
@@ -2380,6 +2386,10 @@ int main(int argc, char** argv) {
     DGPP_LOG_ERROR("--prefill-order must be fair or shortest");
     return 1;
   }
+  if (prefill_group != "auto" && prefill_group != "on" && prefill_group != "off") {
+    DGPP_LOG_ERROR("--prefill-group must be auto, on or off");
+    return 1;
+  }
   if ((decode_passes_per_prefill > 1 || prefill_order != "fair") && world > 1) {
     // The warm record does not carry these knobs yet, so the ranks could not
     // check they agree on them: refuse rather than run a world whose ranks
@@ -2887,6 +2897,7 @@ int main(int argc, char** argv) {
               family->make_graph_engine(bus.get(), rank, world, pick_scratch, graph_batch_min_live,
                                         sample_prefix.data, sample_gather.data, sampling_candidates,
                                         &grammar_vocab, prefix_slots, mtp_depth, compact_batches);
+          graph_engine->set_prefill_group_mode(prefill_group);
           knobs.admission = dgpp::serve::resolve_prefill_policy(knobs.admission, *graph_engine->engine());
           peer_policy = knobs.admission;
           DGPP_LOG_INFO("rank {}: prefill budget {} tokens/tick (0 = full prompt), {} with nothing decoding{}; "

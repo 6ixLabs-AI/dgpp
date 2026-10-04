@@ -1264,9 +1264,22 @@ class GraphEngineAdapter final : public sched::SchedulerEngine {
   // advertising kPrefillGroupAdvance); otherwise one advance per request.
   bool prefill_group_advance() const override {
     if constexpr (requires { Model::kPrefillGroupAdvance; }) {
-      if constexpr (Model::kPrefillGroupAdvance) return prefill_chunk_alignment() > 0;
+      if constexpr (Model::kPrefillGroupAdvance) return group_advance_on_ && prefill_chunk_alignment() > 0;
     }
     return false;
+  }
+  // engine.prefill_group: "on" / "off", or "auto" — shared walks where the
+  // family can, except a family that marks itself opt-in
+  // (Model::kPrefillGroupOptIn). Before the scheduler is built: its
+  // admission policy is resolved from this answer.
+  static bool group_advance_default() {
+    if constexpr (requires { Model::kPrefillGroupOptIn; })
+      return !Model::kPrefillGroupOptIn;
+    else
+      return true;
+  }
+  void set_prefill_group_mode(const std::string& mode) {
+    group_advance_on_ = mode == "on" || (mode != "off" && group_advance_default());
   }
   std::vector<sched::SchedulerEngine::PrefillProgress> advance_prefill_group(
       const std::vector<int>& reqs, const std::vector<int64_t>& budgets) override {
@@ -1274,6 +1287,37 @@ class GraphEngineAdapter final : public sched::SchedulerEngine {
       throw std::invalid_argument("graph engine: advance_prefill_group takes one budget per request");
     if constexpr (requires { Model::kPrefillGroupAdvance; }) {
       if constexpr (Model::kPrefillGroupAdvance) {
+        // A scoring request keeps its tail rows whole and takes the head
+        // over all of them (session_set_score_tail): the scalar walk does
+        // that, a group walk returns each span's last row only. Advance
+        // those one walk each and the rest together.
+        bool scoring = false;
+        for (const int req : reqs) {
+          check_req(req);
+          scoring = scoring || !score_tokens_[static_cast<size_t>(req)].empty();
+        }
+        if (scoring) {
+          std::vector<bool> alone(reqs.size());
+          std::vector<int> rest;
+          std::vector<int64_t> rest_budgets;
+          for (size_t i = 0; i < reqs.size(); ++i) {
+            alone[i] = !score_tokens_[static_cast<size_t>(reqs[i])].empty();
+            if (!alone[i]) {
+              rest.push_back(reqs[i]);
+              rest_budgets.push_back(budgets[i]);
+            }
+          }
+          std::vector<sched::SchedulerEngine::PrefillProgress> grouped;
+          if (rest.size() >= 2)
+            grouped = advance_prefill_group(rest, rest_budgets);
+          else if (rest.size() == 1)
+            grouped.push_back(advance_prefill(rest[0], rest_budgets[0]));
+          std::vector<sched::SchedulerEngine::PrefillProgress> out;
+          size_t at = 0;
+          for (size_t i = 0; i < reqs.size(); ++i)
+            out.push_back(alone[i] ? advance_prefill(reqs[i], budgets[i]) : grouped[at++]);
+          return out;
+        }
         if (reqs.size() >= 2) {
           drain();
           std::vector<typename Model::PrefillCursor*> cursors;
@@ -3403,6 +3447,7 @@ class GraphEngineAdapter final : public sched::SchedulerEngine {
   std::vector<std::vector<int32_t>> context_;  // prompt + decided, per slot
   std::vector<bool> report_;                    // logprobs asked, per slot
   std::vector<std::vector<sample::Result>> pending_logprobs_;
+  bool group_advance_on_ = group_advance_default();      // engine.prefill_group (set_prefill_group_mode)
   std::vector<std::vector<int32_t>> score_tokens_;       // the continuation each slot's prefill scores (empty: none)
   std::vector<int> score_top_;                           // alternatives reported per scored token
   std::vector<std::vector<sample::Result>> score_rows_;  // the finished prefill's scores, until take_score

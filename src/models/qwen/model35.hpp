@@ -162,6 +162,19 @@ class Qwen35Model : public SessionModel<Qwen35Model> {
   static constexpr bool kResumablePrefill = true;
   // run_rows honours RowRun::tail_rows: a given continuation is scored in the read-in pass.
   static constexpr bool kScoreTail = true;
+  // Several in-flight prompts' next chunks as the spans of one walk (6ixServe,
+  // 2026-10-04). run_rows already takes a span at any position: the GDN
+  // layers resume each span from its request's own recurrent and conv state,
+  // the attention layers read and write each request's K/V at its positions,
+  // the MLP runs over all rows at once, and the weights stream once. The
+  // chunks are tolerance-equal across splits, not bitwise (the routed MoE's
+  // near-tie flips: a row's numbers move with the shape of its chunk either
+  // way, grouped or not).
+  static constexpr bool kPrefillGroupAdvance = true;
+  // Opt-in for now: engine.prefill_group "auto" leaves this family reading
+  // one prompt a walk, "on" shares the walk. Drop this once the GPU check
+  // (sixlabs/bench/group_window.sh) has passed on every checkpoint served.
+  static constexpr bool kPrefillGroupOptIn = true;
   // The two opt-in FP8 levers beyond the checkpoint, set from the cluster
   // config before plan_memory and the constructor read them:
   // engine.prefill_fp8_per_tensor (the per-tensor prefill recipe) and

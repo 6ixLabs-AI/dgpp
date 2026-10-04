@@ -512,6 +512,17 @@ only decode. The prompt is read that much slower, and only while something is
 decoding; a queued request waits at most N - 1 decode passes. Single-rank
 only for now: the warm record does not carry the knob.
 
+`engine.prefill_group` (`--prefill-group`, 6ixServe: `auto`, `on`, `off`)
+decides whether the prompts being read in share one walk. With it on, a tick
+advances every in-flight prompt as the spans of one forward: prompts that
+arrive together are read together and start decoding together, and with
+answers in progress the tick's budget is a quantum per reading prompt (up to
+the walk's row limit) instead of one quantum split among them. `auto` is on
+where the family can, except a family that marks itself opt-in — the
+`qwen3_5` family (Qwen3-Next-80B and its siblings) until its GPU check has
+passed on each checkpoint served; set `on` there to use it. A scoring request
+(`POST /v1/score`) is always read in a walk of its own.
+
 `engine.prefill_idle_budget_tokens` (`--prefill-idle-budget-tokens`) optionally
 uses larger chunks when no request is actively decoding. It must be at least
 the enabled busy budget, use the same alignment and fit the prefill scratch

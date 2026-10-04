@@ -233,6 +233,9 @@ struct ClusterConfig {
     int prefill_idle_budget_tokens = 0;
     int decode_passes_per_prefill = 1;  // decode passes per prefill chunk while both are in flight (1: the original loop)
     std::string prefill_order = "fair";  // "fair": equal shares of a tick's budget; "shortest": least left to read first
+    // In-flight prompts as the spans of one walk: "on", "off", or "auto" (on
+    // where the family can and does not mark itself opt-in).
+    std::string prefill_group = "auto";
     double bulk_pace_gbps = -1.0;  // derived from the port rate
     int bulk_inflight = -1;
     int rendezvous_timeout_ms = 120000;

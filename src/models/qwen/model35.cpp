@@ -1455,10 +1455,24 @@ Qwen35Model::Outputs Qwen35Model::run_rows(const RowRun& run) {
   // rows (kScoreTail): each lands at its own row of logits_, and finish_run
   // returns them beside the usual last row.
   const int tail = run.tail_rows > 1 ? std::min(run.tail_rows, T) : 1;
-  const int first = (run.decode || run.all_rows || run.num_spans > 0) ? 0 : T - tail;
-  const int rows = T - first;
-  head_gemv(h_ + static_cast<size_t>(first) * H, logits_ + static_cast<size_t>(first) * lm_vocab_count_,
-            rows, stream_);
+  // A prefill's spans (the cold group, a group advance) need the head on each
+  // span's LAST row only. Over every row it is a tenth of the walk again —
+  // and with a group advance a walk is thousands of rows. Packed: span s's
+  // row is logits_ row s (finish_run's packed form).
+  const bool span_heads = !run.decode && !run.all_rows && run.num_spans > 0;
+  if (span_heads) {
+    int at = 0;
+    for (int sp = 0; sp < run.num_spans; ++sp) {
+      const int last = at + run.span_lens[sp] - 1;
+      head_gemv(h_ + static_cast<size_t>(last) * H, logits_ + static_cast<size_t>(sp) * lm_vocab_count_, 1, stream_);
+      at += run.span_lens[sp];
+    }
+  } else {
+    const int first = (run.decode || run.all_rows) ? 0 : T - tail;
+    const int rows = T - first;
+    head_gemv(h_ + static_cast<size_t>(first) * H, logits_ + static_cast<size_t>(first) * lm_vocab_count_,
+              rows, stream_);
+  }
   // The draft block's input: the last rows' final hidden into the slots'
   // windows by position (the last window rows of a prefill chunk, every
   // decode row — distinct slots within one launch).
@@ -1475,7 +1489,7 @@ Qwen35Model::Outputs Qwen35Model::run_rows(const RowRun& run) {
   // acceptance decay was exactly this — the capture kept the verify
   // exact but starved the drafter).
   if (dflash2_) dflash2_store_features(T, d_req, d_pos);
-  out = finish_run(run, std::move(out));
+  out = finish_run(run, std::move(out), /*packed_logits=*/span_heads);
   return out;
 }
 
