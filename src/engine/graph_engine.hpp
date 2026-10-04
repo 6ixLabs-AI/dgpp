@@ -2036,7 +2036,10 @@ class GraphEngineAdapter final : public sched::SchedulerEngine {
       cudaGraphDestroy(graph);
       (void)cudaMemGetInfo(&free_after, &total);
       DGPP_LOG_INFO("rank {}: graph variant {} instantiated — {:.1f} MiB of device memory ({:.1f} GiB free)", rank_,
-                    variant, static_cast<double>(free_before - free_after) / (1024.0 * 1024.0),
+                    // Signed: on unified memory the free figure can RISE across the call (the
+                    // kernel reclaiming page cache), and the unsigned difference then printed
+                    // 17592186044406.0 MiB (2026-10-04, the 35B's boot log).
+                    variant, (static_cast<double>(free_before) - static_cast<double>(free_after)) / (1024.0 * 1024.0),
                     static_cast<double>(free_after) / (1024.0 * 1024.0 * 1024.0));
       return exec;
     } catch (...) {
