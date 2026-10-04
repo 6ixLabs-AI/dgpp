@@ -20,6 +20,6 @@ DGPP's own tree is untouched outside the files the port changes; our tooling liv
   `~/dgpp` there serves Qwen3.8 and is never built in).
 - Test deployment: DGXone `172.17.0.1:18090`, model `Qwen3-Next-80B`; config
   `deploy/cluster_qwen3-next-80b_nvfp4_w1.json` and `.env` in that copy (both git-ignored: site settings).
-- Gateway name: LiteLLM `qwen3-next-80b-DGPP`.
+- Gateway name: LiteLLM `qwen3-next-80b-6ix`.
 - Weights: the HF cache on DGXone (`nvidia/Qwen3-Next-80B-A3B-Instruct-NVFP4`; the FP8 release is there too).
 - Working files of the captures and benchmarks: DGXone `~/dgpp-refset/`.
