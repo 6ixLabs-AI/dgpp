@@ -62,9 +62,22 @@ ModelArchitecture detect_architecture(const minijson::Value& root) {
   // assembly has not landed, so no app serves it yet.
   if (arch.rfind("NemotronH", 0) == 0 || (arch.empty() && type == "nemotron_h"))
     return ModelArchitecture::NemotronH;
+  // The plain Qwen3 family (2026-10-04, models/qwen3): no Gated DeltaNet,
+  // full attention in every layer. `Qwen3VLMoeForConditionalGeneration` /
+  // `qwen3_vl_moe` (a nested text_config; the text path only),
+  // `Qwen3MoeForCausalLM` / `qwen3_moe` and the dense `Qwen3ForCausalLM` /
+  // `qwen3`. The dense VL class (`Qwen3VLForConditionalGeneration`) is not
+  // one of them and stays refused below.
+  if (arch.rfind("Qwen3VLMoe", 0) == 0 || (arch.empty() && type == "qwen3_vl_moe"))
+    return ModelArchitecture::Qwen3VlMoe;
+  if (arch.rfind("Qwen3MoeFor", 0) == 0 || (arch.empty() && type == "qwen3_moe"))
+    return ModelArchitecture::Qwen3Moe;
+  if (arch == "Qwen3ForCausalLM" || arch == "Qwen3Model" || (arch.empty() && type == "qwen3"))
+    return ModelArchitecture::Qwen3;
   throw std::runtime_error(
       "config.json: unsupported architecture '" + arch + "' (model_type '" +
-      type + "'); the engine implements Glm5*, Qwen4Exp*, Glm4Moe*, GlmMoeDsa*, DeepseekV41*, DeepseekV4*, MiMoV2*, Qwen3_5* and Qwen3Next*");
+      type + "'); the engine implements Glm5*, Qwen4Exp*, Glm4Moe*, GlmMoeDsa*, DeepseekV41*, DeepseekV4*, MiMoV2*, Qwen3_5*, Qwen3Next*, "
+      "Qwen3MoeFor*, Qwen3VLMoe* and Qwen3ForCausalLM");
 }
 
 ModelArchitecture detect_architecture_file(const std::string& path) {

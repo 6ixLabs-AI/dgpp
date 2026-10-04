@@ -685,6 +685,87 @@ QWEN3_NEXT_CASES = [
 ]
 
 
+# The plain Qwen3 templates (2026-10-04). Both write the 80B's JSON tool calls
+# over the same tokenizer, so the 80B's cases run on both, plus what each
+# template adds:
+#   Qwen3-235B-A22B-Instruct-2507 — the Qwen3 reasoning history: an assistant
+#     turn's reasoning (the reasoning_content field, or <think>..</think> inside
+#     its content) is re-rendered as a <think> block only AFTER the last real
+#     user query (a multi-step tool exchange) and dropped before it.
+#   Qwen3-VL-30B-A3B-Instruct — content given as a list of parts (text parts
+#     concatenated; an image / video part renders the checkpoint's placeholder
+#     triple, which the engine never produces: it refuses image inputs for this
+#     family — the case pins the interpreter, not a served path), and no
+#     default system turn.
+QWEN3_MOE_CASES = QWEN3_NEXT_CASES + [
+    ("reasoning_history_dropped_before_the_last_query", {
+        "messages": [
+            {"role": "user", "content": "2+2?"},
+            {"role": "assistant", "content": "4", "reasoning_content": "simple sum"},
+            {"role": "user", "content": "And 3+3?"},
+        ],
+        "add_generation_prompt": True,
+    }),
+    ("reasoning_kept_inside_a_tool_exchange", {
+        "messages": [
+            {"role": "user", "content": "Weather in Paris?"},
+            {"role": "assistant", "content": "", "reasoning_content": "\nneed the tool\n",
+             "tool_calls": [qwen_call("c1", "get_weather", {"city": "Paris"})]},
+            {"role": "tool", "tool_call_id": "c1", "content": "sunny"},
+        ],
+        "tools": [wrapped(weather_tool())], "add_generation_prompt": True,
+    }),
+    ("think_markers_inside_content", {
+        "messages": [
+            {"role": "user", "content": "Weather in Rome? 罗马呢?"},
+            {"role": "assistant", "content": THINK_OPEN + "\ncheck Rome\n" + THINK_CLOSE + "\n\nLooking it up.",
+             "tool_calls": [qwen_call("c1", "get_weather", {"city": "Rome", "days": 2})]},
+            {"role": "tool", "tool_call_id": "c1", "content": "rain"},
+            {"role": "assistant", "content": "Rain in Rome."},
+        ],
+        "tools": [wrapped(weather_tool())], "add_generation_prompt": False,
+    }),
+    ("mid_conversation_system_turn", {
+        "messages": [
+            {"role": "system", "content": "Be brief."},
+            {"role": "user", "content": "Hi"},
+            {"role": "assistant", "content": "Hello."},
+            {"role": "system", "content": "Now answer in French."},
+            {"role": "user", "content": "How are you?"},
+        ],
+        "add_generation_prompt": True,
+    }),
+]
+
+QWEN3_VL_CASES = QWEN3_NEXT_CASES + [
+    ("content_as_text_parts", {
+        "messages": [
+            {"role": "system", "content": [{"type": "text", "text": "Be brief."}]},
+            {"role": "user", "content": [{"type": "text", "text": "Describe "}, {"type": "text", "text": "秋天。"}]},
+            {"role": "assistant", "content": [{"type": "text", "text": "Leaves fall."}]},
+            {"role": "user", "content": "Shorter."},
+        ],
+        "add_generation_prompt": True,
+    }),
+    ("tool_result_as_text_parts", {
+        "messages": [
+            {"role": "user", "content": "Weather in Paris?"},
+            {"role": "assistant", "content": "", "tool_calls": [qwen_call("c1", "get_weather", {"city": "Paris"})]},
+            {"role": "tool", "tool_call_id": "c1", "content": [{"type": "text", "text": "sunny"}]},
+        ],
+        "tools": [wrapped(weather_tool())], "add_generation_prompt": True,
+    }),
+    ("image_and_video_parts_render_the_placeholders", {
+        "messages": [
+            {"role": "user", "content": [{"type": "image", "image": "x.png"}, {"type": "text", "text": "What is this?"},
+                                         {"type": "video", "video": "y.mp4"},
+                                         {"type": "image_url", "image_url": {"url": "z.png"}}]},
+        ],
+        "add_generation_prompt": True, "add_vision_id": True,
+    }),
+]
+
+
 def main():
     import argparse
     ap = argparse.ArgumentParser()
@@ -700,13 +781,18 @@ def main():
     args = ap.parse_args()
     model = args.model
     is_qwen3_next = "Qwen3-Next" in model
-    is_qwen = "Qwen" in model and not is_qwen3_next
+    is_qwen3_vl = "Qwen3-VL" in model
+    is_qwen3_moe = "Qwen3-235B" in model
+    is_qwen = "Qwen" in model and not is_qwen3_next and not is_qwen3_vl and not is_qwen3_moe
     is_glm4 = "GLM-4" in model
     is_mimo = "MiMo" in model
-    cases = (QWEN3_NEXT_CASES if is_qwen3_next else
+    cases = (QWEN3_NEXT_CASES if is_qwen3_next else QWEN3_VL_CASES if is_qwen3_vl else
+             QWEN3_MOE_CASES if is_qwen3_moe else
              MIMO_CASES if is_mimo else QWEN_CASES if is_qwen else GLM4_CASES if is_glm4 else CASES)
     out_path = args.out_opt or args.out or (
         "tests/data/qwen3next_chat_template_goldens.jsonl" if is_qwen3_next else
+        "tests/data/qwen3vl_chat_template_goldens.jsonl" if is_qwen3_vl else
+        "tests/data/qwen3moe_chat_template_goldens.jsonl" if is_qwen3_moe else
         "tests/data/mimo_chat_template_goldens.jsonl" if is_mimo else
         "tests/data/qwen_chat_template_goldens.jsonl" if is_qwen else
         "tests/data/glm4_chat_template_goldens.jsonl" if is_glm4 else "tests/data/glm_chat_template_goldens.jsonl")
@@ -720,7 +806,8 @@ def main():
     tok_raw = pathlib.Path(tok_path).read_bytes()
     template_hash = f"{fnv1a64(tpl_raw):016x}"
     tok_hash = f"{fnv1a64(tok_raw):016x}"
-    if not is_qwen3_next and not is_qwen and not is_glm4 and not is_mimo and tok_hash != "700b4469fc43f23b":
+    if (not is_qwen3_next and not is_qwen3_vl and not is_qwen3_moe and not is_qwen and not is_glm4 and not is_mimo
+            and tok_hash != "700b4469fc43f23b"):
         sys.exit(f"unexpected tokenizer revision {tok_hash} — the tokenizer "
                  "goldens are keyed to 700b4469fc43f23b")
 
@@ -734,8 +821,7 @@ def main():
     with open(out_path, "w", encoding="utf-8") as f:
         header = {
             "model": model,
-            "jinja2": jinja_env.jinja2.__version__ if hasattr(
-                jinja_env, "jinja2") else "3.1.2",
+            "jinja2": __import__("jinja2").__version__,  # the version that rendered this corpus
             "template_hash": template_hash,
             "tokenizer_revision": tok_hash,
             "cases": len(cases),

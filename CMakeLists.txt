@@ -36,6 +36,13 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 option(DGPP_WERROR "Treat compiler warnings as errors" OFF)
 option(DGPP_BUILD_BENCHMARKS "Build platform, kernel and transport microbenchmarks" ON)
+# The plain Qwen3 family's GPU side (models/qwen3 loader + model, qwen3_forward_check, the family in
+# the server's registry) was written on 2026-10-04 without nvcc or a GPU: syntax-checked against a
+# header shim, never compiled for a device, never run. OFF keeps it out of every target, so it cannot
+# stop a build of main; the family's host side (config, binding table, host reference, their unit
+# tests, qwen3_bind_check) is compile-checked and unit-tested and is always built.
+# sixlabs/ports/qwen3-vl-30b-a3b/gpu-steps.md is the sequence that turns this on and verifies it.
+option(DGPP_BUILD_QWEN3_PLAIN_DRAFT "Plain Qwen3 / Qwen3-MoE GPU walk: an unverified draft, not yet compiled or run on a Spark" OFF)
 set(DGPP_SANITIZE "" CACHE STRING "Host sanitizer (address or undefined)")
 set_property(CACHE DGPP_SANITIZE PROPERTY STRINGS "" address undefined)
 
@@ -339,6 +346,39 @@ target_link_libraries(dgpp_models_mimo_layers
   PUBLIC dgpp_models_mimo dgpp_models_mimo_loader dgpp_models_moe dgpp_models_glm dgpp_kernels CUDA::cudart)
 dgpp_set_common(dgpp_models_mimo_layers)
 
+# The plain Qwen3 family (2026-10-04, sixlabs/ports/qwen3-vl-30b-a3b): Qwen3-MoE, the text path of
+# Qwen3-VL-MoE and the dense retrieval models. The host-side model description: config, the
+# expected-tensor table, and the host reference (the routed-only NVFP4 MoE oracle and the whole
+# forward, against tools/qwen3_reference.py). No CUDA.
+add_library(dgpp_models_qwen3 STATIC
+  src/models/qwen3/config.cpp
+  src/models/qwen3/binding.cpp
+  src/models/qwen3/moe_reference.cpp
+  src/models/qwen3/reference.cpp)
+target_include_directories(dgpp_models_qwen3 PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(dgpp_models_qwen3 PUBLIC dgpp_models_glm4 dgpp_models_glm dgpp_loaders dgpp_common)
+dgpp_set_common(dgpp_models_qwen3)
+
+# Its GPU side: an UNVERIFIED DRAFT (see the option). The loader calls the qwen3_5 loader's NVFP4
+# dequant functions (dgpp_models_qwen_loader); the model runs GLM-4.7's attention layer and K/V pool
+# (dgpp_models_glm4_layers) and the shared routed MoE layer (dgpp_models_moe).
+if(DGPP_BUILD_QWEN3_PLAIN_DRAFT)
+  add_library(dgpp_models_qwen3_loader STATIC
+    src/models/qwen3/loader.cpp)
+  target_include_directories(dgpp_models_qwen3_loader PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(dgpp_models_qwen3_loader
+    PUBLIC dgpp_models_qwen3 dgpp_models_qwen_loader dgpp_loaders CUDA::cudart dgpp_device_ranges)
+  dgpp_set_common(dgpp_models_qwen3_loader)
+
+  add_library(dgpp_models_qwen3_layers STATIC
+    src/models/qwen3/model.cpp)
+  target_include_directories(dgpp_models_qwen3_layers PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(dgpp_models_qwen3_layers
+    PUBLIC dgpp_models_qwen3 dgpp_models_qwen3_loader dgpp_models_glm4_layers dgpp_models_moe dgpp_models_glm
+           dgpp_kernels CUDA::cudart)
+  dgpp_set_common(dgpp_models_qwen3_layers)
+endif()
+
 # The full GLM-5.3 model on the session core (docs/glm53_plan.md G5).
 add_library(dgpp_models_glm_dsa_layers STATIC
   src/models/glm_dsa/model.cpp)
@@ -621,6 +661,11 @@ dgpp_set_common(dsv41_bind_check)
 add_executable(qwen35_bind_check apps/qwen35_bind_check.cpp)
 target_link_libraries(qwen35_bind_check PRIVATE dgpp_models_qwen dgpp_loaders)
 dgpp_set_common(qwen35_bind_check)
+# The plain Qwen3 family's bind check (host only): the headers against the table, the per-rank
+# resident arithmetic, and the host reference forward over a list of token ids.
+add_executable(qwen3_bind_check apps/qwen3_bind_check.cpp)
+target_link_libraries(qwen3_bind_check PRIVATE dgpp_models_qwen3 dgpp_loaders)
+dgpp_set_common(qwen3_bind_check)
 add_executable(dsv4_forward_check apps/dsv4_forward_check.cpp)
 target_include_directories(dsv4_forward_check PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/tests/cuda)
 target_link_libraries(dsv4_forward_check PRIVATE dgpp_models_dsv4_layers dgpp_bus dgpp_loaders dgpp_sched dgpp_text CUDA::cudart Threads::Threads)
@@ -749,6 +794,12 @@ if(DGPP_ENABLE_IBV)
                                              dgpp_serve CUDA::cudart
                                              Threads::Threads)
   dgpp_set_common(dgpp_serve_app)
+  # The plain Qwen3 family joins the server's registry only when its draft is built; without it the
+  # server refuses those checkpoints by name (apps/dgpp_serve.cpp make_family).
+  if(DGPP_BUILD_QWEN3_PLAIN_DRAFT)
+    target_link_libraries(dgpp_serve_app PRIVATE dgpp_models_qwen3_layers)
+    target_compile_definitions(dgpp_serve_app PRIVATE DGPP_QWEN3_PLAIN_DRAFT)
+  endif()
   # 6ixServe: the server binary, and so its process, is 6ix-Serve. dgpp-serve stays beside it as
   # a link for the upstream scripts and tests that name the binary (release.sh, the soak tools).
   set_target_properties(dgpp_serve_app PROPERTIES OUTPUT_NAME 6ix-Serve)
@@ -838,6 +889,9 @@ add_executable(unit_tests
   tests/unit/qwen36_loader_test.cpp
   tests/unit/qwen35_bf16_test.cpp
   tests/unit/qwen35_122b_test.cpp
+  tests/unit/qwen3_config_test.cpp
+  tests/unit/qwen3_binding_test.cpp
+  tests/unit/qwen3_reference_test.cpp
   tests/unit/qwen_dflash2_config_test.cpp
   tests/unit/dflash2_speculator_test.cpp
   tests/unit/qwen_rope_scaling_test.cpp
@@ -857,7 +911,7 @@ add_executable(unit_tests
 target_include_directories(unit_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(unit_tests PRIVATE CUDA::cudart dgpp_loaders
                                         dgpp_models_glm dgpp_models_qwen dgpp_models_qwen_loader
-                                        dgpp_models_glm4
+                                        dgpp_models_glm4 dgpp_models_qwen3
                                         dgpp_models_glm_dsa dgpp_models_dsv41 dgpp_models_dsv4 dgpp_models_mimo
                                         dgpp_rope_scaling
                                         dgpp_net dgpp_serve Threads::Threads)
@@ -970,6 +1024,15 @@ dgpp_set_common(qwen3next_tool_calls_test)
 add_test(NAME qwen3next_tool_calls_test
   COMMAND qwen3next_tool_calls_test ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/qwen3next_chat_template_goldens.jsonl)
 set_tests_properties(qwen3next_tool_calls_test PROPERTIES SKIP_RETURN_CODE 2 LABELS "host;checkpoint")
+# The same gate over the plain Qwen3 checkpoints' corpora (2026-10-04): Qwen3-235B-A22B-Instruct-2507
+# and Qwen3-VL-30B-A3B-Instruct write the 80B's JSON call form over the same tokenizer, with their own
+# templates (the Qwen3 reasoning history; content parts and the vision placeholders).
+add_test(NAME qwen3moe_tool_calls_test
+  COMMAND qwen3next_tool_calls_test ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/qwen3moe_chat_template_goldens.jsonl)
+set_tests_properties(qwen3moe_tool_calls_test PROPERTIES SKIP_RETURN_CODE 2 LABELS "host;checkpoint")
+add_test(NAME qwen3vl_tool_calls_test
+  COMMAND qwen3next_tool_calls_test ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/qwen3vl_chat_template_goldens.jsonl)
+set_tests_properties(qwen3vl_tool_calls_test PROPERTIES SKIP_RETURN_CODE 2 LABELS "host;checkpoint")
 # Qwen3-Coder-Next over its real tokenizer and template (host): the same
 # model class and tokenizer, the XML call form — what the template states,
 # the parser and the forced-call grammar over the tokenizer's own pieces.
@@ -1636,6 +1699,29 @@ add_test(NAME dsv4_engine_test COMMAND dsv4_engine_test)
 add_executable(glm4_forward_check apps/glm4_forward_check.cpp)
 target_link_libraries(glm4_forward_check PRIVATE dgpp_models_glm4_layers dgpp_bus dgpp_loaders dgpp_sched dgpp_text CUDA::cudart Threads::Threads)
 dgpp_set_common(glm4_forward_check)
+
+# The plain Qwen3-MoE diagnostic forward and its fixture gates (the loader's resident values and rank
+# slices; the cold forward and the session surface against the host reference — on synthetic
+# checkpoints of both NVFP4 containers): part of the unverified draft.
+if(DGPP_BUILD_QWEN3_PLAIN_DRAFT)
+  add_executable(qwen3_forward_check apps/qwen3_forward_check.cpp)
+  target_link_libraries(qwen3_forward_check PRIVATE dgpp_models_qwen3_layers dgpp_bus dgpp_loaders dgpp_sched dgpp_text CUDA::cudart Threads::Threads)
+  dgpp_set_common(qwen3_forward_check)
+
+  add_executable(qwen3_loader_test tests/cuda/qwen3_loader_test.cpp)
+  target_include_directories(qwen3_loader_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/tests/cuda)
+  target_link_libraries(qwen3_loader_test PRIVATE dgpp_models_qwen3_loader CUDA::cudart Threads::Threads)
+  dgpp_set_common(qwen3_loader_test)
+  add_test(NAME qwen3_loader_test COMMAND qwen3_loader_test)
+  set_tests_properties(qwen3_loader_test PROPERTIES LABELS "gpu")
+
+  add_executable(qwen3_forward_test tests/cuda/qwen3_forward_test.cpp)
+  target_include_directories(qwen3_forward_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/tests/cuda)
+  target_link_libraries(qwen3_forward_test PRIVATE dgpp_models_qwen3_layers dgpp_bus dgpp_loaders dgpp_sched dgpp_text CUDA::cudart Threads::Threads)
+  dgpp_set_common(qwen3_forward_test)
+  add_test(NAME qwen3_forward_test COMMAND qwen3_forward_test)
+  set_tests_properties(qwen3_forward_test PROPERTIES LABELS "gpu")
+endif()
 
 add_executable(mimo_forward_check apps/mimo_forward_check.cpp)
 target_link_libraries(mimo_forward_check PRIVATE dgpp_models_mimo_layers dgpp_bus dgpp_loaders dgpp_sched dgpp_text CUDA::cudart Threads::Threads)

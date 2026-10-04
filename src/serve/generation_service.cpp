@@ -1416,7 +1416,8 @@ bool GenerationService::parse_chat(const dgpp::minijson::Value& body,
         if (type->as_string() == "image_url") {
           if (r != "user") return refuse("images require a user message", at + ".type", "unsupported_content_type");
           if (!frontend_->supports_images() || !engine_->supports_images())
-            return refuse("the served model does not support image inputs", at + ".type", "unsupported_content_type");
+            return refuse(cfg_.image_refusal.empty() ? "the served model does not support image inputs" : cfg_.image_refusal,
+                          at + ".type", "unsupported_content_type");
           const auto* image = part.find("image_url");
           if (!image || !image->is_object()) return refuse("image_url must be an object", at + ".image_url");
           parts.push_back(part);

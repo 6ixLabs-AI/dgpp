@@ -96,6 +96,10 @@
 #include "models/glm_dsa/model.hpp"
 #include "models/mimo/config.hpp"
 #include "models/mimo/forward.hpp"
+#ifdef DGPP_QWEN3_PLAIN_DRAFT  // -DDGPP_BUILD_QWEN3_PLAIN_DRAFT=ON: the unverified plain-Qwen3 walk
+#include "models/qwen3/config.hpp"
+#include "models/qwen3/model.hpp"
+#endif
 #include "sched/scheduler.hpp"
 #include "text/tokenizer.hpp"
 #include "text/tool_grammar.hpp"
@@ -182,6 +186,9 @@ struct ServeKnobs {
   int64_t position_ceiling = 0;
   int64_t kv_pool_tokens = 0;
   std::optional<dgpp::RopeScaling> rope_scaling;
+  // The family's own words for refusing an image part (ServeFamily::
+  // image_refusal; empty: the service's generic message).
+  std::string image_refusal;
 };
 
 // Pinned words for the sampler's collectives, allocated BEFORE the world
@@ -276,6 +283,10 @@ struct ServeFamily {
   // generation_config.json, else the family's EOS): a turn boundary the
   // model must never write inside its own turn. Empty for most families.
   virtual std::vector<int64_t> extra_stop_token_ids() const { return {}; }
+  // What an image part is refused with when the family's engine serves no
+  // vision path: empty for the service's generic message; a family whose
+  // checkpoint carries a tower it does not serve names it.
+  virtual std::string image_refusal() const { return ""; }
   virtual int64_t block_tokens() const = 0;
   virtual int prefill_chunk_tokens() const = 0;
   // Empty when a pool of `pool_tokens` fits the family's id spaces.
@@ -1021,12 +1032,152 @@ struct Qwen35Family final : ServeFamily {
   }
 };
 
+#ifdef DGPP_QWEN3_PLAIN_DRAFT
+// The plain Qwen3 family (models/qwen3, 2026-10-04) — an UNVERIFIED DRAFT,
+// compiled only under -DDGPP_BUILD_QWEN3_PLAIN_DRAFT=ON: Qwen3-MoE and the
+// text path of Qwen3-VL-MoE. The paged K/V pool (64-token blocks, bf16), no
+// recurrent state, no draft layer, the resident fabric model / the streaming
+// world-1 one. A VL checkpoint's vision tower is bound and never served.
+struct Qwen3Family final : ServeFamily {
+  dgpp::Qwen3TextConfig cfg;
+  std::string ckpt;
+  std::vector<int64_t> extra_stops_;
+  std::unique_ptr<dgpp::Qwen3Model> model;
+  explicit Qwen3Family(const std::string& checkpoint)
+      : cfg(dgpp::Qwen3TextConfig::from_json_file((fs::path(checkpoint) / "config.json").string())),
+        ckpt(checkpoint) {
+    if (!cfg.moe())
+      throw std::invalid_argument(
+          "qwen3: the dense dialect (Qwen3ForCausalLM — the retrieval models) is bound and has a host "
+          "reference, but no serving path: a rerank / embedding endpoint is not built");
+    if (cfg.eos_token_ids.empty()) throw std::invalid_argument("qwen3: the config names no EOS token");
+    // The Instruct checkpoints can run past their answer into a fabricated
+    // next turn, as Qwen3-Next-80B does over the same tokenizer and ChatML
+    // template: `<|im_start|>` opens one, so it ends the generation like an
+    // EOS (the id from the checkpoint's added_tokens.json; absent: no extra stop).
+    std::ifstream f(fs::path(checkpoint) / "added_tokens.json");
+    if (f) {
+      std::stringstream ss;
+      ss << f.rdbuf();
+      const std::string text = ss.str();  // the parsed values view the text
+      const auto parsed = dgpp::minijson::parse(text);
+      if (const dgpp::minijson::Value* v = parsed.root.find("<|im_start|>"); v != nullptr && v->is_number())
+        extra_stops_.push_back(v->as_int());
+    }
+    if (cfg.vl())
+      DGPP_LOG_WARN("{}: this checkpoint carries a vision tower ({} blocks). It is bound and NOT served: this engine "
+                    "serves the TEXT path only, and image inputs are refused by name",
+                    cfg.family_name(), cfg.vision ? cfg.vision->depth : 0);
+  }
+  // World > 1 is a PLAN, not a path (sixlabs/ports/qwen3-235b-a22b/sharding-plan.md): the loader's
+  // rank slices exist and have a fixture gate, the walk's two folds per layer are GLM-4.7's, and none
+  // of it has run — not even at world 1. Refused by name until the plan's ladder has been climbed;
+  // lifting it is this one function.
+  static void refuse_world(int world) {
+    if (world > 1)
+      throw std::invalid_argument(
+          "the plain Qwen3 family is single-node for now: world_size " + std::to_string(world) +
+          " is planned (sixlabs/ports/qwen3-235b-a22b/sharding-plan.md), not verified — its walk has not "
+          "run at any world. Use world_size 1 (Qwen3-235B-A22B needs two nodes and is therefore not "
+          "served yet)");
+  }
+  std::vector<int64_t> extra_stop_token_ids() const override { return extra_stops_; }
+  std::string image_refusal() const override {
+    if (!cfg.vl()) return "";
+    return "this checkpoint is a Qwen3-VL model, but its vision tower is not served: the engine runs the text "
+           "path only (send text content parts; image and video inputs are refused)";
+  }
+  const char* name() const override { return cfg.family_name(); }
+  int64_t vocab_size() const override { return cfg.vocab_size; }
+  const std::vector<int64_t>& eos_token_ids() const override { return cfg.eos_token_ids; }
+  int64_t block_tokens() const override { return dgpp::Qwen3Model::kv_block_tokens_static(); }
+  int prefill_chunk_tokens() const override { return dgpp::Qwen3Model::prefill_chunk_tokens(); }
+  std::string pool_check(int64_t) const override { return ""; }
+  const char* kv_format_name() const override { return "bf16"; }
+  // The rope was trained to max_position_embeddings (262,144): a larger pool
+  // seats more requests, and no single request passes the ceiling.
+  int64_t position_limit() const override { return cfg.max_position_embeddings; }
+  int decode_rows_cap() const override { return dgpp::Qwen3Model::decode_rows_cap(); }
+  size_t lat_slot_bytes(int decode_rows) const override {
+    return static_cast<size_t>(decode_rows) * static_cast<size_t>(cfg.hidden_size) * 2;
+  }
+  dgpp::MemoryPlan plan(int forward_rows, int64_t context, int rank, int world_, bool fabric, int slots,
+                        bool mtp, int decode_rows) const override {
+    // No checkpoint of this model class carries a draft layer: engine.mtp has
+    // nothing to run, and says so before the plan.
+    if (mtp)
+      throw std::invalid_argument(
+          "engine.mtp is on, but the plain Qwen3 checkpoints carry no draft layer (no mtp.* tensors) — set "
+          "engine.mtp to false");
+    refuse_world(fabric ? world_ : 1);
+    return dgpp::Qwen3Model::plan_memory(
+        cfg, forward_rows, context, fabric ? rank : 0, fabric ? world_ : 1,
+        fabric ? dgpp::LoaderResidency::Resident : dgpp::LoaderResidency::Streaming, slots, decode_rows,
+        /*serving_logits=*/true);
+  }
+  size_t snapshot_bytes(int world_, bool mtp) const override {
+    return dgpp::Qwen3Model::session_snapshot_bytes(cfg, world_, mtp);
+  }
+  void build_model(dgpp::BoundaryReducer* reducer, int rank, int world_, bool fabric, int forward_rows,
+                   int64_t pool_tokens, int slots, bool mtp, int decode_rows) override {
+    if (mtp) throw std::invalid_argument("qwen3: no draft layer (engine.mtp must be false)");
+    refuse_world(fabric ? world_ : 1);
+    dgpp::Qwen3LayerStream::set_resident_image_dir(dgpp::GlmLayerStream::resident_image_dir());
+    model = std::make_unique<dgpp::Qwen3Model>(
+        cfg, ckpt, forward_rows, pool_tokens,
+        fabric ? dgpp::LoaderResidency::Resident : dgpp::LoaderResidency::Streaming, reducer,
+        fabric ? rank : 0, fabric ? world_ : 1, slots, decode_rows, /*serving_logits=*/true);
+  }
+  void destroy_model() override { model.reset(); }
+  size_t model_snapshot_bytes() const override { return model ? model->session_snapshot_bytes() : 0; }
+  std::unique_ptr<ServeGraphEngine> make_graph_engine(dgpp::net::CollectiveBus* bus, int rank,
+                                                      int world_, uint16_t* pick_scratch,
+                                                      int batch_min_live, uint16_t* prefix_scratch,
+                                                      uint16_t* gather_scratch, int candidates,
+                                                      const dgpp::text::GrammarVocab* grammar,
+                                                      int prefix_slots, int mtp_depth,
+                                                      bool compact_batches) override {
+    return std::make_unique<ServeGraphEngineOf<dgpp::Qwen3Model>>(
+        model.get(), bus, rank, world_, pick_scratch, cfg.vocab_size, /*pick_timeout_ms=*/60000,
+        batch_min_live, prefix_scratch, gather_scratch, candidates, grammar, prefix_slots,
+        mtp_depth, compact_batches);
+  }
+  std::unique_ptr<dgpp::sched::SchedulerEngine> make_eager_engine(
+      int slots, dgpp::DecodePick pick, dgpp::DecodeSample sample, const dgpp::text::GrammarVocab* grammar,
+      int prefix_slots) override {
+    return std::make_unique<dgpp::EagerEngineAdapter<dgpp::Qwen3Model>>(
+        model.get(), slots, std::move(pick), std::move(sample), grammar, prefix_slots);
+  }
+};
+#endif  // DGPP_QWEN3_PLAIN_DRAFT
+
 std::unique_ptr<ServeFamily> make_family(const std::string& ckpt, int world,
                                          dgpp::LatentFormat kv_format,
                                          const std::optional<dgpp::RopeScaling>& rope_scaling,
                                          bool fp8_head_mma) {
   const dgpp::ModelArchitecture arch =
       dgpp::detect_architecture_file((fs::path(ckpt) / "config.json").string());
+  // The plain Qwen3 family (models/qwen3): its config and binding table are
+  // in every build (qwen3_bind_check), its GPU walk is a draft that has not
+  // been compiled or run on a Spark and is kept out of the registry unless
+  // the build asks for it. Named here — the fall-through below is GLM-5.3's.
+  if (arch == dgpp::ModelArchitecture::Qwen3)
+    throw std::runtime_error(
+        "the checkpoint is a dense Qwen3 model (Qwen3ForCausalLM — the Qwen3-Reranker / Qwen3-Embedding "
+        "class). It is bound and has a host reference (qwen3_bind_check), but there is no serving path: no "
+        "GPU walk for the dense dialect and no rerank / embedding endpoint "
+        "(sixlabs/ports/qwen3-retrieval/gpu-steps.md)");
+  if (arch == dgpp::ModelArchitecture::Qwen3Moe || arch == dgpp::ModelArchitecture::Qwen3VlMoe) {
+#ifdef DGPP_QWEN3_PLAIN_DRAFT
+    return std::make_unique<Qwen3Family>(ckpt);
+#else
+    throw std::runtime_error(
+        std::string("the checkpoint is a ") + dgpp::model_architecture_name(arch) +
+        " model (the plain Qwen3 family). This build binds and validates it (qwen3_bind_check) but does not "
+        "serve it: its GPU walk is an unverified draft, compiled only when CMake is configured with "
+        "-DDGPP_BUILD_QWEN3_PLAIN_DRAFT=ON (sixlabs/ports/qwen3-vl-30b-a3b/gpu-steps.md)");
+#endif
+  }
   if (arch == dgpp::ModelArchitecture::DeepseekV41) return std::make_unique<Dsv41Family>(ckpt);
   if (arch == dgpp::ModelArchitecture::DeepseekV4) return std::make_unique<Dsv4Family>(ckpt);
   if (arch == dgpp::ModelArchitecture::MimoV2) return std::make_unique<MimoFamily>(ckpt, kv_format);
@@ -1140,7 +1291,10 @@ int prefix_arena_slots(size_t bytes, double gib) {
 // alike (ChatMarkers::json_calls). A template that cannot be read leaves the
 // JSON form; the template loader refuses that checkpoint anyway.
 bool family_json_calls(std::string_view family, const std::string& ckpt) {
-  if (family != "qwen3_next") return false;
+  // The plain Qwen3 templates (Qwen3-235B-A22B-Instruct-2507, Qwen3-VL-30B-A3B)
+  // write the 80B's JSON object over the same tokenizer: the same reading of
+  // the template's own source decides.
+  if (family != "qwen3_next" && family != "qwen3_moe" && family != "qwen3_vl_moe") return false;
   std::ifstream f(fs::path(ckpt) / "chat_template.jinja");
   if (!f) return true;
   std::stringstream ss;
@@ -1150,7 +1304,9 @@ bool family_json_calls(std::string_view family, const std::string& ckpt) {
 // Families whose checkpoints have no reasoning to control (Qwen3-Next-80B
 // Instruct, Qwen3-Coder-Next): a request's reasoning_effort is accepted and
 // does nothing (TextFrontend's instruct_only).
-bool family_instruct_only(std::string_view family) { return family == "qwen3_next"; }
+bool family_instruct_only(std::string_view family) {
+  return family == "qwen3_next" || family == "qwen3_moe" || family == "qwen3_vl_moe";
+}
 
 int serve_openai(dgpp::sched::SchedulerEngine* engine, int64_t vocab_size,
                  const std::vector<int64_t>& eos_ids, const std::string& ckpt,
@@ -1197,7 +1353,7 @@ int serve_openai(dgpp::sched::SchedulerEngine* engine, int64_t vocab_size,
                                : std::make_unique<dgpp::serve::TextFrontend>(
                                      &tok, &*tpl, family_json_calls(family_name, ckpt),
                                      family_instruct_only(family_name));
-    if (family_name == "qwen3_next")
+    if (family_name == "qwen3_next" || family_name == "qwen3_moe" || family_name == "qwen3_vl_moe")
       DGPP_LOG_INFO("serve: the template writes its tool calls as {}",
                     family_json_calls(family_name, ckpt) ? "one JSON object (the Hermes form)"
                                                          : "<function=...> XML tags");
@@ -1223,6 +1379,7 @@ int serve_openai(dgpp::sched::SchedulerEngine* engine, int64_t vocab_size,
   // The request-context surface (review item 7): what the app computed from
   // the family, the pool and the knob, verbatim onto /v1/models.
   scfg.position_ceiling = k.position_ceiling;
+  scfg.image_refusal = k.image_refusal;
   scfg.kv_pool_tokens = k.kv_pool_tokens;
   scfg.rope_scaling = k.rope_scaling;
   scfg.build_version = DGPP_VERSION;
@@ -2541,6 +2698,11 @@ int main(int argc, char** argv) {
       DGPP_LOG_WARN("serve: --mtp-expert-format {} applies to the Qwen draft experts only; the {} family loads as shipped",
                     mtp_expert_format, family->name());
     if (bf16_weights != "checkpoint" &&
+        (std::string(family->name()) == "qwen3_moe" || std::string(family->name()) == "qwen3_vl_moe"))
+      DGPP_LOG_INFO("serve: --bf16-weights {} packs nothing on the {} family (its draft walk builds no 12-bit "
+                    "companions): the bf16 bytes serve as shipped",
+                    bf16_weights, family->name());
+    if (bf16_weights != "checkpoint" &&
         (std::string(family->name()) == "deepseek_v41" || std::string(family->name()) == "deepseek_v4"))
       DGPP_LOG_INFO("serve: --bf16-weights {} packs nothing on the {} family yet (its bf16 sites ride the "
                     "tensor-core kernels): the bf16 bytes serve as shipped",
@@ -2775,6 +2937,7 @@ int main(int argc, char** argv) {
     knobs.stats_interval_s = stats_interval_s;
     knobs.world = world;
     knobs.position_ceiling = position_ceiling;
+    knobs.image_refusal = family->image_refusal();
     knobs.kv_pool_tokens = pool_tokens;
     knobs.rope_scaling = rope_scaling;
 

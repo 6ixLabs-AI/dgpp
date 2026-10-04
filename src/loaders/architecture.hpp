@@ -21,6 +21,11 @@ enum class ModelArchitecture : int {
   DeepseekV4,  // DeepseekV4ForCausalLM / deepseek_v4 (DeepSeek-V4-Flash-0731, 2026-10-01)
   Qwen3Next,   // Qwen3NextForCausalLM / qwen3_next (Qwen3-Next-80B-A3B: the qwen3_5 stack with a routed MoE)
   NemotronH,   // NemotronHForCausalLM / nemotron_h (Nemotron-3 Nano / Super, 2026-10-04: config + binding only)
+  // The plain Qwen3 family (2026-10-04, models/qwen3): full attention in
+  // every layer, no Gated DeltaNet.
+  Qwen3,       // Qwen3ForCausalLM / qwen3 (dense MLP: Qwen3-Reranker / Qwen3-Embedding; config and binding only)
+  Qwen3Moe,    // Qwen3MoeForCausalLM / qwen3_moe (Qwen3-235B-A22B: a routed MoE, no shared expert)
+  Qwen3VlMoe,  // Qwen3VLMoeForConditionalGeneration / qwen3_vl_moe (Qwen3-VL-30B-A3B: the text path only)
 };
 
 constexpr const char* model_architecture_name(ModelArchitecture a) {
@@ -35,6 +40,9 @@ constexpr const char* model_architecture_name(ModelArchitecture a) {
     case ModelArchitecture::DeepseekV4: return "deepseek_v4";
     case ModelArchitecture::Qwen3Next: return "qwen3_next";
     case ModelArchitecture::NemotronH: return "nemotron_h";
+    case ModelArchitecture::Qwen3: return "qwen3";
+    case ModelArchitecture::Qwen3Moe: return "qwen3_moe";
+    case ModelArchitecture::Qwen3VlMoe: return "qwen3_vl_moe";
   }
   return "glm5";
 }

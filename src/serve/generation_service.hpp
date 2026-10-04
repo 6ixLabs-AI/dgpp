@@ -219,6 +219,11 @@ struct ServiceConfig {
   std::optional<dgpp::RopeScaling> rope_scaling;
   int64_t position_ceiling = 0;
   int64_t kv_pool_tokens = 0;
+  // What an image part is refused with when the served engine has no vision
+  // path (empty: the generic message). A family whose checkpoint CARRIES a
+  // tower this engine does not serve says so here, by name (the plain Qwen3
+  // family's Qwen3-VL text path, 2026-10-04).
+  std::string image_refusal;
   // The build and world /metrics/prometheus reports on dgpp_build_info
   // (the app fills them; empty / 1 in the host rigs).
   std::string build_version;
