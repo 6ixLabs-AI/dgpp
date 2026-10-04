@@ -1019,8 +1019,14 @@ class GraphEngineAdapter final : public sched::SchedulerEngine {
   int64_t pool_blocks_in_use() const override {
     return model_->kv_blocks_in_use();
   }
+  // What reserve() and begin_prefill() take from the pool for `tokens`: the
+  // chained drafts' depth - 1 rows included, so the scheduler's block
+  // arithmetic is the pool's. Without them a depth-2 request on an exact
+  // block boundary of a full pool passed the scheduler's check and failed
+  // the engine's reserve (an engine failure, 2026-10-03).
   int64_t blocks_for_tokens(int64_t tokens) const override {
-    return model_->kv_blocks_for_tokens(tokens);
+    return model_->kv_blocks_for_tokens(
+        std::min<int64_t>(tokens + std::max(0, depth_ - 1), model_->max_context()));
   }
 
   int32_t prefill(int req, const std::vector<int64_t>& prompt) override {

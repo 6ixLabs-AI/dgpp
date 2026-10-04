@@ -738,7 +738,13 @@ if(DGPP_ENABLE_IBV)
                                              dgpp_serve CUDA::cudart
                                              Threads::Threads)
   dgpp_set_common(dgpp_serve_app)
-  set_target_properties(dgpp_serve_app PROPERTIES OUTPUT_NAME dgpp-serve)
+  # 6ixServe: the server binary, and so its process, is 6ix-Serve. dgpp-serve stays beside it as
+  # a link for the upstream scripts and tests that name the binary (release.sh, the soak tools).
+  set_target_properties(dgpp_serve_app PROPERTIES OUTPUT_NAME 6ix-Serve)
+  add_custom_command(TARGET dgpp_serve_app POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E rm -f $<TARGET_FILE_DIR:dgpp_serve_app>/dgpp-serve
+    COMMAND ${CMAKE_COMMAND} -E create_symlink 6ix-Serve $<TARGET_FILE_DIR:dgpp_serve_app>/dgpp-serve
+    VERBATIM)
   # The version stamp: cmake/version.cmake rewrites the header
   # at every build only when the tree's sha or dirtiness changed.
   set(DGPP_VERSION_HEADER ${CMAKE_BINARY_DIR}/generated/dgpp_version.hpp)

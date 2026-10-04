@@ -48,6 +48,8 @@ from site_env import SITE_KEYS, config_argument, config_path, resolve_config, se
 import cluster_process
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# 6ixServe: the locally built server binary (CMake OUTPUT_NAME), and so the process name.
+SERVE_BIN = "6ix-Serve"
 SSH_OPTS = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5"]
 
 
@@ -98,8 +100,8 @@ class Cluster:
             rel = f"{self.release_dir}/dgpp-{self.release}/bin/dgpp-serve"
             self.bin, self.installed = expand(rel), True
         else:
-            self.bin, self.installed = os.path.join(settings().get("DGPP_BUILD_DIR", os.path.join(ROOT, "build-release")), "dgpp-serve"), False
-        self.peer_bin = f"{self.release_dir}/dgpp-{self.release}/bin/dgpp-serve" if self.installed else "./dgpp-serve"
+            self.bin, self.installed = os.path.join(settings().get("DGPP_BUILD_DIR", os.path.join(ROOT, "build-release")), SERVE_BIN), False
+        self.peer_bin = f"{self.release_dir}/dgpp-{self.release}/bin/dgpp-serve" if self.installed else "./" + SERVE_BIN
         self.knobs = shlex.split(getattr(args, "knobs", "") or "")
         reserved = {"--config", "--rank", "--world", "--model", "--bind-host", "--port", "--http-port", "--head", "--fabric-port", "--journal-port"}
         if any(arg.split("=", 1)[0] in reserved for arg in self.knobs):
@@ -286,7 +288,7 @@ class Cluster:
                                  "-maxdepth 1 -type f -name 'serve_rank*.ops' -delete"):
                 say(f"STAGE FAILED to {host} (ssh)")
                 return False
-            if not self.installed and not self.scp_to(host, self.bin, f"{self.stage_dir}/dgpp-serve"):
+            if not self.installed and not self.scp_to(host, self.bin, f"{self.stage_dir}/{SERVE_BIN}"):
                 say(f"STAGE FAILED to {host}")
                 return False
             if self.installed and not self.ssh(host, f"test -x {self.peer_bin}"):

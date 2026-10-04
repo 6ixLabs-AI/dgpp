@@ -196,8 +196,8 @@ class LauncherScanTest(unittest.TestCase):
         namespace = self.namespace("selection", "org/model")
         env = {key: value for key, value in self.environ.items() if key != "DGPP_BUILD_DIR"}
         cases = (
-            ({}, {}, ROOT / "build-release/dgpp-serve", False),
-            ({"DGPP_BUILD_DIR": "build-ci"}, {}, ROOT / "build-ci/dgpp-serve", False),
+            ({}, {}, ROOT / "build-release/6ix-Serve", False),
+            ({"DGPP_BUILD_DIR": "build-ci"}, {}, ROOT / "build-ci/6ix-Serve", False),
             ({}, {"release": "0.1.0"}, self.root / "releases/dgpp-0.1.0/bin/dgpp-serve", True),
             ({"DGPP_BUILD_DIR": "build-ci"}, {"release": "0.1.0"},
              self.root / "releases/dgpp-0.1.0/bin/dgpp-serve", True),

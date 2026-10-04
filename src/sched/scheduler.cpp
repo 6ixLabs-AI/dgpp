@@ -157,6 +157,12 @@ void Scheduler::grow_reservations() {
     int64_t target = std::min<int64_t>(
         full, std::max<int64_t>(need, r.reserved_tokens + policy_.window_tokens));
     const int64_t held = engine_->blocks_for_tokens(r.reserved_tokens);
+    // Cached prefixes share the pool with the live requests, and a live
+    // request's next step outranks every one of them: evict (LRU,
+    // unattached) until the window fits before anything is shed for it.
+    // Seen 2026-10-03: 44 idle entries pinned 4075 of 4096 blocks, and a
+    // 600-token answer was shed with nothing else running.
+    ensure_free_blocks(engine_->blocks_for_tokens(target) - held, r.spec.id);
     for (;;) {
       const int64_t free_blocks =
           engine_->pool_blocks_total() - engine_->pool_blocks_in_use();
