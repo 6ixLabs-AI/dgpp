@@ -18,7 +18,11 @@
     "model_alias": "Qwen3.6-35B-A3B",
     "sampling_candidates": 128,
     "stats_interval_s": 10,
-    "max_tokens_overflow": "clamp"
+    "max_tokens_overflow": "clamp",
+    "prefill_budget_tokens": 1024,
+    "prefill_idle_budget_tokens": 4096,
+    "decode_passes_per_prefill": 8,
+    "prefill_order": "shortest"
   },
   "paths": {
     "resident_cache": ""

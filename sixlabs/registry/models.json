@@ -36,7 +36,7 @@
       "on_main": true,
       "tokenizer": "bpe",
       "engine_defaults": {},
-      "notes": "GDN + full attention, dense MLP or routed MoE, nested text_config. No prefill defaults yet: the 35B and the 122B were verified and measured at the automatic budget (256 tokens a tick, one decode pass a chunk), and their time to first token under load is poor. The serve binary accepts an explicit budget for this family since cecb0cd (before that the 35B exited at start with one), but no checkpoint of the family has been checked on a GPU with a larger budget. Before putting qwen3_next's four settings here, run sixlabs/bench/group_check.py and mixed_load.py against the checkpoint; the dense checkpoints (27B, 0.8B) compute one FP8 activation scale over a chunk's rows, so a larger chunk changes their numbers and their answers must be looked at, not only their speed."
+      "notes": "GDN + full attention, dense MLP or routed MoE, nested text_config. No prefill defaults yet: the 35B and the 122B were verified and measured at the automatic budget (256 tokens a tick, one decode pass a chunk), and their time to first token under load is poor. The serve binary accepts an explicit budget for this family since cecb0cd (before that the 35B exited at start with one). The 35B has been checked with qwen3_next's four settings and its template carries them (sixlabs/bench/results/dgxone_35b_prefill_2026-10-04.md); the 122B and the dense checkpoints have not, so the family default stays empty. Before giving another checkpoint those settings, run sixlabs/bench/group_check.py (with --seed, default against tuned) and mixed_load.py against it; the dense checkpoints (27B, 0.8B) compute one FP8 activation scale over a chunk's rows, so a larger chunk changes their numbers and their answers must be looked at, not only their speed."
     },
     "qwen4_exp": {"architectures": ["Qwen4Exp"], "served": true, "on_main": true, "tokenizer": "bpe", "engine_defaults": {}, "notes": "Qwen3.8-Flash-Next."},
     "glm5": {"architectures": ["Glm5"], "served": true, "on_main": true, "tokenizer": "bpe", "engine_defaults": {}, "notes": "GLM-5.3-Flash."},
@@ -111,7 +111,7 @@
                 "date": "2026-10-04", "box": "DGXone", "source": "sixlabs/ports/qwen3.6-35b-a3b/results-2026-10-04-dgxone.md",
                 "load_cold_s": 47.5, "load_warm_s": 9.0, "plan_gib": 36.0, "gpu_gib": 38.55,
                 "tok_s": {"single_prose": 97.7, "single_code": 120.1, "c2": 128.8, "c4": 194.6, "c8": 271.3},
-                "notes": "One run each, bench_decode. Taken with prefill settings left automatic; prompt reading under concurrency is behind vLLM (see the record). ShareGPT the same day (sixlabs/bench/results/dgxone_35b_6ixcpp_vs_atlas_2026-10-04.md): 96.7 / 135.4 / 182.4 / 220.1 output tok/s at 1 / 2 / 4 / 8; tool-eval-bench short 93, hard 89."
+                "notes": "One run each, bench_decode, taken with the prefill settings left automatic. Since 2026-10-04 the template carries the tuned prefill settings (needs a build with cecb0cd or later): same answers, a burst of eight 2k prompts answered in 6.7 s instead of 34.9 s, chat under long-prompt load 95 tok/s instead of 13 (sixlabs/bench/results/dgxone_35b_prefill_2026-10-04.md). ShareGPT the same day (sixlabs/bench/results/dgxone_35b_6ixcpp_vs_atlas_2026-10-04.md): 96.7 / 135.4 / 182.4 / 220.1 output tok/s at 1 / 2 / 4 / 8; tool-eval-bench short 93, hard 89."
               }
             }
           }

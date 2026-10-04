@@ -35,24 +35,27 @@ class Resolve(unittest.TestCase):
 
     def test_working_model_gets_family_defaults_only_where_the_template_is_silent(self):
         reg = copy.deepcopy(self.reg)
-        reg["families"]["qwen3_5"]["engine_defaults"] = {"prefill_order": "shortest", "kv_capacity": 1}
+        reg["families"]["qwen3_5"]["engine_defaults"] = {"sse_ping_s": 15, "kv_capacity": 1}
         cfg, prov = R.resolve(reg, "qwen3.6-35b-a3b")
         with open(os.path.join(R.ROOT, prov["template"])) as f:
             template = json.load(f)
         for k, v in template["engine"].items():
             self.assertEqual(cfg["engine"][k], v, k)          # the template wins (kv_capacity too)
-        self.assertNotIn("prefill_order", template["engine"])
-        self.assertEqual(cfg["engine"]["prefill_order"], "shortest")   # filled where the template is silent
+        self.assertNotIn("sse_ping_s", template["engine"])
+        self.assertEqual(cfg["engine"]["sse_ping_s"], 15)     # filled where the template is silent
         self.assertEqual(cfg["model"], "nvidia/Qwen3.6-35B-A3B-NVFP4")
         self.assertEqual(prov["world"], 1)
         self.assertEqual(set(cfg) - set(template), set())      # no key the engine does not know
 
-    def test_the_35b_resolves_to_the_settings_it_was_verified_with(self):
-        # The 35B was verified and measured at the automatic prefill budget. The serve binary
-        # refused an explicit one for qwen3_5 until cecb0cd (the 35B exited at start on DGXone on
-        # 2026-10-04 with one); it accepts it now, but no checkpoint of the family has been checked
-        # on a GPU with a larger budget, so the shipped registry does not hand one out yet.
+    def test_only_the_checked_qwen3_5_checkpoint_gets_the_tuned_prefill_settings(self):
+        # The 35B was checked with the tuned prefill settings on 2026-10-04 and its template carries
+        # them. The family default stays empty: the 122B and the dense checkpoints have not been
+        # checked, so they must not inherit a budget from the family.
         cfg, _ = R.resolve(self.reg, "qwen3.6-35b-a3b")
+        self.assertEqual(cfg["engine"]["prefill_budget_tokens"], 1024)
+        self.assertEqual(cfg["engine"]["prefill_order"], "shortest")
+        self.assertEqual(self.reg["families"]["qwen3_5"]["engine_defaults"], {})
+        cfg, _ = R.resolve(self.reg, "qwen3.5-122b-a10b")
         self.assertNotIn("prefill_budget_tokens", cfg["engine"])
 
     def test_the_sehyo_122b_has_its_own_template_and_the_small_pool(self):
