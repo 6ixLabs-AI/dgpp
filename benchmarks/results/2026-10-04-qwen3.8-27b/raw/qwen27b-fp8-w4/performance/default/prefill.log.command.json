@@ -1,0 +1,24 @@
+{
+  "command": [
+    "/usr/bin/python3",
+    "/home/stephen/workspace/dgpp/scripts/serve_prefill_probe.py",
+    "127.0.0.1",
+    "18080",
+    "2048",
+    "8192",
+    "32768",
+    "--repeat",
+    "3",
+    "--no-think",
+    "--seed",
+    "7",
+    "--tag",
+    "qwen27b-20261004",
+    "--json-out",
+    "/home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/qwen27b-fp8-w4/performance/default/prefill.json"
+  ],
+  "cwd": "/home/stephen/workspace/dgpp",
+  "started_at": "2026-10-04T16:13:36.331304+00:00",
+  "returncode": 0,
+  "finished_at": "2026-10-04T16:14:38.535676+00:00"
+}

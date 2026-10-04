@@ -21,6 +21,7 @@
 #include <functional>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "engine/decode_outputs.hpp"
@@ -54,6 +55,64 @@ inline SpecVerdict judge_verify(const std::vector<int64_t>& fed,
   v.next = winners[static_cast<size_t>(a - 1)];
   v.draft_rows.assign(winners.begin(), winners.begin() + a);
   return v;
+}
+
+// The sampled verify of a block proposal (a drafter's drafts are point
+// masses: the DFlash2 walk runs at temperature 0), row by row — the sampled
+// MTP step's rule (sampler.hpp's spec_reference): row t accepts the draft
+// fed to row t + 1 with its exact probability under the request's parameters
+// and the context through that row (the penalties see the accepted drafts),
+// else its residual sample ends the step; the last row reached samples
+// plainly through the engine's closure. Returns the verify's winners
+// (fed.size() entries, -1 past the decision) for judge_verify / commit. The
+// rows must carry the whole vocabulary (the eager world-1 engine).
+inline std::vector<int32_t> spec_sampled_winners(const DecodeOutputs& out, const std::vector<int64_t>& fed,
+                                                 const sample::Params& p, sample::Rng& rng,
+                                                 std::vector<int32_t> context, const DecodeSample& sample) {
+  const int T = static_cast<int>(fed.size());
+  const int vocab = out.lm_vocab_count;
+  if (T <= 0 || vocab <= 0 || out.lm_vocab_begin != 0 ||
+      out.logits.size() < static_cast<size_t>(T) * static_cast<size_t>(vocab))
+    throw std::invalid_argument("spec_sampled_winners: the rows must carry the whole vocabulary");
+  if (!(p.temperature > 0.0f)) throw std::invalid_argument("spec_sampled_winners: a sampled request");
+  std::vector<int32_t> winners(static_cast<size_t>(T), -1);
+  const std::vector<sample::VocabSlice> layout{{0, vocab}};
+  // The context's token counts once per step (a 262K context counted per
+  // row would cost tens of milliseconds), advanced by each accepted draft;
+  // without a penalty the rows are read in place (apply_penalties is then
+  // the identity bitwise: no division, fma by -0 and a subtraction of 0).
+  const bool penalized = p.repetition_penalty != 1.0f || p.frequency_penalty != 0.0f ||
+                         p.presence_penalty != 0.0f;
+  std::unordered_map<int32_t, int32_t> counts;
+  if (penalized) counts = sample::count_context(context);
+  std::vector<float> v;
+  for (int t = 0; t < T; ++t) {
+    const float* row = out.logits.data() + static_cast<size_t>(t) * static_cast<size_t>(vocab);
+    if (t + 1 < T) {
+      const int32_t draft = static_cast<int32_t>(fed[static_cast<size_t>(t + 1)]);
+      const float* adjusted = row;
+      if (penalized) {
+        v.assign(row, row + vocab);
+        sample::apply_penalties(v.data(), vocab, 0, p, counts);
+        adjusted = v.data();
+      }
+      const double lse = sample::sharded_scaled_logsumexp(adjusted, layout, p.temperature);
+      const sample::SpecPrefixDecision d =
+          sample::spec_accept_complete(adjusted, vocab, lse, draft, p, rng);
+      if (!d.resolved) throw std::logic_error("spec_sampled_winners: a complete row must resolve");
+      winners[static_cast<size_t>(t)] = d.result.token;
+      if (!d.accepted) break;
+      context.push_back(draft);
+      if (penalized) ++counts[draft];
+    } else {
+      DecodeOutputs one;
+      one.logits.assign(row, row + vocab);
+      one.lm_vocab_begin = 0;
+      one.lm_vocab_count = vocab;
+      winners[static_cast<size_t>(t)] = sample(one, p, rng, context, nullptr, nullptr).token;
+    }
+  }
+  return winners;
 }
 
 // Per-row local argmax over a rank's [rows, count] logits slice.

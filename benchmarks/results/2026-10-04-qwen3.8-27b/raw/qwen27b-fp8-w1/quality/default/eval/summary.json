@@ -1,0 +1,36 @@
+{
+  "model": "Qwen/Qwen3.8-27B-FP8",
+  "settings": {
+    "max_tokens": 2048,
+    "reasoning_effort": "none",
+    "no_think": true,
+    "limit": 300,
+    "seed": 20260908
+  },
+  "tasks": {
+    "humaneval": {
+      "n": 164,
+      "passed": 157,
+      "rate": 0.9573,
+      "seconds": 447,
+      "mean_completion_tokens": 254,
+      "truncated": 0
+    },
+    "gsm8k": {
+      "n": 300,
+      "passed": 293,
+      "rate": 0.9767,
+      "seconds": 1207,
+      "mean_completion_tokens": 400,
+      "truncated": 4
+    },
+    "extract": {
+      "n": 100,
+      "passed": 100,
+      "rate": 1.0,
+      "seconds": 270,
+      "mean_completion_tokens": 63,
+      "truncated": 0
+    }
+  }
+}

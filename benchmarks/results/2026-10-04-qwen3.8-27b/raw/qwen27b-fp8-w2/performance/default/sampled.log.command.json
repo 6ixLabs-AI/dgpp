@@ -1,0 +1,24 @@
+{
+  "command": [
+    "/usr/bin/python3",
+    "/home/stephen/workspace/dgpp/scripts/timed_load.py",
+    "127.0.0.1",
+    "18080",
+    "--concurrency",
+    "1,8",
+    "--classes",
+    "all",
+    "--repeat",
+    "3",
+    "--max-tokens",
+    "256",
+    "--temperature",
+    "1",
+    "--json-out",
+    "/home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/qwen27b-fp8-w2/performance/default/sampled.json"
+  ],
+  "cwd": "/home/stephen/workspace/dgpp",
+  "started_at": "2026-10-04T16:02:02.593135+00:00",
+  "returncode": 0,
+  "finished_at": "2026-10-04T16:06:53.380721+00:00"
+}

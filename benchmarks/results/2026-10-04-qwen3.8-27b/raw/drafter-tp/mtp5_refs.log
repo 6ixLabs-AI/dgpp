@@ -1,0 +1,35 @@
+
+=== 09:25:43 glm down
+2026-10-04 09:25:50.885 === logs in /home/stephen/dgpp/log/deployments/a911a2d7c4b3be6a
+
+=== 09:25:50 w2-mtp5 up
+2026-10-04 09:26:10.940 READY — curl http://<node-0>:8000/v1/models  (stop: python3 /home/stephen/workspace/dgpp/scripts/dgpp-cluster down --config /home/stephen/workspace/dgpp/deploy/cluster_qwen3.8-27b_fp8_w2.json --log-dir /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/drafter-tp/w2-mtp5/server)
+
+=== 09:26:10 w2-mtp5 transcripts vs w2-dflash2
+chat   256 tokens   12.98 s    50.7 ms/token (wall, prefill included) length | We need answer user: "Explain, in a few paragraphs, why a CU
+code   256 tokens    7.74 s    30.2 ms/token (wall, prefill included) length | We need answer user: "Write a Python function that parses an
+math   256 tokens    5.71 s    22.3 ms/token (wall, prefill included) length | We need answer user: "A train leaves city A at 60 km/h and a
+json   256 tokens    6.51 s    25.4 ms/token (wall, prefill included) length | We need to respond to user: "Return a JSON array of 8 object
+identical transcripts: 4 of 4
+
+=== 09:26:43 w2-mtp5 down
+2026-10-04 09:26:47.642 === logs in /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/drafter-tp/w2-mtp5/server
+
+=== 09:26:47 w4-mtp5 up
+2026-10-04 09:27:08.163 READY — curl http://<node-0>:8000/v1/models  (stop: python3 /home/stephen/workspace/dgpp/scripts/dgpp-cluster down --config /home/stephen/workspace/dgpp/deploy/cluster_qwen3.8-27b_fp8_w4.json --log-dir /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/drafter-tp/w4-mtp5/server)
+
+=== 09:27:08 w4-mtp5 transcripts vs w4-dflash2
+chat   256 tokens    7.11 s    27.8 ms/token (wall, prefill included) length | We need answer user: "Explain, in a few paragraphs, why a CU
+code   256 tokens    4.31 s    16.8 ms/token (wall, prefill included) length | We need answer user: "Write a Python function that parses an
+math   256 tokens    3.40 s    13.3 ms/token (wall, prefill included) length | We need answer user: "A train leaves city A at 60 km/h and a
+json   256 tokens    3.78 s    14.8 ms/token (wall, prefill included) length | We need to respond to user: "Return a JSON array of 8 object
+identical transcripts: 4 of 4
+
+=== 09:27:26 w4-mtp5 down
+2026-10-04 09:27:34.006 === logs in /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/drafter-tp/w4-mtp5/server
+
+=== 09:27:34 glm up
+2026-10-04 09:28:12.293 READY — curl http://<node-0>:18080/v1/models  (stop: python3 /home/stephen/workspace/dgpp/scripts/dgpp-cluster down --config /home/stephen/workspace/dgpp/deploy/cluster_glm-5.3-flash_nvfp4-fp8_w4.json --log-dir /home/stephen/dgpp/log/deployments/a911a2d7c4b3be6a)
+
+MTP5_DONE 09:28:12
+MTP5_EXIT=0

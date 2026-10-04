@@ -955,7 +955,7 @@ the prompts. Its artifacts land under `build-ci/fabric-runs/failure_drill_*`.
   with TTFT, queue, prefill, decode, end-to-end, inter-token and step-time
   histograms (the
   [family list](openai-compatibility.md#prometheus-exposition)); scrape rank
-  0 for the service; with `DGPP_METRICS_PORT` set, each peer serves its own
+  0 for the service; with `ports.metrics` set in the deployment JSON, each peer serves its own
   `dgpp_rank_*` step, prefill and pool meters on that port of its node
   address ([per-rank families](openai-compatibility.md#per-rank-families)).
   `GET /health` is `{"status":"ok"}` while the engine lives.

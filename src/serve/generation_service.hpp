@@ -612,6 +612,9 @@ class GenerationService : public HttpHandler,
                              size_t to = SIZE_MAX) const;
   void on_retire(const std::string& id,
                  const dgpp::sched::Scheduler::Result& result) override;
+  // Under mutex_: observe a pass's new tokens once, including its final
+  // batch before the HTTP pump can remove a retired record.
+  void observe_token_pass(StreamRecord& r, std::chrono::steady_clock::time_point now);
   // Grow-on-demand's growth events (M6 6d) ride to the audit observer:
   // they are rank-identical scheduler state, so the op streams carry them.
   void on_grow(const std::string& id, int64_t reserved_tokens) override {

@@ -1,0 +1,84 @@
+{
+ "started_at": "2026-10-04T15:51:01.629450+00:00",
+ "commit": "d97649b2a41d579e88b81f8a24c54afa56d2a66e",
+ "tracked_diff": "",
+ "site_settings": {
+  "DGPP_HTTP_PORT": "18080",
+  "DGPP_FABRIC_PORT": "29970",
+  "DGPP_JOURNAL_PORT": "29971",
+  "DGPP_LOG_DIR": "~/dgpp/log",
+  "DGPP_STAGE_DIR": "/tmp/bus4",
+  "DGPP_RELEASE_DIR": "~/dgpp/releases",
+  "DGPP_HTTP_BIND": "0.0.0.0",
+  "DGPP_NODES": "<node-0> <node-1> <node-2> <node-3>",
+  "DGPP_SSH_USER": "stephen"
+ },
+ "templates": [
+  {
+   "id": "qwen27b-fp8-w1",
+   "template": "deploy/cluster_qwen3.8-27b_fp8_w1.example.json",
+   "config": "configs/qwen27b-fp8-w1.json",
+   "model": "Qwen/Qwen3.8-27B-FP8",
+   "world": 1,
+   "slots": 8
+  },
+  {
+   "id": "qwen27b-fp8-w2",
+   "template": "deploy/cluster_qwen3.8-27b_fp8_w2.example.json",
+   "config": "configs/qwen27b-fp8-w2.json",
+   "model": "Qwen/Qwen3.8-27B-FP8",
+   "world": 2,
+   "slots": 8
+  },
+  {
+   "id": "qwen27b-fp8-w4",
+   "template": "deploy/cluster_qwen3.8-27b_fp8_w4.example.json",
+   "config": "configs/qwen27b-fp8-w4.json",
+   "model": "Qwen/Qwen3.8-27B-FP8",
+   "world": 4,
+   "slots": 8
+  }
+ ],
+ "datasets": {
+  "gsm8k_test.jsonl": "3730d312f6e3440559ace48831e51066acaca737f6eabec99bccb9e4b3c39d14",
+  "HumanEval.jsonl": "1d49078ba3e2b196b9344535bef34a43021f038fad9561d6ee7c53450609a6a2"
+ },
+ "eval_image": "sha256:8630ab77c5adf06e1f914483db4dd70e3fa59118160daab9b0ee75e685344221",
+ "eval_image_repo_digests": [
+  "python@sha256:2f17fc044b579bab302c2e8054d3a686e2cb9a83de48e70534b94cd8ebbe06a9"
+ ],
+ "eval_image_platform": "linux/arm64",
+ "checkpoint_revisions": {
+  "models--Qwen--Qwen3.8-27B-FP8": [
+   "017b9c7af6b5689d5dd426a76e0bc077eb5ca20a"
+  ],
+  "models--z-lab--Qwen3.8-27B-DFlash2": [
+   "50307d4c4cde6860d4eee73e2547cd786fe8e8a4"
+  ]
+ },
+ "binary_sha256": "cdae62350588feaf3400d9b6546add25b394d2f33c061fe010c3b516dcb5770e",
+ "version": "dgpp-serve 0.1.0+gd97649b2a41d (git d97649b2a41d, cuda 13.0)",
+ "benchmark_environment": {
+  "CUDA_DEVICE_MAX_CONNECTIONS": "32"
+ },
+ "benchmark_environment_scope": "CUDA_DEVICE_MAX_CONNECTIONS=32 on the benchmark client/rank-0 launch and local microbenchmarks; peer launches use their login environment.",
+ "evaluation_thinking_controls": "Reasoning effort low when thinking enabled; none with --no-think. isolated_eval.py supplies none to avoid conflicting API parameters.",
+ "telemetry": {
+  "script": "node_telemetry.py",
+  "scope": "Four-node launches initiated after the second Node3 recovery; earlier performance runs do not have this continuous telemetry.",
+  "memory_interval_s": 1,
+  "gpu_interval_s": 5,
+  "node3_kernel_stream": true,
+  "spot_checks": [
+   "raw/qwen-yarn-w2/long/default/health-snapshots.jsonl"
+  ],
+  "node3_management_ssh": {
+   "host": "<address>",
+   "host_key_alias": "<node-2>",
+   "verified_hostname": "spark-a289",
+   "record": "raw/environment-audit/node3-management-link.json"
+  }
+ },
+ "note": "The Qwen3.8-27B-FP8 campaign (2026-10-04): the family's first measurement on the tree that merged it (#79, #80) and closed its review follow-ups (#84-#90); the other deployments' numbers are the earlier campaigns'. The campaign configs are the templates without `http` (the runner expects :18080) and without `model_alias` (the runner matches the served id to the checkpoint id).",
+ "completed_at": "2026-10-04T16:32:07+00:00"
+}

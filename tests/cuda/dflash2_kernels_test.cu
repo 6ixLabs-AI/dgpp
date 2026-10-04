@@ -4,9 +4,11 @@
 // + the bidirectional block, paged), the candidate top-K (descending,
 // ties to the lower id) and the selector walk (predecessor codes chained
 // through slots, the anchor at step 0, greedy argmax).
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <random>
+#include <string>
 #include <vector>
 
 #include <cuda_runtime.h>
@@ -16,6 +18,7 @@
 #include "common/test.hpp"
 #include "kda_test_helpers.hpp"
 #include "kernels/dflash2.hpp"
+#include "kernels/pick.hpp"
 
 using namespace dgpp::kda_test;
 
@@ -179,6 +182,7 @@ DGPP_TEST(dflash2_selector_walks_the_reference_scores) {
   for (const auto [steps, k, rank, vocab] :
        {std::tuple{2, 4, 16, 97}, std::tuple{7, 16, 256, 1009}}) {
   const int32_t anchor = 5;
+  const int64_t anchor64 = anchor;
   auto pred = random_bf16_normal(31, static_cast<int64_t>(vocab) * rank, 0.5f);
   auto succ = random_bf16_normal(32, static_cast<int64_t>(vocab) * rank, 0.5f);
   std::mt19937 rng(33);
@@ -189,13 +193,14 @@ DGPP_TEST(dflash2_selector_walks_the_reference_scores) {
   for (auto& v : hidden) v = std::uniform_real_distribution<float>(-1.0f, 1.0f)(rng);
 
   DevBuf dp(pred.size() * 2), ds(succ.size() * 2), di(ids.size() * 4), du(unary.size() * 4),
-      dh(hidden.size() * 4), dt(steps * 4);
+      dh(hidden.size() * 4), dt(steps * 4), da(8);
+  da.upload(&anchor64, 8);
   dp.upload(pred.data(), pred.size() * 2);
   ds.upload(succ.data(), succ.size() * 2);
   di.upload(ids.data(), ids.size() * 4);
   du.upload(unary.data(), unary.size() * 4);
   dh.upload(hidden.data(), hidden.size() * 4);
-  dgpp::dflash2_selector_walk(ci32(di), cf32(du), cf32(dh), cb16(dp), cb16(ds), anchor, i32(dt),
+  dgpp::dflash2_selector_walk(ci32(di), cf32(du), cf32(dh), cb16(dp), cb16(ds), ci64(da), i32(dt),
                               steps, k, rank, s);
   DGPP_CUDA_OK(cudaStreamSynchronize(s));
   std::vector<int32_t> got(steps);
@@ -254,12 +259,27 @@ DGPP_TEST(dflash2_block_attends_window_and_block) {
   dvc.upload(vc.data(), vc.size() * 2);
   dtb.upload(table.data(), table.size() * 4);
   dpos.upload(pos.data(), pos.size() * 8);
+  // The span comes off the block's first row (pos0 = 40): context [0, 39],
+  // block [40, 47] — the reference below spells the same bounds.
   dgpp::dflash2_block_attn(cb16(dq), heads * dim, cb16(dkc), cb16(dvc), ci32(dtb), block_tokens,
-                           static_cast<int>(table.size()), ctx_end, blk_lo, blk_hi, window,
-                           ci64(dpos), rows, heads, kv, dim, scale, b16(dy), s);
+                           static_cast<int>(table.size()), rows, window, ci64(dpos), rows, heads, kv,
+                           dim, scale, b16(dy), s);
+  // The split-key form over the same keys (its partials scratch), judged
+  // against the same reference below and against the serial form.
+  DevBuf dys(q.size() * 2), dpart(dgpp::dflash2_block_attn_partials_bytes(rows, heads));
+  dgpp::dflash2_block_attn_split(cb16(dq), heads * dim, cb16(dkc), cb16(dvc), ci32(dtb), block_tokens,
+                                 static_cast<int>(table.size()), rows, window, ci64(dpos), rows, heads, kv,
+                                 dim, scale, f32(dpart), b16(dys), s);
   DGPP_CUDA_OK(cudaStreamSynchronize(s));
-  std::vector<uint16_t> y(q.size());
+  std::vector<uint16_t> y(q.size()), ys(q.size());
   dy.download(y.data(), y.size() * 2);
+  dys.download(ys.data(), ys.size() * 2);
+  {
+    float worst = 0.0f;
+    for (size_t i = 0; i < y.size(); ++i)
+      worst = std::max(worst, std::fabs(dgpp::bf16_bits_to_float(y[i]) - dgpp::bf16_bits_to_float(ys[i])));
+    require(worst <= 0.02f, "split-key block attention vs the serial form: worst |diff| " + std::to_string(worst));
+  }
 
   const auto qf = to_f(q), kf = to_f(kc), vf = to_f(vc);
   const auto slot = [&](int64_t p) {
@@ -313,6 +333,160 @@ DGPP_TEST(dflash2_block_attends_window_and_block) {
 }
 
 }  // namespace
+
+// ---- the recorded block draft ---------------------------------------------------
+
+// Every rank's slice top-K staged, the bus's fold emulated (the bf16 sum
+// of the per-rank tables, exact: one nonzero contributor per slot), the
+// merge against the host's whole-vocabulary top-K, at worlds 2 and 4 and
+// an uneven slice split.
+DGPP_TEST(dflash2_topk_merges_the_ranks_slices) {
+  cudaStream_t s = test_stream();
+  const int rows = 3, k = 16;
+  const int64_t V = 24001;  // odd: uneven slices
+  std::mt19937 rng(77);
+  std::vector<float> lg(static_cast<size_t>(rows) * V);
+  for (auto& v : lg) v = std::uniform_real_distribution<float>(-8.0f, 8.0f)(rng);
+  lg[V + 5] = 100.0f;  // a tie across the slice boundary's candidates
+  lg[V + 20000] = 100.0f;
+  for (const int world : {2, 4}) {
+    const size_t elems = dgpp::dflash2_topk_table_elems(rows, k, world);
+    std::vector<float> folded(elems, 0.0f);
+    for (int rank = 0; rank < world; ++rank) {
+      const int64_t begin = V * rank / world, end = V * (rank + 1) / world, count = end - begin;
+      std::vector<float> slice(static_cast<size_t>(rows) * count);
+      for (int r = 0; r < rows; ++r)
+        std::copy(lg.begin() + r * V + begin, lg.begin() + r * V + end, slice.begin() + r * count);
+      DevBuf dl(slice.size() * 4), did(rows * k * 4), dsc(rows * k * 4), dt(elems * 2);
+      dl.upload(slice.data(), slice.size() * 4);
+      dgpp::dflash2_topk_f32(cf32(dl), i32(did), f32(dsc), count, rows, k, s);
+      dgpp::dflash2_topk_stage(ci32(did), cf32(dsc), rows, k, static_cast<int32_t>(begin), rank, world,
+                               b16(dt), s);
+      DGPP_CUDA_OK(cudaStreamSynchronize(s));
+      std::vector<uint16_t> table(elems);
+      dt.download(table.data(), elems * 2);
+      for (size_t i = 0; i < elems; ++i) folded[i] += dgpp::bf16_bits_to_float(table[i]);
+    }
+    std::vector<uint16_t> tbl(elems);
+    for (size_t i = 0; i < elems; ++i) tbl[i] = dgpp::float_to_bf16_bits(folded[i]);
+    DevBuf dt(elems * 2), did(rows * k * 4), dsc(rows * k * 4);
+    dt.upload(tbl.data(), elems * 2);
+    dgpp::dflash2_topk_merge(cb16(dt), rows, k, world, i32(did), f32(dsc), s);
+    DGPP_CUDA_OK(cudaStreamSynchronize(s));
+    std::vector<int32_t> ids(rows * k);
+    std::vector<float> sc(rows * k);
+    did.download(ids.data(), ids.size() * 4);
+    dsc.download(sc.data(), sc.size() * 4);
+    for (int r = 0; r < rows; ++r) {
+      std::vector<std::pair<float, int32_t>> all;
+      for (int64_t v = 0; v < V; ++v) all.push_back({lg[r * V + v], static_cast<int32_t>(v)});
+      std::sort(all.begin(), all.end(), [](const auto& a, const auto& b) {
+        return a.first > b.first || (a.first == b.first && a.second < b.second);
+      });
+      for (int j = 0; j < k; ++j) {
+        require(sc[r * k + j] == all[j].first,
+                "merged score world " + std::to_string(world) + " row " + std::to_string(r) + " slot " +
+                    std::to_string(j) + ": got " + std::to_string(sc[r * k + j]) + " want " +
+                    std::to_string(all[j].first));
+        require(ids[r * k + j] == all[j].second,
+                "merged id world " + std::to_string(world) + " row " + std::to_string(r) + " slot " +
+                    std::to_string(j) + ": got " + std::to_string(ids[r * k + j]) + " want " +
+                    std::to_string(all[j].second));
+      }
+    }
+  }
+}
+
+// The block's rows off a verdict and the committed position, the context
+// tail masked; the next feed [next, drafts]; the pinned mirror.
+DGPP_TEST(dflash2_block_stage_feed_and_publish) {
+  cudaStream_t s = test_stream();
+  const int rows = 8, D = 7;
+  dgpp::PickVerdict v;
+  v.rows = 8;
+  v.accepted = 3;
+  v.next = 1234;
+  const int64_t session_pos = 100, max_context = 104, mask = 248064;
+  const std::vector<int32_t> drafts = {11, 12, 13, 14, 15, 16, 17};
+  DevBuf dv(sizeof(v)), dsp(8), dpos(rows * 8), dtok(rows * 8), ddr(D * 4), dfeed(rows * 8);
+  dv.upload(&v, sizeof(v));
+  dsp.upload(&session_pos, 8);
+  ddr.upload(drafts.data(), D * 4);
+  int32_t* pinned = nullptr;
+  DGPP_CUDA_OK(cudaMallocHost(reinterpret_cast<void**>(&pinned), D * 4));
+  for (int j = 0; j < D; ++j) pinned[j] = -1;
+  dgpp::dflash2_stage_block(static_cast<const dgpp::PickVerdict*>(dv.p), ci64(dsp), mask, rows, max_context,
+                            static_cast<int64_t*>(dpos.p), static_cast<int64_t*>(dtok.p), s);
+  dgpp::dflash2_block_feed(static_cast<const dgpp::PickVerdict*>(dv.p), ci32(ddr), D,
+                           static_cast<int64_t*>(dfeed.p), s);
+  dgpp::dflash2_publish_drafts(ci32(ddr), pinned, D, s);
+  DGPP_CUDA_OK(cudaStreamSynchronize(s));
+  std::vector<int64_t> pos(rows), tok(rows), feed(rows);
+  dpos.download(pos.data(), rows * 8);
+  dtok.download(tok.data(), rows * 8);
+  dfeed.download(feed.data(), rows * 8);
+  for (int j = 0; j < rows; ++j) {
+    const int64_t want = session_pos + j < max_context ? session_pos + j : -1;
+    require(pos[j] == want, "staged position " + std::to_string(j) + ": got " + std::to_string(pos[j]));
+    require(tok[j] == (j == 0 ? 1234 : mask), "staged token " + std::to_string(j));
+    require(feed[j] == (j == 0 ? 1234 : drafts[static_cast<size_t>(j - 1)]), "feed token " + std::to_string(j));
+  }
+  for (int j = 0; j < D; ++j) require(pinned[j] == drafts[static_cast<size_t>(j)], "published draft " + std::to_string(j));
+  DGPP_CUDA_OK(cudaFreeHost(pinned));
+}
+
+// The fixed batch's forms: three slots, the middle one inactive (accepted
+// 0): its rows at position -1 with token 0, its feed zeroed, the others'
+// blocks, feeds and mirrors at their slot offsets.
+DGPP_TEST(dflash2_block_batched_stage_feed_and_publish) {
+  cudaStream_t s = test_stream();
+  const int rows = 8, D = 7, k = 3;
+  std::vector<dgpp::PickVerdict> v(k);
+  v[0].rows = 8; v[0].accepted = 2; v[0].next = 500;
+  v[1].rows = 0; v[1].accepted = 0; v[1].next = -1;
+  v[2].rows = 8; v[2].accepted = 8; v[2].next = 900;
+  const std::vector<int64_t> session_pos = {40, 7, 1000};
+  const int64_t max_context = 1004, mask = 248064;
+  std::vector<int32_t> drafts(k * D);
+  for (int i = 0; i < k * D; ++i) drafts[i] = 1000 + i;
+  DevBuf dv(sizeof(dgpp::PickVerdict) * k), dsp(k * 8), dpos(k * rows * 8), dtok(k * rows * 8), ddr(k * D * 4),
+      dfeed(k * rows * 8);
+  dv.upload(v.data(), sizeof(dgpp::PickVerdict) * k);
+  dsp.upload(session_pos.data(), k * 8);
+  ddr.upload(drafts.data(), k * D * 4);
+  int32_t* pinned = nullptr;
+  DGPP_CUDA_OK(cudaMallocHost(reinterpret_cast<void**>(&pinned), k * D * 4));
+  for (int j = 0; j < k * D; ++j) pinned[j] = -1;
+  dgpp::dflash2_stage_block_batched(static_cast<const dgpp::PickVerdict*>(dv.p), ci64(dsp), mask, rows, k,
+                                    max_context, static_cast<int64_t*>(dpos.p), static_cast<int64_t*>(dtok.p), s);
+  dgpp::dflash2_block_feed_batched(static_cast<const dgpp::PickVerdict*>(dv.p), ci32(ddr), D, k, rows,
+                                   static_cast<int64_t*>(dfeed.p), s);
+  dgpp::dflash2_publish_drafts_batched(ci32(ddr), pinned, D, k, s);
+  DGPP_CUDA_OK(cudaStreamSynchronize(s));
+  std::vector<int64_t> pos(k * rows), tok(k * rows), feed(k * rows);
+  dpos.download(pos.data(), k * rows * 8);
+  dtok.download(tok.data(), k * rows * 8);
+  dfeed.download(feed.data(), k * rows * 8);
+  for (int q = 0; q < k; ++q) {
+    const bool active = v[static_cast<size_t>(q)].accepted > 0;
+    for (int j = 0; j < rows; ++j) {
+      const int i = q * rows + j;
+      const int64_t p = session_pos[static_cast<size_t>(q)] + j;
+      const int64_t want_pos = active && p < max_context ? p : -1;
+      require(pos[i] == want_pos, "batched position slot " + std::to_string(q) + " row " + std::to_string(j) + ": got " +
+                                      std::to_string(pos[i]));
+      const int64_t want_tok = !active ? 0 : (j == 0 ? v[static_cast<size_t>(q)].next : mask);
+      require(tok[i] == want_tok, "batched token slot " + std::to_string(q) + " row " + std::to_string(j));
+      const int64_t want_feed = !active ? 0 : (j == 0 ? v[static_cast<size_t>(q)].next : drafts[q * D + j - 1]);
+      require(feed[i] == want_feed, "batched feed slot " + std::to_string(q) + " row " + std::to_string(j));
+    }
+    for (int j = 0; j < D; ++j)
+      require(pinned[q * D + j] == drafts[q * D + j], "batched published draft slot " + std::to_string(q));
+  }
+  // Slot 2 runs into the context's tail: rows 1004.. are masked.
+  require(pos[2 * rows + 3] == 1003 && pos[2 * rows + 4] == -1, "the context tail masks the rows past it");
+  DGPP_CUDA_OK(cudaFreeHost(pinned));
+}
 
 int main() {
   return dgpp::test::run_all();

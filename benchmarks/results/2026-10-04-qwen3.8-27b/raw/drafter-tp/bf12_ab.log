@@ -1,0 +1,77 @@
+
+=== 09:16:54 glm down
+2026-10-04 09:17:02.124 === logs in /home/stephen/dgpp/log/deployments/a911a2d7c4b3be6a
+
+=== 09:17:02 w4-mtp3 up
+2026-10-04 09:17:22.322 READY — curl http://<node-0>:8000/v1/models  (stop: python3 /home/stephen/workspace/dgpp/scripts/dgpp-cluster down --config /home/stephen/workspace/dgpp/deploy/cluster_qwen3.8-27b_fp8_w4.json --log-dir /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/drafter-tp/w4-mtp3/server)
+
+=== 09:17:22 w4-mtp3 transcripts
+chat   256 tokens    5.84 s    22.8 ms/token (wall, prefill included) length | We need answer user: "Explain, in a few paragraphs, why a CU
+code   256 tokens    4.71 s    18.4 ms/token (wall, prefill included) length | We need answer user: "Write a Python function that parses an
+math   256 tokens    3.78 s    14.8 ms/token (wall, prefill included) length | We need answer user: "A train leaves city A at 60 km/h and a
+json   256 tokens    3.68 s    14.4 ms/token (wall, prefill included) length | We need to respond to user: "Return a JSON array of 8 object
+
+=== 09:17:40 w4-mtp3 timed_load greedy C1
+== per-class wall aggregate tokens/s (prefill included), greedy, max_tokens 256
+| class | c=1 |
+|---|---|
+| prose | 54.7 |
+| code | 65.1 |
+| json | 74.6 |
+| math | 68.6 |
+| chat | 47.8 |
+
+=== 09:18:24 w4-mtp3 down
+2026-10-04 09:18:31.671 === logs in /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/drafter-tp/w4-mtp3/server
+
+=== 09:18:31 w4-dflash2-nsys up (nsys)
+2026-10-04 09:19:04.406 READY — curl http://<node-0>:8000/v1/models  (stop: python3 /home/stephen/workspace/dgpp/scripts/dgpp-cluster down --config /home/stephen/workspace/dgpp/deploy/cluster_qwen3.8-27b_fp8_w4_dflash2.json --log-dir /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/drafter-tp/w4-dflash2-nsys/server)
+
+=== 09:19:04 w4-dflash2-nsys transcripts
+chat   256 tokens    8.47 s    33.1 ms/token (wall, prefill included) length | We need answer user: "Explain, in a few paragraphs, why a CU
+code   256 tokens    4.69 s    18.3 ms/token (wall, prefill included) length | We need answer user: "Write a Python function that parses an
+math   256 tokens    3.73 s    14.6 ms/token (wall, prefill included) length | We need answer user: "A train leaves city A at 60 km/h and a
+json   256 tokens    4.23 s    16.5 ms/token (wall, prefill included) length | We need to respond to user: "Return a JSON array of 8 object
+
+=== 09:19:25 w4-dflash2-nsys wait for the profile
+
+=== 09:21:05 w4-dflash2-nsys down
+2026-10-04 09:21:16.805 === logs in /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/drafter-tp/w4-dflash2-nsys/server
+
+=== 09:21:16 w2-dflash2-bf12 up
+2026-10-04 09:21:46.743 READY — curl http://<node-0>:8000/v1/models  (stop: python3 /home/stephen/workspace/dgpp/scripts/dgpp-cluster down --config /home/stephen/workspace/dgpp/deploy/cluster_qwen3.8-27b_fp8_w2_dflash2.json --log-dir /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/drafter-tp/w2-dflash2-bf12/server)
+
+=== 09:21:46 w2-dflash2-bf12 timed_load greedy C1
+== per-class wall aggregate tokens/s (prefill included), greedy, max_tokens 256
+| class | c=1 |
+|---|---|
+| prose | 30.0 |
+| code | 47.3 |
+| json | 66.4 |
+| math | 53.7 |
+| chat | 28.3 |
+
+=== 09:22:52 w2-dflash2-bf12 down
+2026-10-04 09:22:56.349 === logs in /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/drafter-tp/w2-dflash2-bf12/server
+
+=== 09:22:56 w4-dflash2-bf12 up
+2026-10-04 09:23:32.445 READY — curl http://<node-0>:8000/v1/models  (stop: python3 /home/stephen/workspace/dgpp/scripts/dgpp-cluster down --config /home/stephen/workspace/dgpp/deploy/cluster_qwen3.8-27b_fp8_w4_dflash2.json --log-dir /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/drafter-tp/w4-dflash2-bf12/server)
+
+=== 09:23:32 w4-dflash2-bf12 timed_load greedy C1
+== per-class wall aggregate tokens/s (prefill included), greedy, max_tokens 256
+| class | c=1 |
+|---|---|
+| prose | 43.8 |
+| code | 68.1 |
+| json | 95.8 |
+| math | 79.9 |
+| chat | 41.3 |
+
+=== 09:24:17 w4-dflash2-bf12 down
+2026-10-04 09:24:24.809 === logs in /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/drafter-tp/w4-dflash2-bf12/server
+
+=== 09:24:24 glm up
+2026-10-04 09:25:03.756 READY — curl http://<node-0>:18080/v1/models  (stop: python3 /home/stephen/workspace/dgpp/scripts/dgpp-cluster down --config /home/stephen/workspace/dgpp/deploy/cluster_glm-5.3-flash_nvfp4-fp8_w4.json --log-dir /home/stephen/dgpp/log/deployments/a911a2d7c4b3be6a)
+
+BF12_DONE 09:25:03
+BF12_EXIT=0

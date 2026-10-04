@@ -19,6 +19,7 @@
 #include "common/dtypes.hpp"
 #include "kernels/fp8_dequant.hpp"
 #include "kernels/fp8w_gemm.hpp"
+#include "kernels/glm_moe_launch.hpp"
 
 namespace {
 
@@ -140,6 +141,27 @@ void run(const Shape& sh, std::mt19937& rng, dgpp::Fp8wScale form) {
       require(f32[r * out_stride + c] == -12345.f && b16[r * out_stride + c] == 0xBEEF,
               "the output padding was written");
     }
+  }
+  if (per_weight && k % 16 == 0) {
+    // The scale GEMM's tile kernel (glm_moe_launch's dense form) computes
+    // the same per-weight terms in the same ascending-k16 mma chain: the
+    // two must agree bit for bit (the large-row route swaps one for the
+    // other, #89).
+    Dev<float> t32(static_cast<size_t>(m) * out_stride);
+    Dev<uint16_t> t16(static_cast<size_t>(m) * out_stride);
+    dgpp::launch_dense_mma_f32(d_act.p, stride, d_w.p, d_ws.p, t32.p, m, n, k, nullptr, out_stride);
+    dgpp::launch_dense_mma_bf16(d_act.p, stride, d_w.p, d_ws.p, t16.p, m, n, k, nullptr, out_stride);
+    DGPP_CUDA_OK(cudaDeviceSynchronize());
+    const std::vector<float> r32 = t32.download();
+    const std::vector<uint16_t> r16 = t16.download();
+    size_t diff32 = 0, diff16 = 0;
+    for (int r = 0; r < m; ++r)
+      for (int c = 0; c < n; ++c) {
+        diff32 += std::memcmp(&r32[r * out_stride + c], &f32[r * out_stride + c], 4) != 0;
+        diff16 += r16[r * out_stride + c] != b16[r * out_stride + c];
+      }
+    std::printf("           vs the tile kernel: %zu f32 and %zu bf16 outputs differ\n", diff32, diff16);
+    require(diff32 == 0 && diff16 == 0, "the per-weight form is not bitwise the scale GEMM's tile kernel");
   }
   // Deterministic across launches.
   dgpp::launch_fp8w_gemm_f32(d_act.p, stride, d_w.p, d_ws.p, d_f32.p, m, n, k, form, nullptr, out_stride);

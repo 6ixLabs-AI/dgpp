@@ -3496,6 +3496,13 @@ std::string GenerationService::legacy_logprobs(const StreamRecord& r, size_t fro
          "],\"top_logprobs\":" + tops + "],\"text_offset\":" + offsets + "]}";
 }
 
+void GenerationService::observe_token_pass(StreamRecord& r, std::chrono::steady_clock::time_point now) {
+  if (!r.first_token_seen || r.ids.size() <= r.last_pass_tokens) return;
+  stats_.itl_s.observe(std::chrono::duration<double>(now - r.last_pass_at).count());
+  r.last_pass_at = now;
+  r.last_pass_tokens = r.ids.size();
+}
+
 void GenerationService::on_retire(const std::string& id,
                                  const Scheduler::Result& result) {
   {
@@ -3523,6 +3530,7 @@ void GenerationService::on_retire(const std::string& id,
       r->reason = result.reason;
       {
         const auto now = std::chrono::steady_clock::now();
+        observe_token_pass(*r, now);
         stats_.e2e_s.observe(std::chrono::duration<double>(now - r->arrived).count());
         stats_.prompt_tokens.observe(r->prompt_tokens);
         stats_.generation_tokens.observe(result.steps_done);
@@ -4079,12 +4087,7 @@ bool GenerationService::engine_pass(const PreTickHook& pre_tick) {
     observed_decode_steps_ = meters_.decode_steps;
     observed_step_ms_ = meters_.step_ms;
     // One inter-token gap per request per pass that delivered its tokens.
-    for (auto& r : records_) {
-      if (!r->first_token_seen || r->ids.size() <= r->last_pass_tokens) continue;
-      stats_.itl_s.observe(std::chrono::duration<double>(meters_published_ - r->last_pass_at).count());
-      r->last_pass_at = meters_published_;
-      r->last_pass_tokens = r->ids.size();
-    }
+    for (auto& r : records_) observe_token_pass(*r, meters_published_);
     return more || !pending_admissions_.empty();
   }
 }

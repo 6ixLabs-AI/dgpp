@@ -1,0 +1,78 @@
+
+=== 08:13:04 glm down
+2026-10-04 08:13:09.581 === logs in /home/stephen/dgpp/log/deployments/a911a2d7c4b3be6a
+
+=== 08:13:09 w1-graph up
+2026-10-04 08:13:35.858 rank 0 serving: ok (26s)
+2026-10-04 08:13:35.858 READY — curl http://<node-0>:8000/v1/models  (stop: python3 /home/stephen/workspace/dgpp/scripts/dgpp-cluster down --config /home/stephen/workspace/dgpp/deploy/cluster_qwen3.8-27b_fp8_w1_graph_dflash2.json --log-dir /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/drafter-tp/w1-graph/server)
+{"object":"list","data":[{"id":"Qwen3.8-27B","object":"model","created":1791101615,"owned_by":"dgpp","sampling":{"availa
+
+=== 08:13:35 w1-graph transcripts
+chat   256 tokens   18.15 s    70.9 ms/token (wall, prefill included) length | We need answer user: "Explain, in a few paragraphs, why a CU
+code   256 tokens   10.59 s    41.4 ms/token (wall, prefill included) length | We need answer user: "Write a Python function that parses an
+math   256 tokens    7.87 s    30.7 ms/token (wall, prefill included) length | We need answer user: "A train leaves city A at 60 km/h and a
+json   256 tokens    9.65 s    37.7 ms/token (wall, prefill included) length | We need to respond to user: "Return a JSON array of 8 object
+identical transcripts: 4 of 4
+
+=== 08:14:22 w1-graph timed_load greedy C1
+== per-class wall aggregate tokens/s (prefill included), greedy, max_tokens 256
+| class | c=1 |
+|---|---|
+| prose | 17.9 |
+| code | 28.6 |
+| json | 40.4 |
+| math | 32.5 |
+| chat | 17.1 |
+
+=== 08:16:11 w1-graph timed_load sampled C1
+== per-class wall aggregate tokens/s (prefill included), sampled T=1.0, max_tokens 256
+| class | c=1 |
+|---|---|
+| prose | 15.5 |
+| code | 25.8 |
+| json | 39.8 |
+| math | 33.7 |
+| chat | 14.5 |
+
+=== 08:18:12 w1-graph down
+2026-10-04 08:18:15.248 === logs in /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/drafter-tp/w1-graph/server
+
+=== 08:18:15 w2-dflash2 up
+2026-10-04 08:18:42.953 rank 0 serving: ok (22s)
+2026-10-04 08:18:42.953 READY — curl http://<node-0>:8000/v1/models  (stop: python3 /home/stephen/workspace/dgpp/scripts/dgpp-cluster down --config /home/stephen/workspace/dgpp/deploy/cluster_qwen3.8-27b_fp8_w2_dflash2.json --log-dir /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/drafter-tp/w2-dflash2/server)
+{"object":"list","data":[{"id":"Qwen3.8-27B","object":"model","created":1791101922,"owned_by":"dgpp","sampling":{"availa
+
+=== 08:18:42 w2-dflash2 transcripts
+math   256 tokens    4.98 s    19.4 ms/token (wall, prefill included) length | We need answer user: "A train leaves city A at 60 km/h and a
+json   256 tokens    6.10 s    23.8 ms/token (wall, prefill included) length | We need to respond to user: "Return a JSON array of 8 object
+chat  DIFFERS at character 214 of 1379/1414 (tokens 256 vs 256): 'eed explain CUDA graph replay faster than eager launches: re' | 'eed explain CUDA graph replay vs eager kernel launches. Key '
+code  DIFFERS at character 996 of 1090/1102 (tokens 256 vs 256): ' an ISO-8601 timestamp" could be simple. Need three doctests' | ' an ISO-8601 timestamp" could return datetime object. Need t'
+math  DIFFERS at character 513 of 725/710 (tokens 256 vs 256): 't train leaves A. First train distance from A: 60t. Second l' | 't train leaves A. First train position from A: 60t. Second l'
+identical transcripts: 1 of 4
+
+=== 08:19:13 w2-dflash2 timed_load greedy C1
+== per-class wall aggregate tokens/s (prefill included), greedy, max_tokens 256
+| class | c=1 |
+|---|---|
+| prose | 28.7 |
+| code | 45.1 |
+| json | 63.6 |
+| math | 51.4 |
+| chat | 27.0 |
+
+=== 08:20:22 w2-dflash2 timed_load sampled C1
+== per-class wall aggregate tokens/s (prefill included), sampled T=1.0, max_tokens 256
+| class | c=1 |
+|---|---|
+| prose | 22.2 |
+| code | 46.7 |
+| json | 60.2 |
+| math | 52.1 |
+| chat | 22.2 |
+
+=== 08:21:40 w2-dflash2 llama-benchy
+
+=== 08:21:42 w2-dflash2 down
+2026-10-04 08:21:46.161 === logs in /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/drafter-tp/w2-dflash2/server
+
+=== 08:21:46 w4-dflash2 up

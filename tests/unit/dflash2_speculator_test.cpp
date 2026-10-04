@@ -1,6 +1,7 @@
 // The DFlash2 speculator's host-side contract: the depth-cap policy, the
 // commit_verify/redraft split (the batched redraft's halves) and the
 // per-position counters — all against a scripted host model, no device.
+#include <algorithm>
 #include <cstdint>
 #include <stdexcept>
 #include <string>
@@ -132,6 +133,60 @@ DGPP_TEST(dflash2_speculator_commit_split_matches_commit) {
   sb.set_drafts(d);
   require(sb.drafts() == d, "set_drafts installs the batch result");
   require(sa.drafts() == b.next_drafts, "solo commit redrafts from the model");
+}
+
+
+// The sampled verify of a block proposal (spec_sampled_winners): a draft
+// that carries the row's whole probability stands, one with none ends the
+// step on the residual sample, and the last row reached samples plainly
+// through the engine's closure; the winners judge like the greedy ones.
+DGPP_TEST(dflash2_sampled_verify_accepts_by_probability) {
+  const int vocab = 128;
+  auto outputs = [&](const std::vector<int32_t>& favourites) {
+    dgpp::DecodeOutputs out;
+    out.lm_vocab_begin = 0;
+    out.lm_vocab_count = vocab;
+    out.logits.assign(favourites.size() * static_cast<size_t>(vocab), -30.0f);
+    for (size_t r = 0; r < favourites.size(); ++r)
+      out.logits[r * static_cast<size_t>(vocab) + static_cast<size_t>(favourites[r])] = 30.0f;
+    return out;
+  };
+  // The engine's closure for the last row: the row's argmax (any sampler will do).
+  const dgpp::DecodeSample last = [](const dgpp::DecodeOutputs& o, const dgpp::sample::Params&, dgpp::sample::Rng&,
+                                     const std::vector<int32_t>&, const dgpp::text::TokenMask*, const float*) {
+    dgpp::sample::Result r;
+    const auto best = std::max_element(o.logits.begin(), o.logits.end());
+    r.token = static_cast<int32_t>(best - o.logits.begin());
+    return r;
+  };
+  dgpp::sample::Params p;
+  p.temperature = 1.0f;
+  dgpp::sample::Rng rng{7, 0};
+  // fed = [anchor 5, drafts 11 12 13]: every row favours the draft fed next.
+  const std::vector<int64_t> fed{5, 11, 12, 13};
+  {
+    const auto w = dgpp::spec_sampled_winners(outputs({11, 12, 13, 99}), fed, p, rng, {1, 2, 5}, last);
+    require(w == std::vector<int32_t>{11, 12, 13, 99}, "accept-all: the drafts stand and the last row samples");
+    const dgpp::SpecVerdict v = dgpp::judge_verify(fed, w);
+    require(v.accepted == 4 && v.next == 99, "accept-all judges four rows and the sampled next");
+  }
+  {
+    // Row 1 favours 70, not the draft 12: the draft's probability is ~0,
+    // the residual sample lands on 70 and the rows after are undecided.
+    const auto w = dgpp::spec_sampled_winners(outputs({11, 70, 13, 99}), fed, p, rng, {1, 2, 5}, last);
+    require(w[0] == 11 && w[1] == 70 && w[2] == -1 && w[3] == -1, "a rejected draft ends the step on the residual");
+    const dgpp::SpecVerdict v = dgpp::judge_verify(fed, w);
+    require(v.accepted == 2 && v.next == 70, "the rejection judges two rows with the residual as next");
+  }
+  bool threw = false;
+  try {
+    dgpp::sample::Params g;
+    g.temperature = 0.0f;
+    (void)dgpp::spec_sampled_winners(outputs({11, 12, 13, 99}), fed, g, rng, {}, last);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  require(threw, "a greedy request is not the sampled verify's");
 }
 
 }  // namespace

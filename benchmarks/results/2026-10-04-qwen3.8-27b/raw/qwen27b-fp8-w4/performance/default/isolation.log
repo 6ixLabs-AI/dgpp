@@ -1,0 +1,5 @@
+model Qwen/Qwen3.8-27B-FP8
+warm 0: status 200 tokens 64
+== isolation: prompt 0 alone (256 tokens) vs beside 7 others (256 tokens): DIFFERENT
+   first difference at char 966: alone 'optimize memory usage and throughput, while analyzing the tr' | batched 'mechanisms optimize memory usage and throughput, while analy'
+transcript isolation failed

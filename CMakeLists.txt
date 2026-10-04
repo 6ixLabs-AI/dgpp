@@ -1580,6 +1580,14 @@ add_test(NAME qwen35_forward_test
   COMMAND qwen35_forward_test --checkpoint-dir ${QWEN35_FORWARD_FIXTURE}
           --dump-file ${CMAKE_CURRENT_BINARY_DIR}/qwen35_teacher_ref.q35dump)
 set_tests_properties(qwen35_forward_test PROPERTIES DEPENDS qwen35_forward_generate_teacher)
+# The 27B TP forwards (#86): loopback worlds of 2 and 4 over the tiny
+# fixture against the world-1 forward (ports 29950, 29951).
+add_executable(qwen35_tp_test tests/cuda/qwen35_tp_test.cpp)
+target_include_directories(qwen35_tp_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/tests/cuda)
+target_link_libraries(qwen35_tp_test PRIVATE dgpp_models_qwen_layers dgpp_models_qwen_loader dgpp_models_qwen dgpp_bus dgpp_loaders dgpp_kernels CUDA::cudart Threads::Threads)
+dgpp_set_common(qwen35_tp_test)
+add_test(NAME qwen35_tp_test COMMAND qwen35_tp_test)
+set_tests_properties(qwen35_tp_test PROPERTIES RUN_SERIAL TRUE LABELS "gpu")
 
 add_executable(qwen35_loader_smoke tests/cuda/qwen35_loader_smoke.cpp)
 target_include_directories(qwen35_loader_smoke PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/tests/cuda)
@@ -2308,6 +2316,10 @@ if(DGPP_BUILD_BENCHMARKS)
 
   dgpp_add_benchmark(micro_gemv_bw
     SOURCES benchmarks/micro/gemv_bw.cu
+    LIBRARIES dgpp_kernels CUDA::cudart)
+
+  dgpp_add_benchmark(micro_mma_gemv_shapes
+    SOURCES benchmarks/micro/mma_gemv_shapes.cu
     LIBRARIES dgpp_kernels CUDA::cudart)
 
   dgpp_add_benchmark(micro_gemm_peak

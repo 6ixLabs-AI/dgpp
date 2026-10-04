@@ -95,8 +95,10 @@ constexpr int kSampleMaxTopLogprobs = 20;
 // The verify rows a sampled verdict decides over: the fed token's row plus
 // up to kSampleVerdictRows - 1 drafts — the families' kSpecRows (6 since
 // the DeepSeek-V4.1 DSpark block of five drafts, 2026-09-14; the kernel's
-// per-row tables moved to dynamic shared memory for it).
-constexpr int kSampleVerdictRows = 6;
+// per-row tables moved to dynamic shared memory for it; 8 since the
+// DFlash2 block of seven drafts on the graph worlds, 2026-10-04 — the
+// dynamic tables reach ~63 KB of the GB10's 99 KB per block).
+constexpr int kSampleVerdictRows = 8;
 
 // The sampling verdict's outcome per request, beside the PickVerdict the
 // device consumers (commit, token feeds) keep reading.

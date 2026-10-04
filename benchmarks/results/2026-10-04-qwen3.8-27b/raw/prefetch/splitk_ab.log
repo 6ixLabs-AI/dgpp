@@ -1,0 +1,56 @@
+
+=== 15:45:29 glm down
+2026-10-04 15:45:37.350 === logs in /home/stephen/dgpp/log/deployments/a911a2d7c4b3be6a
+
+=== 15:45:37 w4-mtp5-splitk up
+2026-10-04 15:45:58.038 READY — curl http://<node-0>:8000/v1/models  (stop: python3 /home/stephen/workspace/dgpp/scripts/dgpp-cluster down --config /home/stephen/workspace/dgpp/deploy/cluster_qwen3.8-27b_fp8_w4.json --log-dir /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/prefetch/w4-mtp5-splitk/server)
+
+=== 15:45:58 w4-mtp5-splitk transcripts -
+chat   256 tokens    6.67 s    26.1 ms/token (wall, prefill included) length | We need answer user: "Explain, in a few paragraphs, why a CU
+code   256 tokens    4.41 s    17.2 ms/token (wall, prefill included) length | We need answer user: "Write a Python function that parses an
+math   256 tokens    3.18 s    12.4 ms/token (wall, prefill included) length | We need answer user: "A train leaves city A at 60 km/h and a
+json   256 tokens    3.70 s    14.5 ms/token (wall, prefill included) length | We need to respond to user: "Return a JSON array of 8 object
+
+=== 15:46:16 w4-mtp5-splitk timed_load greedy C1
+== per-class wall aggregate tokens/s (prefill included), greedy, max_tokens 256
+| class | c=1 |
+|---|---|
+| prose | 53.0 |
+| code | 71.0 |
+| json | 88.5 |
+| math | 79.5 |
+| chat | 46.1 |
+ms/pass median 54 of 15
+
+=== 15:46:57 w4-mtp5-splitk down
+2026-10-04 15:47:04.941 === logs in /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/prefetch/w4-mtp5-splitk/server
+
+=== 15:47:04 w4-dflash2-splitk up
+2026-10-04 15:47:31.368 READY — curl http://<node-0>:8000/v1/models  (stop: python3 /home/stephen/workspace/dgpp/scripts/dgpp-cluster down --config /home/stephen/workspace/dgpp/deploy/cluster_qwen3.8-27b_fp8_w4_dflash2.json --log-dir /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/prefetch/w4-dflash2-splitk/server)
+
+=== 15:47:31 w4-dflash2-splitk transcripts w4-mtp5-splitk
+chat   256 tokens    6.42 s    25.1 ms/token (wall, prefill included) length | We need answer user: "Explain, in a few paragraphs, why a CU
+code   256 tokens    3.45 s    13.5 ms/token (wall, prefill included) length | We need answer user: "Write a Python function that parses an
+math   256 tokens    2.74 s    10.7 ms/token (wall, prefill included) length | We need answer user: "A train leaves city A at 60 km/h and a
+json   256 tokens    3.05 s    11.9 ms/token (wall, prefill included) length | We need to respond to user: "Return a JSON array of 8 object
+identical transcripts: 4 of 4
+
+=== 15:47:47 w4-dflash2-splitk timed_load greedy C1
+== per-class wall aggregate tokens/s (prefill included), greedy, max_tokens 256
+| class | c=1 |
+|---|---|
+| prose | 54.9 |
+| code | 86.3 |
+| json | 120.8 |
+| math | 101.2 |
+| chat | 52.6 |
+ms/pass median 52 of 15
+
+=== 15:48:22 w4-dflash2-splitk down
+2026-10-04 15:48:30.121 === logs in /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/prefetch/w4-dflash2-splitk/server
+
+=== 15:48:30 glm up
+2026-10-04 15:49:06.585 READY — curl http://<node-0>:18080/v1/models  (stop: python3 /home/stephen/workspace/dgpp/scripts/dgpp-cluster down --config /home/stephen/workspace/dgpp/deploy/cluster_glm-5.3-flash_nvfp4-fp8_w4.json --log-dir /home/stephen/dgpp/log/deployments/a911a2d7c4b3be6a)
+
+AB_DONE 15:49:06
+SCRIPT_EXIT=0

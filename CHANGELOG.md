@@ -17,7 +17,7 @@ The history by milestone. The dated engineering record in
 - **Per-rank metrics**: every rank reports `dgpp_rank_*` (step and prefill
   wall time, generated tokens, pool, completed collectives, snapshot age);
   rank 0 on `/metrics/prometheus`, each peer on an optional listener
-  (`DGPP_METRICS_PORT` / `ports.metrics` / `--metrics-port`, off by default)
+  (deployment JSON `ports.metrics` / `--metrics-port`, off by default)
   on its node address.
 - **Qwen3.8-27B: the review's follow-ups** (2026-10-03, #84 / #85 / #87):
   the full-attention layers' kernels rewritten (`kernels/full_attn`: a
@@ -36,9 +36,97 @@ The history by milestone. The dated engineering record in
   instructions share the mma pipe's issue slots), with `kernels/fp8w_gemm`
   (63–66 TF, both scale forms, `fp8w_gemm_test`) kept for the scale GEMM's
   26 TF tile route (#89) and `fp8_gemm_bench --27b` reporting every lever.
+  One recipe per world size (2026-10-04): the single-node template is the
+  DFlash2 drafter's (`cluster_qwen3.8-27b_fp8_w1`), its MTP depth-2 and plain
+  worlds the knobs `--no-dflash --mtp --mtp-depth 2` and `--no-dflash`
+  (`--no-dflash` lands on the decode graph: the eager engine's plain world
+  without a drafter streams its layers); the two- and four-node templates
+  are MTP depth 3 (depth 3 leads depth 2 by 6–18 % across the classes at
+  world 2), the drafter their mode (below).
+  The family's rows on the [benchmarks page](docs/benchmarks.md) come from
+  the 2026-10-04 campaign (`benchmarks/results/2026-10-04-qwen3.8-27b`: the
+  runner's performance, modes and quality stages over both templates, the
+  MTP depth-2 world as the drafter template's mode); the model card is
+  `docs/model_cards/Qwen3.8-27B-FP8.md`.
+  The drafter serves sampled requests (2026-10-04): a sampled slot's block
+  is verified row by row with the sampled MTP rule — each draft stands with
+  its exact probability under the request's temperature, top-k / top-p and
+  penalties, the residual sample ends the step — where it ran plain before
+  (8.4 tok/s at C1 against the greedy block's 17–41); logprobs, a logit bias
+  and a grammar still run plain.
   `engine.bf16_weights: bf12` now packs this family's bf16 decode matrices
   too (#88: the drafter's five layers and fc taps, the MTP fc, a bf16 lm
   head), the bf16 bytes staying resident for the stacked redrafts' mma form.
+  The family serves on two and four Sparks (#86): the loader's TP geometry
+  (GDN and attention heads, the MLP and the lm head sliced across the ranks,
+  the kv heads paired at world 4) through `Qwen35Model`, two boundary folds
+  a layer (the attention / GDN output and the MLP output, bf16 on the wire)
+  in the main and draft walks; the loopback TP
+  gate (`qwen35_tp_test`, worlds 2 and 4 against the world-1 forward over the
+  fixture) and the `cluster_qwen3.8-27b_fp8_w2` template. The scale GEMM's
+  large-row FP8 products (every family's dense MLPs, shared experts and FP8
+  heads past the GEMV rows) run on `kernels/fp8w_gemm`'s per-weight form
+  (#89): bitwise the tile kernel they replace (`fp8w_gemm_test` pins the
+  pair) at 63–66 TF against its 26–30.
+
+- **Qwen3.8-27B TP: the decode GEMV's rate at shard widths** (2026-10-04,
+  #93): the four-node profile's 187 GB/s was measured against the spec's
+  273; the GB10's achievable device read bandwidth is 233.6 GB/s
+  (`micro_mem_bw`), and the fp8 decode GEMVs reach 89–97 % of it in
+  isolation at the per-rank shapes (`micro_mma_gemv_shapes`, the new
+  microbench over the two- and four-node matrices at 1 / 4 / 8 rows: the
+  streaming form, the forced block widths, the row-chunk cores, the fused
+  swiglu down). In-server they ran 7–20 % under that, the worst the MLP gate
+  / up at eight rows: 68 unsplit blocks, because the MLP launches passed no
+  workspace — they do now (split 2: 184 → 208 GB/s on four Sparks; the
+  chunked cores at m <= 4 are unaffected). The lever at TP is the fold
+  time: 138 bus collectives x ~49 us a step on four Sparks with DRAM idle,
+  so the decode walk opens the Qwen3.8-Flash-Next prefetcher's boundary
+  windows (`WeightPrefetcher`, a side-stream graph branch before each fold:
+  the MLP's gate / up / down before the attention fold, the next layer's
+  input projections or the head before the MLP fold; 20 MB at the Light
+  rate from the sweep — 8 / 12 / 20 / 32 MB and the Full rate measured,
+  32 MB and Full slower). Bit-identical on or off (greedy transcripts 4/4
+  at every budget). Four nodes MTP depth 3: 48 → 46 ms a pass (greedy C1
+  54.7 / 65.2 / 74.7 / 69.0 / 47.6 → 56.3 / 67.1 / 76.6 / 70.5 / 49.1
+  tok/s); two nodes 82 → 80; the four-node drafter 54 → 53 with the
+  windows and 52 with the split gate / up (54.9 / 86.3 / 120.8 / 101.2 /
+  52.6; transcripts 4/4 against a same-dispatch MTP depth-5 world).
+
+- **The DFlash2 drafter on the graph worlds** (2026-10-04, #92): the graph
+  engine hosts the block proposal at every world. The verify is the 8-row
+  recorded step (the sampled device pick's row limit `kSampleVerdictRows`
+  6 → 8, the drafts point masses — the P(draft) rule); after the commit one
+  recorded block forward off the device verdict replaces the draft picks
+  (`Qwen35Model::session_graph_capture_block_draft`, a batched form per
+  family): the anchor and the block's positions staged from the verdict
+  and the committed device position, the drafter's heads / kv heads / MLP
+  rows sharded across the ranks with two boundary folds a layer (the
+  replicated 3.7 GB forward cost 17 ms a step on four Sparks; 3.8 sharded
+  and bf12), the mask rows' top-16 on the vocab-sharded head merged across
+  the ranks through one fold of 6-bit digits (`dflash2_topk_stage/merge`,
+  the pick's wire form) so every rank walks the same proposal, the drafts
+  fed to the next replay and a pinned per-slot mirror (`kernels/dflash2`).
+  The block attention takes a split-key form (32 ranges + combine; the
+  serial walk was ~2 ms a layer at 2K). `engine.dflash_model` serves on the
+  fabric (with `decode_graph`) and on one Spark with the decode graph (the
+  eager engine's transcripts 4/4, chat 71 against 95 ms a token); past four
+  slots the engine batches the slots that fit the 32-row ceiling and
+  replays scalar graphs beyond. Gates: `dflash2_kernels_test` (the merge at
+  worlds 2 and 4, the staging, the split attention), greedy transcripts
+  identical 4/4 to the same world's MTP depth-5 world at worlds 1, 2 and 4.
+  Measured greedy C1 (`timed_load`, prose / code / json / math / chat): two
+  nodes MTP depth 3 at 84 ms a pass, the drafter 32.1 / 50.3 / 71.0 / 57.6 /
+  30.3 at 94; four nodes MTP 54.7 / 65.1 / 74.6 / 68.6 / 47.8 at 49 ms, the
+  drafter 52.4 / 82.5 / 115.9 / 97.1 / 50.2 at 56 — the drafter leads code /
+  JSON / math by 27–55 % and ties prose and chat, the MTP template's 4-row
+  verify keeps the shorter pass, so MTP stays the two- and four-node
+  template and the drafter is its mode (`--no-mtp --dflash-model
+  z-lab/Qwen3.8-27B-DFlash2 --bf16-weights bf12`); the drafter recipes pack
+  the drafter bf12 (+4.5 %, lossless). The nsys node trace of rank 0 at four
+  nodes puts the target's fp8 GEMV at 35–38 ms a step for both recipes
+  (6.9 GB a rank at 187 GB/s at four-node shard widths): the shared lever
+  (#93).
 
 - **The DFlash2 block drafter on Qwen3.8-27B** (2026-10-02, #80):
   `engine.dflash_model` serves `z-lab/Qwen3.8-27B-DFlash2` in place of the
@@ -61,7 +149,8 @@ The history by milestone. The dated engineering record in
   top-1). The 27B family's own GEMM instance takes the streaming mma form
   for 17..128-row decode batches (the drafter's weights read once per
   step); other families' dispatch is unchanged. Template
-  `deploy/cluster_qwen3.8-27b_fp8_w1_dflash2.example.json`; references in
+  `deploy/cluster_qwen3.8-27b_fp8_w1.example.json` (the world-1 recipe since 2026-10-04: the drafter is the faster
+  single-node world on every class, so the MTP world is this template's mode, not a second file); references in
   `dflash2_kernels_test`, the host contract in `dflash2_speculator_test`,
   the config gates in `unit_tests`. Measured on one GB10 (greedy, exact
   numerics): 164 ms/step at C1 for 2.5–6.4 tokens per step by class —

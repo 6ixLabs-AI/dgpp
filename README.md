@@ -32,7 +32,7 @@ over RoCE. Each quant links to its specific Hugging Face model card.
 | DeepSeek-V4.1-Flash | [deepseek-ai/DeepSeek-V4.1-Flash](https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash) | 4 | [Four nodes](deploy/cluster_deepseek-v4.1-flash_mxfp4-fp8_w4.example.json) |
 | MiMo-V2.6-Flash | [XiaomiMiMo/MiMo-V2.6-Flash-RL](https://huggingface.co/XiaomiMiMo/MiMo-V2.6-Flash-RL) | 2, 4 | [Two nodes](deploy/cluster_mimo-v2.6-flash_mxfp4-fp8_w2.example.json), [four nodes](deploy/cluster_mimo-v2.6-flash_mxfp4-fp8_w4.example.json) |
 | DeepSeek-V4-Flash | [deepseek-ai/DeepSeek-V4-Flash-0731](https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash-0731) | 2, 4 | [Two nodes](deploy/cluster_deepseek-v4-flash_mxfp4-fp8_w2.example.json), [four nodes](deploy/cluster_deepseek-v4-flash_mxfp4-fp8_w4.example.json) |
-| Qwen3.8-27B | [Qwen/Qwen3.8-27B-FP8](https://huggingface.co/Qwen/Qwen3.8-27B-FP8) | 1 | [One node](deploy/cluster_qwen3.8-27b_fp8_w1.example.json) |
+| Qwen3.8-27B | [Qwen/Qwen3.8-27B-FP8](https://huggingface.co/Qwen/Qwen3.8-27B-FP8) | 1, 2, 4 | [One node](deploy/cluster_qwen3.8-27b_fp8_w1.example.json) (the DFlash2 block drafter), [two nodes](deploy/cluster_qwen3.8-27b_fp8_w2.example.json) and [four nodes](deploy/cluster_qwen3.8-27b_fp8_w4.example.json) (MTP depth 3) |
 
 The Qwen NVFP4 templates select streaming MMA for the FP8 vocabulary head
 with `engine.fp8_head: "mma"`, following matched one- and two-Spark
@@ -229,8 +229,8 @@ and links to the raw results and reproduction commands.
 
 ## Status
 
-As of 2026-10-02, the source tree has thirteen measured deployment templates
-covering seven model architectures on one, two or four Sparks. The shared
+As of 2026-10-04, the source tree has fifteen measured deployment templates
+covering eight model architectures on one, two or four Sparks. The shared
 engine provides graph decode, transactional MTP, row-batched execution,
 grouped prefill, prefix caching, deterministic multi-rank scheduling and the
 OpenAI-compatible service. Current quantized paths cover FP8, NVFP4, MXFP4,
@@ -246,7 +246,13 @@ Full GLM-5.3 ships at eight slots and uses packed tensor-core prefill from 128
 rows. MiMo-V2.6-Flash ships at four slots with MTP depth 1 on two or four
 Sparks. DeepSeek-V4-Flash (2026-10-02) ships at six slots on four Sparks and
 four on two, both with the confidence-scheduled DSpark depth (greedy and
-sampled requests) and the 1M-token context. Version 0.1.0
+sampled requests) and the 1M-token context. Qwen3.8-27B (2026-10-03/04) ships the
+DFlash2 block drafter on one Spark (one block proposal a step, eight request
+slots, the FP8 head) and MTP depth 3 on two and four (tensor parallel over the
+DeltaNet and attention heads, the MLP and the head); the drafter runs on
+every world since 2026-10-04 (the block proposal recorded inside the graph
+step, the ranks' top-16 lists merged through one fold, the drafter sharded)
+and is the two- and four-node templates' mode. Version 0.1.0
 remains the original GLM-5.3-Flash sign-off release; the current source has
 advanced beyond that baseline.
 
@@ -486,7 +492,7 @@ kernel, a lever or a threshold.
 | `engine.prefill_fold_scales` | no | Qwen3.8 AutoRound hybrid prefill lever: the wide packed expert GEMM folds each group's scale into the bf16 weight values and keeps one fp32 accumulator across K (Marlin's form; no per-group fma). Not bitwise the default chain. Off by default and measured as no gain (+3 % at 32K): no template turns it on. | false |
 | `engine.prefill_fp8_gemm` | no | Qwen prefill lever under `engine.dense_weights: "fp8"`: prefill-shaped dense projections run on the fp8 tensor cores from per-token 1×128 e4m3 activations with the checkpoint's 128×128 weight scales (the reference stack's blockwise GEMM) instead of dequantizing each matrix to bf16 for cuBLASLt. Not bitwise the dequantized chain (the activations are quantized). Off by default; requires `dense_weights` fp8; the AutoRound template turns it on beside `prefill_bf16_partials` (0 to −3 % alone). | false |
 | `engine.prefill_fp8_per_tensor` | no | Qwen3.8-27B prefill lever: every FP8 projection's prefill GEMM (rows above the decode GEMV band, and every resumed chunk) runs on cuBLASLt's per-tensor-scale e4m3 kernels from boot-requantized per-tensor weights and per-call per-tensor activations — about 2x the dequantized bf16 GEMM's rate (0.59 vs 1.04 ms/token at 2K), +23 GiB resident at the 27B's shape. Lossy beyond the checkpoint: an 8K-prompt greedy completion differs from the exact path. Opt-in; the default prefill dequantizes each matrix to bf16 for cuBLASLt (exact). | false |
-| `engine.dflash_model` | no | Qwen3.8-27B: a DFlash2 block-drafter checkpoint (`z-lab/Qwen3.8-27B-DFlash2`, an HF id or a directory) that replaces the MTP draft on the eager world-1 engine (`mtp` and `decode_graph` off). Five bidirectional draft layers fed by the target's layer taps propose seven tokens per step through the rank-256 selector walk; the greedy verify/rollback keeps transcripts equal to a plain world's of the same verify width (MTP depth 4: 4/4 identical). Sampled, grammar-constrained and penalized requests run plain. | none |
+| `engine.dflash_model` | no | Qwen3.8-27B: a DFlash2 block-drafter checkpoint (`z-lab/Qwen3.8-27B-DFlash2`, an HF id or a directory) that replaces the MTP draft (`mtp` off). Five bidirectional draft layers fed by the target's layer taps propose seven tokens per step through the rank-256 selector walk. On one Spark without `decode_graph` it runs on the eager engine (the batched verify graph, the stacked redrafts); on the graph worlds — the fabric (`decode_graph` required) or one Spark with the decode graph — the block proposal is recorded inside the graph step on every rank: the drafter's heads and MLP rows sharded across the ranks with two folds a layer, each rank's vocab-slice top-16 merged through one boundary fold so every rank walks the same proposal, the drafts fed to the next replay on the device. The verify is exact: greedy transcripts equal the same world's MTP depth-5 world's (the same verify dispatch class; 4/4 at worlds 1, 2 and 4); sampled requests accept each draft with its exact probability under the request's temperature, top-k / top-p and penalties (the point-mass rule). Requests with logprobs, a logit bias or a grammar run plain. Past 4 slots the 8-row blocks exceed the 32-row decode batch: the engine batches the slots that fit and replays scalar graphs for a live set beyond them. | none |
 | `engine.dflash_verify_graph` | no | With a drafter: replay the multi-slot verify batch as a captured CUDA graph (one static 16- or 32-row replay; a lone slot stays on the scalar path). The measured best; `false` runs the packed eager batch. | true |
 | `engine.dflash_draft_batch` | no | With a drafter: one stacked block forward redrafts every speculating slot (the draft weights read once per step); `false` redrafts slot by slot. | true |
 | `engine.dflash_depth` | no | With a drafter: verify only the first N drafts per step (1–7); unverified drafts are re-drafted next step, so transcripts are exact at any value. 0 verifies the whole block. | 0 |

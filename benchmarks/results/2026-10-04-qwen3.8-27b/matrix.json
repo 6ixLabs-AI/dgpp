@@ -1,0 +1,26 @@
+[
+ {
+  "id": "qwen27b-fp8-w1",
+  "template": "deploy/cluster_qwen3.8-27b_fp8_w1.example.json",
+  "config": "configs/qwen27b-fp8-w1.json",
+  "model": "Qwen/Qwen3.8-27B-FP8",
+  "world": 1,
+  "slots": 8
+ },
+ {
+  "id": "qwen27b-fp8-w2",
+  "template": "deploy/cluster_qwen3.8-27b_fp8_w2.example.json",
+  "config": "configs/qwen27b-fp8-w2.json",
+  "model": "Qwen/Qwen3.8-27B-FP8",
+  "world": 2,
+  "slots": 8
+ },
+ {
+  "id": "qwen27b-fp8-w4",
+  "template": "deploy/cluster_qwen3.8-27b_fp8_w4.example.json",
+  "config": "configs/qwen27b-fp8-w4.json",
+  "model": "Qwen/Qwen3.8-27B-FP8",
+  "world": 4,
+  "slots": 8
+ }
+]

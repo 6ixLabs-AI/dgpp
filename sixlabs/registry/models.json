@@ -268,8 +268,17 @@
       "checkpoints": [
         {
           "repo": "Qwen/Qwen3.8-27B-FP8", "format": "fp8-block", "status": "upstream", "default": true,
-          "worlds": {"1": {"template": "deploy/cluster_qwen3.8-27b_fp8_w1.example.json",
-                           "variants": {"dflash2": "deploy/cluster_qwen3.8-27b_fp8_w1_dflash2.example.json"}}}
+          "worlds": {
+            "1": {"template": "deploy/cluster_qwen3.8-27b_fp8_w1.example.json",
+                  "measured": {"source": "docs/benchmarks.md", "tok_s": {"single_prose": 17.8, "single_code": 28.6, "c8": [45.4, 96.3]},
+                               "notes": "Upstream's 2026-10-04 campaign, not measured on this fleet. Since upstream ecf0e33 this template IS the DFlash2 block-drafter recipe (engine.dflash_model z-lab/Qwen3.8-27B-DFlash2, the eager engine, no MTP); the separate _w1_dflash2 template is gone and MTP depth 2 is a mode of this one (--no-dflash --mtp --mtp-depth 2: 16.1-22.0 tok/s). Single stream by prompt class: prose 17.8, code 28.6, JSON 40.8, math 32.9, chat 17.0."}},
+            "2": {"template": "deploy/cluster_qwen3.8-27b_fp8_w2.example.json",
+                  "measured": {"source": "docs/benchmarks.md", "tok_s": {"single_prose": 34.0, "single_code": 40.5, "c8": [136.4, 217.4]},
+                               "notes": "Upstream's 2026-10-04 campaign, not measured on this fleet. Tensor parallel over two Sparks (upstream #86), MTP depth 3 on the decode graph."}},
+            "4": {"template": "deploy/cluster_qwen3.8-27b_fp8_w4.example.json",
+                  "measured": {"source": "docs/benchmarks.md", "tok_s": {"single_prose": 57.9, "single_code": 69.9, "c8": [203.0, 308.1]},
+                               "notes": "Upstream's 2026-10-04 campaign, not measured on this fleet (four Sparks; this fleet has two)."}}
+          }
         }
       ]
     },

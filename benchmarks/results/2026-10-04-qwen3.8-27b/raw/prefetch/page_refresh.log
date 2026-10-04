@@ -1,0 +1,36 @@
+
+=== 15:50:23 release build
+BUILD_EXIT=0
+
+=== 15:51:01 manifest
+  "version": "dgpp-serve 0.1.0+gd97649b2a41d (git d97649b2a41d, cuda 13.0)"
+}
+
+=== 15:51:01 glm down
+2026-10-04 15:51:09.036 === logs in /home/stephen/dgpp/log/deployments/a911a2d7c4b3be6a
+
+=== 15:51:09 campaign performance
+2026-10-04T16:14:38.536280+00:00 RUN /usr/bin/python3 /home/stephen/workspace/dgpp/scripts/timed_load.py 127.0.0.1 18080 --concurrency 1,8 --classes all --repeat 3 --max-tokens 256 --temperature 1 --json-out /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/qwen27b-fp8-w4/performance/default/sampled.json
+2026-10-04T16:17:47.592673+00:00 EXIT 0 raw/qwen27b-fp8-w4/performance/default/sampled.log
+2026-10-04T16:17:47.593025+00:00 RUN /usr/bin/python3 /home/stephen/workspace/dgpp/scripts/serve_load.py 127.0.0.1 18080 --concurrency 1 --max-tokens 256 --isolation 8 --classes chat --json-out /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/qwen27b-fp8-w4/performance/default/isolation.json
+2026-10-04T16:18:03.779859+00:00 EXIT 1 raw/qwen27b-fp8-w4/performance/default/isolation.log
+2026-10-04T16:18:03.780185+00:00 RUN /usr/bin/python3 /home/stephen/workspace/dgpp/scripts/dgpp-cluster down --config /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/qwen27b-fp8-w4/performance/default/config.json --log-dir /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/qwen27b-fp8-w4/performance/default/server
+2026-10-04T16:18:11.468321+00:00 EXIT 0 raw/qwen27b-fp8-w4/performance/default/down.log
+
+=== 16:18:11 campaign modes
+2026-10-04T16:30:41.575598+00:00 RUN /usr/bin/python3 /home/stephen/workspace/dgpp/scripts/dgpp-cluster up --config /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/qwen27b-fp8-w4/modes/dflash2/config.json --bin /home/stephen/workspace/dgpp/build-release/dgpp-serve --log-dir /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/qwen27b-fp8-w4/modes/dflash2/server
+2026-10-04T16:31:06.835338+00:00 EXIT 0 raw/qwen27b-fp8-w4/modes/dflash2/up.log
+2026-10-04T16:31:06.836571+00:00 RUN /usr/bin/python3 /home/stephen/workspace/dgpp/scripts/timed_load.py 127.0.0.1 18080 --concurrency 1 --classes all --repeat 3 --max-tokens 256 --json-out /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/qwen27b-fp8-w4/modes/dflash2/greedy.json
+2026-10-04T16:31:59.962814+00:00 EXIT 0 raw/qwen27b-fp8-w4/modes/dflash2/greedy.log
+2026-10-04T16:31:59.963128+00:00 RUN /usr/bin/python3 /home/stephen/workspace/dgpp/scripts/dgpp-cluster down --config /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/qwen27b-fp8-w4/modes/dflash2/config.json --log-dir /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/qwen27b-fp8-w4/modes/dflash2/server
+2026-10-04T16:32:06.999608+00:00 EXIT 0 raw/qwen27b-fp8-w4/modes/dflash2/down.log
+
+=== 16:32:07 summarize
+Summarized 5 completed launches.
+merged 18 rows into docs/benchmarks.md
+
+=== 16:32:07 glm up
+2026-10-04 16:32:45.892 READY — curl http://<node-0>:18080/v1/models  (stop: python3 /home/stephen/workspace/dgpp/scripts/dgpp-cluster down --config /home/stephen/workspace/dgpp/deploy/cluster_glm-5.3-flash_nvfp4-fp8_w4.json --log-dir /home/stephen/dgpp/log/deployments/a911a2d7c4b3be6a)
+
+REFRESH_DONE 16:32:45
+SCRIPT_EXIT=0

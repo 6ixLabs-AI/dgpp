@@ -77,17 +77,25 @@ rollback apply to it verbatim. Every target pass (prefill chunks and verify
 rows alike) feeds the planes at its positions; the block forward then runs
 `[bonus, mask x 7]` and proposes seven tokens.
 
-Serve it with `engine.dflash_model` and `mtp` / `decode_graph` off
-(`deploy/cluster_qwen3.8-27b_fp8_w1_dflash2.example.json`; `--no-dflash` runs
-the same recipe plain). Acceptance is the ordinary greedy verify: the fed
-rows (the pending token plus the drafts) run through the target, the accepted
-prefix commits, the rest rolls back, and the step returns the tokens it
-decided (the accepted drafts and the verify's next token), so the transcript
-equals a plain world's of the same verify width: 4/4 identical to an MTP
-depth-4 world (both verify five or more rows, the streaming mma class); a
-3-row MTP verify or a T=1 step differs within the family's cross-dispatch
-near-tie class (`mma_from_rows` 5). Sampled, grammar-constrained and
-penalized requests run the plain step. The throughput line carries the drafter's per-position
+Serve it with `engine.dflash_model` and `mtp` off
+(`deploy/cluster_qwen3.8-27b_fp8_w1.example.json`; `--no-dflash` runs
+the same recipe plain on the decode graph, `--no-dflash --mtp --mtp-depth 2`
+as the MTP world). Without `decode_graph` on one Spark it runs on the eager
+engine; on the graph worlds (the fabric, or one Spark with the decode
+graph) the block proposal is recorded inside the graph step — see "On the
+graph worlds" below. A greedy request's acceptance is the ordinary greedy
+verify: the fed rows (the pending token plus the drafts) run through the
+target, the accepted prefix commits, the rest rolls back, and the step
+returns the tokens it decided (the accepted drafts and the verify's next
+token), so the transcript equals a plain world's of the same verify width:
+4/4 identical to an MTP depth-4 world (both verify five or more rows, the
+streaming mma class); a 3-row MTP verify or a T=1 step differs within the
+family's cross-dispatch near-tie class (`mma_from_rows` 5). A sampled
+request's block is verified with the sampled MTP rule (each draft stands
+with its exact probability under the request's temperature, top-k / top-p
+and penalties; the residual sample ends the step): the drafts are point
+masses, so the target distribution is preserved as for sampled MTP.
+Requests with logprobs, a logit bias or a grammar run the plain step. The throughput line carries the drafter's per-position
 acceptance in the MTP group.
 
 ### Proposal rule: the selector walk
@@ -154,6 +162,56 @@ The author's `bench_qwen35` protocol (thinking on): Q&A 22.4, Code 32.2,
 JSON 35.9, Math 31.0, LongCode 25.1 tokens/s (MTP: 13.6 / 14.4 / 16.4 /
 14.2 / 13.7). The remaining gap is the per-pass cost at 4–8K context (the
 one-warp-per-row attention kernels, #85) and the drafter's bf16 bytes.
+
+### On the graph worlds (2026-10-04, #92)
+
+`GraphEngineAdapter` hosts the block proposal beside the MTP draft chain:
+the verify is the ordinary 8-row recorded step (the sampled device pick
+with no proposal behind the drafts — the point-mass rule; the sampling
+verdict's row limit `kSampleVerdictRows` went 6 → 8), and after the commit
+one recorded block forward off the device verdict replaces the draft
+picks (`Qwen35Model::session_graph_capture_block_draft`, batched per family):
+the anchor and the block's positions come off the verdict and the committed
+device position (`dflash2_stage_block`), the drafter's layers run with its
+heads, kv heads and MLP rows sharded across the ranks and two boundary folds
+a layer, the mask rows go through the vocab-sharded head, each rank's slice
+top-16 is staged as 6-bit digits and merged through one boundary fold
+(`dflash2_topk_stage` / `dflash2_topk_merge`, the pick's wire form) so every
+rank walks the same proposal, and the drafts land in the slot's next feed
+(`dflash2_block_feed`) and a pinned per-slot mirror the engine reads when
+the replay settles. The block attention is the split-key form
+(`dflash2_block_attn_split`: 32 ranges and a combine; the serial walk cost
+~2 ms a layer at a 2K context). The eager draft (the slot's open, the
+sampled fallback's re-draft) runs the same helpers.
+
+The exactness gate is the same world's MTP depth-5 world (six verify rows,
+the same GEMM dispatch class as the 8-row verify): greedy transcripts
+identical 4/4 at worlds 1, 2 and 4; the 1-row plain world differs within
+the family's row-count dispatch class (as at world 1 against a 3-row MTP
+verify). World 1's graph engine equals the eager engine 4/4 and runs the
+same tokens faster (chat 70.9 against 95.2 ms a token).
+
+Measured 2026-10-04 (`benchmarks/results/2026-10-04-qwen3.8-27b/raw/drafter-tp`
+and `raw/prefetch`, the repository's `timed_load` workload, greedy C1, the
+pass time from the engine's counters), prose / code / json / math / chat:
+
+| world | recipe | ms/pass | greedy C1 tok/s |
+|---|---|---:|---|
+| 1 | drafter, graph engine | 176 | 17.9 / 28.6 / 40.4 / 32.5 / 17.1 |
+| 2 | MTP depth 3 (the template) | 80 | 34.0 / 40.5 / 46.4 / 42.6 / 30.9 |
+| 2 | drafter (bf12, sharded) | 94 | 32.1 / 50.3 / 71.0 / 57.6 / 30.3 |
+| 4 | MTP depth 3 (the template) | 46 | 57.9 / 69.9 / 79.9 / 73.3 / 50.4 |
+| 4 | drafter (bf12, sharded) | 52 | 54.9 / 86.3 / 120.8 / 101.2 / 52.6 |
+
+The drafter leads on code, JSON and math by 29–58 % at four nodes and ties
+prose and chat; the MTP template's 4-row verify keeps a 6 ms shorter pass,
+so on prose-like traffic the two recipes are level and MTP stays the two-
+and four-node template, the drafter its mode. The nsys node trace of rank 0
+at four nodes puts the target's fp8 GEMV at 35–38 ms a step for both
+recipes before the prefetch windows (6.9 GB a rank; the GB10 reads at
+233.6 GB/s and the kernels reach 89–97 % of that in isolation), the 128–140
+bus folds at 7–10 ms, the sharded drafter's bf12 GEMMs at 3.8 ms. The
+boundary prefetch windows (#93) hide part of the folds' idle DRAM time.
 
 ## Recorded GLM-5.3 result
 

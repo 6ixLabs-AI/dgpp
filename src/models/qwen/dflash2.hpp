@@ -53,6 +53,19 @@ struct DFlash2Config {
   int query_rows() const { return block_size; }
   int kv_row() const { return num_key_value_heads * head_dim; }
   int q_row() const { return num_attention_heads * head_dim; }
+  // The tensor-parallel slices (2026-10-04): the attention heads, the kv
+  // heads and the MLP rows split across `world` ranks (each must divide);
+  // the convs, norms, fc taps and the selector stay replicated, and the
+  // o / down projections' partial outputs fold at the boundary.
+  bool tp_divisible(int world) const {
+    return world >= 1 && num_attention_heads % world == 0 && num_key_value_heads % world == 0 &&
+           intermediate_size % world == 0;
+  }
+  int local_heads(int world) const { return num_attention_heads / world; }
+  int local_kv_heads(int world) const { return num_key_value_heads / world; }
+  int local_q_row(int world) const { return local_heads(world) * head_dim; }
+  int local_kv_row(int world) const { return local_kv_heads(world) * head_dim; }
+  int local_intermediate(int world) const { return intermediate_size / world; }
   int conv_groups() const { return hidden_size / conv_group_size; }
   // fc's input width: the taps' outputs concatenated.
   int fc_in() const { return static_cast<int>(target_layer_ids.size()) * hidden_size; }
@@ -63,7 +76,9 @@ struct DFlash2Config {
   void validate_against(const Qwen35TextConfig& target) const;
 };
 
-// One draft layer's device weights (BF16, replicated, arena-resident).
+// One draft layer's device weights (BF16, arena-resident; at world > 1 the
+// q|k|v rows, o columns, gate/up rows and down columns are this rank's
+// slices — QW, KW and I below are the local widths).
 struct DFlash2LayerWeights {
   const uint16_t* input_norm = nullptr;   // [H]
   const uint16_t* post_norm = nullptr;    // [H]
@@ -121,11 +136,12 @@ struct DFlash2Weights {
 };
 
 // Reads the checkpoint's safetensors shards (BF16, full-vocab), validates
-// every name/shape against cfg and leaves the device-resident set. The
-// caller's stream orders the uploads.
+// every name/shape against cfg and leaves the device-resident set — rank
+// `rank` of `world`'s slices of the sharded matrices (cfg.tp_divisible).
+// The caller's stream orders the uploads.
 DFlash2Weights load_dflash2_weights(const DFlash2Config& cfg, const std::string& dir,
-                                    cudaStream_t stream);
+                                    cudaStream_t stream, int rank = 0, int world = 1);
 // The arena size load_dflash2_weights allocates (the memory plan's line).
-size_t dflash2_weights_bytes(const DFlash2Config& cfg);
+size_t dflash2_weights_bytes(const DFlash2Config& cfg, int world = 1);
 
 }  // namespace dgpp

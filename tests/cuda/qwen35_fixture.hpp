@@ -34,8 +34,9 @@ using glmrng::Rng;
 using glmrng::seed_for;
 
 // The tiny release: the kernels' pinned widths (128-wide GDN heads,
-// 256-wide attention heads) at the smallest counts (2 GDN key heads x 4
-// value heads, 4 query heads x 2 kv heads), hidden 256, three GDN layers
+// 256-wide attention heads) at the smallest counts that keep worlds 1, 2
+// and 4 legal (4 GDN key heads x 8 value heads, 4 query heads x 2 kv heads:
+// the kv heads pair up at world 4), hidden 256, three GDN layers
 // then one full-attention layer (full_attention_interval 4), the draft
 // layer, dense intermediate 512, vocab 512. Every FP8 matrix's rows and
 // columns are multiples of 128 except none — the 128 x 128 scale grid is
@@ -50,8 +51,8 @@ inline const char* tiny_config_json() {
     "bos_token_id": 1, "eos_token_id": 1, "full_attention_interval": 4,
     "head_dim": 256, "hidden_act": "silu", "hidden_size": 256, "intermediate_size": 512,
     "layer_types": ["linear_attention", "linear_attention", "linear_attention", "full_attention"],
-    "linear_conv_kernel_dim": 4, "linear_key_head_dim": 128, "linear_num_key_heads": 2,
-    "linear_num_value_heads": 4, "linear_value_head_dim": 128, "mamba_ssm_dtype": "float32",
+    "linear_conv_kernel_dim": 4, "linear_key_head_dim": 128, "linear_num_key_heads": 4,
+    "linear_num_value_heads": 8, "linear_value_head_dim": 128, "mamba_ssm_dtype": "float32",
     "max_position_embeddings": 4096, "mtp_num_hidden_layers": 1, "mtp_use_dedicated_embeddings": false,
     "num_attention_heads": 4, "num_hidden_layers": 4, "num_key_value_heads": 2,
     "output_gate_type": "swish", "partial_rotary_factor": 0.25, "rms_norm_eps": 1e-06,
