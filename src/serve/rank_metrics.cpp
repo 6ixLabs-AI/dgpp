@@ -1,8 +1,36 @@
 #include "serve/rank_metrics.hpp"
 
+#include <arpa/inet.h>
+#include <netdb.h>
+
+#include <memory>
+#include <stdexcept>
 #include <string>
 
 namespace dgpp::serve {
+
+namespace {
+
+// Cluster nodes may be hostnames, while HttpServer binds numeric IPv4
+// addresses. Resolve only at listener construction, never on a scrape.
+std::string metrics_bind_address(const std::string& host) {
+  addrinfo hints{};
+  hints.ai_family = AF_INET;
+  hints.ai_socktype = SOCK_STREAM;
+  addrinfo* list = nullptr;
+  const int rc = ::getaddrinfo(host.c_str(), nullptr, &hints, &list);
+  if (rc != 0 || list == nullptr)
+    throw std::runtime_error("rank metrics: cannot resolve IPv4 bind host '" + host + "': " +
+                             (rc == 0 ? "no addresses" : ::gai_strerror(rc)));
+  const std::unique_ptr<addrinfo, decltype(&::freeaddrinfo)> addresses(list, ::freeaddrinfo);
+  const auto* addr = reinterpret_cast<const sockaddr_in*>(list->ai_addr);
+  char text[INET_ADDRSTRLEN];
+  if (::inet_ntop(AF_INET, &addr->sin_addr, text, sizeof(text)) == nullptr)
+    throw std::runtime_error("rank metrics: cannot format IPv4 bind host '" + host + "'");
+  return text;
+}
+
+}  // namespace
 
 void write_rank_metrics(prom::Writer& w, const RankIdentity& id,
                         const dgpp::sched::Scheduler::Meters& m, double snapshot_age_s,
@@ -32,7 +60,8 @@ void write_rank_metrics(prom::Writer& w, const RankIdentity& id,
 
 RankMetricsServer::RankMetricsServer(uint16_t port, const std::string& bind_host, RankIdentity id,
                                      const std::atomic<uint64_t>* collectives)
-    : id_(std::move(id)), collectives_(collectives), http_(port, this, /*max_connections=*/8, bind_host) {
+    : id_(std::move(id)), collectives_(collectives),
+      http_(port, this, /*max_connections=*/8, metrics_bind_address(bind_host)) {
   loop_ = std::thread([this] { http_.serve(); });
 }
 

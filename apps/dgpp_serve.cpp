@@ -1319,7 +1319,7 @@ int main(int argc, char** argv) {
       "  [--bind-host IPV4 (default 127.0.0.1; rank 0 only)]\n"
       "  [--metrics-port N (default 0 = off; ranks > 0 only)]: the peer's\n"
       "    dgpp_rank_* metrics listener (GET /metrics/prometheus); config ports.metrics\n"
-      "  [--metrics-bind IPV4 (default: this rank's node address; ranks > 0 only)]\n"
+      "  [--metrics-bind HOST (default: this rank's node address; resolves to IPv4; ranks > 0 only)]\n"
       "  [--sse-ping-interval N (default 30 seconds; -1 disables; rank 0 only)]:\n"
       "    SSE comments while a stream is silent; overrides http.sse_ping_interval\n"
       "    in cluster JSON; request sse_ping_interval overrides the server setting.\n"

@@ -378,7 +378,7 @@ points at that rank's GPU or link. Rank 0 appends its own (`rank="0"`) to
 `/metrics/prometheus` in a multi-rank world. A peer serves no HTTP API; with
 `ports.metrics` set in the deployment JSON (`--metrics-port` overrides it)
 each peer serves its families at `GET /metrics/prometheus` on its node
-address (an IPv4 address; `--metrics-bind` overrides it), adding
+address (hostnames resolve to IPv4; `--metrics-bind` overrides it), adding
 `dgpp_rank_ticks_total`, the journal records it applied. A peer publishes
 after every tick it applies, so `dgpp_rank_snapshot_age_seconds` also grows
 while the world is idle. The bus's per-lane traffic counters are not exported:

@@ -47,8 +47,8 @@ void write_rank_metrics(prom::Writer& w, const RankIdentity& id,
 // by a thread of its own, so a scrape never touches the engine loop.
 class RankMetricsServer final : public HttpHandler {
  public:
-  // Binds at once (throws std::runtime_error naming the address when it
-  // cannot) and starts serving.
+  // Resolves bind_host to IPv4, binds at once, and starts serving. Throws
+  // std::runtime_error if resolution or binding fails.
   RankMetricsServer(uint16_t port, const std::string& bind_host, RankIdentity id,
                     const std::atomic<uint64_t>* collectives);
   ~RankMetricsServer() override;

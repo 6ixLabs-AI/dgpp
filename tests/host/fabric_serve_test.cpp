@@ -1152,6 +1152,21 @@ std::string scrape_metrics(uint16_t port) {
   return c.read_until("dgpp_rank_kv_pool_blocks_in_use", 2000);
 }
 
+DGPP_TEST(rank_metrics_resolvesNodeHostnamesAndReportsResolutionErrors) {
+  dgpp::serve::RankMetricsServer metrics(0, "localhost", {1, 2, "v", "g"}, nullptr);
+  const std::string text = scrape_metrics(metrics.port());
+  require(text.find("HTTP/1.1 200 OK\r\n") == 0 &&
+              text.find("dgpp_rank_info{rank=\"1\",world_size=\"2\"") != std::string::npos,
+          "hostname listener serves the peer's metrics: " + text);
+  bool refused = false;
+  try {
+    dgpp::serve::RankMetricsServer invalid(0, "invalid host", {1, 2, "v", "g"}, nullptr);
+  } catch (const std::runtime_error& e) {
+    refused = std::string(e.what()).find("cannot resolve IPv4 bind host 'invalid host'") != std::string::npos;
+  }
+  require(refused, "unresolvable node names fail with the bind host in the error");
+}
+
 int64_t sample_of(const std::string& text, const std::string& series) {
   const size_t at = text.find("\n" + series + " ");
   if (at == std::string::npos) return -1;
