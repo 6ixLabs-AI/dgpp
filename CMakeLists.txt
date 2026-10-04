@@ -825,6 +825,7 @@ add_executable(unit_tests
   tests/unit/qwen3codernext_loader_test.cpp
   tests/unit/qwen36_config_test.cpp
   tests/unit/qwen36_loader_test.cpp
+  tests/unit/qwen35_bf16_test.cpp
   tests/unit/qwen_dflash2_config_test.cpp
   tests/unit/dflash2_speculator_test.cpp
   tests/unit/qwen_rope_scaling_test.cpp
@@ -1316,8 +1317,8 @@ set_tests_properties(qwen3next_loader_test PROPERTIES LABELS "gpu")
 
 # The later ports' copy pass over their synthetic fixtures (Qwen3-Coder-Next's
 # compressed-tensors NVFP4 container; Qwen3.6-35B-A3B's NVFP4 mixed and FP8
-# releases): resident values against the fixture's bytes, rank slices, the
-# FP8 form of the dense stack.
+# releases; Qwen3.5-0.8B's unquantized, tied release): resident values against
+# the fixture's bytes, rank slices, the FP8 form of the dense stack.
 add_executable(qwen35_ports_loader_test tests/cuda/qwen35_ports_loader_test.cpp)
 target_include_directories(qwen35_ports_loader_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/tests/cuda)
 target_link_libraries(qwen35_ports_loader_test PRIVATE dgpp_models_qwen_loader dgpp_models_qwen dgpp_loaders CUDA::cudart Threads::Threads)

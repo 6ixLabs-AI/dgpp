@@ -152,8 +152,6 @@ Qwen35TextConfig Qwen35TextConfig::parse(const minijson::Value& tc,
   if (c.num_hidden_layers <= 0) reject("num_hidden_layers", "must be positive");
   if (c.hidden_act != "silu")
     reject("hidden_act", "only silu is implemented, got " + c.hidden_act);
-  if (c.tie_word_embeddings)
-    reject("tie_word_embeddings", "tied embeddings are not implemented");
   if (const minijson::Value* ab = tc.find("attention_bias"))
     if (ab->is_bool() && ab->as_bool())
       reject("attention_bias", "biased attention projections are not implemented");
@@ -282,10 +280,11 @@ Qwen35TextConfig Qwen35TextConfig::parse(const minijson::Value& tc,
     reject("mtp_use_dedicated_embeddings", "the draft shares the embeddings");
 
   // --- quantization ---------------------------------------------------------------
-  if (quantization_config == nullptr || quantization_config->is_null())
-    throw std::runtime_error(
-        "Qwen3.5 quantization_config: missing — the engine implements the FP8 "
-        "block release (e4m3 + BF16 128x128 scales) and the NVFP4 mixed release");
+  // No quantization_config: an unquantized release, every matrix BF16.
+  if (quantization_config == nullptr || quantization_config->is_null()) {
+    c.quant_kind = Qwen35QuantKind::Bf16;
+    return c;
+  }
   {
     const minijson::Value& q = *quantization_config;
     if (const minijson::Value* groups = q.find("config_groups");

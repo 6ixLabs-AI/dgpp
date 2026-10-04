@@ -46,6 +46,12 @@ enum class Qwen35QuantKind : int {
   // multiplies); the GDN projections, the router and the head BF16. No
   // K/V-cache scales and no draft layer in that release.
   Nvfp4Packed,
+  // An unquantized release (no quantization_config: Qwen/Qwen3.5-0.8B,
+  // 2026-10-04): every matrix BF16 as the model was trained, bound as it
+  // ships — or, under engine.dense_weights = fp8, encoded to block FP8 at
+  // load like the Qwen3Next dialect's BF16 projections. The GDN's A_log and
+  // its output norm weight are F32 in that release (the other vectors BF16).
+  Bf16,
 };
 
 // Which checkpoint layout the config describes. Both run the same walk
@@ -66,6 +72,9 @@ struct Qwen35TextConfig {
   int vocab_size = 248320;
   int num_hidden_layers = 64;
   float rms_norm_eps = 1e-6f;
+  // Tied: the checkpoint stores no `lm_head.weight` and the head reads the
+  // embedding matrix (the Qwen3.5 dialect's small models; the Qwen3Next
+  // dialect refuses it).
   bool tie_word_embeddings = false;
   std::string hidden_act = "silu";
   int max_position_embeddings = 262144;

@@ -479,7 +479,7 @@ class ExprParser {
       const bool inv = accept_kw("not");
       if (peek().t != ETok::T::Ident) fail(line_, "'is' needs a test name");
       static const char* kTests[] = {"defined", "undefined", "none", "string",
-                                     "mapping", "iterable", "true", "false"};
+                                     "mapping", "iterable", "sequence", "true", "false"};
       ExprPtr e = make(Expr::Tag::Test);
       e->name = peek().s;
       e->inverted = inv;
@@ -1704,7 +1704,8 @@ struct Renderer {
           r = v.kind() == Value::Kind::String;
         else if (e.name == "mapping")
           r = v.kind() == Value::Kind::Map;  // namespaces are not mappings
-        else  // iterable (strings, lists and maps — Python truth)
+        else  // iterable, and sequence (Jinja: has a length and an item
+              // access) — strings, lists and maps alike in this value model
           r = v.kind() == Value::Kind::String || v.kind() == Value::Kind::List ||
               v.kind() == Value::Kind::Map;
         return Value::boolean(e.inverted ? !r : r);

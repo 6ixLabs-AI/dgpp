@@ -20,6 +20,11 @@
 //   tensors encoded to block FP8, the vision tensor skipped;
 //   the FP8 release — every matrix's codes as shipped and its BF16 block
 //   scales widened, the experts and the draft layer included.
+// Qwen3.5-0.8B (the dense Qwen3.5 dialect, unquantized, tied embeddings):
+//   every BF16 matrix as shipped — the dense MLP through its BF16 pointers —
+//   A_log in F32 as stored, the F32 GDN norm weight rounded to BF16, the head
+//   the embedding's own rows (no grant, no stored tensor); under
+//   dense_weights fp8 every dense matrix the block-FP8 encode of those.
 // The stream throws on any drift between its byte formulas, its planned
 // source bytes and what a build used, so every load here is that check too.
 #include <cmath>
@@ -806,6 +811,137 @@ DGPP_TEST(qwen36_fp8_loader_resident_values_are_the_checkpoints) {
     const std::vector<float> got = down(gate.scales, 2, "gate scales");
     require(got[0] == dgpp::bf16_bits_to_float(gs[0]) && got[1] == dgpp::bf16_bits_to_float(gs[1]),
             "world 2: expert gate scales");
+  }
+}
+
+// ---- Qwen3.5-0.8B -----------------------------------------------------------------
+
+DGPP_TEST(qwen35_bf16_loader_resident_values_are_the_checkpoints) {
+  const Fixture fx = qwen35portsfx::write_fixture((fs::current_path() / "qwen35_bf16_loader_fixture").string(),
+                                                  qwen35portsfx::qwen35_bf16_config_json());
+  const Qwen35TextConfig& c = fx.cfg;
+  require(!c.next() && !c.moe() && c.quant_kind == dgpp::Qwen35QuantKind::Bf16 && c.tie_word_embeddings &&
+              c.mtp_layer() == 4,
+          "the fixture's dialect and recipe");
+  require(fx.src.count("lm_head.weight") == 0, "a tied checkpoint stores no head");
+  const int64_t H = c.hidden_size, d = c.head_dim, I = c.intermediate_size;
+  const int64_t qh = c.num_attention_heads, kvh = c.num_key_value_heads;
+  const int64_t kdim = static_cast<int64_t>(c.gdn_key_heads) * c.gdn_key_head_dim;
+  const int64_t vdim = static_cast<int64_t>(c.gdn_value_heads) * c.gdn_value_head_dim;
+  const size_t V = static_cast<size_t>(c.vocab_size);
+  {
+    const DenseForm bf16(false);
+    Qwen35LayerStream s(c, fx.dir, 0, 1, dgpp::LoaderResidency::Streaming, dgpp::LoaderHeadSharding::Full);
+    for (int l = 0; l < s.max_layer(); ++l) {
+      const Qwen35LayerResident& r = s.load_layer(l);
+      const bool is_mtp = l == c.mtp_layer();
+      const std::string p = dgpp::qwen35_layer_prefix(c, l);
+      const std::string at = "layer " + std::to_string(l) + ": ";
+      if (!is_mtp && r.kind == dgpp::Qwen35LayerKind::Gdn) {
+        const std::string g = p + "linear_attn.";
+        require(r.gdn.in_proj_qkv_fp8.payload == nullptr && r.gdn.out_proj_fp8.payload == nullptr,
+                at + "no fp8 view in the BF16 form");
+        // Split and head-major as shipped: world 1 takes every row.
+        require(down(r.gdn.in_proj_qkv, static_cast<size_t>((2 * kdim + vdim) * H), "qkv") ==
+                    fx.bf16(g + "in_proj_qkv.weight"),
+                at + "in_proj_qkv");
+        require(down(r.gdn.in_proj_z, static_cast<size_t>(vdim * H), "z") == fx.bf16(g + "in_proj_z.weight"),
+                at + "in_proj_z");
+        require(down(r.gdn.out_proj, static_cast<size_t>(H * vdim), "out") == fx.bf16(g + "out_proj.weight"),
+                at + "out_proj");
+        require(down(r.gdn.in_proj_a, static_cast<size_t>(c.gdn_value_heads * H), "a") ==
+                    fx.bf16(g + "in_proj_a.weight"),
+                at + "in_proj_a");
+        // A_log: F32 in this release, as stored. The norm weight: F32,
+        // rounded to the BF16 the gated norm reads. dt_bias: BF16, widened.
+        const std::vector<uint8_t>& a_log = fx.bytes(g + "A_log");
+        require(a_log.size() == static_cast<size_t>(c.gdn_value_heads) * 4 &&
+                    down(reinterpret_cast<const uint8_t*>(r.gdn.a_log), a_log.size(), "a_log") == a_log,
+                at + "A_log is the stored F32");
+        const std::vector<uint8_t>& norm = fx.bytes(g + "norm.weight");
+        const std::vector<uint16_t> got_norm = down(r.gdn.norm, static_cast<size_t>(c.gdn_value_head_dim), "norm");
+        bool inexact = false;
+        for (size_t i = 0; i < got_norm.size(); ++i) {
+          float v;
+          std::memcpy(&v, &norm[i * 4], 4);
+          require(got_norm[i] == dgpp::float_to_bf16_bits(v), at + "the norm weight rounded to BF16");
+          inexact = inexact || dgpp::bf16_bits_to_float(got_norm[i]) != v;
+        }
+        require(inexact, "the fixture's F32 norm weights are not BF16 values (the rounding is exercised)");
+        const std::vector<uint16_t> dt = fx.bf16(g + "dt_bias");
+        const std::vector<float> got_d = down(r.gdn.dt_bias, dt.size(), "dt_bias");
+        for (size_t i = 0; i < dt.size(); ++i)
+          require(got_d[i] == dgpp::bf16_bits_to_float(dt[i]), at + "dt_bias widened");
+      } else {
+        const std::string a = p + "self_attn.";
+        require(r.full.q_proj_fp8.payload == nullptr, at + "no fp8 view in the BF16 form");
+        require(down(r.full.q_proj, static_cast<size_t>(2 * qh * d * H), "q") == fx.bf16(a + "q_proj.weight") &&
+                    down(r.full.k_proj, static_cast<size_t>(kvh * d * H), "k") == fx.bf16(a + "k_proj.weight") &&
+                    down(r.full.v_proj, static_cast<size_t>(kvh * d * H), "v") == fx.bf16(a + "v_proj.weight") &&
+                    down(r.full.o_proj, static_cast<size_t>(H * qh * d), "o") == fx.bf16(a + "o_proj.weight"),
+                at + "the attention projections as shipped");
+        require(r.kv_cache_scales == nullptr, at + "no cache scales");
+      }
+      // The dense MLP through its BF16 pointers.
+      require(r.mlp.gate_fp8.payload == nullptr && r.moe.router == nullptr, at + "a BF16 dense MLP, no MoE");
+      require(down(r.mlp.gate, static_cast<size_t>(I * H), "gate") == fx.bf16(p + "mlp.gate_proj.weight") &&
+                  down(r.mlp.up, static_cast<size_t>(I * H), "up") == fx.bf16(p + "mlp.up_proj.weight") &&
+                  down(r.mlp.down, static_cast<size_t>(H * I), "down") == fx.bf16(p + "mlp.down_proj.weight"),
+              at + "the dense MLP as shipped");
+    }
+    const dgpp::Qwen35GlobalsResident& g = s.load_globals();
+    require(down(g.embed, V * H, "embed") == fx.bf16("model.language_model.embed_tokens.weight"), "embed");
+    require(g.lm_head == g.embed && g.lm_vocab_begin == 0 && g.lm_vocab_count == c.vocab_size,
+            "tied: the head is the embedding itself");
+    require(g.bytes == Qwen35LayerStream::globals_bytes(c) &&
+                g.bytes == dgpp::align_up_256(V * H * 2) + 4 * dgpp::align_up_256(static_cast<size_t>(H) * 2) +
+                               dgpp::align_up_256(static_cast<size_t>(H) * 2 * H * 2),
+            "no head grant among the globals");
+    require(down(g.mtp_fc, static_cast<size_t>(H * 2 * H), "fc") == fx.bf16("mtp.fc.weight"), "mtp fc");
+  }
+  // World 2: the dense MLP's rows and columns, and the head shard as rows of the embedding.
+  for (int rank = 0; rank < 2; ++rank) {
+    const DenseForm bf16(false);
+    Qwen35LayerStream s2(c, fx.dir, rank, 2, dgpp::LoaderResidency::Streaming,
+                         dgpp::LoaderHeadSharding::VocabSharded);
+    const Qwen35LayerResident& r = s2.load_layer(3);
+    const std::string p = "model.language_model.layers.3.";
+    const int64_t li = I / 2;
+    require(down(r.mlp.gate, static_cast<size_t>(li * H), "gate") ==
+                    rows_of(fx.bf16(p + "mlp.gate_proj.weight"), H, rank * li, li) &&
+                down(r.mlp.down, static_cast<size_t>(H * li), "down") ==
+                    cols_of(fx.bf16(p + "mlp.down_proj.weight"), I, rank * li, li),
+            "world 2: the dense MLP slices");
+    const dgpp::Qwen35GlobalsResident& g2 = s2.load_globals();
+    const size_t v0 = V * static_cast<size_t>(rank) / 2, vn = V / 2;
+    require(g2.lm_head == g2.embed + v0 * H && g2.lm_vocab_begin == static_cast<int>(v0) &&
+                g2.lm_vocab_count == static_cast<int>(vn),
+            "world 2: the head shard is this rank's rows of the embedding");
+  }
+  // dense_weights fp8: every dense matrix is the block-FP8 encode of what ships.
+  {
+    const DenseForm fp8(true);
+    Qwen35LayerStream s8(c, fx.dir, 0, 1, dgpp::LoaderResidency::Streaming, dgpp::LoaderHeadSharding::Full);
+    {
+      const Qwen35LayerResident& r = s8.load_layer(0);
+      const std::string p = "model.language_model.layers.0.";
+      require(r.gdn.in_proj_qkv == nullptr && r.mlp.gate == nullptr, "the FP8 form has no BF16 views");
+      require_fp8_encode(r.gdn.in_proj_qkv_fp8, fx.bf16(p + "linear_attn.in_proj_qkv.weight"), 2 * kdim + vdim, H,
+                         "fp8 form: in_proj_qkv");
+      require_fp8_encode(r.gdn.in_proj_z_fp8, fx.bf16(p + "linear_attn.in_proj_z.weight"), vdim, H,
+                         "fp8 form: in_proj_z");
+      require_fp8_encode(r.gdn.out_proj_fp8, fx.bf16(p + "linear_attn.out_proj.weight"), H, vdim,
+                         "fp8 form: out_proj");
+      require_fp8_encode(r.mlp.gate_fp8, fx.bf16(p + "mlp.gate_proj.weight"), I, H, "fp8 form: mlp gate");
+      require_fp8_encode(r.mlp.up_fp8, fx.bf16(p + "mlp.up_proj.weight"), I, H, "fp8 form: mlp up");
+      require_fp8_encode(r.mlp.down_fp8, fx.bf16(p + "mlp.down_proj.weight"), H, I, "fp8 form: mlp down");
+    }
+    {
+      const Qwen35LayerResident& r = s8.load_layer(3);
+      const std::string a = "model.language_model.layers.3.self_attn.";
+      require_fp8_encode(r.full.q_proj_fp8, fx.bf16(a + "q_proj.weight"), 2 * qh * d, H, "fp8 form: q_proj");
+      require_fp8_encode(r.full.o_proj_fp8, fx.bf16(a + "o_proj.weight"), H, qh * d, "fp8 form: o_proj");
+    }
   }
 }
 

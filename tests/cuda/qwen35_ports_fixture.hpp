@@ -2,7 +2,8 @@
 // Synthetic mini-checkpoints for the qwen3_5 stack's later ports (2026-10-04:
 // Qwen3-Coder-Next's compressed-tensors NVFP4 container on the Qwen3Next
 // dialect; Qwen3.6-35B-A3B's two containers on the Qwen3.5 dialect with the
-// routed MoE): a small config written as config.json and its binding table
+// routed MoE; Qwen3.5-0.8B's unquantized dense release with tied
+// embeddings): a small config written as config.json and its binding table
 // written as one safetensors shard, so fixture and table cannot disagree.
 // Values are deterministic per tensor name (glm_rng's scheme); the fixture
 // keeps every tensor's bytes so a test can state what the loader must hold.
@@ -90,6 +91,29 @@ inline const char* kQuantModeloptMixed = R"json({
 inline const char* kQuantFp8Block = R"json({
     "activation_scheme": "dynamic", "fmt": "e4m3", "quant_method": "fp8",
     "weight_block_size": [128, 128]})json";
+
+// Qwen3.5-0.8B: the dense Qwen3.5 dialect, no quantization_config, tied
+// embeddings, one value head a key head (the release's 16 x 16), a dense
+// intermediate of 512 (128 a rank at world 4: the FP8 form's block grid).
+inline const char* qwen35_bf16_config_json() {
+  return R"json({
+  "architectures": ["Qwen3_5ForConditionalGeneration"], "model_type": "qwen3_5",
+  "text_config": {
+    "model_type": "qwen3_5_text", "attention_bias": false, "attn_output_gate": true,
+    "eos_token_id": 1, "full_attention_interval": 4, "head_dim": 256, "hidden_act": "silu",
+    "hidden_size": 256, "intermediate_size": 512,
+    "layer_types": ["linear_attention", "linear_attention", "linear_attention", "full_attention"],
+    "linear_conv_kernel_dim": 4, "linear_key_head_dim": 128, "linear_num_key_heads": 4,
+    "linear_num_value_heads": 4, "linear_value_head_dim": 128, "mamba_ssm_dtype": "float32",
+    "max_position_embeddings": 4096, "mlp_only_layers": [], "mtp_num_hidden_layers": 1,
+    "mtp_use_dedicated_embeddings": false, "num_attention_heads": 4, "num_hidden_layers": 4,
+    "num_key_value_heads": 2, "rms_norm_eps": 1e-06,
+    "rope_parameters": {"mrope_interleaved": true, "mrope_section": [11, 11, 10],
+                        "partial_rotary_factor": 0.25, "rope_theta": 10000000, "rope_type": "default"},
+    "tie_word_embeddings": true, "vocab_size": 64},
+  "tie_word_embeddings": true, "vision_config": {"depth": 2}
+})json";
+}
 
 struct Fixture {
   Qwen35TextConfig cfg;

@@ -210,6 +210,7 @@ class PortabilityTest(unittest.TestCase):
             "RedHatAI/Qwen3-Coder-Next-NVFP4": "qwen3-coder-next_nvfp4",
             "nvidia/Qwen3.6-35B-A3B-NVFP4": "qwen3.6-35b-a3b_nvfp4",
             "Qwen/Qwen3.6-35B-A3B-FP8": "qwen3.6-35b-a3b_fp8",
+            "Qwen/Qwen3.5-0.8B": "qwen3.5-0.8b_bf16",
         }
         # Checkpoints that carry no draft layer (no `mtp.*` tensors): there is
         # no MTP to enable, so their templates run the plain decode graph.

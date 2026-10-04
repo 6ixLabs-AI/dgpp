@@ -8,6 +8,11 @@
 // uniform scale grid, the modelopt NVFP4 experts, shared expert and head,
 // and a BF16 draft layer whose stacked experts are encoded to block FP8.
 //
+// An unquantized release of the dense dialect (Qwen3.5-0.8B) binds its BF16
+// matrices as they ship — the dense MLP's BF16 pointers included — or block
+// FP8 under dense_weights fp8; with tied embeddings the head is the
+// embedding's rows and takes no grant.
+//
 // The Qwen3Next dialect builds the same residents in their BF16 forms from
 // the modelopt NVFP4 release: gathered GDN projections, NVFP4 output
 // projections and shared expert dequantized on the host, the routed experts
@@ -483,6 +488,30 @@ struct Qwen35LoaderFamily::Builder : WeightBuilder<QwenExpectedTensor> {
   // form the recipe has it (`base` without ".weight"): the FP8 release's
   // block scales, or the NVFP4 mixed release's one scale per tensor.
   bool fp8_per_tensor() const { return cfg.quant_kind == Qwen35QuantKind::Nvfp4Mixed; }
+  bool unquantized() const { return cfg.quant_kind == Qwen35QuantKind::Bf16; }
+
+  // An F32 vector the kernels read as BF16 (the unquantized release's GDN
+  // norm weight), rounded to nearest even at load — what a BF16 model
+  // dtype makes of the stored parameter. Replicated, like the BF16 one.
+  uint16_t* load_f32_as_bf16(const std::string& name) {
+    const QwenExpectedTensor& e = expected(name);
+    if (e.dtype != DType::F32) fail("'" + name + "' is not F32");
+    if (sharded() && !verbatim_ok(e)) fail("'" + name + "' is sliced: it cannot load verbatim");
+    const size_t n = e.numel();
+    uint16_t* dst = static_cast<uint16_t*>(bump.alloc(n * 2));
+    if (copy) {
+      const TensorInfo& t = source(name);
+      uint16_t* h = bump.host(dst);
+      for (size_t i = 0; i < n; ++i) {
+        float v;
+        std::memcpy(&v, static_cast<const uint8_t*>(t.data) + i * 4, 4);
+        h[i] = float_to_bf16_bits(v);
+      }
+      consumed(t);
+    }
+    note_read(e, n * 4);
+    return dst;
+  }
   GlmQuantMatrix load_fp8_rows35(const std::string& base, int64_t r0, int64_t rn) {
     if (fp8_per_tensor()) return load_fp8_tensor_rows(base, {{r0, rn, 0}}, rn);
     return load_fp8_native_rows(base + ".weight", r0, rn);
@@ -495,8 +524,9 @@ struct Qwen35LoaderFamily::Builder : WeightBuilder<QwenExpectedTensor> {
   // `is_mtp`: the NVFP4 mixed release ships its draft layer BF16 (`mtp*` is on
   // the recipe's ignore list) — the Qwen3Next draft builder's case, under the
   // same names; the FP8 release's draft layer is FP8 like the rest.
+  // The unquantized release is BF16 in every layer: the same builder.
   void build_full(const std::string& p, bool is_mtp) {
-    if (is_mtp && fp8_per_tensor()) {
+    if (unquantized() || (is_mtp && fp8_per_tensor())) {
       build_full_next(p, true);
       return;
     }
@@ -554,6 +584,37 @@ struct Qwen35LoaderFamily::Builder : WeightBuilder<QwenExpectedTensor> {
         {r * lk * dk, lk * dk, 0},
         {K + r * lk * dk, lk * dk, lk * dk},
         {2 * K + r * lv * dv, lv * dv, 2 * lk * dk}};
+    if (unquantized()) {
+      // The BF16 release: the projections as they ship (or block FP8 under
+      // dense_weights fp8), A_log in F32 as stored, the F32 norm weight
+      // rounded to the BF16 the gated norm reads.
+      const bool fp8 = g_dense_weights_fp8;
+      std::vector<Qwen35RowRun> runs;
+      for (const auto& sg : qkv_segs) runs.push_back({sg[0], sg[1], sg[2]});
+      const std::string qkv_name = p + "linear_attn.in_proj_qkv.weight";
+      if (fp8)
+        g.in_proj_qkv_fp8 = gather_bf16_rows_fp8(qkv_name, runs, local_rows);
+      else
+        g.in_proj_qkv = gather_bf16_rows(qkv_name, runs, local_rows);
+      if (copy) consumed(source(qkv_name));
+      g.conv = load_gdn_conv(p);
+      const std::string z_name = p + "linear_attn.in_proj_z.weight";
+      if (fp8)
+        g.in_proj_z_fp8 = load_dense_rows_fp8(z_name, r * lv * dv, lv * dv);
+      else
+        g.in_proj_z = load_bf16_rows(z_name, r * lv * dv, lv * dv);
+      g.in_proj_a = load_bf16_rows(p + "linear_attn.in_proj_a.weight", r * lv, lv);
+      g.in_proj_b = load_bf16_rows(p + "linear_attn.in_proj_b.weight", r * lv, lv);
+      g.a_log = load_f32_range(p + "linear_attn.A_log", r * lv, lv);
+      g.dt_bias = load_bf16_as_f32(p + "linear_attn.dt_bias", r * lv, lv);
+      g.norm = load_f32_as_bf16(p + "linear_attn.norm.weight");
+      const std::string out_name = p + "linear_attn.out_proj.weight";
+      if (fp8)
+        g.out_proj_fp8 = load_dense_cols_fp8(out_name, r * lv * dv, lv * dv);
+      else
+        g.out_proj = load_bf16_cols(out_name, r * lv * dv, lv * dv);
+      return;
+    }
     if (fp8_per_tensor()) {
       g.in_proj_qkv_fp8 = load_fp8_tensor_rows(p + "linear_attn.in_proj_qkv", qkv_segs, local_rows);
     } else {
@@ -575,6 +636,18 @@ struct Qwen35LoaderFamily::Builder : WeightBuilder<QwenExpectedTensor> {
     const int64_t li = geo.local_inter;
     const int64_t r0 = static_cast<int64_t>(geo.rank) * li;
     Qwen35DenseMlpResident& m = out.mlp;
+    if (unquantized()) {
+      if (g_dense_weights_fp8) {
+        m.gate_fp8 = load_dense_rows_fp8(p + "mlp.gate_proj.weight", r0, li);
+        m.up_fp8 = load_dense_rows_fp8(p + "mlp.up_proj.weight", r0, li);
+        m.down_fp8 = load_dense_cols_fp8(p + "mlp.down_proj.weight", r0, li);
+      } else {
+        m.gate = load_bf16_rows(p + "mlp.gate_proj.weight", r0, li);
+        m.up = load_bf16_rows(p + "mlp.up_proj.weight", r0, li);
+        m.down = load_bf16_cols(p + "mlp.down_proj.weight", r0, li);
+      }
+      return;
+    }
     m.gate_fp8 = load_fp8_native_rows(p + "mlp.gate_proj.weight", r0, li);
     m.up_fp8 = load_fp8_native_rows(p + "mlp.up_proj.weight", r0, li);
     m.down_fp8 = load_fp8_native_cols(p + "mlp.down_proj.weight", r0, li);
@@ -1212,7 +1285,7 @@ size_t Qwen35LoaderFamily::globals_bytes(const Config& c, int rank, int world,
   const size_t Vn = static_cast<size_t>(V * (rank + 1) / world) - static_cast<size_t>(V * rank / world);
   size_t b = 0;
   b += align_up_256(V * H * 2);   // embed
-  b += align_up_256(Vn * H * 2);  // lm head shard
+  if (!c.tie_word_embeddings) b += align_up_256(Vn * H * 2);  // lm head shard (tied: the embedding's rows)
   b += align_up_256(H * 2);       // final norm
   if (c.mtp_layer() >= 0) {
     b += align_up_256(H * 2 * H * 2);  // mtp.fc [H, 2H] BF16
@@ -1256,12 +1329,37 @@ void Qwen35LoaderFamily::build_globals(const Config& c, const Geometry& geo,
     verbatim_bytes += t.nbytes();
     return dst;
   };
+  // The grants after the head, in the order globals_bytes counts them: the
+  // final norm, then the draft head's four tensors.
+  auto finish_globals = [&](const std::string& mp) {
+    out.final_norm = copy_global(mp + "norm.weight");
+    if (c.mtp_layer() >= 0) {
+      out.mtp_fc = copy_global("mtp.fc.weight");
+      out.mtp_norm = copy_global("mtp.norm.weight");
+      out.mtp_pre_fc_norm_embedding = copy_global("mtp.pre_fc_norm_embedding.weight");
+      out.mtp_pre_fc_norm_hidden = copy_global("mtp.pre_fc_norm_hidden.weight");
+    } else {
+      out.mtp_fc = nullptr;
+      out.mtp_norm = nullptr;
+      out.mtp_pre_fc_norm_embedding = nullptr;
+      out.mtp_pre_fc_norm_hidden = nullptr;
+    }
+  };
   const std::string mp = qwen35_model_prefix(c);  // flat names in the Qwen3Next dialect
   out.embed = copy_global(mp + "embed_tokens.weight");
   const int64_t V = c.vocab_size;
   const int64_t V0 = V * geo.rank / geo.world;
   const int64_t Vn = V * (geo.rank + 1) / geo.world - V0;
   const size_t H = static_cast<size_t>(c.hidden_size);
+  if (c.tie_word_embeddings) {
+    // Tied: no head is stored, and none is granted — this rank's vocab rows
+    // of the embedding are the head.
+    out.lm_head = out.embed + static_cast<size_t>(V0) * H;
+    out.lm_vocab_begin = geo.lm_vocab_begin;
+    out.lm_vocab_count = geo.lm_vocab_count;
+    finish_globals(mp);
+    return;
+  }
   const TensorInfo& lm = lookup("lm_head.weight");
   uint16_t* head = static_cast<uint16_t*>(bump.alloc(static_cast<size_t>(Vn) * H * 2));
   if (c.quant_kind == Qwen35QuantKind::Nvfp4Mixed) {
@@ -1291,18 +1389,7 @@ void Qwen35LoaderFamily::build_globals(const Config& c, const Geometry& geo,
   out.lm_head = head;
   out.lm_vocab_begin = geo.lm_vocab_begin;
   out.lm_vocab_count = geo.lm_vocab_count;
-  out.final_norm = copy_global(mp + "norm.weight");
-  if (c.mtp_layer() >= 0) {
-    out.mtp_fc = copy_global("mtp.fc.weight");
-    out.mtp_norm = copy_global("mtp.norm.weight");
-    out.mtp_pre_fc_norm_embedding = copy_global("mtp.pre_fc_norm_embedding.weight");
-    out.mtp_pre_fc_norm_hidden = copy_global("mtp.pre_fc_norm_hidden.weight");
-  } else {
-    out.mtp_fc = nullptr;
-    out.mtp_norm = nullptr;
-    out.mtp_pre_fc_norm_embedding = nullptr;
-    out.mtp_pre_fc_norm_hidden = nullptr;
-  }
+  finish_globals(mp);
 }
 
 std::string& resident_image_dir_storage_35() {

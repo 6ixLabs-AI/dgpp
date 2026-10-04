@@ -1,4 +1,7 @@
-// Qwen3.5-27B dense model (FP8 text-only, standard pre-norm residual).
+// Qwen3.5-27B dense model (FP8 text-only, standard pre-norm residual). The
+// same dense walk serves an unquantized release (Qwen3.5-0.8B, 2026-10-04)
+// from its BF16 matrices, the head reading the embedding when the config
+// ties them.
 //
 // The Qwen3Next dialect (Qwen3-Next-80B-A3B, 2026-10-03) runs the same walk
 // with Flash-Next's routed MoE (QwenMoeLayer) in the dense MLP's place and
@@ -244,6 +247,13 @@ Qwen35Model::Qwen35Model(const Qwen35TextConfig& cfg, const std::string& checkpo
     throw std::invalid_argument(
         "Qwen35Model: engine.prefill_fp8_per_tensor requantizes the dense FP8 release's matrices; a "
         "routed-MoE checkpoint (Qwen3-Next, Qwen3.6-35B-A3B) has no per-tensor recipe");
+  // ... and it requantizes block-FP8 matrices: an unquantized checkpoint
+  // has them only when the loader encodes its dense stack at load.
+  if (prefill_fp8_per_tensor_ && cfg_.quant_kind == Qwen35QuantKind::Bf16 &&
+      !Qwen35LayerStream::dense_weights_fp8())
+    throw std::invalid_argument(
+        "Qwen35Model: engine.prefill_fp8_per_tensor requantizes block-FP8 matrices; this checkpoint's "
+        "dense stack is BF16 — set engine.dense_weights to fp8 with it");
   if (cfg_.next() && !dflash2_dir.empty())
     throw std::invalid_argument("Qwen35Model: the DFlash2 drafter is a Qwen3.8-27B drafter");
   if (cfg_.moe()) moe_cfg_ = moe_config35(cfg_);
@@ -831,6 +841,22 @@ void Qwen35Model::dense_mlp(const uint16_t* x, uint16_t* out, int tokens,
                             const Qwen35DenseMlpResident& m, cudaStream_t stream, int layer,
                             bool resume) {
   const int64_t H = cfg_.hidden_size, I = cfg_.intermediate_size;
+  // The unquantized release's MLP bound in BF16 (Qwen3.5-0.8B): the three
+  // products through the BF16 GEMM interface — its GEMV lowering at decode
+  // rows, cuBLASLt above them, as the BF16 attention projections take —
+  // around the same fused SwiGLU. Boot-fixed addresses: it replays under
+  // CUDA graphs like the FP8 forms below. (The per-tensor recipe never
+  // reaches a BF16 stack: the constructor refuses the pair.)
+  if (m.gate != nullptr) {
+    gw_.gemm->matmul(x, m.gate, gate_tmp_, tokens, static_cast<int>(I), static_cast<int>(H), DType::BF16,
+                     GemmOut::BF16, static_cast<size_t>(H), gw_.ws, gw_.ws_bytes, stream);
+    gw_.gemm->matmul(x, m.up, up_tmp_, tokens, static_cast<int>(I), static_cast<int>(H), DType::BF16,
+                     GemmOut::BF16, static_cast<size_t>(H), gw_.ws, gw_.ws_bytes, stream);
+    qwen35_swiglu_bf16(gate_tmp_, up_tmp_, gate_tmp_, static_cast<int64_t>(tokens) * I, stream);
+    gw_.gemm->matmul(gate_tmp_, m.down, out, tokens, static_cast<int>(H), static_cast<int>(I), DType::BF16,
+                     GemmOut::BF16, static_cast<size_t>(I), gw_.ws, gw_.ws_bytes, stream);
+    return;
+  }
   // Per-tensor FP8 recipe: one shared activation quantize over the H rows
   // feeds both gate and up; the swiglu output is quantized once for down.
   // All addresses are boot-fixed (slots, scratch, scale cells), so the

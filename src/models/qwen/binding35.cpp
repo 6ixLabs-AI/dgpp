@@ -56,6 +56,10 @@ void add_fp8_tensor(TensorList& out, const std::string& base, int64_t rows, int6
 // that recipe's ignore list).
 void add_dense35(TensorList& out, const Qwen35TextConfig& cfg, const std::string& base,
                  int64_t rows, int64_t cols, QwenWeightClass cls, int layer, bool is_mtp) {
+  if (cfg.quant_kind == Qwen35QuantKind::Bf16) {
+    add_bf16(out, base + ".weight", {rows, cols}, cls, layer);
+    return;
+  }
   if (cfg.quant_kind == Qwen35QuantKind::Nvfp4Mixed) {
     if (is_mtp)
       add_bf16(out, base + ".weight", {rows, cols}, cls, layer);
@@ -199,14 +203,18 @@ void expect_gdn35(TensorList& out, const std::string& p, const Qwen35TextConfig&
   const int64_t vdim = static_cast<int64_t>(cfg.gdn_value_heads) * cfg.gdn_value_head_dim;
   const int64_t vh = cfg.gdn_value_heads;
   const QwenWeightClass c = QwenWeightClass::Gdn;
-  add_bf16(out, p + "A_log", {vh}, c, layer);
+  // The unquantized release keeps two of the GDN's vectors in F32 — A_log
+  // and the output norm's weight (Qwen/Qwen3.5-0.8B's headers); the
+  // quantized releases store every vector BF16.
+  const DType f32_or_bf16 = cfg.quant_kind == Qwen35QuantKind::Bf16 ? DType::F32 : DType::BF16;
+  add(out, p + "A_log", f32_or_bf16, {vh}, c, layer);
   add_bf16(out, p + "dt_bias", {vh}, c, layer);
   add_bf16(out, p + "conv1d.weight", {2 * kdim + vdim, 1, cfg.gdn_conv_width}, c, layer);
   add_bf16(out, p + "in_proj_a.weight", {vh, H}, c, layer);
   add_bf16(out, p + "in_proj_b.weight", {vh, H}, c, layer);
   add_dense35(out, cfg, p + "in_proj_qkv", 2 * kdim + vdim, H, c, layer, false);
   add_dense35(out, cfg, p + "in_proj_z", vdim, H, c, layer, false);
-  add_bf16(out, p + "norm.weight", {cfg.gdn_value_head_dim}, c, layer);
+  add(out, p + "norm.weight", f32_or_bf16, {cfg.gdn_value_head_dim}, c, layer);
   add_dense35(out, cfg, p + "out_proj", H, vdim, c, layer, false);
 }
 
@@ -276,9 +284,9 @@ void expect_dense_mlp35(TensorList& out, const std::string& p, const Qwen35TextC
   const int64_t H = cfg.hidden_size;
   const int64_t I = cfg.intermediate_size;
   const QwenWeightClass c = QwenWeightClass::DenseMlp;
-  add_fp8(out, p + "gate_proj.weight", I, H, c, layer);
-  add_fp8(out, p + "up_proj.weight", I, H, c, layer);
-  add_fp8(out, p + "down_proj.weight", H, I, c, layer);
+  add_dense35(out, cfg, p + "gate_proj", I, H, c, layer, false);
+  add_dense35(out, cfg, p + "up_proj", I, H, c, layer, false);
+  add_dense35(out, cfg, p + "down_proj", H, I, c, layer, false);
 }
 
 void expect_norm35(TensorList& out, const std::string& p, const Qwen35TextConfig& cfg, int layer) {
@@ -338,11 +346,15 @@ std::vector<QwenExpectedTensor> qwen35_expected_global_tensors(const Qwen35TextC
   add_bf16(out, qwen35_model_prefix(cfg) + "embed_tokens.weight", {cfg.vocab_size, H},
            QwenWeightClass::Embed, -1);
   // The NVFP4 mixed release quantizes the head with the experts (the modelopt
-  // set over [vocab, H]); every other release ships it BF16.
-  if (cfg.quant_kind == Qwen35QuantKind::Nvfp4Mixed)
-    add_fp4(out, "lm_head", cfg.vocab_size, H, QwenWeightClass::LmHead, -1);
-  else
-    add_bf16(out, "lm_head.weight", {cfg.vocab_size, H}, QwenWeightClass::LmHead, -1);
+  // set over [vocab, H]); every other release ships it BF16 — or not at all
+  // when the config ties it to the embedding (the head then reads
+  // embed_tokens, and a stored lm_head.weight would be unexpected).
+  if (!cfg.tie_word_embeddings) {
+    if (cfg.quant_kind == Qwen35QuantKind::Nvfp4Mixed)
+      add_fp4(out, "lm_head", cfg.vocab_size, H, QwenWeightClass::LmHead, -1);
+    else
+      add_bf16(out, "lm_head.weight", {cfg.vocab_size, H}, QwenWeightClass::LmHead, -1);
+  }
   add_bf16(out, qwen35_model_prefix(cfg) + "norm.weight", {H}, QwenWeightClass::Norm, -1);
   if (cfg.mtp_layer() >= 0) {
     // The fused head projection (embedding + hidden pre-projection).
