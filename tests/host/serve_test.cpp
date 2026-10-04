@@ -1298,6 +1298,134 @@ DGPP_TEST(serve_modelsHealthMetrics_theOpsSurface) {
       require(json_of(m.value) == json_of(second.root.at("scheduler").at(m.key)), "scheduler gauges agree");
 }
 
+DGPP_TEST(serve_prometheusExposition_countersAndDistributions) {
+  // GIVEN the service after one chat completion (prompt 4, three tokens,
+  // the steps cap),
+  ServiceRig rig;
+  {
+    Client c(rig.port());
+    c.send_all("POST /v1/chat/completions HTTP/1.1\r\nHost: t\r\n"
+               "Content-Type: application/json\r\nContent-Length: " +
+               std::to_string(chat_body("abcd", 3).size()) + "\r\n\r\n" + chat_body("abcd", 3));
+    require(c.read_until("usage", 5000).find("200 OK") != std::string::npos, "the completion ran");
+  }
+
+  // WHEN the exposition is read,
+  Client m(rig.port());
+  m.send_all("GET /metrics/prometheus HTTP/1.1\r\nHost: t\r\n\r\n");
+  const std::string r = m.read_until("dgpp_request_generation_tokens_count", 2000);
+
+  // THEN it is the text format: the route's original unlabeled lines
+  // intact, every family declared once, the counters typed and labeled
+  // with the model, and each distribution holding the request.
+  const std::string model = "model_name=\"" + kModel + "\"";
+  const auto has = [&](const std::string& line) { return r.find(line) != std::string::npos; };
+  require(r.find("HTTP/1.1 200 OK\r\n") == 0 && has("Content-Type: text/plain; version=0.0.4"),
+          "exposition content type: " + r.substr(0, 200));
+  for (const char* legacy : {"\nspec_decode_num_draft_tokens_total 0\n", "\nspec_decode_num_accepted_tokens_total 0\n",
+                             "\nspec_decode_num_drafts_total 0\n"})
+    require(has(legacy), std::string("legacy line kept: ") + legacy);
+  require(has("# TYPE dgpp_requests_total counter\n") && has("dgpp_requests_total{" + model + "} 1\n"),
+          "requests counter: " + r);
+  require(has("dgpp_request_finished_total{" + model + ",reason=\"length\"} 1\n"), "finish reason");
+  require(has("dgpp_generation_tokens_total{" + model + "} 3\n"), "generated tokens");
+  require(has("dgpp_build_info{" + model + ",version=\"\",git_sha=\"\",world_size=\"1\",admission=\"full\"} 1\n"),
+          "build info");
+  require(has("dgpp_max_concurrent_requests{" + model + "} 4\n"), "engine slots");
+  require(has("dgpp_num_requests_running{" + model + "} 0\n") && has("dgpp_num_requests_waiting{" + model + "} 0\n"),
+          "idle occupancy");
+  for (const char* h : {"dgpp_e2e_request_latency_seconds", "dgpp_request_queue_time_seconds",
+                        "dgpp_request_prefill_time_seconds", "dgpp_request_decode_time_seconds",
+                        "dgpp_request_time_per_output_token_seconds", "dgpp_request_prompt_tokens",
+                        "dgpp_request_generation_tokens"}) {
+    require(has(std::string(h) + "_count{" + model + "} 1\n"), std::string("one observation: ") + h);
+    require(has(std::string(h) + "_bucket{" + model + ",le=\"+Inf\"} 1\n"), std::string("+Inf bucket: ") + h);
+  }
+  require(has("dgpp_time_to_first_token_seconds_count{" + model + ",prefix_cache=\"miss\"} 1\n") &&
+              has("dgpp_time_to_first_token_seconds_count{" + model + ",prefix_cache=\"hit\"} 0\n"),
+          "TTFT split by attach");
+  require(has("dgpp_request_prompt_tokens_bucket{" + model + ",le=\"1\"} 0\n") &&
+              has("dgpp_request_prompt_tokens_bucket{" + model + ",le=\"8\"} 1\n") &&
+              has("dgpp_request_generation_tokens_sum{" + model + "} 3\n"),
+          "size buckets");
+  for (const char* family : {"dgpp_time_to_first_token_seconds", "dgpp_inter_token_latency_seconds",
+                             "dgpp_decode_step_duration_seconds", "dgpp_spec_decode_depth",
+                             "dgpp_decode_batch_replays_by_slots_total", "dgpp_prefix_cache_skipped_no_block_total"}) {
+    const std::string header = std::string("# TYPE ") + family + " ";
+    const size_t first = r.find(header);
+    require(first != std::string::npos && r.find(header, first + 1) == std::string::npos,
+            std::string("declared exactly once: ") + family);
+  }
+}
+
+DGPP_TEST(serve_interTokenMetrics_surviveRetirementBeforePassPublication) {
+  // The HTTP thread may finish a request while the engine thread is still
+  // in its retirement callback. Exercise that ordering deliberately, for
+  // one-token replies, scalar decode and several tokens from one MTP pass.
+  class BatchEngine : public FakeEngine {
+   public:
+    explicit BatchEngine(int batch) : FakeEngine(4, 100, 4), batch_(batch) {}
+    std::vector<int32_t> step(int req) override {
+      std::vector<int32_t> tokens;
+      for (int i = 0; i < batch_; ++i) tokens.push_back(FakeEngine::step(req).front());
+      return tokens;
+    }
+   private:
+    int batch_;
+  };
+  struct DrainOnRetire : dgpp::sched::SchedulerObserver {
+    GenerationService& service;
+    bool retired = false;
+    explicit DrainOnRetire(GenerationService& s) : service(s) {}
+    void on_token(const std::string&, int64_t, int) override {}
+    void on_retire(const std::string&, const dgpp::sched::Scheduler::Result&) override {
+      const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+      while (!service.drained() && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      require(service.drained(), "HTTP removed the record before the engine pass completed");
+      retired = true;
+    }
+  };
+
+  for (const bool stream : {false, true}) {
+    for (const auto& [batch, tokens] : {std::pair{1, 1}, std::pair{1, 3}, std::pair{3, 7}}) {
+      BatchEngine engine(batch);
+      FakeFrontend frontend;
+      ServiceConfig cfg;
+      cfg.model_id = kModel;
+      cfg.vocab_size = 512;
+      GenerationService service(cfg, &engine, &frontend, {kFakeEos});
+      DrainOnRetire observer(service);
+      service.set_audit_observer(&observer);
+      HttpServer http(0, &service, 8);
+      std::thread http_loop([&] { http.serve(); });
+      struct Join {
+        HttpServer& http;
+        std::thread& loop;
+        ~Join() { http.stop(); loop.join(); }
+      } join{http, http_loop};
+      Client client(http.port());
+      post_completion(client, true, stream ? ",\"stream\":true" : "", tokens);
+      const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+      while (service.stats().requests_total == 0 && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      require(service.stats().requests_total == 1, "request arrived before the first engine pass");
+      const uint64_t expected_gaps = static_cast<uint64_t>((tokens - 1) / batch);
+      const int passes = std::max(1, static_cast<int>(expected_gaps));
+      for (int pass = 0; pass < passes; ++pass) service.engine_pass();
+      require(observer.retired, "request retired in the expected number of passes");
+      const std::string response = client.read_until(stream ? "data: [DONE]" : "usage", 2000);
+      require(response.find("200 OK") != std::string::npos, "completion still succeeds");
+      const auto stats = service.stats();
+      require(stats.tokens_out == static_cast<uint64_t>(tokens), "generated token count is unchanged");
+      require(stats.itl_s.count() == expected_gaps,
+              "one latency observation per batch after the first token, including the retiring batch");
+      service.engine_pass();
+      require(service.stats().itl_s.count() == expected_gaps, "idle passes do not count the final batch twice");
+    }
+  }
+}
+
 DGPP_TEST(serve_decodeBatchMetrics_retainsLastLaunchWhileIdle) {
   ServiceRig rig;
   for (const bool reported : {false, true}) {

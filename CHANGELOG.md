@@ -6,6 +6,19 @@ The history by milestone. The dated engineering record in
 
 ## Unreleased
 
+- **Prometheus exposition of the service's metrics**: `GET /metrics/prometheus`
+  now renders every JSON counter as typed `dgpp_*` families labeled with the
+  served model, plus histograms of time to first token (split by prefix-cache
+  attach), queue, prefill, decode and end-to-end time, time per output token,
+  inter-token gaps, decode step time and request sizes, retires by reason and
+  a `dgpp_build_info` line. The scheduler's observer gains `on_admit` (timing
+  only; the op stream does not record it). The route's three original
+  `spec_decode_*` samples keep their exact form.
+- **Per-rank metrics**: every rank reports `dgpp_rank_*` (step and prefill
+  wall time, generated tokens, pool, completed collectives, snapshot age);
+  rank 0 on `/metrics/prometheus`, each peer on an optional listener
+  (deployment JSON `ports.metrics` / `--metrics-port`, off by default)
+  on its node address.
 - **Qwen3.8-27B: the review's follow-ups** (2026-10-03, #84 / #85 / #87):
   the full-attention layers' kernels rewritten (`kernels/full_attn`: a
   query-tiled prefill form — sixteen queries by one head a warp over

@@ -188,6 +188,37 @@ class SiteEnvTest(unittest.TestCase):
             with self.subTest(case=case), self.assertRaises(ValueError):
                 site_env.resolve_config(self.config, self.values(**case))
 
+    def test_metrics_port_is_optional_and_validated(self):
+        self.assertNotIn("metrics", site_env.resolve_config(self.config, self.values())["ports"])
+        cfg = json.loads(self.config.read_text())
+        for value in (0, 29972, 65535, 18888):
+            with self.subTest(value=value):
+                cfg["ports"] = {"metrics": value}
+                self.config.write_text(json.dumps(cfg))
+                # A site's environment cannot enable or override deployment metrics.
+                resolved = site_env.resolve_config(self.config, self.values(DGPP_METRICS_PORT="29973"))
+                self.assertEqual(resolved["ports"]["metrics"], value)
+                self.assertEqual(resolved["ports"]["http"], 18888)
+        for value in (-1, 70000, True, None, "29972", 1.5, 1.0, 29970, 29971):
+            with self.subTest(value=value):
+                cfg["ports"] = {"metrics": value}
+                self.config.write_text(json.dumps(cfg))
+                with self.assertRaisesRegex(ValueError, "ports.metrics"):
+                    site_env.resolve_config(self.config, self.values())
+
+    def test_metrics_port_survives_cluster_resolution(self):
+        cfg = json.loads(self.config.read_text())
+        cfg["ports"] = {"metrics": 29972}
+        self.config.write_text(json.dumps(cfg))
+        result = subprocess.run(
+            [sys.executable, str(ROOT / "scripts/dgpp-cluster"), "resolve", "--config", str(self.config)],
+            env=self.environ, capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        resolved = json.loads(result.stdout)
+        self.assertEqual(resolved["ports"], {"http": 18888, "fabric": 29970, "journal": 29971, "metrics": 29972})
+        self.assertEqual(resolved["nodes"], ["head", "peer1"])
+
     def test_missing_explicit_env_file_fails(self):
         with self.assertRaisesRegex(ValueError, "does not exist"):
             site_env.settings({"DGPP_ENV_FILE": str(self.root / "missing")})
@@ -200,7 +231,7 @@ class SiteEnvTest(unittest.TestCase):
             self.assertNotIn("private-value", str(error.exception))
 
     def test_legacy_json_and_invalid_world_sizes_fail(self):
-        for extra in ({"nodes": ["old"]}, {"ssh_user": "old"}, {"ports": {}},
+        for extra in ({"nodes": ["old"]}, {"ssh_user": "old"}, {"ports": {"fabric": 29970}},
                       {"world_size": True}, {"world_size": 0}, {"world_size": -1},
                       {"world_size": "2"}, {"paths": {"stage_dir": "/old"}}):
             cfg = {"model": "org/model", "world_size": 2, **extra}
