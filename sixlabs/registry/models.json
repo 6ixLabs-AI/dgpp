@@ -296,7 +296,7 @@
       "checkpoints": [
         {
           "repo": "HawkBearPig/GLM-5.3-Flash-NVFP4-FP8", "format": "nvfp4-fp8-hybrid", "status": "upstream", "default": true,
-          "notes": "195.1 GB. Being downloaded to DGXone's cache on 2026-10-04.",
+          "notes": "195.1 GB. Not in the fleet's cache.",
           "worlds": {
             "2": {"template": "deploy/cluster_glm-5.3-flash_nvfp4-fp8_w2.example.json",
                   "measured": {"source": "docs/benchmarks.md", "tok_s": {"single_prose": [31.3, 36.0], "c4": [56.3, 61.8]}}},
