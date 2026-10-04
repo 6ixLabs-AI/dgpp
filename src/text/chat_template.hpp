@@ -12,17 +12,22 @@
 // if/elif/else, for (single or (k, v) tuple targets, with loop meta and
 // {% break %}), and macro definitions. Macros resolve at RENDER time
 // (tool_to_json lives inside {% if tools %} — a falsy `tools` leaves it
-// undefined, exactly like Jinja), close over the root frame only, and
-// return their rendered body as a string.
+// undefined, exactly like Jinja), close over the root frame only, take
+// positional and keyword arguments (an absent one is its default, else
+// undefined), and return their rendered body as a string.
 //
-// Supported expressions: string/int/true/false/none literals, names,
-// attribute access (digit names index lists, like Jinja's foo.0),
-// subscripts (negative indexes included), method calls (items/split/
-// strip), filters (capitalize/tojson/replace/length), the is-tests
-// (defined/none/string/mapping/iterable, with `is not`), in/not in,
-// ==/!=/</<=/>/>=, and/or/not, + and ~ concatenation, unary minus on
-// int literals, and a if b else c. The globals namespace() and range(a,b)
-// are the only functions.
+// Supported expressions: string/int/true/false/none literals, list,
+// tuple and dict literals (string keys), names, attribute access (digit
+// names index lists, like Jinja's foo.0), subscripts and slices (negative
+// indexes included), method calls (items/get on a map; split/strip/
+// lstrip/rstrip/startswith/endswith on a string), filters (capitalize/
+// tojson/replace/length/trim/default/string/safe/items/join/list), the
+// is-tests (defined/undefined/none/string/mapping/iterable/true/false,
+// with `is not`), in/not in, ==/!=/</<=/>/>=, and/or/not, + (numbers,
+// strings, lists) and ~ concatenation, unary minus on int literals, and
+// a if b else c. The globals namespace(), range() and raise_exception()
+// are the only functions; raise_exception(message) — the template's own
+// validation — throws std::runtime_error("chat-template: " + message).
 //
 // Unsupported constructs are rejected during parsing with the construct
 // named in the error. Rendering errors (undefined names, bad call targets,
@@ -105,9 +110,9 @@ class Value {
   std::string to_json(bool ensure_ascii) const;
 
   // Attribute read. Digit names are list/string indexes (Jinja's foo.0).
-  // 'items' on a Map and 'split'/'strip' on a String produce Method
-  // values (dict methods live on the object, not in its keys). A miss
-  // yields Undefined so `x.y is defined` works; never throws.
+  // 'items'/'get' on a Map and 'split'/'strip' (and their kin) on a String
+  // produce Method values (dict methods live on the object, not in its
+  // keys). A miss yields Undefined so `x.y is defined` works; never throws.
   Value get_attr(std::string_view name) const;
 
   // {% set target.attr = value %}: Namespace (and Map) only; other
@@ -159,7 +164,8 @@ class Value {
   std::vector<Value> list_;
   std::shared_ptr<Members> object_;
   std::shared_ptr<MacroDef> macro_;
-  int method_ = 0;  // 1 = items, 2 = split, 3 = strip
+  int method_ = 0;  // 1 = items, 2 = split, 3 = strip, 4 = startswith, 5 = endswith,
+                    // 6 = rstrip, 7 = lstrip, 8 = get
 };
 
 class ChatTemplate {

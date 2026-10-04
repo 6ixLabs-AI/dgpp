@@ -1036,6 +1036,22 @@ std::unique_ptr<ServeFamily> make_family(const std::string& ckpt, int world,
   if (arch == dgpp::ModelArchitecture::Qwen3_5) return std::make_unique<Qwen35Family>(ckpt);
   if (arch == dgpp::ModelArchitecture::Glm4Moe) return std::make_unique<Glm4Family>(ckpt);
   if (arch == dgpp::ModelArchitecture::GlmMoeDsa) return std::make_unique<GlmDsaFamily>(ckpt, world, kv_format);
+  // Mistral-Small-4 and MiniMax-M2.7 (2026-10-04): the registry recognizes
+  // them and their config parsers, binding tables and host references are
+  // built and tested, but neither has a serve family — the device side is
+  // an unverified draft (DGPP_BUILD_MISTRAL_DRAFT) or a written plan
+  // (docs/minimax_m27_plan.md). Refused by name here, never handed to the
+  // GLM family below.
+  if (arch == dgpp::ModelArchitecture::Mistral4)
+    throw std::runtime_error(
+        "serve: " + ckpt + " is a Mistral-Small-4 checkpoint (mistral4): recognized, bound and referenced on the "
+        "host, but its device assembly is an unverified draft with no serve family yet — see "
+        "docs/mistral_small4_plan.md and sixlabs/ports/mistral-small-4/gpu-steps.md");
+  if (arch == dgpp::ModelArchitecture::MiniMaxM2)
+    throw std::runtime_error(
+        "serve: " + ckpt + " is a MiniMax-M2 checkpoint (minimax_m2): recognized, bound and referenced on the "
+        "host, but it needs two ranks and its device assembly is a plan, not code — see "
+        "docs/minimax_m27_plan.md and sixlabs/ports/minimax-m2.7/gpu-steps.md");
   return std::make_unique<GlmFamily>(ckpt, world, kv_format);
 }
 

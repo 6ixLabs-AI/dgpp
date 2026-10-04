@@ -8,6 +8,7 @@
 // accepted position by position.
 #include <algorithm>
 #include <cstdint>
+#include <initializer_list>
 #include <map>
 #include <stdexcept>
 #include <string>
@@ -1957,6 +1958,303 @@ DGPP_TEST(tool_grammar_json_sameMasksFromTheJournalsEntry) {
   require(t.allows('"') && !t.allows('c'), "the kText entry's texts are JSON strings here");
   feed(t, bytes_of("\"f"));
   require(t.allows('a') && !t.allows('c'), "one of its texts");
+}
+
+// ---- the Mistral format (Mistral-Small-4) --------------------------
+// "[TOOL_CALLS]NAME[ARGS]{json}": the two brackets and the [THINK] pair are
+// SPECIAL tokens — their vocabulary texts are empty, like an EOS's — and no
+// marker closes a call: its arguments object's last brace does. The pieces
+// around that brace ("}}", "}\n", "\"}") are what a real vocabulary offers.
+constexpr int64_t kMCloseBoth = 270, kMCloseNl = 271, kMQuoteClose = 272, kMBraceQuote = 273,
+                  kMCloseSpace = 274, kMSpaceBrace = 275, kMEmpty = 276;
+GrammarVocab mistral_vocab() {
+  std::vector<std::string> texts(static_cast<size_t>(kVocab));
+  for (int b = 0; b < 256; ++b) texts[static_cast<size_t>(b)] = std::string(1, static_cast<char>(b));
+  texts[kGet] = "get";
+  texts[kWeather] = "_weather";
+  texts[kGetWeather] = "get_weather";
+  texts[kUnderscore] = "_";
+  texts[kCity] = "city";
+  texts[kGetT] = "get_t";
+  texts[kIme] = "ime";
+  texts[kMCloseBoth] = "}}";
+  texts[kMCloseNl] = "}\n";
+  texts[kMQuoteClose] = "\"}";
+  texts[kMBraceQuote] = "{\"";
+  texts[kMCloseSpace] = "} ";
+  texts[kMSpaceBrace] = " {";
+  texts[kMEmpty] = "{}";
+  ChatMarkers m;
+  m.think_open = ChatMarker{kThinkOpen, "[THINK]"};
+  m.think_close = ChatMarker{kThinkClose, "[/THINK]"};
+  m.tool_calls = ChatMarker{kToolOpen, "[TOOL_CALLS]"};
+  m.args = ChatMarker{kToolClose, "[ARGS]"};
+  m.bracket_think = true;
+  return GrammarVocab(std::move(texts), m, {kEosText}, kVocab);
+}
+// The JSON-arguments tools of a request (the service derives them with the
+// vocabulary's format): a closed, typed weather tool, a strict one, a bare one.
+GrammarSpec mistral_spec(GrammarSpec::Mode mode, bool parallel = true, const std::string& named = "") {
+  using dgpp::text::ToolFormat;
+  GrammarSpec s;
+  s.mode = mode;
+  s.parallel = parallel;
+  s.named = named;
+  for (const char* def : {
+           R"({"name":"get_weather","parameters":{"type":"object","properties":{)"
+           R"("city":{"type":"string"},"days":{"type":"integer"}},"required":["city"]}})",
+           R"({"name":"get_time","strict":true,"parameters":{"type":"object","properties":{)"
+           R"("zone":{"type":"string","enum":["utc","cet"]}},"required":["zone"],"additionalProperties":false}})",
+           R"({"name":"ping","parameters":{"type":"object","properties":{}}})"}) {
+    const dgpp::minijson::ParseResult parsed = dgpp::minijson::parse(def);
+    s.tools.push_back(dgpp::text::grammar_tool_from_function(parsed.root, nullptr, nullptr, ToolFormat::kMistral));
+  }
+  return s;
+}
+// What the grammar let through, as the Mistral parser reads it.
+std::vector<dgpp::text::ToolCallParser::Call> parse_mistral_calls(const GrammarVocab& vocab,
+                                                                  const std::vector<int64_t>& ids,
+                                                                  std::string* content, std::string* reasoning) {
+  dgpp::text::ToolCallParser::Options opts;
+  opts.start_in_reasoning = false;
+  opts.model_may_open_thinking = true;
+  dgpp::text::ToolCallParser parser(
+      vocab.markers(),
+      [&](const std::vector<int64_t>& run) {
+        std::string out;
+        for (const int64_t id : run) out += vocab.text(id);
+        return out;
+      },
+      dgpp::text::ToolSchemas(), opts);
+  std::vector<dgpp::text::ToolCallParser::Event> events;
+  for (const int64_t id : ids) parser.feed(id, &events);
+  parser.finish(&events);
+  std::vector<dgpp::text::ToolCallParser::Call> calls;
+  for (const auto& ev : events) {
+    if (ev.kind == dgpp::text::ToolCallParser::Event::Kind::kToolCall) calls.push_back(ev.call);
+    if (ev.kind == dgpp::text::ToolCallParser::Event::Kind::kContent) *content += ev.text;
+    if (ev.kind == dgpp::text::ToolCallParser::Event::Kind::kReasoning) *reasoning += ev.text;
+  }
+  return calls;
+}
+std::vector<int64_t> joined(std::initializer_list<std::vector<int64_t>> parts) {
+  std::vector<int64_t> out;
+  for (const auto& p : parts) out.insert(out.end(), p.begin(), p.end());
+  return out;
+}
+
+DGPP_TEST(tool_grammar_mistral_format_isReadOffTheMarkers) {
+  using dgpp::text::ToolFormat;
+  const GrammarVocab vocab = mistral_vocab();
+  require(vocab.usable() && vocab.markers().tool_format() == ToolFormat::kMistral, "the two brackets: usable");
+  require(GrammarVocab::covers(ToolFormat::kMistral) && GrammarVocab::covers(ToolFormat::kGlmMarkers) &&
+              GrammarVocab::covers(ToolFormat::kQwenXml) && GrammarVocab::covers(ToolFormat::kQwenJson) &&
+              GrammarVocab::covers(ToolFormat::kDsml),
+          "every format but MiniMax's is covered");
+  require(same(vocab.marker_ids(), {kToolOpen, kToolClose}), "the brackets are the structural ids: " + show(vocab.marker_ids()));
+  require(vocab.call_turn_eos() == kEosText, "the call turn ends at the EOS");
+  require(!vocab.json_call_end_ids().empty(), "the ids that close an object and run on are indexed");
+  // A string property is a JSON text here, as under the JSON call format.
+  const GrammarSpec spec = mistral_spec(GrammarSpec::Mode::kRequired);
+  require(spec.tools[0].args.size() == 2 && spec.tools[0].args[0].kind == GrammarArg::Kind::kJson &&
+              spec.tools[0].args[1].kind == GrammarArg::Kind::kJson,
+          "every declared property is typed JSON");
+  // MiniMax-M2's format is not covered: its vocabulary is not usable (an
+  // engine then reports no constrained decoding) and a grammar on it
+  // refuses by name rather than mask with another format's shape.
+  std::vector<std::string> texts(static_cast<size_t>(kVocab));
+  for (int b = 0; b < 256; ++b) texts[static_cast<size_t>(b)] = std::string(1, static_cast<char>(b));
+  ChatMarkers mm;
+  mm.think_open = ChatMarker{kThinkOpen, "<think>"};
+  mm.think_close = ChatMarker{kThinkClose, "</think>"};
+  mm.tool_call_open = ChatMarker{kToolOpen, "<minimax:tool_call>"};
+  mm.tool_call_close = ChatMarker{kToolClose, "</minimax:tool_call>"};
+  mm.minimax_invoke = true;
+  const GrammarVocab minimax(std::move(texts), mm, {kEosText}, kVocab);
+  require(minimax.markers().tool_format() == ToolFormat::kMinimaxXml && minimax.markers().tool_calls_available(),
+          "MiniMax's markers are read");
+  require(!GrammarVocab::covers(ToolFormat::kMinimaxXml) && !minimax.usable(), "and its grammar is not there");
+  for (const GrammarSpec::Mode mode : {GrammarSpec::Mode::kRequired, GrammarSpec::Mode::kAuto,
+                                       GrammarSpec::Mode::kForbidCalls, GrammarSpec::Mode::kJsonOrTools}) {
+    std::string what;
+    try {
+      GrammarState g(&minimax, spec_of(mode), false);
+    } catch (const std::invalid_argument& e) {
+      what = e.what();
+    }
+    require(what.find("MiniMax-M2") != std::string::npos, "a MiniMax grammar refuses by name: " + what);
+  }
+}
+
+DGPP_TEST(tool_grammar_mistral_required_call_walks_the_bracket_shape) {
+  const GrammarVocab vocab = mistral_vocab();
+  GrammarState g(&vocab, mistral_spec(GrammarSpec::Mode::kRequired), /*prompt_opens_thinking=*/false);
+  // A call is owed: [TOOL_CALLS] alone — no prose, no EOS, no [ARGS].
+  require(same(allowed_ids(g), {kToolOpen}), "top: the opener only: " + show(allowed_ids(g)));
+  g.advance(kToolOpen);
+  require(std::string(g.state_name()) == "m-name", std::string("the name follows: ") + g.state_name());
+  // The name automaton over token texts: any tokenization of a tool name.
+  require(same(allowed_ids(g), {'g', 'p', kGet, kGetWeather, kGetT}), "the names' first pieces: " + show(allowed_ids(g)));
+  feed_consistent(g, {kGet, kUnderscore}, "name");
+  require(same(allowed_ids(g), {'w', 't', kIme}) || same(allowed_ids(g), {'w', 't'}),
+          "after get_: weather or time: " + show(allowed_ids(g)));
+  feed_consistent(g, bytes_of("weather"), "name");
+  // A whole name: [ARGS], and nothing else (no other name extends it).
+  require(same(allowed_ids(g), {kToolClose}), "[ARGS] closes the name: " + show(allowed_ids(g)));
+  g.advance(kToolClose);
+  require(std::string(g.state_name()) == "m-args", std::string("the arguments follow: ") + g.state_name());
+  // The object opens at once: its brace, never whitespace, a marker or EOS.
+  require(g.allows('{') && g.allows(kMBraceQuote) && !g.allows(' ') && !g.allows('\n') && !g.allows(kMSpaceBrace) &&
+              !g.allows(kEosText) && !g.allows(kToolOpen) && !g.allows(kToolClose) && !g.allows('['),
+          "the arguments are one object, opened by its brace");
+  feed_consistent(g, joined({{kMBraceQuote}, bytes_of("city\": \"Par")}), "arguments");
+  // Inside a string a brace is text; the closing pieces must end AT the
+  // object's brace: "\"}" does, "}}" and "}\n" would run past it.
+  require(g.allows('}') && g.allows(kMCloseBoth) && g.allows(kMCloseSpace) && !g.allows(kMCloseNl),
+          "a string's content is free (a raw newline aside)");
+  feed_consistent(g, bytes_of("is\", \"days\": 3"), "arguments");
+  require(g.allows('}') && !g.allows(kMCloseBoth) && !g.allows(kMCloseNl) && !g.allows(kMCloseSpace) &&
+              !g.allows(kMQuoteClose),
+          "the object closes with a piece that ends at its brace");
+  g.advance('}');
+  // The brace ended the call: another call or the turn's end, nothing else.
+  require(std::string(g.state_name()) == "top", std::string("after the call: ") + g.state_name());
+  require(same(allowed_ids(g), {kToolOpen, kEosText}), "another call or EOS: " + show(allowed_ids(g)));
+  // A second call, its object closed by a piece that ends at the brace.
+  feed_consistent(g, joined({{kToolOpen, kGetWeather, kToolClose, kMBraceQuote}, bytes_of("city\": \"Rome"), {kMQuoteClose}}),
+                  "second call");
+  require(std::string(g.state_name()) == "top", "the second call closed on \"}");
+  g.advance(kEosText);
+  require(g.active() && std::string(g.state_name()) == "done", std::string("the turn ended: ") + g.state_name());
+  // The same ids through the parser: two calls, typed.
+  std::string content, reasoning;
+  const auto calls = parse_mistral_calls(
+      vocab,
+      joined({{kToolOpen, kGet, kUnderscore}, bytes_of("weather"), {kToolClose, kMBraceQuote},
+              bytes_of("city\": \"Paris\", \"days\": 3}"),
+              {kToolOpen, kGetWeather, kToolClose, kMBraceQuote}, bytes_of("city\": \"Rome"), {kMQuoteClose, kEosText}}),
+      &content, &reasoning);
+  require(calls.size() == 2 && calls[0].name == "get_weather" && calls[0].arguments == "{\"city\": \"Paris\", \"days\": 3}" &&
+              calls[1].arguments == "{\"city\": \"Rome\"}" && content.empty(),
+          "what the grammar admits, the parser reads");
+}
+
+DGPP_TEST(tool_grammar_mistral_typedArgumentsAndStrictRequiredKeys) {
+  const GrammarVocab vocab = mistral_vocab();
+  const auto opened = [&](const std::string& name) {
+    GrammarState g(&vocab, mistral_spec(GrammarSpec::Mode::kRequired), false);
+    g.advance(kToolOpen);
+    feed_consistent(g, bytes_of(name), "name");
+    g.advance(kToolClose);
+    return g;
+  };
+  // The closed key set: a declared name, never another.
+  GrammarState keys = opened("get_weather");
+  feed_consistent(keys, bytes_of("{\""), "key");
+  require(keys.allows('c') && keys.allows('d') && keys.allows(kCity) && !keys.allows('z'), "the declared keys only");
+  // An integer is one: no quote, no fraction.
+  feed_consistent(keys, bytes_of("days\": "), "value");
+  require(keys.allows('3') && keys.allows('-') && !keys.allows('"') && !keys.allows('t'), "days is an integer");
+  feed_consistent(keys, bytes_of("3"), "value");
+  require(!keys.allows('.') && keys.allows('}') && keys.allows(','), "no fraction; the object may go on or close");
+  // A non-strict tool closes without its required key; a strict one does not.
+  GrammarState lax = opened("get_weather");
+  feed_consistent(lax, bytes_of("{"), "empty");
+  require(lax.allows('}') && lax.allows(kMEmpty) == false, "a non-strict call may be empty (the piece {} is past the brace)");
+  GrammarState whole = opened("get_weather");
+  require(whole.allows(kMEmpty), "one piece holds the whole empty object");
+  whole.advance(kMEmpty);
+  require(std::string(whole.state_name()) == "top", "and closes the call");
+  GrammarState strict = opened("get_time");
+  require(!strict.allows(kMEmpty), "a strict call cannot be empty while a key is required");
+  feed_consistent(strict, bytes_of("{"), "strict");
+  require(!strict.allows('}'), "the brace is withheld until zone is written");
+  feed_consistent(strict, bytes_of("\"zone\": \""), "strict");
+  require(strict.allows('u') && strict.allows('c') && !strict.allows('x'), "the enum's values, as JSON strings");
+  feed_consistent(strict, bytes_of("utc\""), "strict");
+  require(strict.allows('}') && !strict.allows(','), "every key written: the object closes");
+  strict.advance('}');
+  require(std::string(strict.state_name()) == "top", "the strict call closed");
+  // A bare tool: its object is empty.
+  GrammarState bare = opened("ping");
+  feed_consistent(bare, bytes_of("{"), "bare");
+  require(bare.allows('}') && !bare.allows('"'), "no keys to write");
+}
+
+DGPP_TEST(tool_grammar_mistral_modes) {
+  const GrammarVocab vocab = mistral_vocab();
+  const std::vector<int64_t> call =
+      joined({{kToolOpen, kGetWeather, kToolClose}, bytes_of("{\"city\": \"Paris\"}")});
+  // named: the one function, once, then the turn's end.
+  GrammarState named(&vocab, mistral_spec(GrammarSpec::Mode::kNamed, true, "ping"), false);
+  named.advance(kToolOpen);
+  require(same(allowed_ids(named), {'p'}), "the named function only: " + show(allowed_ids(named)));
+  feed_consistent(named, joined({bytes_of("ping"), {kToolClose, kMEmpty}}), "named");
+  require(std::string(named.state_name()) == "end" && same(allowed_ids(named), {kEosText}), "then EOS alone");
+  // required, one call: the second opener is refused.
+  GrammarState single(&vocab, mistral_spec(GrammarSpec::Mode::kRequired, /*parallel=*/false), false);
+  feed_consistent(single, call, "single");
+  require(same(allowed_ids(single), {kEosText}), "parallel_tool_calls false: the turn ends");
+  // auto: prose at will — never a bare [ARGS] — a call, prose again.
+  GrammarState automatic(&vocab, mistral_spec(GrammarSpec::Mode::kAuto), false);
+  require(automatic.allows('H') && automatic.allows(kToolOpen) && automatic.allows(kEosText) &&
+              !automatic.allows(kToolClose),
+          "auto: text, the opener or EOS; [ARGS] is structural");
+  feed_consistent(automatic, joined({bytes_of("Hi "), call}), "auto");
+  require(automatic.allows('!') && automatic.allows(kToolOpen) && automatic.allows(kEosText), "auto: after a call, anything again");
+  // none: [TOOL_CALLS] never.
+  GrammarState none(&vocab, mistral_spec(GrammarSpec::Mode::kForbidCalls), false);
+  require(none.allows('H') && none.allows(kEosText) && !none.allows(kToolOpen) && !none.allows(kToolClose),
+          "none: text and EOS, no bracket");
+  // A disallowed id kills the grammar (the MTP draft may propose one).
+  GrammarState dead(&vocab, mistral_spec(GrammarSpec::Mode::kRequired), false);
+  dead.advance('H');
+  require(!dead.active() && std::string(dead.state_name()) == "dead", "prose while a call is owed");
+}
+
+DGPP_TEST(tool_grammar_mistral_reasoningIsTheModelsToOpen) {
+  const GrammarVocab vocab = mistral_vocab();
+  // The prompt ends in [/INST]: the model may open [THINK] as its first id.
+  GrammarState g(&vocab, mistral_spec(GrammarSpec::Mode::kRequired), /*prompt_opens_thinking=*/false,
+                 /*model_may_open_thinking=*/true);
+  require(same(allowed_ids(g), {kThinkOpen, kToolOpen}), "the opener or the model's [THINK]: " + show(allowed_ids(g)));
+  g.advance(kThinkOpen);
+  require(std::string(g.state_name()) == "think", "inside the reasoning");
+  // Free, but the turn may not end while the call is owed.
+  require(g.allows('x') && g.allows(kThinkClose) && g.allows(kToolOpen) && !g.allows(kEosText),
+          "reasoning is free; EOS is withheld");
+  feed(g, bytes_of("plan"));
+  // [TOOL_CALLS] inside the reasoning opens the call (the parser closes
+  // the block there).
+  GrammarState direct = g;
+  direct.advance(kToolOpen);
+  require(std::string(direct.state_name()) == "m-name", std::string("a call from the reasoning: ") + direct.state_name());
+  g.advance(kThinkClose);
+  require(same(allowed_ids(g), {kToolOpen}), "after [/THINK]: the opener");
+  // What the grammar admits, the parser reads the same way.
+  std::string content, reasoning;
+  const auto calls = parse_mistral_calls(
+      vocab, joined({{kThinkOpen}, bytes_of("plan"), {kToolOpen}, bytes_of("ping"), {kToolClose, kMEmpty, kEosText}}),
+      &content, &reasoning);
+  require(calls.size() == 1 && calls[0].name == "ping" && reasoning == "plan" && content.empty(),
+          "the parser closes the reasoning at the call");
+  // tool_choice none and response_format: no call may open, in or out of
+  // the reasoning.
+  GrammarState none(&vocab, mistral_spec(GrammarSpec::Mode::kForbidCalls), false, true);
+  none.advance(kThinkOpen);
+  require(none.allows('x') && none.allows(kThinkClose) && none.allows(kEosText) && !none.allows(kToolOpen),
+          "none: [TOOL_CALLS] is withheld inside the reasoning too");
+  GrammarSpec json;
+  json.mode = GrammarSpec::Mode::kJson;
+  GrammarState body(&vocab, json, false, true);
+  require(body.allows(kThinkOpen) && body.allows('{') && !body.allows(kToolOpen), "json: [THINK] or the document");
+  body.advance(kThinkOpen);
+  require(!body.allows(kToolOpen) && !body.allows(kEosText) && body.allows(kThinkClose), "json: no call from the reasoning");
+  body.advance(kThinkClose);
+  feed(body, bytes_of("{\"a\": 1}"));
+  require(body.allows(kEosText), "json: the document, then EOS");
+  body.advance(kEosText);
+  require(body.active() && std::string(body.state_name()) == "done", "json: done");
 }
 
 }  // namespace

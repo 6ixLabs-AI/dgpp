@@ -55,6 +55,15 @@ if(DGPP_SANITIZE)
 endif()
 
 option(DGPP_ENABLE_IBV "Build serving and RDMA targets (required even for the single-node server)" ON)
+# The 2026-10-04 overnight ports. What is in the default build for these two
+# families is host-only and was compiled and unit-tested on a Mac (Apple
+# clang): the config parsers, the binding tables, the host references, the
+# bind-check apps. Everything that needs a GPU to be checked — CUDA kernels,
+# model assembly, a serve family — is a DRAFT that has never been compiled by
+# nvcc, loaded a weight or produced a token, and builds only when asked for.
+# With an option OFF the serve binary refuses the family by name.
+option(DGPP_BUILD_MISTRAL_DRAFT "Build the UNVERIFIED Mistral-Small-4 device draft (docs/mistral_small4_plan.md)" OFF)
+option(DGPP_BUILD_MINIMAX_DRAFT "Build the UNVERIFIED MiniMax-M2 device draft (docs/minimax_m27_plan.md)" OFF)
 
 add_library(dgpp_common INTERFACE)
 target_include_directories(dgpp_common INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -281,6 +290,29 @@ add_library(dgpp_models_glm4 STATIC
 target_include_directories(dgpp_models_glm4 PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(dgpp_models_glm4 PUBLIC dgpp_loaders dgpp_common)
 dgpp_set_common(dgpp_models_glm4)
+
+# Mistral-Small-4 (2026-10-04, docs/mistral_small4_plan.md): the host-side
+# model description — the params.json parser, the expected-tensor table and
+# the attention layer's host reference. No CUDA.
+add_library(dgpp_models_mistral4 STATIC
+  src/models/mistral4/config.cpp
+  src/models/mistral4/binding.cpp
+  src/models/mistral4/mla_reference.cpp)
+target_include_directories(dgpp_models_mistral4 PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(dgpp_models_mistral4 PUBLIC dgpp_loaders dgpp_common dgpp_rope_scaling)
+dgpp_set_common(dgpp_models_mistral4)
+
+# MiniMax-M2.7 (2026-10-04, docs/minimax_m27_plan.md): the host-side model
+# description — the config parser, the expected-tensor table and the
+# attention layer's host reference (GLM-4.7's attention oracle under the
+# per-layer q/k norm). No CUDA.
+add_library(dgpp_models_minimax STATIC
+  src/models/minimax/config.cpp
+  src/models/minimax/binding.cpp
+  src/models/minimax/attn_reference.cpp)
+target_include_directories(dgpp_models_minimax PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(dgpp_models_minimax PUBLIC dgpp_loaders dgpp_common dgpp_models_glm4)
+dgpp_set_common(dgpp_models_minimax)
 
 # The GLM-4.7 resident loader (loaders/resident_stream.hpp + the family's builders).
 add_library(dgpp_models_glm4_loader STATIC
@@ -610,6 +642,12 @@ dgpp_set_common(dsv41_bind_check)
 add_executable(qwen35_bind_check apps/qwen35_bind_check.cpp)
 target_link_libraries(qwen35_bind_check PRIVATE dgpp_models_qwen dgpp_loaders)
 dgpp_set_common(qwen35_bind_check)
+add_executable(mistral4_bind_check apps/mistral4_bind_check.cpp)
+target_link_libraries(mistral4_bind_check PRIVATE dgpp_models_mistral4 dgpp_loaders)
+dgpp_set_common(mistral4_bind_check)
+add_executable(minimax_bind_check apps/minimax_bind_check.cpp)
+target_link_libraries(minimax_bind_check PRIVATE dgpp_models_minimax dgpp_loaders)
+dgpp_set_common(minimax_bind_check)
 add_executable(dsv4_forward_check apps/dsv4_forward_check.cpp)
 target_include_directories(dsv4_forward_check PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/tests/cuda)
 target_link_libraries(dsv4_forward_check PRIVATE dgpp_models_dsv4_layers dgpp_bus dgpp_loaders dgpp_sched dgpp_text CUDA::cudart Threads::Threads)
@@ -852,6 +890,18 @@ target_compile_definitions(unit_tests PRIVATE DGPP_SOURCE_DIR="${CMAKE_CURRENT_S
 dgpp_set_common(unit_tests)
 add_test(NAME unit_tests COMMAND unit_tests)
 target_sources(unit_tests PRIVATE tests/unit/site_options_test.cpp)
+# Mistral-Small-4 and MiniMax-M2.7 (2026-10-04): config, binding table
+# (pinned to the real checkpoints' header counts) and the host references
+# against the numpy references' vectors (tests/unit/*_vectors.hpp, generated
+# by tools/mistral4_synth.py and tools/minimax_m2_synth.py).
+target_sources(unit_tests PRIVATE
+  tests/unit/mistral4_config_test.cpp
+  tests/unit/mistral4_binding_test.cpp
+  tests/unit/mistral4_mla_test.cpp
+  tests/unit/minimax_config_test.cpp
+  tests/unit/minimax_binding_test.cpp
+  tests/unit/minimax_attn_test.cpp)
+target_link_libraries(unit_tests PRIVATE dgpp_models_mistral4 dgpp_models_minimax)
 
 # The vLLM YaRN oracle, offline (2026-09-19): tests/python/qwen_yarn_oracle.py
 # --emit records the recipe's rope goldens — the YaRN table, the attention
@@ -917,6 +967,15 @@ set_tests_properties(glm_dsa_tokenizer_test PROPERTIES SKIP_RETURN_CODE 2)
 add_test(NAME mimo_tokenizer_test
   COMMAND tokenizer_test ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/mimo_tokenizer_goldens.jsonl)
 set_tests_properties(mimo_tokenizer_test PROPERTIES SKIP_RETURN_CODE 2)
+# Mistral-Small-4 (the tekken pattern: cased letter runs, one number per
+# pretoken) and MiniMax-M2.7 (the o200k pattern under NFC, Split spelled
+# Removed + invert), 2026-10-04.
+add_test(NAME mistral4_tokenizer_test
+  COMMAND tokenizer_test ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/mistral4_tokenizer_goldens.jsonl)
+set_tests_properties(mistral4_tokenizer_test PROPERTIES SKIP_RETURN_CODE 2 LABELS "host;checkpoint")
+add_test(NAME minimax_tokenizer_test
+  COMMAND tokenizer_test ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/minimax_tokenizer_goldens.jsonl)
+set_tests_properties(minimax_tokenizer_test PROPERTIES SKIP_RETURN_CODE 2 LABELS "host;checkpoint")
 
 # M6 Stage 3b: the chat-template differential gate (host). Skips with rc 2
 # when the model cache is absent, same as above.
@@ -958,6 +1017,26 @@ target_link_libraries(qwen3codernext_tool_calls_test PRIVATE dgpp_models_glm Thr
 dgpp_set_common(qwen3codernext_tool_calls_test)
 add_test(NAME qwen3codernext_tool_calls_test COMMAND qwen3codernext_tool_calls_test)
 set_tests_properties(qwen3codernext_tool_calls_test PROPERTIES SKIP_RETURN_CODE 2 LABELS "host;checkpoint")
+# Mistral-Small-4 over its real tokenizer and template (host): the renders and
+# the template's refusals against the corpus, the [TOOL_CALLS] / [THINK] parser
+# and the forced-call grammar over the tokenizer's own pieces. Skips with rc 2
+# when the model cache is absent.
+add_executable(mistral4_tool_calls_test tests/host/mistral4_tool_calls_test.cpp)
+target_include_directories(mistral4_tool_calls_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(mistral4_tool_calls_test PRIVATE dgpp_models_glm Threads::Threads)
+dgpp_set_common(mistral4_tool_calls_test)
+add_test(NAME mistral4_tool_calls_test
+  COMMAND mistral4_tool_calls_test ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/mistral4_chat_template_goldens.jsonl)
+set_tests_properties(mistral4_tool_calls_test PROPERTIES SKIP_RETURN_CODE 2 LABELS "host;checkpoint")
+# MiniMax-M2.7 likewise: the renders, the invoke / parameter parser typed from
+# the schema; the forced-call grammar does not cover this format (asserted).
+add_executable(minimax_tool_calls_test tests/host/minimax_tool_calls_test.cpp)
+target_include_directories(minimax_tool_calls_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(minimax_tool_calls_test PRIVATE dgpp_models_glm Threads::Threads)
+dgpp_set_common(minimax_tool_calls_test)
+add_test(NAME minimax_tool_calls_test
+  COMMAND minimax_tool_calls_test ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/minimax_chat_template_goldens.jsonl)
+set_tests_properties(minimax_tool_calls_test PROPERTIES SKIP_RETURN_CODE 2 LABELS "host;checkpoint")
 
 # M6 Stage 4: the serving capstone — HTTP/SSE over epoll + the OpenAI
 # generation service (host-only; the engine adapters live in the apps,
@@ -1249,6 +1328,42 @@ target_include_directories(glm4_attn_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/sr
 target_link_libraries(glm4_attn_test PRIVATE dgpp_models_glm4 dgpp_kernels CUDA::cudart Threads::Threads)
 dgpp_set_common(glm4_attn_test)
 add_test(NAME glm4_attn_test COMMAND glm4_attn_test)
+
+# ---- UNVERIFIED device drafts (2026-10-04), OFF by default --------------------
+# Written overnight with no GPU: syntax-checked with clang's CUDA front end
+# against a qualifier shim, never compiled by nvcc, never run. Each option
+# builds the family's new kernel(s) and the CUDA test that holds them — and,
+# for Mistral, the existing latent-attention kernels in the order a layer
+# must enqueue them — against the family's host reference (which is in the
+# default build and tested). Neither option adds a serve family: the server
+# keeps refusing both by name. sixlabs/ports/<model>/gpu-steps.md says what
+# to run and what a pass looks like.
+if(DGPP_BUILD_MISTRAL_DRAFT)
+  add_library(dgpp_kernels_mistral4_draft STATIC src/kernels/mistral4_attn.cu)
+  target_include_directories(dgpp_kernels_mistral4_draft PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(dgpp_kernels_mistral4_draft PUBLIC CUDA::cudart dgpp_core)
+  dgpp_set_common(dgpp_kernels_mistral4_draft)
+  add_executable(mistral4_attn_test tests/cuda/mistral4_attn_test.cu)
+  target_include_directories(mistral4_attn_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/tests/cuda)
+  target_link_libraries(mistral4_attn_test PRIVATE dgpp_kernels_mistral4_draft dgpp_models_mistral4 dgpp_kernels
+                                                 CUDA::cudart Threads::Threads)
+  dgpp_set_common(mistral4_attn_test)
+  add_test(NAME mistral4_attn_test COMMAND mistral4_attn_test)
+  set_tests_properties(mistral4_attn_test PROPERTIES SKIP_RETURN_CODE 2)
+endif()
+if(DGPP_BUILD_MINIMAX_DRAFT)
+  add_library(dgpp_kernels_minimax_draft STATIC src/kernels/minimax_attn.cu)
+  target_include_directories(dgpp_kernels_minimax_draft PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(dgpp_kernels_minimax_draft PUBLIC CUDA::cudart dgpp_core)
+  dgpp_set_common(dgpp_kernels_minimax_draft)
+  add_executable(minimax_attn_test tests/cuda/minimax_attn_test.cu)
+  target_include_directories(minimax_attn_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/tests/cuda)
+  target_link_libraries(minimax_attn_test PRIVATE dgpp_kernels_minimax_draft dgpp_models_minimax dgpp_models_glm4
+                                                dgpp_kernels CUDA::cudart Threads::Threads)
+  dgpp_set_common(minimax_attn_test)
+  add_test(NAME minimax_attn_test COMMAND minimax_attn_test)
+  set_tests_properties(minimax_attn_test PROPERTIES SKIP_RETURN_CODE 2)
+endif()
 
 add_executable(full_attn_test tests/cuda/full_attn_test.cu)
 target_include_directories(full_attn_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/tests/cuda)

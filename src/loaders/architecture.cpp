@@ -5,6 +5,8 @@
 #include <cstring>
 #include <filesystem>
 #include <stdexcept>
+#include <string>
+#include <string_view>
 
 namespace dgpp {
 
@@ -56,24 +58,75 @@ ModelArchitecture detect_architecture(const minijson::Value& root) {
   // Flash-Next routed MoE in place of the dense MLP.
   if (arch.rfind("Qwen3Next", 0) == 0 || (arch.empty() && type == "qwen3_next"))
     return ModelArchitecture::Qwen3Next;
+  // MiniMax-M2.7 (2026-10-04, docs/minimax_m27_plan.md):
+  // `MiniMaxM2ForCausalLM` / `minimax_m2` — a flat config.
+  if (arch.rfind("MiniMaxM2", 0) == 0 || (arch.empty() && type == "minimax_m2"))
+    return ModelArchitecture::MiniMaxM2;
+  // Mistral-Small-4 in transformers' format (`Mistral3ForConditionalGeneration`
+  // over a `mistral4` text_config, or `Mistral4ForCausalLM`): the same model
+  // with fused expert tensors and other names. Only the Mistral-native
+  // release (params.json) has a binding table here.
+  if (arch.rfind("Mistral4", 0) == 0 || arch.rfind("Mistral3", 0) == 0 || type == "mistral4" || type == "mistral3")
+    throw std::runtime_error(
+        "config.json: architecture '" + arch + "' (model_type '" + type +
+        "') is Mistral's transformers-format release, which is not implemented; the engine reads the "
+        "Mistral-native release (params.json, e.g. mistralai/Mistral-Small-4-119B-2603-NVFP4)");
   throw std::runtime_error(
       "config.json: unsupported architecture '" + arch + "' (model_type '" +
-      type + "'); the engine implements Glm5*, Qwen4Exp*, Glm4Moe*, GlmMoeDsa*, DeepseekV41*, DeepseekV4*, MiMoV2*, Qwen3_5* and Qwen3Next*");
+      type + "'); the engine implements Glm5*, Qwen4Exp*, Glm4Moe*, GlmMoeDsa*, DeepseekV41*, DeepseekV4*, MiMoV2*, Qwen3_5*, Qwen3Next* and MiniMaxM2*, and Mistral-native params.json (Mistral-Small-4)");
 }
 
-ModelArchitecture detect_architecture_file(const std::string& path) {
-  namespace fs = std::filesystem;
-  const fs::path p = fs::is_directory(path) ? fs::path(path) / "config.json"
-                                            : fs::path(path);
+ModelArchitecture detect_architecture_params(const minijson::Value& root) {
+  if (!root.is_object()) throw std::runtime_error("params.json: root is not an object");
+  const auto has = [&](std::string_view key) {
+    const minijson::Value* v = root.find(key);
+    return v && !v->is_null();
+  };
+  const minijson::Value* moe = root.find("moe");
+  const bool shared_moe = moe && moe->is_object() && moe->find("num_shared_experts") &&
+                          moe->find("num_shared_experts")->as_int() > 0;
+  if (has("qk_nope_head_dim") && has("kv_lora_rank") && shared_moe && has("llama_4_scaling"))
+    return ModelArchitecture::Mistral4;
+  throw std::runtime_error(
+      "params.json: unsupported Mistral-native model; the engine implements the latent-attention MoE family "
+      "(Mistral-Small-4: qk_nope_head_dim / kv_lora_rank, moe.num_shared_experts > 0 and llama_4_scaling)");
+}
+
+namespace {
+
+std::string read_text(const std::filesystem::path& p, const char* what) {
   FILE* f = std::fopen(p.c_str(), "rb");
   if (!f)
-    throw std::runtime_error("cannot open config " + p.string() + ": " +
+    throw std::runtime_error(std::string("cannot open ") + what + " " + p.string() + ": " +
                              std::strerror(errno));
   std::string text;
   char buf[1 << 16];
   size_t n;
   while ((n = std::fread(buf, 1, sizeof buf, f)) > 0) text.append(buf, n);
   std::fclose(f);
+  return text;
+}
+
+}  // namespace
+
+ModelArchitecture detect_architecture_file(const std::string& path) {
+  namespace fs = std::filesystem;
+  const fs::path p = fs::is_directory(path) ? fs::path(path) / "config.json"
+                                            : fs::path(path);
+  // The Mistral-native layout: params.json and no config.json. `p` is the
+  // config.json this function would read; when it does not exist and its
+  // directory holds a params.json, that file describes the checkpoint.
+  fs::path params;
+  if (p.filename() == "params.json")
+    params = p;
+  else if (!fs::exists(p) && fs::exists(p.parent_path() / "params.json"))
+    params = p.parent_path() / "params.json";
+  if (!params.empty()) {
+    const std::string text = read_text(params, "params");
+    const auto parsed = minijson::parse(text);
+    return detect_architecture_params(parsed.root);
+  }
+  const std::string text = read_text(p, "config");
   const auto parsed = minijson::parse(text);
   return detect_architecture(parsed.root);
 }

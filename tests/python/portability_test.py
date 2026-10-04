@@ -210,10 +210,15 @@ class PortabilityTest(unittest.TestCase):
             "RedHatAI/Qwen3-Coder-Next-NVFP4": "qwen3-coder-next_nvfp4",
             "nvidia/Qwen3.6-35B-A3B-NVFP4": "qwen3.6-35b-a3b_nvfp4",
             "Qwen/Qwen3.6-35B-A3B-FP8": "qwen3.6-35b-a3b_fp8",
+            "mistralai/Mistral-Small-4-119B-2603-NVFP4": "mistral-small-4_nvfp4",
+            "lukealonso/MiniMax-M2.7-NVFP4": "minimax-m2.7_nvfp4",
         }
         # Checkpoints that carry no draft layer (no `mtp.*` tensors): there is
         # no MTP to enable, so their templates run the plain decode graph.
-        no_draft = {"RedHatAI/Qwen3-Coder-Next-NVFP4"}
+        # (MiniMax-M2.7's config.json declares one; no published checkpoint
+        # has its tensors.)
+        no_draft = {"RedHatAI/Qwen3-Coder-Next-NVFP4", "mistralai/Mistral-Small-4-119B-2603-NVFP4",
+                    "lukealonso/MiniMax-M2.7-NVFP4"}
         values = {**site_env.DEFAULTS, "DGPP_NODES": "head peer1 peer2 peer3", "DGPP_SSH_USER": "ops"}
         templates = list((ROOT / "deploy").glob("*.example.json"))
         self.assertTrue(templates)

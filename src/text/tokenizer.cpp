@@ -51,6 +51,27 @@ constexpr const char* kSplitPatternDsv41Cjk = "[\u4e00-\u9fa5\u3040-\u309f\u30a0
 // CR and LF stand in the file as the control characters themselves.
 constexpr const char* kSplitPatternDsv41Main =
     "[!\"#$%&'()*+,\\-./:;<=>?@\\[\\\\\\]^_`{|}~][A-Za-z]+|[^\r\n\\p{L}\\p{P}\\p{S}]?[\\p{L}\\p{M}]+| ?[\\p{P}\\p{S}]+[\r\n]*|\\s*[\r\n]+|\\s+(?!\\S)|\\s+";
+// The Mistral-Small-4 pattern (2026-10-04; tekken.json's config.pattern,
+// carried verbatim into the checkpoint's tokenizer.json): words split on
+// letter case — two word alternatives over the "upper" class
+// [\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}] and the "lower" class
+// [\p{Ll}\p{Lm}\p{Lo}\p{M}] — no contraction alternative, numbers one per
+// pretoken, marks in the punctuation class, and '/' beside CR/LF in the
+// punctuation run's tail. The cased-word scanner below spells out the
+// alternatives.
+constexpr const char* kSplitPatternTekken =
+    "[^\\r\\n\\p{L}\\p{N}]?[\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\\p{M}]*[\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}]+"
+    "|[^\\r\\n\\p{L}\\p{N}]?[\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\\p{M}]+[\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}]*"
+    "|\\p{N}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n/]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+";
+// The MiniMax-M2.7 pattern (2026-10-04; OpenAI's o200k_base regex): the
+// tekken pattern with an optional contraction closing either word
+// alternative and number runs of at most three.
+constexpr const char* kSplitPatternO200k =
+    "[^\\r\\n\\p{L}\\p{N}]?[\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\\p{M}]*[\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}]+"
+    "(?i:'s|'t|'re|'ve|'m|'ll|'d)?"
+    "|[^\\r\\n\\p{L}\\p{N}]?[\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\\p{M}]+[\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}]*"
+    "(?i:'s|'t|'re|'ve|'m|'ll|'d)?"
+    "|\\p{N}{1,3}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n/]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+";
 
 [[noreturn]] void reject(const std::string& what) {
   throw std::runtime_error("glm_tokenizer: " + what);
@@ -494,6 +515,218 @@ class Dsv41Scanner {
   std::vector<size_t> starts_;
 };
 
+// ---------------------------------------------------------------------------
+// The cased-word scanner (kSplitPatternTekken, kSplitPatternO200k): the
+// two patterns whose word alternatives split on letter case. Over
+// codepoints, like the scanners above. The classes:
+//   P [^\r\n\p{L}\p{N}]               the optional word prefix: anything but
+//                                     CR, LF, a letter or a number — so
+//                                     whitespace, punctuation, controls and
+//                                     MARKS all qualify
+//   U [\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]   "upper": a letter that is not Ll, or a mark
+//   W [\p{Ll}\p{Lm}\p{Lo}\p{M}]         "lower": a letter that is not Lu/Lt, or a mark
+// (caseless letters — Lm, Lo: CJK, Hangul, Arabic, Devanagari... — and
+// marks sit in BOTH classes). The alternatives, leftmost-first:
+//   C1 P?U*W+ c?                    a word ending in lower-class characters
+//   C2 P?U+W* c?                    a word of upper-class characters
+//   C3 \p{N} (tekken), \p{N}{1,3} (o200k)
+//   C4  ?[^\s\p{L}\p{N}]+[\r\n/]*   optional literal SPACE + a punctuation
+//                                   run (marks included) + trailing
+//                                   CR/LF/'/' characters
+//   C5-C7 the whitespace alternatives of the GLM pattern (A5-A7)
+// c is the o200k pattern's (?i:'s|'t|'re|'ve|'m|'ll|'d): tried once where
+// the word's letters end (the regex never backs into the letters to find
+// one), under Unicode simple case folding — U+017F LONG S matches 's' (HF's
+// Oniguruma does this; pinned by an exhaustive probe over every codepoint).
+//
+// The backtracking outcomes the scanner reproduces:
+//   * C1's U* is greedy and runs through caseless letters and marks. When no
+//     W character follows the run, the regex backs up to the run's LAST
+//     character that is also W, which then is the whole W+: "ABカDE" matches
+//     "ABカ", and a run of Lu/Lt alone fails C1 ("HTMLParser" is one piece —
+//     U "HTMLP" then W "arser" — while "iPhone" is "i" | "Phone").
+//   * The prefix is tried taken, then absent, and C1 is exhausted before C2
+//     is tried at all. A mark is a legal prefix AND a legal run character, so
+//     U+0301 before "ABC" fails C1 as a prefix, then matches C1 alone as its
+//     own W+ — a piece of its own, although C2 would have taken all four.
+//   * C2 is reached only when C1 failed, i.e. over a run of Lu/Lt alone: its
+//     W* is then empty by construction, but the scanner runs it as written.
+// Every codepoint starts a match (a letter C1 or C2, a mark C1, a number C3,
+// whitespace C7, anything else C4), so the matches leave no text between
+// them: the o200k file's Split(Removed, invert=true) — keep the matches,
+// drop what lies between — produces exactly the pieces Isolated would, and
+// the defensive throw below is the same loud pin as SplitScanner's.
+// ---------------------------------------------------------------------------
+class CasedSplitScanner {
+ public:
+  // contractions: a contraction may close a word (o200k); number_run: the
+  // longest \p{N} run in one pretoken (tekken: 1, o200k: 3).
+  CasedSplitScanner(std::string_view text, std::vector<std::string_view>* out, bool contractions,
+                    size_t number_run)
+      : text_(text), out_(out), contractions_(contractions), number_run_(number_run) {
+    // Strict UTF-8, as SplitScanner; each codepoint's classes are looked up
+    // once here (the general categories are disjoint, and no White_Space
+    // codepoint is a letter, mark or number).
+    size_t i = 0;
+    while (i < text_.size()) {
+      const unsigned char lead = static_cast<unsigned char>(text_[i]);
+      const int len = utf8_len(lead);
+      if (len < 1 || i + static_cast<size_t>(len) > text_.size())
+        reject("input is not valid UTF-8");
+      // The lead byte's payload bits, then six per continuation byte.
+      uint32_t c = len == 1 ? lead : lead & (0xFFu >> (len + 1));
+      for (int k = 1; k < len; ++k) {
+        const unsigned char cont = static_cast<unsigned char>(text_[i + static_cast<size_t>(k)]);
+        if ((cont & 0xC0) != 0x80) reject("input is not valid UTF-8 (bad continuation byte)");
+        c = (c << 6) | (cont & 0x3Fu);
+      }
+      uint8_t cls = 0;
+      if (unicode::is_letter(c)) {
+        cls = kLetter;
+        if (!unicode::is_lowercase_letter(c)) cls |= kUpper;
+        if (!unicode::is_uppercase_or_titlecase_letter(c)) cls |= kLower;
+      } else if (unicode::is_mark(c)) {
+        cls = kUpper | kLower;
+      } else if (unicode::is_number(c)) {
+        cls = kNumber;
+      } else if (unicode::is_white_space(c)) {
+        cls = kSpace;
+      }
+      cps_.push_back(c);
+      cls_.push_back(cls);
+      starts_.push_back(i);
+      i += static_cast<size_t>(len);
+    }
+    starts_.push_back(text_.size());
+  }
+
+  void run() {
+    size_t i = 0;  // codepoint index
+    while (i < cps_.size()) {
+      const size_t end = match_at(i);
+      if (end == i) reject("scanner hole at codepoint " + std::to_string(i));
+      out_->push_back(text_.substr(starts_[i], starts_[end] - starts_[i]));
+      i = end;
+    }
+  }
+
+ private:
+  enum : uint8_t { kLetter = 1, kUpper = 2, kLower = 4, kNumber = 8, kSpace = 16 };
+
+  static int utf8_len(unsigned char b) {
+    if (b < 0x80) return 1;
+    if ((b & 0xE0) == 0xC0) return 2;
+    if ((b & 0xF0) == 0xE0) return 3;
+    if ((b & 0xF8) == 0xF0) return 4;
+    return -1;
+  }
+  bool eos(size_t i) const { return i >= cps_.size(); }
+  uint32_t cp(size_t i) const { return eos(i) ? 0 : cps_[i]; }
+  bool is(size_t i, uint8_t cls) const { return !eos(i) && (cls_[i] & cls) != 0; }
+  bool upper(size_t i) const { return is(i, kUpper); }
+  bool lower(size_t i) const { return is(i, kLower); }
+  bool number(size_t i) const { return is(i, kNumber); }
+  bool ws(size_t i) const { return is(i, kSpace); }
+  bool crlf(size_t i) const { return cp(i) == '\r' || cp(i) == '\n'; }
+  // P: not CR/LF, not a letter, not a number.
+  bool prefix(size_t i) const { return !eos(i) && !is(i, kLetter | kNumber) && !crlf(i); }
+  // C4's class: not whitespace, not a letter, not a number.
+  bool punct(size_t i) const { return !eos(i) && !is(i, kSpace | kLetter | kNumber); }
+
+  // U*W+ at s (C1 past its prefix): the greedy U run, then the greedy W run;
+  // with no W run, back to the U run's last character that is also W.
+  bool lower_word(size_t s, size_t* end) const {
+    size_t a = s;
+    while (upper(a)) ++a;
+    size_t b = a;
+    while (lower(b)) ++b;
+    if (b > a) {
+      *end = b;
+      return true;
+    }
+    for (size_t k = a; k > s; --k)
+      if (lower(k - 1)) {
+        *end = k;
+        return true;
+      }
+    return false;
+  }
+
+  // U+W* at s (C2 past its prefix).
+  bool upper_word(size_t s, size_t* end) const {
+    size_t a = s;
+    while (upper(a)) ++a;
+    if (a == s) return false;
+    while (lower(a)) ++a;
+    *end = a;
+    return true;
+  }
+
+  // The optional contraction where a word's letters end at e: apostrophe +
+  // s|t|m|d (1) or re|ve|ll (2), case-insensitive. Returns the match end.
+  static uint32_t fold(uint32_t c) {
+    if (c >= 'A' && c <= 'Z') return c + 32;
+    return c == 0x17F ? uint32_t{'s'} : c;  // LATIN SMALL LETTER LONG S folds to 's'
+  }
+  size_t contraction(size_t e) const {
+    if (!contractions_ || cp(e) != '\'') return e;
+    const uint32_t a = fold(cp(e + 1));
+    if (a == 's' || a == 't' || a == 'm' || a == 'd') return e + 2;
+    const uint32_t b = fold(cp(e + 2));
+    if ((a == 'r' && b == 'e') || (a == 'v' && b == 'e') || (a == 'l' && b == 'l'))
+      return e + 3;
+    return e;
+  }
+
+  // Returns the codepoint index one PAST the match at i (never i).
+  size_t match_at(size_t i) const {
+    size_t end = 0;
+    // C1, then C2: each with the prefix taken first, then absent.
+    if (prefix(i) && lower_word(i + 1, &end)) return contraction(end);
+    if (lower_word(i, &end)) return contraction(end);
+    if (prefix(i) && upper_word(i + 1, &end)) return contraction(end);
+    if (upper_word(i, &end)) return contraction(end);
+
+    // C3: one number (tekken) or 1..3 (o200k).
+    if (number(i)) {
+      size_t j = i + 1;
+      while (j < i + number_run_ && number(j)) ++j;
+      return j;
+    }
+
+    // C4: optional literal space + punct run + CR/LF/slash tail.
+    {
+      size_t j = i;
+      if (cp(i) == ' ' && punct(i + 1)) j = i + 1;
+      if (punct(j)) {
+        while (punct(j)) ++j;
+        while (crlf(j) || cp(j) == '/') ++j;
+        return j;
+      }
+    }
+
+    // C5: \s*[\r\n]+ — through the whitespace run's LAST CR/LF.
+    size_t j = i;
+    while (ws(j)) ++j;
+    size_t last_nl = i;
+    for (size_t k = i; k < j; ++k)
+      if (crlf(k)) last_nl = k + 1;
+    if (last_nl > i) return last_nl;
+    // C6: \s+(?!\S) — the whole run at end of text, one short before a
+    // non-space (a run of >= 2 then); C7: \s+ — the run.
+    if (j > i && !eos(j) && j - i >= 2) return j - 1;
+    return j;
+  }
+
+  std::string_view text_;
+  std::vector<std::string_view>* out_;
+  bool contractions_ = false;
+  size_t number_run_ = 1;
+  std::vector<uint32_t> cps_;
+  std::vector<uint8_t> cls_;    // per codepoint: the k* class bits
+  std::vector<size_t> starts_;  // size = cps+1 (end sentinel)
+};
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -538,11 +771,24 @@ Tokenizer Tokenizer::load(const std::string& path) {
   const size_t splits = pres.size() >= 1 ? pres.size() - 1 : 0;
   if ((splits != 1 && splits != 3) || want_string(pres[splits], "type", "pre_tokenizer[last]") != "ByteLevel")
     reject("pre_tokenizer is neither [Split, ByteLevel] nor [Split x 3, ByteLevel]");
+  // Split behaviour: Isolated with invert=false — the matches and the text
+  // between them are all pieces. The o200k file alone (MiniMax-M2.7) says
+  // Removed with invert=true: the matches are the pieces and the text
+  // between them is dropped — the same pieces for a pattern that leaves
+  // nothing between its matches (the cased-word scanner's comment), and
+  // accepted for that pattern only, below.
+  bool removed_inverted = false;
   for (size_t k = 0; k < splits; ++k) {
     if (want_string(pres[k], "type", "pre_tokenizer[k]") != "Split") reject("pre_tokenizer stage is not a Split");
-    if (want_string(pres[k], "behavior", "Split") != "Isolated") reject("Split behavior is not Isolated");
-    if (const minijson::Value* inv = pres[k].find("invert"); inv && inv->kind() == minijson::Value::Kind::Bool && inv->as_bool())
-      reject("Split invert must be false");
+    const std::string_view behavior = want_string(pres[k], "behavior", "Split");
+    const minijson::Value* inv = pres[k].find("invert");
+    const bool invert = inv && inv->kind() == minijson::Value::Kind::Bool && inv->as_bool();
+    if (splits == 1 && behavior == "Removed" && invert) {
+      removed_inverted = true;
+      continue;
+    }
+    if (behavior != "Isolated") reject("Split behavior is not Isolated");
+    if (invert) reject("Split invert must be false");
   }
   const auto split_regex = [&](size_t k) {
     const minijson::Value& pattern = field(pres[k], "pattern", "Split");
@@ -553,9 +799,14 @@ Tokenizer Tokenizer::load(const std::string& path) {
     if (regex == kSplitPattern) t.pattern_ = 0;
     else if (regex == kSplitPatternQwen) t.pattern_ = 1;
     else if (regex == kSplitPatternQwen2) t.pattern_ = 3;
+    else if (regex == kSplitPatternTekken) t.pattern_ = 4;
+    else if (regex == kSplitPatternO200k) t.pattern_ = 5;
     else
       reject("Split pattern differs from the pinned regexes (the scanner "
              "hardcodes them — update the scanner or the checkpoint)");
+    if (removed_inverted != (t.pattern_ == 5))
+      reject("Split behavior/invert do not fit the pattern (the o200k regex is pinned as "
+             "Removed with invert=true, every other regex as Isolated with invert=false)");
   } else {
     if (split_regex(0) != kSplitPatternDsv41Numbers || split_regex(1) != kSplitPatternDsv41Cjk ||
         split_regex(2) != kSplitPatternDsv41Main)
@@ -628,6 +879,11 @@ Tokenizer Tokenizer::load(const std::string& path) {
       reject("duplicate vocab token: " + key);
     max_vocab_id = std::max(max_vocab_id, id);
   }
+  // The highest id encode can produce: the base vocabulary's here, raised
+  // by the added tokens below. (Mistral-Small-4's added tokens are ids
+  // 0..999 — its control tokens are also vocab keys, BELOW the BPE range —
+  // so the last added token is not the highest id there.)
+  t.max_id_ = max_vocab_id;
 
   // --- merges (rank = list order) ---------------------------------------
   const auto& merges = field(*model, "merges", "model").items();
@@ -675,6 +931,12 @@ Tokenizer Tokenizer::load(const std::string& path) {
         reject("added token with " + std::string(f) +
                " set (plain matching only): " + a.content);
     }
+    // The cased-word files (Mistral-Small-4, MiniMax-M2.7) are pinned with
+    // every added token non-normalized: encode() cuts the added tokens out
+    // of the RAW text and normalizes only what lies between them.
+    if (t.pattern_ >= 4 && want_bool(at, "normalized", "added_tokens"))
+      reject("added token with normalized set (added tokens match on the raw text only): " +
+             a.content);
     t.added_tokens_.push_back(std::move(a));
     // Insert into the byte trie (leftmost-longest matching). Added
     // tokens are ASCII here, so a match can never start mid-codepoint
@@ -710,11 +972,12 @@ Tokenizer Tokenizer::load(const std::string& path) {
       reject("vocab ids are not dense (missing id " + std::to_string(id) +
              " — decode-by-id needs the dense base range)");
 
+  const char* const pattern_names[] = {"glm", "qwen", "deepseek-v4.1", "qwen2", "tekken", "o200k"};
   DGPP_LOG_INFO(
       "tokenizer: loaded vocab {} merges {} added {} (revision 0x{:016x}; "
       "{} pattern, {}, ignore_merges {})",
       t.vocab_.size(), t.merge_rank_.size(), t.added_tokens_.size(),
-      t.revision_hash_, t.pattern_ == 2 ? "deepseek-v4.1" : t.pattern_ == 1 ? "qwen" : t.pattern_ == 3 ? "qwen2" : "glm", t.nfc_ ? "NFC" : "no normalizer",
+      t.revision_hash_, pattern_names[t.pattern_], t.nfc_ ? "NFC" : "no normalizer",
       t.ignore_merges_);
   return t;
 }
@@ -768,6 +1031,10 @@ void Tokenizer::encode_segment(std::string_view segment,
   std::vector<std::string_view> pretokens;
   if (pattern_ == 2) {
     Dsv41Scanner scanner(segment, &pretokens);
+    scanner.run();
+  } else if (pattern_ == 4 || pattern_ == 5) {
+    CasedSplitScanner scanner(segment, &pretokens, /*contractions=*/pattern_ == 5,
+                              /*number_run=*/pattern_ == 5 ? 3 : 1);
     scanner.run();
   } else {
     SplitScanner scanner(segment, &pretokens, /*marks=*/pattern_ == 1, /*single_number=*/pattern_ == 1 || pattern_ == 3);

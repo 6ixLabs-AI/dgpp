@@ -1,0 +1,4 @@
+{"messages": [
+  {"role": "user", "content": "In two sentences, why is the sky blue?"},
+  {"role": "assistant", "content": "Sunlight is scattered by the molecules of the atmosphere, and the scattering is much stronger for short wavelengths, so blue light reaches the eye from every direction of the sky. At sunrise and sunset the light crosses far more air, most of the blue is scattered out of the direct beam, and what remains looks red."}
+], "add_generation_prompt": false}

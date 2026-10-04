@@ -9,6 +9,7 @@
 #include <cctype>
 #include <charconv>
 #include <cmath>
+#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -35,6 +36,7 @@ struct Expr {
   enum class Tag {
     Const,     // value
     ListLit,   // kids[] as elements
+    DictLit,   // kids[] as key, value, key, value, ...
     Name,      // name
     Getattr,   // kids[0].name
     Getitem,   // kids[0][kids[1]]
@@ -175,10 +177,15 @@ struct Tok {
 };
 
 // Scans for the tag's closing delimiter, skipping quoted string bodies so
-// "{{ '}' }}" and friends cannot terminate early.
+// "{{ '}' }}" and friends cannot terminate early, and the braces of a dict
+// literal so "{{ {'a': 1}}}" ends at its last pair (Jinja's lexer balances
+// them the same way). A {# comment #} is raw text up to its "#}": a quote
+// inside it opens nothing (MiniMax-M2.7's "... if it's system").
 size_t find_tag_end(std::string_view src, size_t from, char close1,
                     size_t line) {
+  const bool comment = close1 == '#';
   char quote = 0;
+  int braces = 0;
   for (size_t k = from; k + 1 < src.size(); ++k) {
     const char c = src[k];
     if (quote) {
@@ -186,8 +193,12 @@ size_t find_tag_end(std::string_view src, size_t from, char close1,
         ++k;
       else if (c == quote)
         quote = 0;
-    } else if (c == '\'' || c == '"') {
+    } else if (!comment && (c == '\'' || c == '"')) {
       quote = c;
+    } else if (!comment && c == '{') {
+      ++braces;
+    } else if (!comment && c == '}' && braces > 0) {
+      --braces;
     } else if (c == close1 && src[k + 1] == '}') {
       return k;
     }
@@ -251,6 +262,12 @@ std::vector<Tok> lex(std::string_view src) {
     if (!is_comment)
       out.push_back(
           {is_out ? Tok::Kind::Output : Tok::Kind::Block, body, line});
+    // The tag's own newlines count toward the lines after it (a string
+    // literal may span lines: Mistral-Small-4's default system prompt runs
+    // to 28 of them).
+    line += static_cast<size_t>(
+        std::count(src.begin() + static_cast<std::ptrdiff_t>(i),
+                   src.begin() + static_cast<std::ptrdiff_t>(body_end + 2), '\n'));
     // Whitespace after the tag: the explicit marker strips everything;
     // trim_blocks (block tags) strips exactly one newline; output tags
     // trim only with the marker.
@@ -340,7 +357,7 @@ std::vector<ETok> lex_expr(std::string_view s, size_t line) {
       i += 2;
       continue;
     }
-    if (std::strchr("()[],.+-~|<>=:", c)) {
+    if (std::strchr("()[]{},.+-~|<>=:", c)) {
       out.push_back({ETok::T::Sym, std::string(1, c), 0});
       ++i;
       continue;
@@ -549,7 +566,7 @@ class ExprParser {
       if (e->name != "capitalize" && e->name != "tojson" &&
           e->name != "replace" && e->name != "length" && e->name != "trim" &&
           e->name != "default" && e->name != "string" && e->name != "safe" &&
-          e->name != "items")
+          e->name != "items" && e->name != "join" && e->name != "list")
         fail(line_, "unsupported filter '" + e->name + "'");
       a = std::move(e);
     }
@@ -671,6 +688,26 @@ class ExprParser {
       }
       return e;
     }
+    if (accept_sym("{")) {
+      // Dict literal ('{k: v, ...}' — Mistral-Small-4's template builds its
+      // merged messages and thinking chunks so): the kids alternate key,
+      // value.
+      ExprPtr e = make(Expr::Tag::DictLit);
+      if (!accept_sym("}")) {
+        for (;;) {
+          e->kids.push_back(ternary());
+          expect_sym(":", "dict literal");
+          e->kids.push_back(ternary());
+          if (accept_sym(",")) {
+            if (accept_sym("}")) break;  // a trailing comma
+            continue;
+          }
+          expect_sym("}", "dict literal");
+          break;
+        }
+      }
+      return e;
+    }
     if (accept_sym("(")) {
       // A parenthesized expression, or a tuple literal ('(a, b)' — the
       // template's `not in ('xhigh', 'medium', 'low')`).
@@ -698,7 +735,8 @@ class ExprParser {
   }
 
   // Parses "arg, ..., name=arg, ...)" — the caller consumed '('. Positional
-  // args land in `args`, named ones in `kwargs` (only tojson uses kwargs).
+  // args land in `args`, named ones in `kwargs` (tojson's ensure_ascii,
+  // namespace()'s attributes, a macro's parameters by name).
   void parse_call_args(std::vector<std::pair<std::string, ExprPtr>>* kwargs,
                        std::vector<ExprPtr>* args) {
     if (accept_sym(")")) return;
@@ -1164,10 +1202,10 @@ Value Value::get_attr(std::string_view name) const {
   }
   switch (kind_) {
     case Kind::Map:
-      if (name == "items") {  // the dict method, never a key
+      if (name == "items" || name == "get") {  // the dict methods, never keys
         Value v;
         v.kind_ = Kind::Method;
-        v.method_ = 1;
+        v.method_ = name == "items" ? 1 : 8;
         return v;
       }
       for (const auto& m : *object_)
@@ -1298,19 +1336,30 @@ struct Renderer {
   // A macro call renders its body into a fresh buffer with a stack of
   // just the parameter frame: macros close over the root frame only
   // (this template's macros reference nothing else across scopes).
-  Value call_macro(const MacroDef& def, const std::vector<Value>& args) {
+  Value call_macro(const MacroDef& def, const std::vector<Value>& args,
+                   const std::vector<std::pair<std::string, Value>>& kwargs) {
     if (args.size() > def.params.size())
       fail(ctx_.line, "macro '" + def.name + "': expected at most " +
                      std::to_string(def.params.size()) +
                      " argument(s), got " + std::to_string(args.size()));
     Frame params;
     for (size_t k = 0; k < args.size(); ++k) params[def.params[k]] = args[k];
-    // Absent trailing arguments take their defaults (evaluated now, in
-    // the caller's context); a parameter without one is required.
+    // A keyword argument names a parameter no positional argument filled
+    // (Jinja refuses anything else in the same words).
+    for (const auto& [name, value] : kwargs) {
+      const auto it = std::find(def.params.begin(), def.params.end(), name);
+      if (it == def.params.end() ||
+          static_cast<size_t>(it - def.params.begin()) < args.size())
+        fail(ctx_.line, "macro '" + def.name + "' takes no keyword argument '" + name + "'");
+      params[name] = value;
+    }
+    // An absent argument takes its default (evaluated now, in the caller's
+    // context); a parameter without one is undefined, as in Jinja
+    // (Mistral-Small-4's template calls render_content without
+    // support_thinking and tests the parameter's truth).
     for (size_t k = args.size(); k < def.params.size(); ++k) {
-      if (!def.defaults[k])
-        fail(ctx_.line, "macro '" + def.name + "': missing argument '" + def.params[k] + "'");
-      params[def.params[k]] = eval(*def.defaults[k]);
+      if (params.count(def.params[k]) != 0) continue;
+      params[def.params[k]] = def.defaults[k] ? eval(*def.defaults[k]) : Value();
     }
     std::vector<Frame> saved = std::move(ctx_.stack);
     ctx_.stack.clear();
@@ -1356,6 +1405,16 @@ struct Renderer {
       }
       out.push_back(Value::string_value(s.substr(start)));
       return Value::list_value(std::move(out));
+    }
+    if (method == 8) {  // get(key[, default]) — Python's dict.get
+      if (recv.kind() != Value::Kind::Map)
+        fail(ctx_.line, "'get' called on a non-map");
+      if (args.empty() || args.size() > 2)
+        fail(ctx_.line, "get() takes a key and an optional default");
+      if (args[0].kind() == Value::Kind::String)
+        for (const auto& m : *recv.as_members())
+          if (m.first == args[0].as_string()) return m.second;
+      return args.size() == 2 ? args[1] : Value::null_value();
     }
     if (method == 4 || method == 5) {  // startswith / endswith
       if (recv.kind() != Value::Kind::String)
@@ -1446,6 +1505,9 @@ struct Renderer {
         return Value::integer(static_cast<int64_t>(v.as_members()->size()));
       if (v.kind() == Value::Kind::String)
         return Value::integer(static_cast<int64_t>(utf8_length(v.as_string())));
+      // Jinja's Undefined has length 0 (Mistral-Small-4's template measures
+      // the content of a message that carries none).
+      if (v.kind() == Value::Kind::Undefined) return Value::integer(0);
       fail(ctx_.line, "length: not a list/map/string");
     }
     if (name == "trim") {  // Python str.strip(), the whitespace set
@@ -1466,6 +1528,42 @@ struct Renderer {
       return Value::string_value(v.to_output_string());
     }
     if (name == "safe") return v;  // no autoescape: the identity
+    if (name == "join") {
+      // sep.join(str(x) for x in value): a list of scalars (an undefined
+      // value joins to ''); the separator defaults to ''. The `attribute`
+      // argument is not supported.
+      if (!e.kwargs.empty() || args.size() > 1 ||
+          (args.size() == 1 && args[0].kind() != Value::Kind::String))
+        fail(ctx_.line, "join: takes at most one string separator");
+      if (v.kind() == Value::Kind::Undefined) return Value::string_value("");
+      if (v.kind() != Value::Kind::List) fail(ctx_.line, "join: not a list");
+      std::string out;
+      for (size_t k = 0; k < v.as_list().size(); ++k) {
+        if (k != 0 && !args.empty()) out += args[0].as_string();
+        out += v.as_list()[k].to_output_string();
+      }
+      return Value::string_value(std::move(out));
+    }
+    if (name == "list") {
+      // list(value): a list as it is, a string's characters, a map's keys;
+      // an undefined value is the empty list.
+      if (v.kind() == Value::Kind::List) return v;
+      std::vector<Value> out;
+      if (v.kind() == Value::Kind::String) {
+        const std::string& x = v.as_string();
+        for (size_t i = 0; i < x.size();) {
+          const unsigned char c = static_cast<unsigned char>(x[i]);
+          const size_t n = c < 0x80 ? 1 : c < 0xE0 ? 2 : c < 0xF0 ? 3 : 4;
+          out.push_back(Value::string_value(x.substr(i, n)));
+          i += n;
+        }
+      } else if (v.kind() == Value::Kind::Map) {
+        for (const auto& m : *v.as_members()) out.push_back(Value::string_value(m.first));
+      } else if (v.kind() != Value::Kind::Undefined) {
+        fail(ctx_.line, "list: not a list/map/string");
+      }
+      return Value::list_value(std::move(out));
+    }
     if (name == "items") {
       if (v.kind() != Value::Kind::Map) fail(ctx_.line, "items: not a map");
       std::vector<Value> out;
@@ -1490,6 +1588,26 @@ struct Renderer {
         items.reserve(e.kids.size());
         for (const auto& k : e.kids) items.push_back(eval(*k));
         return Value::list_value(std::move(items));
+      }
+      case Expr::Tag::DictLit: {
+        // Keys are strings (the Map model's); a repeated key keeps its
+        // first position and takes the last value, like a Python dict.
+        Value::Members members;
+        for (size_t k = 0; k + 1 < e.kids.size(); k += 2) {
+          const Value key = eval(*e.kids[k]);
+          if (key.kind() != Value::Kind::String)
+            fail(ctx_.line, "dict literal: keys must be strings");
+          Value value = eval(*e.kids[k + 1]);
+          bool replaced = false;
+          for (auto& m : members)
+            if (m.first == key.as_string()) {
+              m.second = value;
+              replaced = true;
+              break;
+            }
+          if (!replaced) members.emplace_back(key.as_string(), std::move(value));
+        }
+        return Value::map_value(std::move(members));
       }
       case Expr::Tag::Name: {
         const Value* v = ctx_.find(e.name);
@@ -1592,8 +1710,12 @@ struct Renderer {
             return call_method(m.as_method(), recv, args);
           fail(ctx_.line, "cannot call a non-callable value");
         }
-        if (target.kind() == Value::Kind::Macro)
-          return call_macro(*target.as_macro(), args);
+        if (target.kind() == Value::Kind::Macro) {
+          std::vector<std::pair<std::string, Value>> kwargs;
+          kwargs.reserve(e.kwargs.size());
+          for (const auto& [k, v] : e.kwargs) kwargs.emplace_back(k, eval(*v));
+          return call_macro(*target.as_macro(), args, kwargs);
+        }
         fail(ctx_.line, "cannot call a non-callable value");
       }
       case Expr::Tag::Filter: {
@@ -1625,13 +1747,20 @@ struct Renderer {
           out += b.as_string();
           return Value::string_value(std::move(out));
         }
+        // '+' with two lists concatenates them too (Mistral-Small-4's
+        // template grows its namespace lists so).
+        if (e.name == "+" && a.kind() == Value::Kind::List && b.kind() == Value::Kind::List) {
+          std::vector<Value> out = a.as_list();
+          out.insert(out.end(), b.as_list().begin(), b.as_list().end());
+          return Value::list_value(std::move(out));
+        }
         const bool a_num =
             a.kind() == Value::Kind::Int || a.kind() == Value::Kind::Double;
         const bool b_num =
             b.kind() == Value::Kind::Int || b.kind() == Value::Kind::Double;
         if (!a_num || !b_num)
           fail(ctx_.line, std::string("'") + e.name +
-                         "' needs two numbers (or, for '+', two strings)");
+                         "' needs two numbers (or, for '+', two strings or two lists)");
         if (e.name == "+") {
           if (a.kind() == Value::Kind::Int && b.kind() == Value::Kind::Int)
             return Value::integer(a.as_int(0) + b.as_int(0));
@@ -1786,6 +1915,10 @@ struct Renderer {
             for (const auto& m : *iter.as_members()) keys.push_back(Value::string_value(m.first));
             iter = Value::list_value(std::move(keys));
           }
+          // An undefined value iterates as nothing, as in Jinja (a message
+          // without the key the template walks: Mistral-Small-4's content
+          // blocks, MiniMax-M2.7's tool outputs).
+          if (iter.kind() == Value::Kind::Undefined) iter = Value::list_value({});
           if (iter.kind() != Value::Kind::List)
             fail(s->line, "for: cannot iterate a non-list");
           const bool tuple = s->names.size() == 2;
