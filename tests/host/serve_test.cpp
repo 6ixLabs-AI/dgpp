@@ -1358,6 +1358,74 @@ DGPP_TEST(serve_prometheusExposition_countersAndDistributions) {
   }
 }
 
+DGPP_TEST(serve_interTokenMetrics_surviveRetirementBeforePassPublication) {
+  // The HTTP thread may finish a request while the engine thread is still
+  // in its retirement callback. Exercise that ordering deliberately, for
+  // one-token replies, scalar decode and several tokens from one MTP pass.
+  class BatchEngine : public FakeEngine {
+   public:
+    explicit BatchEngine(int batch) : FakeEngine(4, 100, 4), batch_(batch) {}
+    std::vector<int32_t> step(int req) override {
+      std::vector<int32_t> tokens;
+      for (int i = 0; i < batch_; ++i) tokens.push_back(FakeEngine::step(req).front());
+      return tokens;
+    }
+   private:
+    int batch_;
+  };
+  struct DrainOnRetire : dgpp::sched::SchedulerObserver {
+    GenerationService& service;
+    bool retired = false;
+    explicit DrainOnRetire(GenerationService& s) : service(s) {}
+    void on_token(const std::string&, int64_t, int) override {}
+    void on_retire(const std::string&, const dgpp::sched::Scheduler::Result&) override {
+      const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+      while (!service.drained() && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      require(service.drained(), "HTTP removed the record before the engine pass completed");
+      retired = true;
+    }
+  };
+
+  for (const bool stream : {false, true}) {
+    for (const auto& [batch, tokens] : {std::pair{1, 1}, std::pair{1, 3}, std::pair{3, 7}}) {
+      BatchEngine engine(batch);
+      FakeFrontend frontend;
+      ServiceConfig cfg;
+      cfg.model_id = kModel;
+      cfg.vocab_size = 512;
+      GenerationService service(cfg, &engine, &frontend, {kFakeEos});
+      DrainOnRetire observer(service);
+      service.set_audit_observer(&observer);
+      HttpServer http(0, &service, 8);
+      std::thread http_loop([&] { http.serve(); });
+      struct Join {
+        HttpServer& http;
+        std::thread& loop;
+        ~Join() { http.stop(); loop.join(); }
+      } join{http, http_loop};
+      Client client(http.port());
+      post_completion(client, true, stream ? ",\"stream\":true" : "", tokens);
+      const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+      while (service.stats().requests_total == 0 && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      require(service.stats().requests_total == 1, "request arrived before the first engine pass");
+      const uint64_t expected_gaps = static_cast<uint64_t>((tokens - 1) / batch);
+      const int passes = std::max(1, static_cast<int>(expected_gaps));
+      for (int pass = 0; pass < passes; ++pass) service.engine_pass();
+      require(observer.retired, "request retired in the expected number of passes");
+      const std::string response = client.read_until(stream ? "data: [DONE]" : "usage", 2000);
+      require(response.find("200 OK") != std::string::npos, "completion still succeeds");
+      const auto stats = service.stats();
+      require(stats.tokens_out == static_cast<uint64_t>(tokens), "generated token count is unchanged");
+      require(stats.itl_s.count() == expected_gaps,
+              "one latency observation per batch after the first token, including the retiring batch");
+      service.engine_pass();
+      require(service.stats().itl_s.count() == expected_gaps, "idle passes do not count the final batch twice");
+    }
+  }
+}
+
 DGPP_TEST(serve_decodeBatchMetrics_retainsLastLaunchWhileIdle) {
   ServiceRig rig;
   for (const bool reported : {false, true}) {
