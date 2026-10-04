@@ -265,7 +265,7 @@ class EagerEngineAdapter : public sched::SchedulerEngine {
           auto& sp = spec_.at(static_cast<size_t>(req));
           const int T = static_cast<int>(fed.size());
           const auto out = model_->session_verify(req, fed);
-          const std::vector<int32_t> winners = rows_pick()(local_row_maxes(out, T));
+          const std::vector<int32_t> winners = dflash_winners(s, out, fed, T);
           const std::vector<int32_t> committed = sp->commit(fed, winners, 0);
           pending = sp->next();
           // The tokens decided this step: the accepted drafts (committed[0]
@@ -346,7 +346,8 @@ class EagerEngineAdapter : public sched::SchedulerEngine {
         if (is_spec[i]) {
           auto& sp = spec_.at(static_cast<size_t>(reqs[i]));
           const int T = static_cast<int>(feds[i].size());
-          const std::vector<int32_t> winners = rows_pick()(local_row_maxes(outs[i], T));
+          const std::vector<int32_t> winners =
+              dflash_winners(state_.at(static_cast<size_t>(reqs[i])), outs[i], feds[i], T);
           const std::vector<int32_t> committed = use_batch ? sp->commit_verify(feds[i], winners, offs[i])
                                                             : sp->commit(feds[i], winners, offs[i]);
           pending = sp->next();
@@ -541,18 +542,30 @@ class EagerEngineAdapter : public sched::SchedulerEngine {
   // greedy, one full block fits the context; the speculator is created and
   // started as needed), empty when it runs the exact plain step instead
   // (retiring any live speculation, retried next step).
+  // The verify's winners for a drafter slot: the argmax rows for a greedy
+  // slot, the sampled verify for a sampled one (the slot's parameters, RNG
+  // and context; the drafts are point-mass proposals).
+  std::vector<int32_t> dflash_winners(SlotState& s, const DecodeOutputs& out,
+                                      const std::vector<int64_t>& fed, int T) {
+    if (s.params.temperature <= 0.0f) return rows_pick()(local_row_maxes(out, T));
+    return spec_sampled_winners(out, fed, s.params, s.rng, s.context, sample_);
+  }
   std::vector<int64_t> dflash_fed(int req) {
     SlotState& s = state_.at(static_cast<size_t>(req));
     auto& sp = spec_.at(static_cast<size_t>(req));
-    const bool plain_greedy = s.params.temperature <= 0.0f && !s.report_logprobs &&
-                              s.bias.empty() && !s.grammar &&
-                              s.params.repetition_penalty == 1.0f &&
-                              s.params.frequency_penalty == 0.0f &&
-                              s.params.presence_penalty == 0.0f;
+    // A greedy slot's drafts are judged by the argmax rows; a sampled slot's
+    // by the sampled verify (spec_sampled_winners: each draft stands with its
+    // exact probability, the penalties included). Logprobs, a logit bias
+    // and a grammar keep a slot plain, as does a greedy slot with
+    // penalties (its full-path pick).
+    const bool penalized = s.params.repetition_penalty != 1.0f || s.params.frequency_penalty != 0.0f ||
+                           s.params.presence_penalty != 0.0f;
+    const bool eligible = !s.report_logprobs && s.bias.empty() && !s.grammar &&
+                          (s.params.temperature > 0.0f || !penalized);
     const bool fits = model_->session_position(req) + 1 + model_->dflash2_drafts() <=
                       model_->max_context();
-    if (sp && (!plain_greedy || !fits)) retire_spec(sp);
-    if (!(plain_greedy && fits)) {
+    if (sp && (!eligible || !fits)) retire_spec(sp);
+    if (!(eligible && fits)) {
       // DGPP_DFLASH2_TRACE=1 logs why a slot runs plain (one line per
       // slot-step): the engagement split that sizes every spec-side
       // investment. Default off: zero behavior change.

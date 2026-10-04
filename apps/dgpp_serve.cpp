@@ -1357,8 +1357,8 @@ int main(int argc, char** argv) {
       "    [--mtp-depth N]  draft tokens per step (1..5; the verify runs 1+N rows)\n"
       "    [--prefill-fp8-per-tensor]  Qwen3.8-27B: prefill GEMMs on cuBLASLt's per-tensor e4m3 kernels\n"
       "      (engine.prefill_fp8_per_tensor; ~2x the prefill rate, +23 GiB, changes greedy output)\n"
-      "    [--dflash-model DIR_OR_ID]  DFlash2 block drafter checkpoint (replaces --mtp; eager world-1)\n"
-      "    [--no-dflash]  run plain from a drafter template (the A/B knob)\n"
+      "    [--dflash-model DIR_OR_ID]  DFlash2 block drafter checkpoint (replaces --mtp; past world 1 on the decode graph)\n"
+      "    [--no-dflash]  run plain from a drafter template on the decode graph (the A/B knob; add --mtp for the MTP world)\n"
       "    [--no-dflash-verify-graph]  the multi-slot verify as an eager batch (engine.dflash_verify_graph)\n"
       "    [--no-dflash-draft-batch]  one block forward per slot (engine.dflash_draft_batch)\n"
       "    [--dflash-depth N]  verify only the first N drafts per step, 0 = the block (engine.dflash_depth)\n"
@@ -1646,7 +1646,15 @@ int main(int argc, char** argv) {
       graph_batch_min_live = std::stoi(next());
     else if (a == "--mtp") mtp = true;
     else if (a == "--dflash-model") dflash_model = next();
-    else if (a == "--no-dflash") dflash_model.clear();  // the plain path from a drafter template (the A/B knob)
+    else if (a == "--no-dflash") {
+      // The plain world from a drafter template (the A/B knob): the drafter
+      // runs on the eager engine, whose plain world without a drafter would
+      // stream its layers (0.65 tok/s measured), so the knob lands on the
+      // decode graph — the same resident plain world the MTP templates'
+      // --no-mtp gives; --mtp [--mtp-depth N] beside it is the MTP world.
+      dflash_model.clear();
+      decode_graph = true;
+    }
     else if (a == "--no-dflash-verify-graph") dflash_verify_graph = false;
     else if (a == "--no-dflash-draft-batch") dflash_draft_batch = false;
     else if (a == "--dflash-depth") dflash_depth = std::stoi(next());
@@ -1740,15 +1748,22 @@ int main(int argc, char** argv) {
   }
   // The DFlash2 block drafter (models/qwen/dflash2.hpp): a standalone
   // checkpoint (a directory or a cached HF id) that replaces the MTP
-  // draft. v1 is the eager world-1 path (graph capture refuses).
+  // draft. World 1 without the decode graph is the eager engine's drafter
+  // (the batched verify graph, the stacked redrafts); the graph worlds —
+  // the fabric, or one Spark with the decode graph — record the block
+  // proposal inside the step (2026-10-04, engine/graph_engine.hpp).
   std::string dflash_dir;
   if (!dflash_model.empty()) {
     if (mtp) {
       DGPP_LOG_ERROR("engine.dflash_model replaces engine.mtp: enable one or the other, not both");
       return 2;
     }
-    if (world > 1 || decode_graph) {
-      DGPP_LOG_ERROR("engine.dflash_model is the eager world-1 path: no fabric (world 1) and no --decode-graph");
+    if (world > 1 && !decode_graph) {
+      DGPP_LOG_ERROR("engine.dflash_model past world 1 runs on the decode graph: set engine.decode_graph");
+      return 2;
+    }
+    if (mtp_schedule) {
+      DGPP_LOG_ERROR("engine.mtp_schedule needs the MTP draft; the block drafter verifies its whole block");
       return 2;
     }
     if (std::filesystem::is_directory(dflash_model)) {
@@ -2311,12 +2326,15 @@ int main(int argc, char** argv) {
     if (decode_rows > family->decode_rows_cap()) {
       if (!decode_graph) {
         decode_rows = family->decode_rows_cap();  // eager: a narrower spec batch
-      } else if (mtp_depth > 1 && max_concurrency * 2 <= family->decode_rows_cap()) {
+      } else if ((mtp_depth > 1 || !dflash_dir.empty()) && max_concurrency * 2 <= family->decode_rows_cap()) {
+        // The MTP chain past depth 1 and the block drafter alike: the graph
+        // engine batches the slots whose blocks fit the ceiling and replays
+        // scalar graphs for a live set past them.
         DGPP_LOG_INFO(
             "serve: {} slots x {} rows exceed the {} family's {}-row decode ceiling; "
-            "depth {} uses fitting batch families where supported, otherwise scalar graphs",
+            "{} uses fitting batch families where supported, otherwise scalar graphs",
             max_concurrency, graph_rows_per_request, family->name(), family->decode_rows_cap(),
-            mtp_depth);
+            dflash_dir.empty() ? "depth " + std::to_string(mtp_depth) : std::string("the block drafter"));
         decode_rows = family->decode_rows_cap();
       } else {
         DGPP_LOG_ERROR(
@@ -2716,6 +2734,13 @@ int main(int argc, char** argv) {
                           greedy_draft ? "the draft's argmax, accepted with probability P(draft)"
                                        : "a draw from the draft's distribution under the ratio verify",
                           mtp_draft);
+          } else if (!dflash_dir.empty()) {
+            // The block drafter's walk runs at temperature 0: its drafts
+            // are point masses, accepted with probability P(draft).
+            graph_engine->set_proposal_drafts(false);
+            DGPP_LOG_INFO("rank {}: the DFlash2 block proposal ({} drafts a step) on the decode graph; sampled "
+                          "requests accept each draft with probability P(draft)",
+                          rank, dgpp::kSpecRows - 1);
           }
           if (mtp_schedule) {
             // The value of decode time: the configured throughput, or the

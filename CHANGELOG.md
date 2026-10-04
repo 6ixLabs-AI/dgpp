@@ -25,9 +25,22 @@ The history by milestone. The dated engineering record in
   26 TF tile route (#89) and `fp8_gemm_bench --27b` reporting every lever.
   One recipe per world size (2026-10-04): the single-node template is the
   DFlash2 drafter's (`cluster_qwen3.8-27b_fp8_w1`), its MTP depth-2 and plain
-  worlds the knobs `--no-dflash --mtp --mtp-depth 2 --decode-graph` and
-  `--no-dflash`; the two-node template is MTP depth 2 until the drafter runs
-  past world 1.
+  worlds the knobs `--no-dflash --mtp --mtp-depth 2` and `--no-dflash`
+  (`--no-dflash` lands on the decode graph: the eager engine's plain world
+  without a drafter streams its layers); the two- and four-node templates
+  are MTP depth 3 (depth 3 leads depth 2 by 6–18 % across the classes at
+  world 2), the drafter their mode (below).
+  The family's rows on the [benchmarks page](docs/benchmarks.md) come from
+  the 2026-10-04 campaign (`benchmarks/results/2026-10-04-qwen3.8-27b`: the
+  runner's performance, modes and quality stages over both templates, the
+  MTP depth-2 world as the drafter template's mode); the model card is
+  `docs/model_cards/Qwen3.8-27B-FP8.md`.
+  The drafter serves sampled requests (2026-10-04): a sampled slot's block
+  is verified row by row with the sampled MTP rule — each draft stands with
+  its exact probability under the request's temperature, top-k / top-p and
+  penalties, the residual sample ends the step — where it ran plain before
+  (8.4 tok/s at C1 against the greedy block's 17–41); logprobs, a logit bias
+  and a grammar still run plain.
   `engine.bf16_weights: bf12` now packs this family's bf16 decode matrices
   too (#88: the drafter's five layers and fc taps, the MTP fc, a bf16 lm
   head), the bf16 bytes staying resident for the stacked redrafts' mma form.
@@ -35,13 +48,48 @@ The history by milestone. The dated engineering record in
   (GDN and attention heads, the MLP and the lm head sliced across the ranks,
   the kv heads paired at world 4) through `Qwen35Model`, two boundary folds
   a layer (the attention / GDN output and the MLP output, bf16 on the wire)
-  in the main and draft walks, the drafter at world 1 only; the loopback TP
+  in the main and draft walks; the loopback TP
   gate (`qwen35_tp_test`, worlds 2 and 4 against the world-1 forward over the
   fixture) and the `cluster_qwen3.8-27b_fp8_w2` template. The scale GEMM's
   large-row FP8 products (every family's dense MLPs, shared experts and FP8
   heads past the GEMV rows) run on `kernels/fp8w_gemm`'s per-weight form
   (#89): bitwise the tile kernel they replace (`fp8w_gemm_test` pins the
   pair) at 63–66 TF against its 26–30.
+
+- **The DFlash2 drafter on the graph worlds** (2026-10-04, #92): the graph
+  engine hosts the block proposal at every world. The verify is the 8-row
+  recorded step (the sampled device pick's row limit `kSampleVerdictRows`
+  6 → 8, the drafts point masses — the P(draft) rule); after the commit one
+  recorded block forward off the device verdict replaces the draft picks
+  (`Qwen35Model::session_graph_capture_block_draft`, a batched form per
+  family): the anchor and the block's positions staged from the verdict
+  and the committed device position, the drafter's heads / kv heads / MLP
+  rows sharded across the ranks with two boundary folds a layer (the
+  replicated 3.7 GB forward cost 17 ms a step on four Sparks; 3.8 sharded
+  and bf12), the mask rows' top-16 on the vocab-sharded head merged across
+  the ranks through one fold of 6-bit digits (`dflash2_topk_stage/merge`,
+  the pick's wire form) so every rank walks the same proposal, the drafts
+  fed to the next replay and a pinned per-slot mirror (`kernels/dflash2`).
+  The block attention takes a split-key form (32 ranges + combine; the
+  serial walk was ~2 ms a layer at 2K). `engine.dflash_model` serves on the
+  fabric (with `decode_graph`) and on one Spark with the decode graph (the
+  eager engine's transcripts 4/4, chat 71 against 95 ms a token); past four
+  slots the engine batches the slots that fit the 32-row ceiling and
+  replays scalar graphs beyond. Gates: `dflash2_kernels_test` (the merge at
+  worlds 2 and 4, the staging, the split attention), greedy transcripts
+  identical 4/4 to the same world's MTP depth-5 world at worlds 1, 2 and 4.
+  Measured C1 on the arena harness (llama-benchy pp2048 tg128, the
+  checkpoint's sampling): two nodes MTP depth 3 32.2 tok/s at 84 ms a pass,
+  the drafter 31.3 at 94; four nodes MTP 55.0 at 49 ms (the public TP=4 card
+  58.48), the drafter 50.1 at 56; greedy by class the drafter leads code /
+  JSON / math by 27–55 % on four nodes (82.5 / 115.9 / 97.1 against 65.1 /
+  74.6 / 68.6) and ties prose and chat, so MTP stays the two- and four-node
+  template and the drafter is its mode (`--no-mtp --dflash-model
+  z-lab/Qwen3.8-27B-DFlash2 --bf16-weights bf12`); the drafter recipes pack
+  the drafter bf12 (+4.5 %, lossless). The nsys node trace of rank 0 at four
+  nodes puts the target's fp8 GEMV at 35–38 ms a step for both recipes
+  (6.9 GB a rank at 187 GB/s at four-node shard widths): the shared lever
+  toward the cards.
 
 - **The DFlash2 block drafter on Qwen3.8-27B** (2026-10-02, #80):
   `engine.dflash_model` serves `z-lab/Qwen3.8-27B-DFlash2` in place of the

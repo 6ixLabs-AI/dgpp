@@ -269,8 +269,39 @@ class Qwen35Model : public SessionModel<Qwen35Model> {
       const std::vector<int>& reqs, const std::vector<std::vector<int64_t>>& feds,
       std::vector<int>* offsets = nullptr);
   static constexpr int query_block_rows() { return 8; }
+  // The recorded block draft (2026-10-04, the graph engine's block
+  // proposal at every world): off the verify's device verdict — the anchor
+  // is its next token, the block's positions follow the committed device
+  // position — the drafter's block forward, the mask rows' head rows and
+  // their top-K (world > 1: every rank's slice list merged through one
+  // boundary fold, kernels/dflash2.hpp), the selector walk, the slot's
+  // next feed [next, drafts] and the drafts' pinned mirror. Kernel nodes
+  // only; the engine's reserve covers the block's rows.
+  void session_graph_capture_block_draft(int req, const PickVerdict* verdict);
+  // The fixed batch's form: every slot's block off its verify verdict
+  // (verdicts[q], slot q == request q) in one stacked block forward; the
+  // feeds and mirrors of all slots. An inactive slot's rows run at
+  // position -1 (no state write) and its feed is zeroed.
+  void session_graph_capture_block_draft_batch(const PickVerdict* verdicts, int requests);
+  // The mirror the recorded draft of slot `req` publishes (readable once
+  // the replay's end event has passed).
+  const int32_t* block_drafts_host(int req) const {
+    return df_mirror_h_ + static_cast<size_t>(req) * static_cast<size_t>(dfcfg_.drafts());
+  }
 
  private:
+  // The block forward's layers over `slots` stacked [bonus, mask x D]
+  // blocks (df_pos_ / df_tokens_ / df_resid_ staged for slots * query_rows
+  // rows): the row-wise ops over every row at once, each slot's K/V
+  // appends and attention at its row offset against its own block table.
+  void df_block_layers(int slots, const int* reqs, bool capture);
+  // This rank's drafter slices (the whole drafter at world 1): heads, kv
+  // heads, q / kv row widths, MLP rows.
+  int df_nh_ = 0, df_kvh_ = 0, df_qw_ = 0, df_kvr_ = 0, df_i_ = 0;
+  // The mask rows' head rows and top-K per slot (world > 1: this rank's
+  // slice lists staged, folded and merged into the global top-K), the
+  // hidden projection and the selector walk into df_tok_ (D per slot).
+  void df_block_select(int slots, bool capture);
   // The shared static padded staging of the two padded verify variants
   // (validate, grow blocks, stage the 8-row blocks, upload, RowRun).
   RowRun df_stage_padded(const std::vector<int>& reqs,
@@ -398,6 +429,7 @@ class Qwen35Model : public SessionModel<Qwen35Model> {
   uint16_t* df_kv_ = nullptr;     // [df_rows_cap, 2*KW] BF16 (one layer's k|v)
   uint16_t *df_resid_ = nullptr, *df_x_ = nullptr, *df_xc_ = nullptr, *df_qkv_ = nullptr;
   uint16_t *df_q_ = nullptr, *df_attn_ = nullptr, *df_o_ = nullptr, *df_mlp_ = nullptr;
+  float* df_attn_part_ = nullptr;  // the split-key block attention's partials (BR rows)
   uint16_t *df_gate_ = nullptr, *df_up_ = nullptr;  // [query_rows, draft I]
   int32_t* df_zero_ = nullptr;  // [query_rows] zeros (the single-request append view)
   uint16_t* df_delta_ = nullptr;  // [query_rows, 2*taps*groups] the conv deltas
@@ -411,6 +443,8 @@ class Qwen35Model : public SessionModel<Qwen35Model> {
   int64_t* df_pos_ = nullptr;     // [query_rows] device
   int64_t* df_tokens_ = nullptr;  // [query_rows] device
   int64_t* df_io64_h_ = nullptr;  // pinned: query_rows positions then tokens
+  uint16_t* df_table_ = nullptr;   // world > 1: the top-K gather table (the eager fold's buffer)
+  int32_t* df_mirror_h_ = nullptr;  // pinned [max_requests, drafts]: the recorded drafts
   int df_batch_ = 1;  // the stacked draft batch width (slots per forward)
   // The captured verify's replay state (one static 32-row graph): the
   // pool tables pointer the capture baked in (a mismatch means the pool

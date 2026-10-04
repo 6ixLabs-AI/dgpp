@@ -10,6 +10,7 @@
 //
 // All kernels are deterministic; bf16 io (uint16_t bits), fp32 interiors,
 // the reference's rounding points named per kernel.
+#include <cstddef>
 #include <cstdint>
 
 #include <cuda_runtime.h>
@@ -54,20 +55,38 @@ void dflash2_norm_rope_bf16(const uint16_t* x, int64_t x_row_stride, const uint1
                             int64_t out_row_stride, int rows, int heads, int dim, float eps,
                             cudaStream_t stream);
 
-// The drafter's block attention: rows query rows (one request), q bf16
-// [rows, heads, dim] (row stride q_row_stride, heads contiguous); GQA
-// kv_heads; the paged planes as Qwen35KvPool views (bf16 [slots,
-// kv_heads*dim], one physical block table). A key at position p is visible
-// to the query at q from either the context span [0, ctx_end] with
-// q - p < window (causal, sliding), or the block span [blk_lo, blk_hi]
-// with no causal and no window restriction (the block is bidirectional
-// and far narrower than any window). fp32 online softmax, bf16
-// probabilities into V (the house rule), fp32 output rounded to bf16.
+// The drafter's block attention: rows query rows (one request, whole
+// blocks of block_rows), q bf16 [rows, heads, dim] (row stride
+// q_row_stride, heads contiguous); GQA kv_heads; the paged planes as
+// Qwen35KvPool views (bf16 [slots, kv_heads*dim], one physical block
+// table). The block's span comes off its first row's position p0 =
+// pos[row - row % block_rows] (device-read, so a recorded draft takes the
+// committed position): a key at position p is visible to the query at q
+// from either the context span [0, p0 - 1] with q - p < window (causal,
+// sliding), or the block span [p0, p0 + block_rows - 1] with no causal and
+// no window restriction (the block is bidirectional and far narrower than
+// any window). A row whose position (or whose block's p0) is negative
+// writes zeros. fp32 online softmax, bf16 probabilities into V (the house
+// rule), fp32 output rounded to bf16.
 void dflash2_block_attn(const uint16_t* q, int64_t q_row_stride, const uint16_t* k_cache,
                         const uint16_t* v_cache, const int32_t* block_table, int block_tokens,
-                        int blocks_per_request, int64_t ctx_end, int64_t blk_lo, int64_t blk_hi,
-                        int64_t window, const int64_t* pos, int rows, int heads, int kv_heads,
-                        int dim, float scale, uint16_t* out, cudaStream_t stream);
+                        int blocks_per_request, int block_rows, int64_t window, const int64_t* pos,
+                        int rows, int heads, int kv_heads, int dim, float scale, uint16_t* out,
+                        cudaStream_t stream);
+// The split-key form (2026-10-04): the same attention with each (row, kv
+// head)'s key walk cut into dflash2_block_attn_splits() ranges that run in
+// parallel, each leaving an unnormalized (m, l, acc) partial in `partials`
+// (dflash2_block_attn_partials_bytes(rows, heads) bytes), merged by a
+// combine pass — the serial walk over a 2K window cost ~2 ms a layer. One
+// rescaling point differs from the serial form (tolerance-equal, not
+// bitwise); deterministic on every rank.
+int dflash2_block_attn_splits();
+size_t dflash2_block_attn_partials_bytes(int rows, int heads);
+void dflash2_block_attn_split(const uint16_t* q, int64_t q_row_stride, const uint16_t* k_cache,
+                              const uint16_t* v_cache, const int32_t* block_table, int block_tokens,
+                              int blocks_per_request, int block_rows, int64_t window, const int64_t* pos,
+                              int rows, int heads, int kv_heads, int dim, float scale, float* partials,
+                              uint16_t* out, cudaStream_t stream);
 
 // Per-row top-K of fp32 logits (descending by score, ties to the lower id):
 // the candidate sets the selector walks. K <= 32.
@@ -76,13 +95,63 @@ void dflash2_topk_f32(const float* logits, int32_t* ids, float* scores, int64_t 
 
 // The DFlash2 candidate path selector: the scores[l][p][c] table
 // unary[l][c] + <pred_code[id(l-1, p)] * hidden[l], succ_code[id(l, c)]>
-// (step 0's predecessor is the anchor token, every slot) walked greedily
-// per step: token = ids[l][argmax_c scores[l][prev][c]], prev = that argmax
-// (ties to the first). One block, steps sequential, scores within a step
-// computed in parallel; the reduction order over the rank is fixed.
-// cb bf16 [vocab, rank].
+// (step 0's predecessor is the anchor token *anchor — the block's first
+// row token, device-read — every slot) walked greedily per step: token =
+// ids[l][argmax_c scores[l][prev][c]], prev = that argmax (ties to the
+// first). One block, steps sequential, scores within a step computed in
+// parallel; the reduction order over the rank is fixed. cb bf16 [vocab, rank].
 void dflash2_selector_walk(const int32_t* ids, const float* unary, const float* hidden,
-                           const uint16_t* pred_cb, const uint16_t* succ_cb, int32_t anchor,
+                           const uint16_t* pred_cb, const uint16_t* succ_cb, const int64_t* anchor,
                            int32_t* tokens, int steps, int k, int rank, cudaStream_t stream);
+
+// ---- the recorded block draft (the graph engine's block proposal) -------------
+//
+// The block's row inputs off a verify verdict: tokens[0] = verdict->next
+// (the anchor), tokens[1..rows) = mask_id; pos[j] = *session_pos + j (the
+// position the recorded commit advanced to), or -1 for a position at or
+// past max_context (every state write skips it).
+struct PickVerdict;
+void dflash2_stage_block(const PickVerdict* verdict, const int64_t* session_pos, int64_t mask_id,
+                         int rows, int64_t max_context, int64_t* pos, int64_t* tokens,
+                         cudaStream_t stream);
+// The slot's next feed: tokens[0] = verdict->next, tokens[1 + c] = drafts[c].
+void dflash2_block_feed(const PickVerdict* verdict, const int32_t* drafts, int count,
+                        int64_t* tokens, cudaStream_t stream);
+// The drafts' pinned mirror (a kernel node: the host reads it after the
+// replay's end event), system-scope release ordered.
+void dflash2_publish_drafts(const int32_t* drafts, int32_t* pinned, int count, cudaStream_t stream);
+// The fixed batch's forms over `requests` slots (slot q is request q): the
+// stacked blocks' rows [q*rows, (q+1)*rows) off verdicts[q] and
+// session_pos[q] (an inactive verdict — accepted 0 — stages positions -1
+// and token 0); each slot's feed rows at feeds + q*rows ([next, drafts],
+// zeros for an inactive slot); each slot's drafts into pinned + q*count.
+void dflash2_stage_block_batched(const PickVerdict* verdicts, const int64_t* session_pos, int64_t mask_id,
+                                 int rows, int requests, int64_t max_context, int64_t* pos,
+                                 int64_t* tokens, cudaStream_t stream);
+void dflash2_block_feed_batched(const PickVerdict* verdicts, const int32_t* drafts, int count, int requests,
+                                int rows, int64_t* feeds, cudaStream_t stream);
+void dflash2_publish_drafts_batched(const int32_t* drafts, int32_t* pinned, int count, int requests,
+                                    cudaStream_t stream);
+
+// The cross-rank top-K at a vocab-sharded head (world > 1): every rank
+// holds its slice's per-row top-K; the lists ride the bus's bf16 SUM
+// all-reduce as a disjoint-slot gather (kernels/pick.hpp's wire form:
+// 6-bit digits in bf16, one nonzero contributor per slot, exact under the
+// fp32-accumulated fold). Table [rows][world][k] slots of 9 digits (6 for
+// the fp32 score bits, 3 for the global id < 2^18), padded to an even
+// count. dflash2_topk_stage zeroes the table and writes this rank's slots
+// (ids offset by vocab_begin); after the fold dflash2_topk_merge decodes
+// every rank's candidates and writes each row's top-K in the canonical
+// order (score desc, id asc) — identical on every rank.
+constexpr int kDflash2TopkDigits = 9;
+constexpr size_t dflash2_topk_table_elems(int rows, int k, int world) {
+  const size_t slots = static_cast<size_t>(rows) * static_cast<size_t>(world) *
+                       static_cast<size_t>(k) * static_cast<size_t>(kDflash2TopkDigits);
+  return slots + (slots & 1);
+}
+void dflash2_topk_stage(const int32_t* ids, const float* scores, int rows, int k, int32_t vocab_begin,
+                        int rank, int world, uint16_t* table, cudaStream_t stream);
+void dflash2_topk_merge(const uint16_t* table, int rows, int k, int world, int32_t* ids,
+                        float* scores, cudaStream_t stream);
 
 }  // namespace dgpp

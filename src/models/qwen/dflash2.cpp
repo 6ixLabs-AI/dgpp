@@ -217,11 +217,12 @@ void DFlash2Config::validate_against(const Qwen35TextConfig& target) const {
 
 DFlash2Weights::~DFlash2Weights() { cudaFree(arena); }
 
-size_t dflash2_weights_bytes(const DFlash2Config& cfg) {
+size_t dflash2_weights_bytes(const DFlash2Config& cfg, int world) {
   // Element offsets with 128-element (256-byte) alignment — the same bump
   // the loader uses, so this is exactly the arena's byte size.
-  const size_t H = cfg.hidden_size, I = cfg.intermediate_size, HD = cfg.head_dim;
-  const size_t QW = cfg.q_row(), KW = cfg.kv_row(), G = cfg.conv_groups(), T = cfg.conv_taps;
+  if (!cfg.tp_divisible(world)) throw std::invalid_argument("dflash2_weights_bytes: the drafter does not split across this world");
+  const size_t H = cfg.hidden_size, I = cfg.local_intermediate(world), HD = cfg.head_dim;
+  const size_t QW = cfg.local_q_row(world), KW = cfg.local_kv_row(world), G = cfg.conv_groups(), T = cfg.conv_taps;
   size_t total = 0;
   const auto bump = [&](size_t elems) {
     const size_t o = total;
@@ -244,7 +245,9 @@ size_t dflash2_weights_bytes(const DFlash2Config& cfg) {
 }
 
 DFlash2Weights load_dflash2_weights(const DFlash2Config& cfg, const std::string& dir,
-                                    cudaStream_t stream) {
+                                    cudaStream_t stream, int rank, int world) {
+  if (!cfg.tp_divisible(world) || rank < 0 || rank >= world)
+    throw std::invalid_argument("DFlash2: the drafter's heads / kv heads / MLP rows must divide across the world");
   std::vector<std::string> shards;
   for (const auto& e : fs::directory_iterator(dir))
     if (e.path().extension() == ".safetensors") shards.push_back(e.path().string());
@@ -253,8 +256,11 @@ DFlash2Weights load_dflash2_weights(const DFlash2Config& cfg, const std::string&
   std::vector<std::unique_ptr<SafetensorsFile>> files;
   for (const auto& s : shards) files.push_back(SafetensorsFile::open(s));
 
-  const int H = cfg.hidden_size, I = cfg.intermediate_size, HD = cfg.head_dim;
-  const int QW = cfg.q_row(), KW = cfg.kv_row(), G = cfg.conv_groups(), T = cfg.conv_taps;
+  // The checkpoint's widths (the shapes checked) and this rank's slices.
+  const int H = cfg.hidden_size, HD = cfg.head_dim;
+  const int gI = cfg.intermediate_size, gQW = cfg.q_row(), gKW = cfg.kv_row();
+  const int I = cfg.local_intermediate(world), QW = cfg.local_q_row(world), KW = cfg.local_kv_row(world);
+  const int G = cfg.conv_groups(), T = cfg.conv_taps;
   const int64_t V = cfg.vocab_size;
   const int nTaps = static_cast<int>(cfg.target_layer_ids.size());
   const int L = cfg.num_hidden_layers;
@@ -352,21 +358,49 @@ DFlash2Weights load_dflash2_weights(const DFlash2Config& cfg, const std::string&
   auto copy = [&](const char* name, size_t off_elems, const std::vector<int64_t>& shape) {
     upload_bf16(*file_for(name), name, shape, dev(off_elems), stream);
   };
+  // A row range of a [rows, cols] tensor (contiguous bytes): this rank's
+  // heads or MLP rows.
+  auto copy_rows = [&](const char* name, size_t off_elems, int64_t rows, int64_t cols, int64_t row0,
+                       int64_t count) {
+    const TensorInfo* t = need(name);
+    if (t->shape != std::vector<int64_t>{rows, cols})
+      throw std::runtime_error(std::string("DFlash2 tensor ") + name + ": unexpected shape");
+    const auto* src = static_cast<const uint16_t*>(t->data) + static_cast<size_t>(row0) * cols;
+    DGPP_CUDA_OK(cudaMemcpyAsync(dev(off_elems), src, static_cast<size_t>(count) * cols * 2,
+                                 cudaMemcpyHostToDevice, stream));
+  };
+  // A column range of a [rows, cols] tensor (this rank's input slice of o /
+  // down): gathered on the host, then one upload.
+  std::vector<uint16_t> colbuf;
+  auto copy_cols = [&](const char* name, size_t off_elems, int64_t rows, int64_t cols, int64_t col0,
+                       int64_t count) {
+    const TensorInfo* t = need(name);
+    if (t->shape != std::vector<int64_t>{rows, cols})
+      throw std::runtime_error(std::string("DFlash2 tensor ") + name + ": unexpected shape");
+    colbuf.resize(static_cast<size_t>(rows) * count);
+    const auto* src = static_cast<const uint16_t*>(t->data);
+    for (int64_t r = 0; r < rows; ++r)
+      std::memcpy(colbuf.data() + static_cast<size_t>(r) * count, src + static_cast<size_t>(r) * cols + col0,
+                  static_cast<size_t>(count) * 2);
+    DGPP_CUDA_OK(cudaMemcpy(dev(off_elems), colbuf.data(), colbuf.size() * 2, cudaMemcpyHostToDevice));
+  };
+  const int64_t q0 = static_cast<int64_t>(rank) * QW, kv0 = static_cast<int64_t>(rank) * KW;
+  const int64_t i0 = static_cast<int64_t>(rank) * I;
   for (int l = 0; l < L; ++l) {
     const std::string p = "layers." + std::to_string(l) + ".";
     const Off& x = off[l];
     copy((p + "input_layernorm.weight").c_str(), x.input_norm, {H});
     copy((p + "post_attention_layernorm.weight").c_str(), x.post_norm, {H});
-    copy((p + "self_attn.q_proj.weight").c_str(), x.qkv, {QW, H});
-    copy((p + "self_attn.k_proj.weight").c_str(), x.qkv + static_cast<size_t>(QW) * H, {KW, H});
-    copy((p + "self_attn.v_proj.weight").c_str(), x.qkv + static_cast<size_t>(QW + KW) * H,
-         {KW, H});
-    copy((p + "self_attn.o_proj.weight").c_str(), x.o, {H, QW});
+    copy_rows((p + "self_attn.q_proj.weight").c_str(), x.qkv, gQW, H, q0, QW);
+    copy_rows((p + "self_attn.k_proj.weight").c_str(), x.qkv + static_cast<size_t>(QW) * H, gKW, H, kv0, KW);
+    copy_rows((p + "self_attn.v_proj.weight").c_str(), x.qkv + static_cast<size_t>(QW + KW) * H, gKW, H, kv0,
+              KW);
+    copy_cols((p + "self_attn.o_proj.weight").c_str(), x.o, H, gQW, q0, QW);
     copy((p + "self_attn.q_norm.weight").c_str(), x.qn, {HD});
     copy((p + "self_attn.k_norm.weight").c_str(), x.kn, {HD});
-    copy((p + "mlp.gate_proj.weight").c_str(), x.gate, {I, H});
-    copy((p + "mlp.up_proj.weight").c_str(), x.up, {I, H});
-    copy((p + "mlp.down_proj.weight").c_str(), x.down, {H, I});
+    copy_rows((p + "mlp.gate_proj.weight").c_str(), x.gate, gI, H, i0, I);
+    copy_rows((p + "mlp.up_proj.weight").c_str(), x.up, gI, H, i0, I);
+    copy_cols((p + "mlp.down_proj.weight").c_str(), x.down, H, gI, i0, I);
     copy((p + "attention_conv.base_kernel").c_str(), x.acb, {2, T, H});
     copy((p + "attention_conv.kernel_projection.weight").c_str(), x.ack, {2ll * T * G, H});
     copy((p + "mlp_conv.base_kernel").c_str(), x.mcb, {2, T, H});
