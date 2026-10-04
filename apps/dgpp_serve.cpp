@@ -883,7 +883,7 @@ struct MimoFamily final : ServeFamily {
 
 // Qwen3.8-27B dense family (FP8 text-only, bf16 K/V pool, the MTP draft layer),
 // and on the same stack the routed-MoE models: the Qwen3Next dialect
-// (Qwen3-Next-80B-A3B, Qwen3-Coder-Next) and Qwen3.6-35B-A3B.
+// (Qwen3-Next-80B-A3B, Qwen3-Coder-Next), Qwen3.6-35B-A3B and Qwen3.5-122B-A10B.
 // engine.dense_weights = fp8 requantizes its BF16 lm head to block FP8 and
 // engine.prefill_fp8_per_tensor selects the per-tensor prefill recipe; both
 // are static settings on Qwen35Model applied before the plan and the build.

@@ -171,13 +171,14 @@ DGPP_TEST(qwen36_config_refusals_name_the_field) {
       "group_1": {"weights": {"num_bits": 4, "type": "float", "group_size": 32}}}})")
               .find("NVFP4") != std::string::npos,
           "group_1 must be NVFP4");
-  // RedHatAI's compressed-tensors release of this model (one group,
-  // nvfp4-pack-quantized) has no binding on this dialect: refused.
+  // The compressed-tensors container (one group, nvfp4-pack-quantized) binds
+  // with the ignore list Sehyo's releases write (tests/unit/qwen35_122b_test.cpp);
+  // a recipe without it is refused by the first entry it lacks.
   require(refusal(text_json(), R"({"config_groups": {"group_0": {"format": "nvfp4-pack-quantized",
       "weights": {"num_bits": 4, "type": "float", "group_size": 16}}}, "format": "nvfp4-pack-quantized",
       "quant_method": "compressed-tensors"})")
-              .find("group_1") != std::string::npos,
-          "the single-group compressed-tensors recipe");
+              .find("quantization_config.ignore: 'lm_head' missing") != std::string::npos,
+          "the single-group compressed-tensors recipe without its ignore list");
 }
 
 DGPP_TEST(qwen36_architecture_is_the_qwen3_5_stack) {

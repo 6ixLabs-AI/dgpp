@@ -53,10 +53,14 @@ void add_fp8_tensor(TensorList& out, const std::string& base, int64_t rows, int6
 // One dense projection of the Qwen3.5 dialect in the form the config's
 // recipe ships it: the FP8 release's block form, the NVFP4 mixed release's
 // per-tensor FP8 in the backbone and BF16 in the draft layer (`mtp*` is on
-// that recipe's ignore list).
+// that recipe's ignore list), BF16 in the unquantized release and in the
+// experts-only NVFP4 release. Under the compressed-tensors container only
+// the GDN's projections come through here (BF16: the recipe ignores them);
+// its attention takes the NVFP4 set (expect_full_next).
 void add_dense35(TensorList& out, const Qwen35TextConfig& cfg, const std::string& base,
                  int64_t rows, int64_t cols, QwenWeightClass cls, int layer, bool is_mtp) {
-  if (cfg.quant_kind == Qwen35QuantKind::Bf16) {
+  if (cfg.quant_kind == Qwen35QuantKind::Bf16 || cfg.quant_kind == Qwen35QuantKind::Nvfp4Experts ||
+      cfg.quant_kind == Qwen35QuantKind::Nvfp4Packed) {
     add_bf16(out, base + ".weight", {rows, cols}, cls, layer);
     return;
   }
@@ -203,18 +207,17 @@ void expect_gdn35(TensorList& out, const std::string& p, const Qwen35TextConfig&
   const int64_t vdim = static_cast<int64_t>(cfg.gdn_value_heads) * cfg.gdn_value_head_dim;
   const int64_t vh = cfg.gdn_value_heads;
   const QwenWeightClass c = QwenWeightClass::Gdn;
-  // The unquantized release keeps two of the GDN's vectors in F32 — A_log
-  // and the output norm's weight (Qwen/Qwen3.5-0.8B's headers); the
-  // quantized releases store every vector BF16.
-  const DType f32_or_bf16 = cfg.quant_kind == Qwen35QuantKind::Bf16 ? DType::F32 : DType::BF16;
-  add(out, p + "A_log", f32_or_bf16, {vh}, c, layer);
+  // A_log and the output norm's weight are BF16 in most releases and F32 in
+  // some (Qwen/Qwen3.5-0.8B, Qwen/Qwen3.5-122B-A10B-FP8): either is bound.
+  add(out, p + "A_log", DType::BF16, {vh}, c, layer, -1, QwenTensorRole::Bf16OrF32);
   add_bf16(out, p + "dt_bias", {vh}, c, layer);
   add_bf16(out, p + "conv1d.weight", {2 * kdim + vdim, 1, cfg.gdn_conv_width}, c, layer);
   add_bf16(out, p + "in_proj_a.weight", {vh, H}, c, layer);
   add_bf16(out, p + "in_proj_b.weight", {vh, H}, c, layer);
   add_dense35(out, cfg, p + "in_proj_qkv", 2 * kdim + vdim, H, c, layer, false);
   add_dense35(out, cfg, p + "in_proj_z", vdim, H, c, layer, false);
-  add(out, p + "norm.weight", f32_or_bf16, {cfg.gdn_value_head_dim}, c, layer);
+  add(out, p + "norm.weight", DType::BF16, {cfg.gdn_value_head_dim}, c, layer, -1,
+      QwenTensorRole::Bf16OrF32);
   add_dense35(out, cfg, p + "out_proj", H, vdim, c, layer, false);
 }
 
@@ -242,6 +245,11 @@ void expect_full35(TensorList& out, const std::string& p, const Qwen35TextConfig
 //   module's own two stacked parameters — `experts.gate_up_proj`
 //   [E, 2I, H] (an expert's gate rows, then its up rows) and
 //   `experts.down_proj` [E, H, I].
+//   The experts-only NVFP4 release: a BF16 shared expert in every layer, the
+//   modelopt NVFP4 set per routed-expert matrix in the backbone, per-expert
+//   BF16 matrices in the draft layer.
+// (The compressed-tensors container is the Qwen3Next dialect's table under
+// these names: expect_moe_next.)
 void expect_moe35(TensorList& out, const std::string& p, const Qwen35TextConfig& cfg, int layer,
                   bool is_mtp) {
   const int64_t H = cfg.hidden_size;
@@ -251,6 +259,18 @@ void expect_moe35(TensorList& out, const std::string& p, const Qwen35TextConfig&
   add_bf16(out, p + "gate.weight", {E, H}, QwenWeightClass::Router, layer);
   add_bf16(out, p + "shared_expert_gate.weight", {1, H}, QwenWeightClass::Router, layer);
   const std::string sp = p + "shared_expert.";
+  if (cfg.quant_kind == Qwen35QuantKind::Nvfp4Experts) {
+    add_bf16(out, sp + "gate_proj.weight", {S, H}, QwenWeightClass::SharedExpert, layer);
+    add_bf16(out, sp + "up_proj.weight", {S, H}, QwenWeightClass::SharedExpert, layer);
+    add_bf16(out, sp + "down_proj.weight", {H, S}, QwenWeightClass::SharedExpert, layer);
+    for (int e = 0; e < cfg.num_experts; ++e) {
+      const std::string ep = p + "experts." + std::to_string(e) + ".";
+      add_fp4_or_bf16(out, cfg, ep + "gate_proj", I, H, QwenWeightClass::RoutedExpert, layer, e, is_mtp);
+      add_fp4_or_bf16(out, cfg, ep + "up_proj", I, H, QwenWeightClass::RoutedExpert, layer, e, is_mtp);
+      add_fp4_or_bf16(out, cfg, ep + "down_proj", H, I, QwenWeightClass::RoutedExpert, layer, e, is_mtp);
+    }
+    return;
+  }
   if (cfg.quant_kind == Qwen35QuantKind::Nvfp4Mixed) {
     add_fp4_or_bf16(out, cfg, sp + "gate_proj", S, H, QwenWeightClass::SharedExpert, layer, -1, is_mtp);
     add_fp4_or_bf16(out, cfg, sp + "up_proj", S, H, QwenWeightClass::SharedExpert, layer, -1, is_mtp);
@@ -329,11 +349,19 @@ std::vector<QwenExpectedTensor> qwen35_expected_layer_tensors(const Qwen35TextCo
     expect_moe_next(out, p + "mlp.", cfg, layer, is_mtp);
     return out;
   }
+  // The compressed-tensors container quantizes what it does on the Qwen3Next
+  // dialect — the attention q/k/v/o, the shared expert, the routed experts,
+  // BF16 in the draft layer — under the same names below the layer prefix.
+  const bool packed = cfg.quant_kind == Qwen35QuantKind::Nvfp4Packed;
   if (kind == Qwen35LayerKind::Gdn)
     expect_gdn35(out, p + "linear_attn.", cfg, layer);
+  else if (packed)
+    expect_full_next(out, p + "self_attn.", cfg, layer, is_mtp);
   else
     expect_full35(out, p + "self_attn.", cfg, layer, is_mtp);
-  if (cfg.moe())
+  if (cfg.moe() && packed)
+    expect_moe_next(out, p + "mlp.", cfg, layer, is_mtp);
+  else if (cfg.moe())
     expect_moe35(out, p + "mlp.", cfg, layer, is_mtp);
   else
     expect_dense_mlp35(out, p + "mlp.", cfg, layer);
@@ -394,6 +422,23 @@ QwenBindReport qwen35_validate_text_binding(
     }
     return out + "]";
   };
+  // A config that names a draft layer the checkpoint does not carry (a
+  // fine-tune saved without its `mtp.*` tensors): said once, ahead of the
+  // per-tensor lines.
+  if (cfg.mtp_layer() >= 0) {
+    bool any_mtp = false;
+    for (const auto& [name, desc] : present) {
+      (void)desc;
+      if (name.rfind("mtp.", 0) == 0) {
+        any_mtp = true;
+        break;
+      }
+    }
+    if (!any_mtp)
+      push_error("the config names a draft layer (mtp_num_hidden_layers 1) and the checkpoint "
+                 "holds no mtp.* tensor: it cannot be served as described — a config with "
+                 "mtp_num_hidden_layers 0 binds it without the draft");
+  }
   std::unordered_map<std::string, int8_t> consumed;
   consumed.reserve(present.size());
   for (const auto& e : expected) {
@@ -404,7 +449,9 @@ QwenBindReport qwen35_validate_text_binding(
       continue;
     }
     consumed.emplace(e.name, 1);
-    if (it->second.dtype != e.dtype) {
+    // A Bf16OrF32 vector is listed BF16 and bound in either dtype.
+    if (it->second.dtype != e.dtype &&
+        !(e.role == QwenTensorRole::Bf16OrF32 && it->second.dtype == DType::F32)) {
       ++rep.dtype_mismatch;
       push_error(std::format("'{}' dtype {} != expected {}", e.name,
                              dtype_name(it->second.dtype), dtype_name(e.dtype)));
@@ -424,6 +471,13 @@ QwenBindReport qwen35_validate_text_binding(
     if (consumed.count(name)) continue;
     if (name.rfind("model.visual.", 0) == 0) {
       ++rep.vision;
+      continue;
+    }
+    // A tied config whose checkpoint was saved with the head written out as
+    // well (Hcompany/Holo-3.1-0.8B): the head reads the embedding, as the
+    // model class ties it at load; the stored copy is not read.
+    if (cfg.tie_word_embeddings && name == "lm_head.weight") {
+      ++rep.out_of_scope;
       continue;
     }
     // A truncated config (the check apps' --layers N): the layers past it

@@ -45,12 +45,23 @@ enum class Qwen35QuantKind : int {
   // an F32 `weight_global_scale` (a divisor, where modelopt's weight_scale_2
   // multiplies); the GDN projections, the router and the head BF16. No
   // K/V-cache scales and no draft layer in that release.
+  //   The same container on the Qwen3.5 dialect's routed-MoE models
+  // (Sehyo/Qwen3.5-122B-A10B-NVFP4, Sehyo/Qwen3.5-35B-A3B-NVFP4): the same
+  // matrices quantized, the split GDN projections BF16, and a BF16 draft
+  // layer with per-expert matrices (the recipe ignores `mtp.*`).
   Nvfp4Packed,
+  // nvidia/Qwen3.5-122B-A10B-NVFP4 (modelopt `quant_algo` NVFP4 with one
+  // group and an ignore list, 2026-10-04): the routed experts alone as the
+  // modelopt NVFP4 set; the GDN, the attention, the shared expert, the router
+  // and the head BF16; a BF16 draft layer with per-expert matrices. The
+  // config's ignore list is held to exactly that (config35.cpp).
+  Nvfp4Experts,
   // An unquantized release (no quantization_config: Qwen/Qwen3.5-0.8B,
   // 2026-10-04): every matrix BF16 as the model was trained, bound as it
   // ships — or, under engine.dense_weights = fp8, encoded to block FP8 at
   // load like the Qwen3Next dialect's BF16 projections. The GDN's A_log and
-  // its output norm weight are F32 in that release (the other vectors BF16).
+  // its output norm weight are F32 in that release and BF16 in others of
+  // this kind (binding.hpp's Bf16OrF32).
   Bf16,
 };
 

@@ -68,6 +68,13 @@ enum class QwenTensorRole : uint8_t {
   // e4m3 [N, K] payload (role Fp8Payload) with ONE F32 [] scale for the
   // whole tensor, `base.weight_scale` — a multiplier.
   Fp8TensorScale,
+  // A float vector the releases of one model store in either dtype (the
+  // qwen3_5 stack's GDN A_log and output-norm weight: BF16 in most releases,
+  // F32 — the module's own mamba_ssm_dtype — in Qwen/Qwen3.5-0.8B and
+  // Qwen/Qwen3.5-122B-A10B-FP8; nothing in config.json says which). The table
+  // lists it BF16; the validator admits F32 and the loader reads the dtype
+  // the header gives.
+  Bf16OrF32,
 };
 
 struct QwenExpectedTensor {

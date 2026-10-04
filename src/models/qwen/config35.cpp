@@ -6,6 +6,7 @@
 #include <cstring>
 #include <format>
 #include <stdexcept>
+#include <unordered_set>
 
 namespace dgpp {
 namespace {
@@ -51,11 +52,6 @@ double require_double(const minijson::Value& v, std::string_view field) {
   const double d = f.as_double();
   if (!std::isfinite(d)) reject(field, "not finite");
   return d;
-}
-bool require_bool(const minijson::Value& v, std::string_view field) {
-  const minijson::Value& f = require(v, field);
-  if (!f.is_bool()) reject(field, "not a bool");
-  return f.as_bool();
 }
 bool optional_bool(const minijson::Value& v, std::string_view field, bool dflt) {
   const minijson::Value* f = v.find(field);
@@ -112,6 +108,48 @@ void parse_moe_fields(const minijson::Value& v, Qwen35TextConfig& c) {
   }
 }
 
+// compressed-tensors' `nvfp4-pack-quantized`: everything that would change
+// what a stored code means is read and held to the one recipe the loader
+// implements. `q` is the quantization_config, `groups` its config_groups,
+// `w` group_0's weights; `scope` names the config in a refusal.
+void require_packed_nvfp4_recipe(const minijson::Value& q, const minijson::Value& groups,
+                                 const minijson::Value& w, const char* scope) {
+  const auto bad = [scope](const std::string& what) {
+    throw std::runtime_error(std::string(scope) +
+                             " quantization_config (nvfp4-pack-quantized): " + what);
+  };
+  if (!optional_bool(w, "symmetric", true)) bad("weights.symmetric must be true");
+  if (const std::string st = optional_string(w, "strategy", "tensor_group"); st != "tensor_group")
+    bad("weights.strategy must be tensor_group, got " + st);
+  if (groups.members().size() != 1) bad("config_groups must hold group_0 alone");
+  const auto empty = [](const minijson::Value* v) {
+    return v == nullptr || v->is_null() || (v->is_object() && v->members().empty());
+  };
+  // A transform (a rotation folded into the weights) or a sparsity mask
+  // would make the stored codes something other than the weights.
+  if (!empty(q.find("transform_config"))) bad("transform_config must be empty");
+  if (!empty(q.find("sparsity_config"))) bad("sparsity_config must be empty");
+  // The modelopt release carries its K/V-cache scales as tensors; this
+  // one names no cache scheme, and one that did would have none to read.
+  if (const minijson::Value* kv = q.find("kv_cache_scheme"); kv != nullptr && !kv->is_null())
+    bad("kv_cache_scheme must be null");
+  if (const std::string st = optional_string(q, "quantization_status", "compressed");
+      st != "compressed")
+    bad("quantization_status must be compressed, got " + st);
+}
+
+// A recipe's `ignore` list as written (module names, or modelopt's trailing-*
+// patterns): the entries the single-group NVFP4 recipes of the Qwen3.5
+// dialect are held to.
+std::unordered_set<std::string> ignore_entries(const minijson::Value& q) {
+  std::unordered_set<std::string> out;
+  const minijson::Value* ig = q.find("ignore");
+  if (ig == nullptr || !ig->is_array()) return out;
+  for (const auto& item : ig->items())
+    if (item.is_string()) out.emplace(item.as_string());
+  return out;
+}
+
 std::string read_file(const std::string& path) {
   FILE* f = std::fopen(path.c_str(), "rb");
   if (!f)
@@ -143,7 +181,10 @@ Qwen35TextConfig Qwen35TextConfig::parse(const minijson::Value& tc,
   c.vocab_size = require_int(tc, "vocab_size");
   c.num_hidden_layers = require_int(tc, "num_hidden_layers");
   c.rms_norm_eps = static_cast<float>(require_double(tc, "rms_norm_eps"));
-  c.tie_word_embeddings = require_bool(tc, "tie_word_embeddings");
+  // Absent in some releases' text_config (Qwen/Qwen3.5-122B-A10B-FP8): untied,
+  // the class's default — the binding then holds the checkpoint to a stored
+  // lm_head.weight.
+  c.tie_word_embeddings = optional_bool(tc, "tie_word_embeddings", false);
   c.hidden_act = require_string(tc, "hidden_act");
   c.max_position_embeddings = require_int(tc, "max_position_embeddings");
   if (c.hidden_size <= 0 || c.hidden_size % 8 != 0)
@@ -287,6 +328,85 @@ Qwen35TextConfig Qwen35TextConfig::parse(const minijson::Value& tc,
   }
   {
     const minijson::Value& q = *quantization_config;
+    const std::string method = optional_string(q, "quant_method", "");
+    // Intel's AutoRound releases of this model class (`quant_method`
+    // "auto-round", GPTQ-packed int4 per 128 on the routed experts and on
+    // every GDN and attention projection) have no path here, for the reason
+    // the Qwen3Next dialect gives below: the dense projections have no exact
+    // resident form.
+    if (method == "auto-round" || method == "gptq")
+      throw std::runtime_error(
+          "Qwen3.5 quantization_config.quant_method: '" + method +
+          "' (the AutoRound int4 release) is not implemented — the engine serves this model "
+          "class from its FP8, NVFP4 and unquantized releases");
+    if (const minijson::Value* groups = q.find("config_groups");
+        groups != nullptr && groups->is_object() && groups->find("group_1") == nullptr) {
+      // One group: an NVFP4 recipe that says which modules it left alone in
+      // its ignore list. Two are implemented, both for the routed-MoE models,
+      // and the list is held to what the binding table then expects.
+      const minijson::Value* g0 = groups->find("group_0");
+      const minijson::Value* w = g0 != nullptr && g0->is_object() ? g0->find("weights") : nullptr;
+      if (w == nullptr || !w->is_object())
+        throw std::runtime_error("Qwen3.5 quantization_config.config_groups: group_0.weights missing");
+      if (require_int(*w, "num_bits") != 4 || require_int(*w, "group_size") != 16 ||
+          optional_string(*w, "type", "float") != "float")
+        throw std::runtime_error(
+            "Qwen3.5 quantization_config.config_groups.group_0.weights: a single group must be "
+            "NVFP4 (4-bit float, group 16)");
+      if (!moe)
+        throw std::runtime_error(
+            "Qwen3.5 quantization_config: the single-group NVFP4 recipes are implemented for the "
+            "routed-MoE models (qwen3_5_moe_text); a dense model's NVFP4 MLP and GDN have no path");
+      const std::unordered_set<std::string> ignored = ignore_entries(q);
+      const auto must_ignore = [&](const std::string& entry, const char* release) {
+        if (ignored.count(entry) == 0)
+          throw std::runtime_error("Qwen3.5 quantization_config.ignore: '" + entry +
+                                   "' missing — " + release);
+      };
+      const std::string format = optional_string(q, "format", "");
+      if (format == "nvfp4-pack-quantized") {
+        // compressed-tensors (Sehyo/Qwen3.5-122B-A10B-NVFP4): the attention
+        // q/k/v/o, the shared expert and the routed experts quantized; the
+        // Gated DeltaNet and the head left BF16.
+        static const char* kRelease =
+            "the engine implements this container with the Gated DeltaNet and the head left "
+            "BF16 (Sehyo/Qwen3.5-122B-A10B-NVFP4)";
+        require_packed_nvfp4_recipe(q, *groups, *w, "Qwen3.5");
+        must_ignore("lm_head", kRelease);
+        for (int i = 0; i < c.num_hidden_layers; ++i) {
+          if (c.layers[i] != Qwen35LayerKind::Gdn) continue;
+          const std::string la = "model.language_model.layers." + std::to_string(i) + ".linear_attn.";
+          must_ignore(la + "in_proj_qkv", kRelease);
+          must_ignore(la + "in_proj_z", kRelease);
+          must_ignore(la + "out_proj", kRelease);
+        }
+        c.quant_kind = Qwen35QuantKind::Nvfp4Packed;
+        return c;
+      }
+      if (!format.empty())
+        throw std::runtime_error(
+            "Qwen3.5 quantization_config.format: only nvfp4-pack-quantized and the modelopt "
+            "recipes (no format) are implemented, got '" + format + "'");
+      if (const std::string algo = optional_string(q, "quant_algo", ""); algo != "NVFP4")
+        throw std::runtime_error(
+            "Qwen3.5 quantization_config.quant_algo: a single-group modelopt recipe must be "
+            "NVFP4, got '" + algo + "'");
+      // modelopt NVFP4 (nvidia/Qwen3.5-122B-A10B-NVFP4): the routed experts
+      // alone quantized. Its patterns, as modelopt writes them.
+      static const char* kRelease =
+          "the engine implements modelopt's NVFP4 recipe with the routed experts alone "
+          "quantized (nvidia/Qwen3.5-122B-A10B-NVFP4)";
+      must_ignore("lm_head", kRelease);
+      for (int i = 0; i < c.num_hidden_layers; ++i) {
+        const std::string lp = "model.language_model.layers." + std::to_string(i) + ".";
+        must_ignore(lp + (c.layers[i] == Qwen35LayerKind::Gdn ? "linear_attn*" : "self_attn*"),
+                    kRelease);
+        must_ignore(lp + "mlp.shared_expert*", kRelease);
+      }
+      if (c.mtp_num_layers == 1) must_ignore("mtp*", kRelease);
+      c.quant_kind = Qwen35QuantKind::Nvfp4Experts;
+      return c;
+    }
     if (const minijson::Value* groups = q.find("config_groups");
         groups != nullptr && groups->is_object()) {
       // The NVFP4 mixed release (modelopt MIXED_PRECISION, config35.hpp):
@@ -312,7 +432,6 @@ Qwen35TextConfig Qwen35TextConfig::parse(const minijson::Value& tc,
       c.quant_kind = Qwen35QuantKind::Nvfp4Mixed;
       return c;
     }
-    const std::string method = optional_string(q, "quant_method", "");
     if (method != "fp8")
       throw std::runtime_error("Qwen3.5 quantization_config.quant_method: only fp8 is implemented, got '" + method + "'");
     const std::vector<int64_t> bs = require_int_array(q, "weight_block_size");
@@ -485,29 +604,7 @@ Qwen35TextConfig Qwen35TextConfig::parse_qwen3_next(const minijson::Value& root)
     if (format.empty()) {
       c.quant_kind = Qwen35QuantKind::Nvfp4Modelopt;
     } else if (format == "nvfp4-pack-quantized") {
-      // compressed-tensors: everything that would change what a stored code
-      // means is read and held to the one recipe the loader implements.
-      const auto bad = [](const std::string& what) {
-        throw std::runtime_error("Qwen3-Next quantization_config (nvfp4-pack-quantized): " + what);
-      };
-      if (!optional_bool(*w, "symmetric", true)) bad("weights.symmetric must be true");
-      if (const std::string st = optional_string(*w, "strategy", "tensor_group"); st != "tensor_group")
-        bad("weights.strategy must be tensor_group, got " + st);
-      if (groups->members().size() != 1) bad("config_groups must hold group_0 alone");
-      const auto empty = [](const minijson::Value* v) {
-        return v == nullptr || v->is_null() || (v->is_object() && v->members().empty());
-      };
-      // A transform (a rotation folded into the weights) or a sparsity mask
-      // would make the stored codes something other than the weights.
-      if (!empty(q->find("transform_config"))) bad("transform_config must be empty");
-      if (!empty(q->find("sparsity_config"))) bad("sparsity_config must be empty");
-      // The modelopt release carries its K/V-cache scales as tensors; this
-      // one names no cache scheme, and one that did would have none to read.
-      if (const minijson::Value* kv = q->find("kv_cache_scheme"); kv != nullptr && !kv->is_null())
-        bad("kv_cache_scheme must be null");
-      if (const std::string st = optional_string(*q, "quantization_status", "compressed");
-          st != "compressed")
-        bad("quantization_status must be compressed, got " + st);
+      require_packed_nvfp4_recipe(*q, *groups, *w, "Qwen3-Next");
       c.quant_kind = Qwen35QuantKind::Nvfp4Packed;
     } else {
       throw std::runtime_error(

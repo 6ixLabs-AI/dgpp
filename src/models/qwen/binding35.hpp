@@ -44,6 +44,18 @@ namespace dgpp {
 // (out_proj included), the router and the head are BF16; there are no
 // K/V-cache scales and no draft layer.
 
+//
+// The Qwen3.5 dialect's routed-MoE models in the NVFP4 containers that carry
+// an ignore list (Qwen3.5-122B-A10B, 2026-10-04; hidden 3072, 48 layers):
+//   nvidia/...-NVFP4 @ 98915d83 (149,309 tensors, 333 of them vision): the
+//   modelopt set on the routed experts alone; everything else BF16;
+//   Sehyo/...-NVFP4 @ 56a6bdda (149,885 tensors): the compressed-tensors set
+//   on the attention q/k/v/o, the shared expert and the routed experts; the
+//   GDN, the router and the head BF16;
+// both with a BF16 draft layer of per-expert matrices. The GDN's A_log and
+// output-norm weight are listed BF16 and bound in F32 as well (the 0.8B and
+// the 122B FP8 releases store them so).
+
 // "model.language_model." (Qwen3.5) or "model." (the flat Qwen3Next names):
 // the prefix of `layers.L.`, `embed_tokens.weight` and `norm.weight`.
 std::string qwen35_model_prefix(const Qwen35TextConfig& cfg);

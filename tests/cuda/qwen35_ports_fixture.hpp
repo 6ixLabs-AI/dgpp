@@ -3,7 +3,7 @@
 // Qwen3-Coder-Next's compressed-tensors NVFP4 container on the Qwen3Next
 // dialect; Qwen3.6-35B-A3B's two containers on the Qwen3.5 dialect with the
 // routed MoE; Qwen3.5-0.8B's unquantized dense release with tied
-// embeddings): a small config written as config.json and its binding table
+// embeddings; Qwen3.5-122B-A10B's two NVFP4 containers): a small config written as config.json and its binding table
 // written as one safetensors shard, so fixture and table cannot disagree.
 // Values are deterministic per tensor name (glm_rng's scheme); the fixture
 // keeps every tensor's bytes so a test can state what the loader must hold.
@@ -91,6 +91,45 @@ inline const char* kQuantModeloptMixed = R"json({
 inline const char* kQuantFp8Block = R"json({
     "activation_scheme": "dynamic", "fmt": "e4m3", "quant_method": "fp8",
     "weight_block_size": [128, 128]})json";
+
+// Qwen3.5-122B-A10B's two NVFP4 containers on the same tiny shape, each with
+// the ignore list its recipe writes (the config parser holds it to them).
+// modelopt `NVFP4`: the routed experts alone quantized.
+inline const char* kQuantModeloptExperts = R"json({
+    "config_groups": {"group_0": {
+      "input_activations": {"dynamic": false, "num_bits": 4, "type": "float", "group_size": 16},
+      "weights": {"dynamic": false, "num_bits": 4, "type": "float", "group_size": 16},
+      "targets": ["Linear"]}},
+    "ignore": ["lm_head",
+      "model.language_model.layers.0.linear_attn*", "model.language_model.layers.0.mlp.shared_expert*",
+      "model.language_model.layers.0.mlp.shared_expert_gate",
+      "model.language_model.layers.1.linear_attn*", "model.language_model.layers.1.mlp.shared_expert*",
+      "model.language_model.layers.1.mlp.shared_expert_gate",
+      "model.language_model.layers.2.linear_attn*", "model.language_model.layers.2.mlp.shared_expert*",
+      "model.language_model.layers.2.mlp.shared_expert_gate",
+      "model.language_model.layers.3.mlp.shared_expert*",
+      "model.language_model.layers.3.mlp.shared_expert_gate", "model.language_model.layers.3.self_attn*",
+      "model.visual*", "mtp.layers.0*", "mtp*"],
+    "quant_algo": "NVFP4", "kv_cache_scheme": {"dynamic": false, "num_bits": 8, "type": "float"},
+    "producer": {"name": "modelopt", "version": "0.0.1"}, "quant_method": "modelopt"})json";
+// compressed-tensors `nvfp4-pack-quantized`: the attention, the shared
+// expert and the routed experts quantized; the GDN and the head ignored.
+inline const char* kQuantPackedMoe = R"json({
+    "config_groups": {"group_0": {"format": "nvfp4-pack-quantized",
+      "weights": {"dynamic": false, "num_bits": 4, "type": "float", "group_size": 16,
+                  "strategy": "tensor_group", "symmetric": true},
+      "targets": ["Linear"]}},
+    "format": "nvfp4-pack-quantized",
+    "ignore": ["lm_head",
+      "model.language_model.layers.0.linear_attn.in_proj_qkv", "model.language_model.layers.0.linear_attn.in_proj_z",
+      "model.language_model.layers.0.linear_attn.out_proj", "model.language_model.layers.0.mlp.gate",
+      "model.language_model.layers.1.linear_attn.in_proj_qkv", "model.language_model.layers.1.linear_attn.in_proj_z",
+      "model.language_model.layers.1.linear_attn.out_proj", "model.language_model.layers.1.mlp.gate",
+      "model.language_model.layers.2.linear_attn.in_proj_qkv", "model.language_model.layers.2.linear_attn.in_proj_z",
+      "model.language_model.layers.2.linear_attn.out_proj", "model.language_model.layers.2.mlp.gate",
+      "model.language_model.layers.3.mlp.gate", "mtp.fc", "re:mtp\\.layers\\.\\d+\\."],
+    "kv_cache_scheme": null, "quant_method": "compressed-tensors", "quantization_status": "compressed",
+    "sparsity_config": {}, "transform_config": {}})json";
 
 // Qwen3.5-0.8B: the dense Qwen3.5 dialect, no quantization_config, tied
 // embeddings, one value head a key head (the release's 16 x 16), a dense
@@ -185,8 +224,10 @@ inline std::vector<uint8_t> tensor_bytes(const QwenExpectedTensor& e, const Qwen
 }
 
 // Writes `dir` (config.json + one safetensors shard) for a tiny config and
-// returns what was written.
-inline Fixture write_fixture(const std::string& dir, const char* config_json) {
+// returns what was written. `f32_vectors`: the GDN's A_log and output-norm
+// weight stored F32, as Qwen/Qwen3.5-0.8B and Qwen/Qwen3.5-122B-A10B-FP8
+// store them (the table lists them BF16 and binds either).
+inline Fixture write_fixture(const std::string& dir, const char* config_json, bool f32_vectors = false) {
   Fixture fx;
   fx.dir = dir;
   const fs::path root(dir);
@@ -203,7 +244,9 @@ inline Fixture write_fixture(const std::string& dir, const char* config_json) {
   std::string header = "{";
   std::vector<uint8_t> data;
   bool first = true;
-  for (const auto& e : fx.table) {
+  for (const auto& table_entry : fx.table) {
+    QwenExpectedTensor e = table_entry;
+    if (f32_vectors && e.role == QwenTensorRole::Bf16OrF32) e.dtype = dgpp::DType::F32;
     std::vector<uint8_t> b = tensor_bytes(e, fx.cfg);
     std::string shape = "[";
     for (size_t i = 0; i < e.shape.size(); ++i) {

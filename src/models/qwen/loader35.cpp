@@ -13,6 +13,13 @@
 // FP8 under dense_weights fp8; with tied embeddings the head is the
 // embedding's rows and takes no grant.
 //
+// The routed-MoE models' NVFP4 containers with an ignore list
+// (Qwen3.5-122B-A10B): the GDN BF16 as it ships, then the Qwen3Next
+// dialect's builders under this dialect's names — the compressed-tensors
+// container's attention, shared expert and experts as Qwen3-Coder-Next's,
+// the experts-only modelopt release's BF16 attention and shared expert
+// around the 80B's NVFP4 experts — and a per-expert BF16 draft layer.
+//
 // The Qwen3Next dialect builds the same residents in their BF16 forms from
 // the modelopt NVFP4 release: gathered GDN projections, NVFP4 output
 // projections and shared expert dequantized on the host, the routed experts
@@ -490,26 +497,62 @@ struct Qwen35LoaderFamily::Builder : WeightBuilder<QwenExpectedTensor> {
   bool fp8_per_tensor() const { return cfg.quant_kind == Qwen35QuantKind::Nvfp4Mixed; }
   bool unquantized() const { return cfg.quant_kind == Qwen35QuantKind::Bf16; }
 
-  // An F32 vector the kernels read as BF16 (the unquantized release's GDN
-  // norm weight), rounded to nearest even at load — what a BF16 model
-  // dtype makes of the stored parameter. Replicated, like the BF16 one.
-  uint16_t* load_f32_as_bf16(const std::string& name) {
+  // The GDN's projections ship BF16: the unquantized release, and the two
+  // routed-MoE NVFP4 containers whose recipes leave the GDN alone.
+  bool experts_only() const { return cfg.quant_kind == Qwen35QuantKind::Nvfp4Experts; }
+  bool gdn_bf16() const { return unquantized() || experts_only() || fp4_packed(); }
+
+  // The GDN's A_log and output-norm weight (binding.hpp's Bf16OrF32): BF16
+  // in most releases, F32 in others. The resident form is the same either
+  // way — A_log fp32 as the recurrence reads it, the norm weight the BF16
+  // the gated norm reads (an F32 one rounded to nearest even, what a BF16
+  // model dtype makes of the stored parameter). The read is accounted at the
+  // table's BF16 width in both passes — the counting pass has no header to
+  // ask — so a release that stores F32 reads twice the bytes accounted for
+  // these two vectors.
+  float* load_float_vector_f32(const std::string& name, int64_t start, int64_t count) {
     const QwenExpectedTensor& e = expected(name);
-    if (e.dtype != DType::F32) fail("'" + name + "' is not F32");
+    check_range(name, start, count, static_cast<int64_t>(e.numel()));
+    float* dst = static_cast<float*>(bump.alloc(static_cast<size_t>(count) * 4));
+    if (copy) {
+      const TensorInfo& t = source(name);
+      const uint8_t* src = static_cast<const uint8_t*>(t.data);
+      float* h = bump.host(dst);
+      if (t.dtype == DType::F32) {
+        std::memcpy(h, src + static_cast<size_t>(start) * 4, static_cast<size_t>(count) * 4);
+      } else {
+        for (int64_t i = 0; i < count; ++i) {
+          uint16_t bits;
+          std::memcpy(&bits, src + static_cast<size_t>(start + i) * 2, 2);
+          h[i] = bf16_bits_to_float(bits);
+        }
+      }
+      consumed(t);
+    }
+    note_read(e, static_cast<size_t>(count) * 2);
+    return dst;
+  }
+  // Replicated, like any norm weight.
+  uint16_t* load_float_vector_bf16(const std::string& name) {
+    const QwenExpectedTensor& e = expected(name);
     if (sharded() && !verbatim_ok(e)) fail("'" + name + "' is sliced: it cannot load verbatim");
     const size_t n = e.numel();
     uint16_t* dst = static_cast<uint16_t*>(bump.alloc(n * 2));
     if (copy) {
       const TensorInfo& t = source(name);
       uint16_t* h = bump.host(dst);
-      for (size_t i = 0; i < n; ++i) {
-        float v;
-        std::memcpy(&v, static_cast<const uint8_t*>(t.data) + i * 4, 4);
-        h[i] = float_to_bf16_bits(v);
+      if (t.dtype == DType::F32) {
+        for (size_t i = 0; i < n; ++i) {
+          float v;
+          std::memcpy(&v, static_cast<const uint8_t*>(t.data) + i * 4, 4);
+          h[i] = float_to_bf16_bits(v);
+        }
+      } else {
+        std::memcpy(h, t.data, n * 2);
       }
       consumed(t);
     }
-    note_read(e, n * 4);
+    note_read(e, n * 2);
     return dst;
   }
   GlmQuantMatrix load_fp8_rows35(const std::string& base, int64_t r0, int64_t rn) {
@@ -524,10 +567,17 @@ struct Qwen35LoaderFamily::Builder : WeightBuilder<QwenExpectedTensor> {
   // `is_mtp`: the NVFP4 mixed release ships its draft layer BF16 (`mtp*` is on
   // the recipe's ignore list) — the Qwen3Next draft builder's case, under the
   // same names; the FP8 release's draft layer is FP8 like the rest.
-  // The unquantized release is BF16 in every layer: the same builder.
+  // The unquantized release and the experts-only NVFP4 release are BF16 in
+  // every layer: the same builder. The compressed-tensors container is that
+  // dialect's attention whole — the NVFP4 set on q/k/v/o in the backbone,
+  // BF16 in the draft layer.
   void build_full(const std::string& p, bool is_mtp) {
-    if (unquantized() || (is_mtp && fp8_per_tensor())) {
+    if (unquantized() || experts_only() || (is_mtp && fp8_per_tensor())) {
       build_full_next(p, true);
+      return;
+    }
+    if (fp4_packed()) {
+      build_full_next(p, is_mtp);
       return;
     }
     const int64_t d = cfg.head_dim;
@@ -584,10 +634,9 @@ struct Qwen35LoaderFamily::Builder : WeightBuilder<QwenExpectedTensor> {
         {r * lk * dk, lk * dk, 0},
         {K + r * lk * dk, lk * dk, lk * dk},
         {2 * K + r * lv * dv, lv * dv, 2 * lk * dk}};
-    if (unquantized()) {
-      // The BF16 release: the projections as they ship (or block FP8 under
-      // dense_weights fp8), A_log in F32 as stored, the F32 norm weight
-      // rounded to the BF16 the gated norm reads.
+    if (gdn_bf16()) {
+      // A BF16 GDN: the projections as they ship (or block FP8 under
+      // dense_weights fp8).
       const bool fp8 = g_dense_weights_fp8;
       std::vector<Qwen35RowRun> runs;
       for (const auto& sg : qkv_segs) runs.push_back({sg[0], sg[1], sg[2]});
@@ -605,9 +654,9 @@ struct Qwen35LoaderFamily::Builder : WeightBuilder<QwenExpectedTensor> {
         g.in_proj_z = load_bf16_rows(z_name, r * lv * dv, lv * dv);
       g.in_proj_a = load_bf16_rows(p + "linear_attn.in_proj_a.weight", r * lv, lv);
       g.in_proj_b = load_bf16_rows(p + "linear_attn.in_proj_b.weight", r * lv, lv);
-      g.a_log = load_f32_range(p + "linear_attn.A_log", r * lv, lv);
+      g.a_log = load_float_vector_f32(p + "linear_attn.A_log", r * lv, lv);
       g.dt_bias = load_bf16_as_f32(p + "linear_attn.dt_bias", r * lv, lv);
-      g.norm = load_f32_as_bf16(p + "linear_attn.norm.weight");
+      g.norm = load_float_vector_bf16(p + "linear_attn.norm.weight");
       const std::string out_name = p + "linear_attn.out_proj.weight";
       if (fp8)
         g.out_proj_fp8 = load_dense_cols_fp8(out_name, r * lv * dv, lv * dv);
@@ -626,9 +675,9 @@ struct Qwen35LoaderFamily::Builder : WeightBuilder<QwenExpectedTensor> {
     g.in_proj_z_fp8 = load_fp8_rows35(p + "linear_attn.in_proj_z", r * lv * dv, lv * dv);
     g.in_proj_a = load_bf16_rows(p + "linear_attn.in_proj_a.weight", r * lv, lv);
     g.in_proj_b = load_bf16_rows(p + "linear_attn.in_proj_b.weight", r * lv, lv);
-    g.a_log = load_bf16_as_f32(p + "linear_attn.A_log", r * lv, lv);
+    g.a_log = load_float_vector_f32(p + "linear_attn.A_log", r * lv, lv);
     g.dt_bias = load_bf16_as_f32(p + "linear_attn.dt_bias", r * lv, lv);
-    g.norm = load_bf16(p + "linear_attn.norm.weight");
+    g.norm = load_float_vector_bf16(p + "linear_attn.norm.weight");
     g.out_proj_fp8 = load_fp8_cols35(p + "linear_attn.out_proj", r * lv * dv, lv * dv);
   }
 
@@ -1042,11 +1091,11 @@ struct Qwen35LoaderFamily::Builder : WeightBuilder<QwenExpectedTensor> {
     const std::string sp = p + "mlp.shared_expert.";
     const int E = cfg.num_experts;
     const bool fp8 = g_dense_weights_fp8;
-    if (is_mtp) {
-      // The draft layer is BF16 throughout. Its shared expert loads as is;
-      // its per-expert matrices are encoded to block FP8 at load
-      // (loaders/fp8_quant.hpp) — the form the routed kernels read, and
-      // what Flash-Next's loader does with a BF16 draft layer.
+    // The shared expert ships BF16 in the draft layer, and in every layer of
+    // the release that quantizes the routed experts alone: loaded as is (or
+    // block FP8 under dense_weights fp8). Elsewhere it is the NVFP4 set,
+    // dequantized on the host.
+    if (is_mtp || experts_only()) {
       if (fp8) {
         m.shared_fp8[0] = load_dense_rows_fp8(sp + "gate_proj.weight", r * S, S);
         m.shared_fp8[1] = load_dense_rows_fp8(sp + "up_proj.weight", r * S, S);
@@ -1056,6 +1105,20 @@ struct Qwen35LoaderFamily::Builder : WeightBuilder<QwenExpectedTensor> {
         m.shared[1] = load_bf16_rows(sp + "up_proj.weight", r * S, S);
         m.shared[2] = load_bf16_cols(sp + "down_proj.weight", r * S, S);
       }
+    } else if (fp8) {
+      m.shared_fp8[0] = load_fp4_rows_as_fp8(sp + "gate_proj", r * S, S);
+      m.shared_fp8[1] = load_fp4_rows_as_fp8(sp + "up_proj", r * S, S);
+      m.shared_fp8[2] = load_fp4_cols_as_fp8(sp + "down_proj", r * S, S);
+    } else {
+      m.shared[0] = load_fp4_as_bf16(sp + "gate_proj", r * S, S, 0, H);
+      m.shared[1] = load_fp4_as_bf16(sp + "up_proj", r * S, S, 0, H);
+      m.shared[2] = load_fp4_as_bf16(sp + "down_proj", 0, H, r * S, S);
+    }
+    if (is_mtp) {
+      // The draft layer's routed experts are BF16 per expert: encoded to
+      // block FP8 at load (loaders/fp8_quant.hpp) — the form the routed
+      // kernels read, and what Flash-Next's loader does with a BF16 draft
+      // layer.
       m.experts.resize(static_cast<size_t>(E) * 3);
       for (int e = 0; e < E; ++e) {
         const std::string ep = p + "mlp.experts." + std::to_string(e) + ".";
@@ -1067,15 +1130,6 @@ struct Qwen35LoaderFamily::Builder : WeightBuilder<QwenExpectedTensor> {
             load_bf16_cols_fp8(ep + "down_proj.weight", r * I, I);
       }
       return;
-    }
-    if (fp8) {
-      m.shared_fp8[0] = load_fp4_rows_as_fp8(sp + "gate_proj", r * S, S);
-      m.shared_fp8[1] = load_fp4_rows_as_fp8(sp + "up_proj", r * S, S);
-      m.shared_fp8[2] = load_fp4_cols_as_fp8(sp + "down_proj", r * S, S);
-    } else {
-      m.shared[0] = load_fp4_as_bf16(sp + "gate_proj", r * S, S, 0, H);
-      m.shared[1] = load_fp4_as_bf16(sp + "up_proj", r * S, S, 0, H);
-      m.shared[2] = load_fp4_as_bf16(sp + "down_proj", 0, H, r * S, S);
     }
     // The backbone's routed experts stay NVFP4: the modelopt set per matrix,
     // sliced on the intermediate axis.
@@ -1117,7 +1171,14 @@ struct Qwen35LoaderFamily::Builder : WeightBuilder<QwenExpectedTensor> {
   //   block FP8 at load as the 80B's per-expert draft matrices are.
   //   The FP8 release ships every matrix block FP8, the draft layer included:
   //   bound as shipped, the experts' sliced axis re-blocked at gcd(128, I/W).
+  //   The two NVFP4 containers with an ignore list are that builder in
+  //   every layer: per-expert BF16 matrices in the draft layer, and in the
+  //   experts-only release a BF16 shared expert throughout.
   void build_moe35(const std::string& p, bool is_mtp) {
+    if (fp4_packed() || experts_only()) {
+      build_moe_next(p, is_mtp);
+      return;
+    }
     if (fp8_per_tensor() && !is_mtp) {
       build_moe_next(p, false);
       return;

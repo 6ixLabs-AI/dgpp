@@ -5,6 +5,7 @@
 // headers, 153 of them the vision tower's, 335 in the table — the counting
 // build reads every byte of a layer, and the template construct this
 // checkpoint's chat template adds (`is sequence`) evaluates as Jinja's.
+#include <iterator>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -140,14 +141,20 @@ DGPP_TEST(qwen35_bf16_binding_table_is_the_checkpoint) {
   };
   using dgpp::DType;
   const std::string L0 = "model.language_model.layers.0.", L3 = "model.language_model.layers.3.";
-  // The GDN: BF16 split projections; A_log and the norm weight F32 in this release.
+  // The GDN: BF16 split projections; A_log and the norm weight listed BF16
+  // and bound in F32 as well (this release stores them F32).
   require(shape_is(L0 + "linear_attn.in_proj_qkv.weight", DType::BF16, {6144, 1024}), "qkv");
   require(shape_is(L0 + "linear_attn.in_proj_z.weight", DType::BF16, {2048, 1024}), "z");
   require(shape_is(L0 + "linear_attn.out_proj.weight", DType::BF16, {1024, 2048}), "out");
   require(shape_is(L0 + "linear_attn.in_proj_a.weight", DType::BF16, {16, 1024}), "a");
   require(shape_is(L0 + "linear_attn.conv1d.weight", DType::BF16, {6144, 1, 4}), "conv");
-  require(shape_is(L0 + "linear_attn.A_log", DType::F32, {16}), "A_log is F32");
-  require(shape_is(L0 + "linear_attn.norm.weight", DType::F32, {128}), "the GDN norm weight is F32");
+  require(shape_is(L0 + "linear_attn.A_log", DType::BF16, {16}) &&
+              by_name.at(L0 + "linear_attn.A_log")->role == dgpp::QwenTensorRole::Bf16OrF32,
+          "A_log: either float dtype");
+  require(shape_is(L0 + "linear_attn.norm.weight", DType::BF16, {128}) &&
+              by_name.at(L0 + "linear_attn.norm.weight")->role == dgpp::QwenTensorRole::Bf16OrF32,
+          "the GDN norm weight: either float dtype");
+  require(by_name.at(L0 + "linear_attn.dt_bias")->role == dgpp::QwenTensorRole::Plain, "dt_bias is BF16 alone");
   require(shape_is(L0 + "linear_attn.dt_bias", DType::BF16, {16}), "dt_bias is BF16");
   require(by_name.count(L0 + "linear_attn.in_proj_qkv.weight_scale_inv") == 0, "no scale partners");
   // Attention and the dense MLP: BF16.
@@ -162,24 +169,44 @@ DGPP_TEST(qwen35_bf16_binding_table_is_the_checkpoint) {
   require(shape_is("model.language_model.embed_tokens.weight", DType::BF16, {248320, 1024}), "embed");
   require(by_name.count("lm_head.weight") == 0, "a tied config expects no stored head");
 
+  // The release's headers: the two GDN vectors F32, everything else as listed.
   std::unordered_map<std::string, dgpp::QwenTensorDesc> present;
-  for (const auto& e : all) present.emplace(e.name, dgpp::QwenTensorDesc{e.dtype, e.shape});
+  for (const auto& e : all)
+    present.emplace(e.name, dgpp::QwenTensorDesc{e.role == dgpp::QwenTensorRole::Bf16OrF32 ? DType::F32 : e.dtype,
+                                                 e.shape});
   for (int i = 0; i < 153; ++i)
     present.emplace("model.visual.blocks." + std::to_string(i) + ".norm1.weight",
                     dgpp::QwenTensorDesc{DType::BF16, {768}});
   dgpp::QwenBindReport rep = dgpp::qwen35_validate_text_binding(c, present);
   require(rep.ok() && rep.matched == 335 && rep.vision == 153 && rep.quantized_matrices == 0,
           "exact binding beside the vision tower, nothing quantized");
-  // A stored head beside a tied config is unexpected, by name.
+  // A head stored beside a tied config (Hcompany/Holo-3.1-0.8B saves both) is
+  // counted and not read: the head is the embedding, as the class ties it.
   present.emplace("lm_head.weight", dgpp::QwenTensorDesc{DType::BF16, {248320, 1024}});
   rep = dgpp::qwen35_validate_text_binding(c, present);
-  require(!rep.ok() && rep.unexpected == 1 && rep.errors[0].find("lm_head.weight") != std::string::npos,
-          "a stored head under a tied config");
-  // The quantized releases store A_log BF16: this table refuses that dtype.
+  require(rep.ok() && rep.matched == 335 && rep.out_of_scope == 1 && rep.unexpected == 0,
+          "a stored head under a tied config is out of scope");
   present.erase("lm_head.weight");
+  // Other releases of this kind store the two vectors BF16 (Holo-3.1-0.8B,
+  // Ornith-1.0-9B): bound alike. Any other dtype, or F32 on a vector that
+  // has no second dtype, is refused.
   present[L0 + "linear_attn.A_log"].dtype = DType::BF16;
+  present[L0 + "linear_attn.norm.weight"].dtype = DType::BF16;
   rep = dgpp::qwen35_validate_text_binding(c, present);
-  require(!rep.ok() && rep.dtype_mismatch == 1, "A_log dtype");
+  require(rep.ok() && rep.matched == 335, "BF16 A_log and norm weight bind");
+  present[L0 + "linear_attn.A_log"].dtype = DType::F16;
+  present[L0 + "linear_attn.dt_bias"].dtype = DType::F32;
+  rep = dgpp::qwen35_validate_text_binding(c, present);
+  require(!rep.ok() && rep.dtype_mismatch == 2, "an F16 A_log and an F32 dt_bias are refused");
+  present[L0 + "linear_attn.A_log"].dtype = DType::F32;
+  present[L0 + "linear_attn.dt_bias"].dtype = DType::BF16;
+  // A fine-tune saved without its draft layer under a config that names one
+  // (deepreinforce-ai/Ornith-1.0-9B): said once, ahead of the missing names.
+  for (auto it = present.begin(); it != present.end();)
+    it = it->first.rfind("mtp.", 0) == 0 ? present.erase(it) : std::next(it);
+  rep = dgpp::qwen35_validate_text_binding(c, present);
+  require(!rep.ok() && rep.missing == 15 && rep.errors[0].find("names a draft layer") != std::string::npos,
+          "a config naming a draft layer the checkpoint lacks");
 
   // Untied, the same release would store its head.
   const dgpp::Qwen35TextConfig untied =
