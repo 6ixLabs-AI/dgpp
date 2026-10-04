@@ -1,13 +1,13 @@
 # The model registry
 
-One file, `models.json`, says for every model 6ixInfer knows about: which family serves it, which
+One file, `models.json`, says for every model Infer knows about: which family serves it, which
 checkpoints it accepts, how it is launched, and how far it has been verified. `registry.py` checks
 that file against the tree, prints the status and speed table, and turns an entry into the
 deployment JSON `scripts/dgpp-cluster` takes.
 
 ```
 python3 sixlabs/registry/registry.py check                 # registry vs the tree; exit 1 on any problem
-python3 sixlabs/registry/registry.py table                 # every model, 6ixInfer beside its baselines
+python3 sixlabs/registry/registry.py table                 # every model, Infer beside its baselines
 python3 sixlabs/registry/registry.py table --status working,compiled
 python3 sixlabs/registry/registry.py show qwen3.6-35b-a3b
 python3 sixlabs/registry/registry.py resolve qwen3.6-35b-a3b            # writes deploy/cluster_<model>_<format>_w<N>.json
