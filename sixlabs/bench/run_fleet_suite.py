@@ -19,8 +19,8 @@ One at a time on purpose: each saturates the engine, and two together measure ea
 environment variable NAME and reaches each step without ever being on a command line (argv shows
 in `ps`, in the Jobs view and in this log) or in this log's text: DecodeBench takes it in its
 signed request body, llama-benchy gets it appended in-process, tool-eval-bench reads
-TOOL_EVAL_API_KEY. ~/run-sharegpt-bench.sh has no way to send a key (its own /v1/models probe is
-unauthenticated), so against a keyed slot that step is reported as skipped, not run.
+TOOL_EVAL_API_KEY, and ~/run-sharegpt-bench.sh reads OPENAI_API_KEY (its /v1/models probe and its
+harness both use it; a copy of that script older than 2026-10-04 cannot, and fails at the probe).
 """
 import argparse, json, os, subprocess, sys, time, urllib.request
 
@@ -136,14 +136,11 @@ def main():
                     rc = sh([os.path.join(venv, "llama-benchy"), *args])
                 print("    saved", out, flush=True)
             elif step == "sharegpt":
+                env = {"PORT": str(a.port), "HOST": a.host, "MODEL": a.model, "MAXC": str(a.maxc),
+                       "CONCS": " ".join(str(c) for c in levels)}
                 if key:
-                    rc = 1
-                    print("    sharegpt: SKIPPED — ~/run-sharegpt-bench.sh cannot send a key (its /v1/models probe "
-                          "and its harness call are unauthenticated), and this endpoint requires one", flush=True)
-                else:
-                    rc = sh([os.path.join(HOME, "run-sharegpt-bench.sh")],
-                            {"PORT": str(a.port), "HOST": a.host, "MODEL": a.model, "MAXC": str(a.maxc),
-                             "CONCS": " ".join(str(c) for c in levels)})
+                    env["OPENAI_API_KEY"] = key      # the script and its harness read it; never in argv
+                rc = sh([os.path.join(HOME, "run-sharegpt-bench.sh")], env)
             else:
                 work = os.path.join(HOME, "tool-eval-bench")
                 os.makedirs(work, exist_ok=True)
