@@ -36,7 +36,7 @@
       "on_main": true,
       "tokenizer": "bpe",
       "engine_defaults": {},
-      "notes": "GDN + full attention, dense MLP or routed MoE, nested text_config. No prefill defaults: the serve binary refuses an explicit prefill budget for this family (apps/dgpp_serve.cpp allows it for qwen4_exp, glm5 and qwen3_next), found on DGXone 2026-10-04 when the 35B exited at start. It runs the automatic budget (256 tokens a tick, one decode pass a chunk)."
+      "notes": "GDN + full attention, dense MLP or routed MoE, nested text_config. No prefill defaults yet: the 35B and the 122B were verified and measured at the automatic budget (256 tokens a tick, one decode pass a chunk), and their time to first token under load is poor. The serve binary accepts an explicit budget for this family since cecb0cd (before that the 35B exited at start with one), but no checkpoint of the family has been checked on a GPU with a larger budget. Before putting qwen3_next's four settings here, run sixlabs/bench/group_check.py and mixed_load.py against the checkpoint; the dense checkpoints (27B, 0.8B) compute one FP8 activation scale over a chunk's rows, so a larger chunk changes their numbers and their answers must be looked at, not only their speed."
     },
     "qwen4_exp": {"architectures": ["Qwen4Exp"], "served": true, "on_main": true, "tokenizer": "bpe", "engine_defaults": {}, "notes": "Qwen3.8-Flash-Next."},
     "glm5": {"architectures": ["Glm5"], "served": true, "on_main": true, "tokenizer": "bpe", "engine_defaults": {}, "notes": "GLM-5.3-Flash."},

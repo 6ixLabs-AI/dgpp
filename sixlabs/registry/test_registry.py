@@ -47,9 +47,11 @@ class Resolve(unittest.TestCase):
         self.assertEqual(prov["world"], 1)
         self.assertEqual(set(cfg) - set(template), set())      # no key the engine does not know
 
-    def test_the_35b_resolves_to_a_config_the_engine_accepts(self):
-        # The serve binary refuses an explicit prefill budget for qwen3_5: the shipped registry
-        # must not hand it one (the 35B exited at start on DGXone on 2026-10-04 with one).
+    def test_the_35b_resolves_to_the_settings_it_was_verified_with(self):
+        # The 35B was verified and measured at the automatic prefill budget. The serve binary
+        # refused an explicit one for qwen3_5 until cecb0cd (the 35B exited at start on DGXone on
+        # 2026-10-04 with one); it accepts it now, but no checkpoint of the family has been checked
+        # on a GPU with a larger budget, so the shipped registry does not hand one out yet.
         cfg, _ = R.resolve(self.reg, "qwen3.6-35b-a3b")
         self.assertNotIn("prefill_budget_tokens", cfg["engine"])
 
@@ -120,9 +122,13 @@ class CheckNotices(unittest.TestCase):
         self.assertTrue(any("not a key" in b for b in self.broken(lambda r: r["families"]["qwen3_5"]["engine_defaults"].update(no_such_key=1))))
 
     def test_prefill_budget_default_on_a_family_the_binary_refuses_it_for(self):
+        accepted = R.prefill_budget_families(R.ROOT)
+        self.assertIn("qwen3_next", accepted)
+        self.assertNotIn("glm4_moe", accepted)
         self.assertTrue(any("refused by apps/dgpp_serve.cpp" in b for b in
-                            self.broken(lambda r: r["families"]["qwen3_5"]["engine_defaults"].update(prefill_budget_tokens=1024))))
-        self.assertEqual(R.prefill_budget_families(R.ROOT), {"qwen4_exp", "glm5", "qwen3_next"})
+                            self.broken(lambda r: r["families"]["glm4_moe"]["engine_defaults"].update(prefill_budget_tokens=1024))))
+        self.assertFalse(any("refused by apps/dgpp_serve.cpp" in b for b in
+                             self.broken(lambda r: r["families"]["qwen3_next"]["engine_defaults"].update(prefill_budget_tokens=512))))
 
     def test_branch_model_marked_as_runnable(self):
         def edit(r):
