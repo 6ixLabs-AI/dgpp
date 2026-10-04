@@ -15,6 +15,10 @@ slot) answers wrongly. Greedy, with log-probabilities.
   5  a burst of eight       2k-token prompts, 64-token answers: first token of each and the wall
                             time for all of them (the number to compare between engine settings)
 Rows 1-4 are PASS/FAIL; row 5 is a measurement. One JSONL row per run in --out.
+
+PASS needs every lookup answered right, which the 80B does. A smaller model can miss one with no
+engine fault (the 35B gets 3 of 4 one at a time): there, compare two runs with the same --seed
+instead (the row keeps the one-at-a-time answers and log-probabilities).
 """
 import argparse, concurrent.futures as cf, json, sys, threading, time, urllib.request
 
@@ -84,15 +88,21 @@ def main():
     ap.add_argument("--thinking-off", action="store_true",
                     help="send chat_template_kwargs.enable_thinking false: a model that reasons by default (Qwen3.5/3.6) "
                          "spends these short answers' token budgets on reasoning otherwise, and every row fails")
+    ap.add_argument("--seed", type=int, default=None,
+                    help="fix the prompts (default: from the clock). With the same seed two runs send the same prompts, and the "
+                         "row's 'ref' and 'alone' answers and log-probabilities can be compared between engine settings; "
+                         "restart the engine between such runs so nothing is answered from its prefix cache")
     a = ap.parse_args()
-    s0 = int(time.time()) % 40000 + 100
-    fails, row = 0, {"label": a.label}
+    s0 = a.seed if a.seed is not None else int(time.time()) % 40000 + 100
+    fails, row = 0, {"label": a.label, "seed": s0}
+    keep = lambda rs, wants: [{"text": r["text"], "want": w, "lps": [round(x, 4) for x in r["lps"]]} for r, w in zip(rs, wants)]
 
     print("[1/5] one at a time", flush=True)
     qs = [question(s0 + k, 90) for k in range(4)]                 # about 3k tokens each
     ref = [ask(a, q) for q, _ in qs]
     fails += not compare("four 3k-token prompts, one at a time", ref, [w for _, w in qs])
     row["prompt_tokens_3k"] = ref[0]["prompt_tokens"]
+    row["ref"] = keep(ref, [w for _, w in qs])
 
     print("[2/5] four at once", flush=True)
     got = together(a, [q for q, _ in qs])
@@ -103,6 +113,7 @@ def main():
     mixed = [question(s0 + 10 + k, n) for k, n in enumerate((30, 90, 180, 270))]
     alone = [ask(a, q) for q, _ in mixed]
     fails += not compare("1k / 3k / 6k / 9k, one at a time", alone, [w for _, w in mixed])
+    row["alone"] = keep(alone, [w for _, w in mixed])
     mixed2 = [question(s0 + 20 + k, n) for k, n in enumerate((30, 90, 180, 270))]
     got = together(a, [q for q, _ in mixed2])
     fails += not compare("1k / 3k / 6k / 9k fresh prompts, sent together", got, [w for _, w in mixed2])
