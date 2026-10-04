@@ -32,7 +32,11 @@ The history by milestone. The dated engineering record in
   a layer (the attention / GDN output and the MLP output, bf16 on the wire)
   in the main and draft walks, the drafter at world 1 only; the loopback TP
   gate (`qwen35_tp_test`, worlds 2 and 4 against the world-1 forward over the
-  fixture) and the `cluster_qwen3.8-27b_fp8_w2` template.
+  fixture) and the `cluster_qwen3.8-27b_fp8_w2` template. The scale GEMM's
+  large-row FP8 products (every family's dense MLPs, shared experts and FP8
+  heads past the GEMV rows) run on `kernels/fp8w_gemm`'s per-weight form
+  (#89): bitwise the tile kernel they replace (`fp8w_gemm_test` pins the
+  pair) at 63–66 TF against its 26–30.
 
 - **The DFlash2 block drafter on Qwen3.8-27B** (2026-10-02, #80):
   `engine.dflash_model` serves `z-lab/Qwen3.8-27B-DFlash2` in place of the

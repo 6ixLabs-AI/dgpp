@@ -9,6 +9,7 @@
 #include "common/dtypes.hpp"
 #include "kernels/bf16_gemv.cuh"
 #include "kernels/fp8_gemv.cuh"
+#include "kernels/fp8w_gemm.hpp"
 #include "kernels/glm_moe_launch.hpp"
 #include "kernels/mma_gemv.hpp"
 
@@ -223,6 +224,14 @@ void launch_scale_gemv_rows(const uint16_t* act, size_t act_stride,
 // difference between the bf16 and fp32 products (same tiles, same GEMV
 // core, same accumulation order), so a value that rounds to bf16 in one
 // is the unrounded fp32 of the other.
+inline void launch_fp8w(const uint16_t* act, size_t act_stride, const uint8_t* payload, const float* scales,
+                        uint16_t* out, int m, int n, int k, size_t out_stride, cudaStream_t stream) {
+  launch_fp8w_gemm_bf16(act, act_stride, payload, scales, out, m, n, k, Fp8wScale::PerWeight, stream, out_stride);
+}
+inline void launch_fp8w(const uint16_t* act, size_t act_stride, const uint8_t* payload, const float* scales,
+                        float* out, int m, int n, int k, size_t out_stride, cudaStream_t stream) {
+  launch_fp8w_gemm_f32(act, act_stride, payload, scales, out, m, n, k, Fp8wScale::PerWeight, stream, out_stride);
+}
 inline void launch_dense_mma(const uint16_t* act, size_t act_stride,
                              const uint8_t* payload, const float* scales,
                              uint16_t* out, int m, int n, int k,
@@ -331,6 +340,15 @@ void launch_scale_gemm(const uint16_t* act, size_t act_row_stride_elems,
   // decoded once per 128 rows instead of once per 16 (the dense MLP
   // layers' 2048-row GEMMs: 9.7 ms a call on the tile kernel). k % 16 != 0
   // stays on the tile kernel.
+  // The fp8-weight GEMM (kernels/fp8w_gemm, #89): the same per-weight
+  // bf16(code x scale) terms and the same ascending-k16 mma chain as the
+  // tile kernel — bitwise it (fp8w_gemm_test pins the pair) — on a
+  // sixteen-warp cp.async / ldmatrix pipeline: 63-66 TF against the dense
+  // form's 26-30. Its shape: k % 64 == 0 and 16-byte activation rows.
+  if (fp8w_gemm_shape_ok(act, act_row_stride_elems, k)) {
+    launch_fp8w(act, act_row_stride_elems, w_payload, w_scales, out, m, n, k, out_stride, stream);
+    return;
+  }
   if (k % 16 == 0) {
     launch_dense_mma(act, act_row_stride_elems, w_payload, w_scales, out, m, n,
                      k, out_stride, stream);
