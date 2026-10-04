@@ -83,6 +83,7 @@ git ignores.
 - every family marked `served` is a family name in `apps/dgpp_serve.cpp`, and the reverse;
 - every architecture prefix of an on-main family is recognised in `src/loaders/architecture.cpp`;
 - every `engine_defaults` key is one `src/serve/cluster_config.cpp` parses;
+- no family carries a `prefill_budget_tokens` default unless `apps/dgpp_serve.cpp` accepts one for it;
 - every template and variant exists, is JSON, names that checkpoint and that world size;
 - `working` has a record that exists and a measurement; `compiled` has its steps;
 - one default checkpoint per model; unique fleet aliases; nothing on a branch is marked runnable.

@@ -35,13 +35,8 @@
       "served": true,
       "on_main": true,
       "tokenizer": "bpe",
-      "engine_defaults": {
-        "prefill_budget_tokens": 1024,
-        "prefill_idle_budget_tokens": 4096,
-        "decode_passes_per_prefill": 8,
-        "prefill_order": "shortest"
-      },
-      "notes": "GDN + full attention, dense MLP or routed MoE, nested text_config. Same prefill defaults as qwen3_next."
+      "engine_defaults": {},
+      "notes": "GDN + full attention, dense MLP or routed MoE, nested text_config. No prefill defaults: the serve binary refuses an explicit prefill budget for this family (apps/dgpp_serve.cpp allows it for qwen4_exp, glm5 and qwen3_next), found on DGXone 2026-10-04 when the 35B exited at start. It runs the automatic budget (256 tokens a tick, one decode pass a chunk)."
     },
     "qwen4_exp": {"architectures": ["Qwen4Exp"], "served": true, "on_main": true, "tokenizer": "bpe", "engine_defaults": {}, "notes": "Qwen3.8-Flash-Next."},
     "glm5": {"architectures": ["Glm5"], "served": true, "on_main": true, "tokenizer": "bpe", "engine_defaults": {}, "notes": "GLM-5.3-Flash."},
@@ -116,7 +111,7 @@
                 "date": "2026-10-04", "box": "DGXone", "source": "sixlabs/ports/qwen3.6-35b-a3b/results-2026-10-04-dgxone.md",
                 "load_cold_s": 47.5, "load_warm_s": 9.0, "plan_gib": 36.0, "gpu_gib": 38.55,
                 "tok_s": {"single_prose": 97.7, "single_code": 120.1, "c2": 128.8, "c4": 194.6, "c8": 271.3},
-                "notes": "One run each. Taken with prefill settings left automatic; prompt reading under concurrency is behind vLLM (see the record)."
+                "notes": "One run each, bench_decode. Taken with prefill settings left automatic; prompt reading under concurrency is behind vLLM (see the record). ShareGPT the same day (sixlabs/bench/results/dgxone_35b_6ixcpp_vs_atlas_2026-10-04.md): 96.7 / 135.4 / 182.4 / 220.1 output tok/s at 1 / 2 / 4 / 8; tool-eval-bench short 93, hard 89."
               }
             }
           }
@@ -142,7 +137,9 @@
         {"engine": "vllm", "checkpoint": "Qwen/Qwen3.6-35B-A3B-FP8", "date": "2026-10-04", "box": "DGXone", "source": "sixlabs/ports/qwen3.6-35b-a3b/results-2026-10-04-dgxone.md",
          "load_cold_s": 404, "gpu_gib": 44.51, "tok_s": {"single_prose": 50.1, "single_code": 50.1, "c2": 62.6, "c4": 105.9, "c8": 190.0},
          "notes": "The fleet's slot qwen3.6-35b@dgxone, same box and tools, one run. A different quantization from the 6ix.cpp row."},
-        {"engine": "atlas", "checkpoint": "nvidia/Qwen3.6-35B-A3B-NVFP4", "source": "Atlas recipes README (published, not measured here)", "tok_s": {"single_prose": 116.5}}
+        {"engine": "atlas", "checkpoint": "nvidia/Qwen3.6-35B-A3B-NVFP4", "date": "2026-10-04", "box": "DGXone", "source": "sixlabs/bench/results/dgxone_35b_6ixcpp_vs_atlas_2026-10-04.md",
+         "load_cold_s": 49, "gpu_gib": 72.1, "tok_s": {"single_prose": 84.8, "c2": 112.2, "c4": 108.9, "c8": 127.1},
+         "notes": "The same file as the 6ix.cpp row, measured here. tok/s is ShareGPT output throughput: compare with 6ix.cpp's ShareGPT 96.7 / 135.4 / 182.4 / 220.1, not the bench_decode figures in its row. Atlas ran its recipe with thinking on to match (the recipe ships thinking off; its published figure is 116.5 with one draft token), 32,768-token context, 0.62 of the box."}
       ]
     },
 
@@ -219,20 +216,32 @@
           "revision": "98915d83",
           "format": "nvfp4-modelopt",
           "status": "compiled",
-          "default": true,
           "tensors": 148976,
           "gpu_steps": "sixlabs/ports/qwen3.5-122b-a10b/gpu-steps.md",
-          "notes": "70.33 GiB resident by the loader's formulas, about 82 GiB with a 262,144-token pool and the prefix cache. 32 query heads on 2 KV heads sends prefill down the row-kernel branch, which no served model has used.",
+          "notes": "Not in the fleet's cache and never loaded; the Sehyo release below is the one that was verified. 70.33 GiB resident by the loader's formulas; the planner says 91.0 GiB with a 262,144-token pool and the prefix cache, and the real cost ran about 6.5 GiB over the planner on the Sehyo file.",
           "worlds": {"1": {"template": "deploy/cluster_qwen3.5-122b-a10b_nvfp4_w1.example.json"}}
         },
         {
           "repo": "Sehyo/Qwen3.5-122B-A10B-NVFP4",
           "revision": "56a6bdda",
           "format": "nvfp4-compressed-tensors",
-          "status": "compiled",
+          "status": "working",
+          "default": true,
           "tensors": 149552,
           "gpu_steps": "sixlabs/ports/qwen3.5-122b-a10b/gpu-steps.md",
-          "notes": "Binds. No template of its own; use the nvidia template with this repo as the model."
+          "verified": {"date": "2026-10-04", "box": "DGXone", "engine_commit": "29f904b", "record": "sixlabs/ports/qwen3.5-122b-a10b/results-2026-10-04-dgxone.md"},
+          "notes": "The checkpoint in the fleet's cache, and the one Atlas's single-Spark recipe names. Gate passed on prose and code in both dense forms. One Spark only with a reduced pool: the planner says 83.12 GiB at 65,536 tokens and 8 seats, the box lost about 89.6 GiB, which left 15 GiB beside the reranker, embedder and Docling (under the fleet's 19.7 GiB floor; the owner waived it for the run).",
+          "worlds": {
+            "1": {
+              "template": "deploy/cluster_qwen3.5-122b-a10b_nvfp4-sehyo_w1.example.json",
+              "measured": {
+                "date": "2026-10-04", "box": "DGXone", "source": "sixlabs/ports/qwen3.5-122b-a10b/results-2026-10-04-dgxone.md",
+                "load_cold_s": 176, "load_warm_s": 26, "plan_gib": 83.12, "gpu_gib": 84.9,
+                "tok_s": {"single_prose": 36.5, "c2": 46.9, "c4": 60.0, "c8": 71.2},
+                "notes": "tok/s is ShareGPT output throughput (64 prompts a level), 65,536-token pool, draft head on (77.5 % of drafts accepted). The cold load writes a 67.4 GiB resident image."
+              }
+            }
+          }
         },
         {
           "repo": "Qwen/Qwen3.5-122B-A10B-FP8",
@@ -247,7 +256,8 @@
       ],
       "baselines": [
         {"engine": "vllm", "date": "2026-09", "box": "DGXone + DGXtwo", "source": "6ixlabs cluster/serving/loadouts.json", "load_cold_s": 395, "gpu_gib": 47.6, "notes": "Fleet record: tensor parallel over both boxes, 47.6 GiB on each."},
-        {"engine": "atlas", "checkpoint": "Sehyo/Qwen3.5-122B-A10B-NVFP4", "source": "Atlas README (published, not measured here)", "tok_s": {"single_prose": 46}, "notes": "Two Sparks."}
+        {"engine": "atlas", "checkpoint": "Sehyo/Qwen3.5-122B-A10B-NVFP4", "source": "Atlas recipe qwen3.5-122b-a10b-nvfp4-single (published, not measured here)", "tok_s": {"single_prose": 33.4},
+         "notes": "One Spark, one request at a time, 16,384-token context, no speculation, 0.92 of the box: it commits about 110 GiB before its cache and could not be run beside DGXone's services. Atlas publishes about 51 tok/s on two Sparks."}
       ]
     },
 

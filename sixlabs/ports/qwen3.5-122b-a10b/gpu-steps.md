@@ -1,5 +1,23 @@
 # Port 4 — Qwen3.5-122B-A10B: what to run once a GPU is free
 
+**Update 2026-10-04 (DGXone): checkpoint B (`Sehyo/Qwen3.5-122B-A10B-NVFP4`) was run through these
+steps and is verified. The record is `results-2026-10-04-dgxone.md` beside this file.** What the
+run showed that the text below does not say:
+
+- Bind check `expected 149552 | matched 149552`; the gate passed on prose and code in both dense
+  forms (recalibrated bounds: pearson ≥ 0.995, mean ≤ 0.10 nat, greedy agreement above 0.5 nat).
+- It served with `"kv_capacity": 65536, "prefix_cache_gib": 1`, 8 seats, fp8 dense form, draft head
+  on (template `deploy/cluster_qwen3.5-122b-a10b_nvfp4-sehyo_w1.example.json`). Cold load 176 s
+  (writes a 67.4 GiB resident image), warm 26 s, 86,941 MiB.
+- The planner understates this model: 83.12 GiB planned, about 89.6 GiB of MemAvailable gone at 8
+  seats. Beside the reranker, embedder and Docling that left 15 GiB, under the fleet's 19.7 GiB
+  floor; 4 seats left 18.3 GiB. The 262,144-token pool plans at 91.0 GiB and was not booted.
+- Do not add `prefill_*` keys: the serve binary refuses an explicit prefill budget for `qwen3_5`.
+- ShareGPT: 36.5 / 46.9 / 60.0 / 71.2 output tok/s at 1 / 2 / 4 / 8 streams. Checkpoint A
+  (`nvidia/…`) is not in the fleet's cache and has not been loaded.
+
+The rest of this file is as it was written before the run.
+
 Status when this was written (2026-10-04, overnight): **code complete on the host side for three
 checkpoints, nothing has run on a GPU, and no weight byte of this model has been read** — the
 configs and safetensors headers were read from Hugging Face from the Mac (HTTP range requests);

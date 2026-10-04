@@ -1,0 +1,26 @@
+{
+  "model": "Sehyo/Qwen3.5-122B-A10B-NVFP4",
+  "world_size": 1,
+  "engine": {
+    "max_concurrency": 8,
+    "kv_capacity": 65536,
+    "kv_dtype": "bf16",
+    "dense_weights": "fp8",
+    "default_max_tokens": 32768,
+    "queue_limit": 64,
+    "max_connections": 256,
+    "decode_graph": true,
+    "mtp": true,
+    "mtp_depth": 2,
+    "prefix_cache_gib": 1,
+    "admission": "grow",
+    "admission_window": 256,
+    "model_alias": "Qwen3.5-122B-A10B",
+    "sampling_candidates": 128,
+    "stats_interval_s": 10,
+    "max_tokens_overflow": "clamp"
+  },
+  "paths": {
+    "resident_cache": ""
+  }
+}

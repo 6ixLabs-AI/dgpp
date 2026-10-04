@@ -56,6 +56,14 @@ def server_families(root):
 
 
 # ── check ────────────────────────────────────────────────────────────────────────────────────
+def prefill_budget_families(root):
+    """The families the serve binary accepts an explicit prefill budget for, read from the refusal
+    in apps/dgpp_serve.cpp; None when that code cannot be found."""
+    with open(os.path.join(root, "apps/dgpp_serve.cpp")) as f:
+        m = re.search(r"prefill_budget_tokens > 0 &&(.{0,400}?)\{", f.read(), re.S)
+    return set(re.findall(r'!= "([a-z0-9_]+)"', m.group(1))) if m else None
+
+
 def check(reg, root=ROOT):
     """Every inconsistency in the registry, and between it and the tree. Empty list = clean."""
     bad = []
@@ -92,6 +100,11 @@ def check(reg, root=ROOT):
             bad.append(f"family {n} is marked served but apps/dgpp_serve.cpp has no family of that name")
         for n in sorted(in_server - served):
             bad.append(f"apps/dgpp_serve.cpp serves family {n}, which the registry does not list as served")
+        budget_ok = prefill_budget_families(root)
+        for n, f in fams.items():
+            if budget_ok is not None and "prefill_budget_tokens" in f.get("engine_defaults", {}) and n not in budget_ok:
+                bad.append(f"family {n}: engine default 'prefill_budget_tokens' is refused by apps/dgpp_serve.cpp for this family "
+                           f"(accepted: {', '.join(sorted(budget_ok))})")
     except OSError:
         bad.append("cannot read apps/dgpp_serve.cpp")
 

@@ -34,16 +34,30 @@ class Resolve(unittest.TestCase):
         self.reg = R.load()
 
     def test_working_model_gets_family_defaults_only_where_the_template_is_silent(self):
-        cfg, prov = R.resolve(self.reg, "qwen3.6-35b-a3b")
+        reg = copy.deepcopy(self.reg)
+        reg["families"]["qwen3_5"]["engine_defaults"] = {"prefill_order": "shortest", "kv_capacity": 1}
+        cfg, prov = R.resolve(reg, "qwen3.6-35b-a3b")
         with open(os.path.join(R.ROOT, prov["template"])) as f:
             template = json.load(f)
         for k, v in template["engine"].items():
-            self.assertEqual(cfg["engine"][k], v, k)          # the template wins
-        self.assertEqual(cfg["engine"]["prefill_budget_tokens"], 1024)
-        self.assertEqual(cfg["engine"]["prefill_order"], "shortest")
+            self.assertEqual(cfg["engine"][k], v, k)          # the template wins (kv_capacity too)
+        self.assertNotIn("prefill_order", template["engine"])
+        self.assertEqual(cfg["engine"]["prefill_order"], "shortest")   # filled where the template is silent
         self.assertEqual(cfg["model"], "nvidia/Qwen3.6-35B-A3B-NVFP4")
         self.assertEqual(prov["world"], 1)
         self.assertEqual(set(cfg) - set(template), set())      # no key the engine does not know
+
+    def test_the_35b_resolves_to_a_config_the_engine_accepts(self):
+        # The serve binary refuses an explicit prefill budget for qwen3_5: the shipped registry
+        # must not hand it one (the 35B exited at start on DGXone on 2026-10-04 with one).
+        cfg, _ = R.resolve(self.reg, "qwen3.6-35b-a3b")
+        self.assertNotIn("prefill_budget_tokens", cfg["engine"])
+
+    def test_the_sehyo_122b_has_its_own_template_and_the_small_pool(self):
+        cfg, prov = R.resolve(self.reg, "qwen3.5-122b-a10b")      # the verified checkpoint is the default
+        self.assertEqual(cfg["model"], "Sehyo/Qwen3.5-122B-A10B-NVFP4")
+        self.assertEqual(cfg["engine"]["kv_capacity"], 65536)
+        self.assertEqual(prov["status"], "working")
 
     def test_set_overrides_everything_and_parses_json(self):
         cfg, prov = R.resolve(self.reg, "qwen3-next-80b", sets=["kv_capacity=262144", "prefill_order=fair"])
@@ -104,6 +118,11 @@ class CheckNotices(unittest.TestCase):
 
     def test_engine_default_the_engine_does_not_parse(self):
         self.assertTrue(any("not a key" in b for b in self.broken(lambda r: r["families"]["qwen3_5"]["engine_defaults"].update(no_such_key=1))))
+
+    def test_prefill_budget_default_on_a_family_the_binary_refuses_it_for(self):
+        self.assertTrue(any("refused by apps/dgpp_serve.cpp" in b for b in
+                            self.broken(lambda r: r["families"]["qwen3_5"]["engine_defaults"].update(prefill_budget_tokens=1024))))
+        self.assertEqual(R.prefill_budget_families(R.ROOT), {"qwen4_exp", "glm5", "qwen3_next"})
 
     def test_branch_model_marked_as_runnable(self):
         def edit(r):
