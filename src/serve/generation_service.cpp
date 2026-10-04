@@ -1718,6 +1718,14 @@ void GenerationService::handle(const HttpRequest& req,
       route_completions(req, w);
     return;
   }
+  if (p == "/v1/score") {
+    if (req.method != "POST") {
+      respond_error(w, 405, req.method + " is not allowed here; use POST", "invalid_request_error");
+      return;
+    }
+    route_score(req, w);
+    return;
+  }
   if (p == "/v1/models" || p.rfind("/v1/models/", 0) == 0) {
     if (req.method != "GET") {
       respond_error(w, 405, req.method + " is not allowed here; use GET",
@@ -2344,6 +2352,230 @@ void GenerationService::route_completions(const HttpRequest& req,
   record->logprobs = logprobs;
   record->arrived = std::chrono::steady_clock::now();
   enqueue_admission(std::move(record), std::move(sr));
+}
+
+// ---------------------------------------------------------------------------
+// POST /v1/score (6ixServe, 2026-10-04)
+//
+// The model's own log-probability of a GIVEN continuation after a prompt:
+//   {"model", "prompt": "<text>" | "prompt_ids": [..],
+//    "continuation": "<text>" | "continuation_ids": [..], "top_logprobs": 0..20}
+//   -> {"object":"score","model","prompt_tokens","continuation_tokens","sum_logprob",
+//       "tokens":[{"token","id","logprob","top_logprobs":[{"token","id","logprob"}]}]}
+// Stated in the read-in pass: the continuation's tokens but the last ride at
+// the end of the prompt, the head runs over those rows, and each token's
+// log-probability is read from the model's distribution at temperature 1
+// with no top-k/top-p, penalty, bias or mask. One prefill, no decode beyond
+// the one token every request generates (discarded). Never cached.
+// ---------------------------------------------------------------------------
+
+void GenerationService::route_score(const HttpRequest& req, HttpResponseWriter& w) {
+  dgpp::minijson::ParseResult parsed;
+  try {
+    parsed = dgpp::minijson::parse(req.body);
+  } catch (const std::exception& e) {
+    respond_error(w, 400, std::string("invalid JSON body: ") + e.what(), "invalid_request_error", "body");
+    return;
+  }
+  const dgpp::minijson::Value& body = parsed.root;
+  if (!body.is_object()) {
+    respond_error(w, 400, "the request body must be a JSON object", "invalid_request_error", "body");
+    return;
+  }
+  const dgpp::minijson::Value* model = body.find("model");
+  if (model == nullptr || !model->is_string()) {
+    respond_error(w, 400, "model is required and must be a string", "invalid_request_error", "model");
+    return;
+  }
+  if (model->as_string() != cfg_.model_id) {
+    respond_error(w, 404, "the model '" + std::string(model->as_string()) + "' does not exist on this server",
+                  "invalid_request_error", "model", "model_not_found");
+    return;
+  }
+  if (!engine_->supports_score()) {
+    respond_error(w, 501, "this engine does not state a continuation's score (single-rank, whole-head models only)",
+                  "invalid_request_error", "", "score_unsupported");
+    return;
+  }
+  if (body.find("messages") != nullptr) {
+    respond_error(w, 400, "score takes a rendered prompt in this version: apply the chat template yourself and send "
+                          "\"prompt\"", "invalid_request_error", "messages");
+    return;
+  }
+  const dgpp::minijson::Value* prompt = body.find("prompt");
+  const dgpp::minijson::Value* prompt_ids = body.find("prompt_ids");
+  if ((prompt == nullptr) == (prompt_ids == nullptr) || (prompt != nullptr && !prompt->is_string())) {
+    respond_error(w, 400, "send exactly one of prompt (a string) and prompt_ids (token ids)", "invalid_request_error",
+                  "prompt");
+    return;
+  }
+  const int64_t max_id = cfg_.vocab_size > 0 ? cfg_.vocab_size - 1 : std::numeric_limits<int>::max();
+  const dgpp::minijson::Value* text = body.find("continuation");
+  const dgpp::minijson::Value* given = body.find("continuation_ids");
+  if ((text == nullptr) == (given == nullptr)) {
+    respond_error(w, 400, "send exactly one of continuation (text) and continuation_ids (token ids)",
+                  "invalid_request_error", "continuation");
+    return;
+  }
+  std::vector<int32_t> cont;
+  if (text != nullptr) {
+    if (!text->is_string() || text->as_string().empty()) {
+      respond_error(w, 400, "continuation must be a non-empty string", "invalid_request_error", "continuation");
+      return;
+    }
+    for (const int64_t id : frontend_->encode_text(text->as_string())) cont.push_back(static_cast<int32_t>(id));
+  } else {
+    if (!given->is_array() || given->items().empty()) {
+      respond_error(w, 400, "continuation_ids must be a non-empty array of token ids",
+                    "invalid_request_error", "continuation_ids");
+      return;
+    }
+    for (const dgpp::minijson::Value& v : given->items()) {
+      if (!bounded_integer(v, 0, max_id)) {
+        respond_error(w, 400, "continuation_ids must be token ids of this model", "invalid_request_error",
+                      "continuation_ids");
+        return;
+      }
+      cont.push_back(static_cast<int32_t>(v.as_int()));
+    }
+  }
+  const int limit = engine_->score_limit();
+  if (cont.empty() || static_cast<int>(cont.size()) > limit) {
+    respond_error(w, 400, "the continuation is " + std::to_string(cont.size()) + " tokens; this server scores 1 to " +
+                              std::to_string(limit),
+                  "invalid_request_error", "continuation");
+    return;
+  }
+  int top = 0;
+  if (const dgpp::minijson::Value* tv = optional_field(body, "top_logprobs")) {
+    if (!bounded_integer(*tv, 0, 20)) {
+      respond_error(w, 400, "top_logprobs must be an integer in [0, 20]", "invalid_request_error", "top_logprobs");
+      return;
+    }
+    top = static_cast<int>(tv->as_int());
+  }
+  std::vector<int64_t> ids;
+  if (prompt != nullptr) {
+    ids = frontend_->encode_text(prompt->as_string());
+  } else {
+    if (!prompt_ids->is_array()) {
+      respond_error(w, 400, "prompt_ids must be an array of token ids", "invalid_request_error", "prompt_ids");
+      return;
+    }
+    for (const dgpp::minijson::Value& v : prompt_ids->items()) {
+      if (!bounded_integer(v, 0, max_id)) {
+        respond_error(w, 400, "prompt_ids must be token ids of this model", "invalid_request_error", "prompt_ids");
+        return;
+      }
+      ids.push_back(v.as_int());
+    }
+  }
+  if (ids.empty()) {
+    respond_error(w, 400, "the prompt produced no tokens", "invalid_request_error", "prompt");
+    return;
+  }
+  const int prompt_tokens = static_cast<int>(ids.size());
+  // The rows that predict the continuation: the prompt's last row predicts
+  // its first token, and each of its tokens but the last predicts the next.
+  for (size_t i = 0; i + 1 < cont.size(); ++i) ids.push_back(cont[i]);
+  const int steps = 1;
+  if (cfg_.position_ceiling > 0 && static_cast<int64_t>(ids.size()) + steps > cfg_.position_ceiling) {
+    respond_error(w, 400,
+                  "the prompt and continuation (" + std::to_string(ids.size() + 1) + " tokens) exceed the model's " +
+                      std::to_string(cfg_.position_ceiling) + "-token positional ceiling",
+                  "invalid_request_error", "prompt", "context_length_exceeded");
+    return;
+  }
+  if (engine_->blocks_for_tokens(static_cast<int64_t>(ids.size()) + steps) > engine_->pool_blocks_total()) {
+    respond_error(w, 400, "the prompt and continuation exceed the model's KV capacity", "invalid_request_error",
+                  "prompt", "context_length_exceeded");
+    return;
+  }
+
+  auto record = std::make_shared<StreamRecord>();
+  record->tag = next_tag_.fetch_add(1, std::memory_order_relaxed);
+  {
+    char suffix[17];
+    std::snprintf(suffix, sizeof(suffix), "%016llx", static_cast<unsigned long long>(record->tag));
+    record->id = "score-" + std::string(suffix);
+  }
+  record->sched_id = record->id;
+  record->group = std::make_shared<ChoiceGroup>();
+  record->group->choices.resize(1);
+  record->call_seed = record->tag;
+  record->model = cfg_.model_id;
+  record->created_unix = std::time(nullptr);
+  record->chat = false;
+  record->stream = false;
+  record->prompt_tokens = prompt_tokens;
+  record->score = true;
+  record->score_ids = cont;
+  record->writer = &w;
+  w.set_stream_tag(record->tag);
+
+  SchedulerRequest sr;
+  sr.id = record->id;
+  sr.no_cache = true;
+  sr.prompt = std::move(ids);
+  sr.max_steps = steps;
+  sr.sampling = dgpp::sample::greedy_params();
+  sr.score_tokens = std::move(cont);
+  sr.score_top = top;
+  record->arrived = std::chrono::steady_clock::now();
+  enqueue_admission(std::move(record), std::move(sr));
+}
+
+std::string GenerationService::score_body(const StreamRecord& r) const {
+  std::string out = "{\"id\":";
+  append_json_string(&out, r.id);
+  out.append(",\"object\":\"score\",\"model\":");
+  append_json_string(&out, r.model);
+  out.append(",\"prompt_tokens\":");
+  append_json_int(&out, r.prompt_tokens);
+  out.append(",\"continuation_tokens\":");
+  append_json_int(&out, static_cast<int64_t>(r.score_rows.size()));
+  double sum = 0.0;
+  for (const sample::Result& row : r.score_rows) sum += static_cast<double>(row.logprob);
+  out.append(",\"sum_logprob\":");
+  append_json_float(&out, sum);
+  out.append(",\"tokens\":[");
+  for (size_t i = 0; i < r.score_rows.size(); ++i) {
+    const sample::Result& row = r.score_rows[i];
+    if (i) out.push_back(',');
+    out.append("{\"token\":");
+    std::string piece = frontend_->decode_ids({static_cast<int64_t>(row.token)});
+    sanitize_utf8(&piece);
+    append_json_string(&out, piece);
+    out.append(",\"id\":");
+    append_json_int(&out, row.token);
+    out.append(",\"logprob\":");
+    append_json_float(&out, row.logprob);
+    out.append(",\"top_logprobs\":[");
+    for (size_t j = 0; j < row.top_logprobs.size(); ++j) {
+      if (j) out.push_back(',');
+      out.append("{\"token\":");
+      std::string alt = frontend_->decode_ids({static_cast<int64_t>(row.top_logprobs[j].first)});
+      sanitize_utf8(&alt);
+      append_json_string(&out, alt);
+      out.append(",\"id\":");
+      append_json_int(&out, row.top_logprobs[j].first);
+      out.append(",\"logprob\":");
+      append_json_float(&out, row.top_logprobs[j].second);
+      out.push_back('}');
+    }
+    out.append("]}");
+  }
+  out.append("]}");
+  return out;
+}
+
+void GenerationService::on_score(const std::string& id, const std::vector<sample::Result>& rows) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  for (auto& r : records_) {
+    if (r->sched_id != id || r->done) continue;
+    if (r->score) r->score_rows = rows;
+    break;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -3606,6 +3838,24 @@ void GenerationService::pump_records() {
           std::lock_guard<std::mutex> lock(mutex_);
           lp_json = r->chat ? logprobs_content(*r, 0, r->lps.size())
                             : legacy_logprobs(*r);
+        }
+        if (r->score) {
+          // POST /v1/score: the rows the prefill stated, or the reason there
+          // are none (the request retired before its prefill finished).
+          bool have = false;
+          std::string response;
+          {
+            std::lock_guard<std::mutex> lock(mutex_);
+            have = !r->score_rows.empty() && r->score_rows.size() == r->score_ids.size();
+            if (have) response = score_body(*r);
+          }
+          if (have)
+            r->writer->respond(200, "application/json", std::move(response));
+          else
+            respond_error(*r->writer, 500, "the request ended before its score was computed", "server_error", "",
+                          "score_unavailable");
+          g.ended = true;
+          continue;
         }
         const char* finish = finish_reason(r->reason, !r->calls.empty());
         if (r->chat) {

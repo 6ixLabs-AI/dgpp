@@ -1451,7 +1451,11 @@ Qwen35Model::Outputs Qwen35Model::run_rows(const RowRun& run) {
   }
   // Final norm + lm head.
   qwen_rmsnorm_bf16(resid_, globals_.final_norm, h_, T, H, eps, stream_);
-  const int first = (run.decode || run.all_rows || run.num_spans > 0) ? 0 : T - 1;
+  // A scoring prefill's last chunk runs the head over its last tail_rows
+  // rows (kScoreTail): each lands at its own row of logits_, and finish_run
+  // returns them beside the usual last row.
+  const int tail = run.tail_rows > 1 ? std::min(run.tail_rows, T) : 1;
+  const int first = (run.decode || run.all_rows || run.num_spans > 0) ? 0 : T - tail;
   const int rows = T - first;
   head_gemv(h_ + static_cast<size_t>(first) * H, logits_ + static_cast<size_t>(first) * lm_vocab_count_,
             rows, stream_);

@@ -98,6 +98,13 @@ class SessionModel : public PrefillReporting {
   // schedules the verify depth only for a family that shadows this).
   static constexpr bool kVerifyConfidence = false;
   struct Outputs : DecodeOutputs {
+    // The scoring tail (session_set_score_tail, 6ixServe 2026-10-04): the
+    // head's rows over a prefill's last tail_rows positions, fp32
+    // [tail_rows, lm_vocab_count]; its last row is `logits`. Row i is the
+    // model's distribution after everything up to and including position
+    // end - tail_rows + i. Empty unless the slot asked for more than one row.
+    std::vector<float> tail_logits;
+    int tail_rows = 0;
     std::vector<std::vector<uint16_t>> layer_states;  // per layer, when captured
     std::vector<std::vector<int32_t>> route_ids;      // per MoE layer [T, top_k], ascending
     std::vector<std::vector<float>> route_weights;    // per MoE layer [T, top_k]
@@ -126,6 +133,7 @@ class SessionModel : public PrefillReporting {
     int64_t pos0 = 0;              // prefill: the chunk's first position
     bool decode = false;           // decode rows: metadata staged by decode_host_prep
     bool all_rows = false;         // every row's logits (else the last row; decode: all rows)
+    int tail_rows = 0;             // prefill: the head on the last tail_rows rows (0 or 1: the last row alone)
     bool capture_layers = false;
     bool capture = false;          // graph capture: no syncs, no copies, nothing executes
     int batch_requests = 0;        // > 0: the fixed slot-major batch (decode)
@@ -193,6 +201,7 @@ class SessionModel : public PrefillReporting {
     bool suspended = false;
     SnapshotRequest* snap = nullptr;
     Outputs output;
+    int score_tail = 0;  // the slot's scoring tail when the cursor was made: the last chunk holds these rows whole
   };
   PrefillCursor session_prefill_begin(int req, const std::vector<int64_t>& prompt,
       int64_t reserve_tokens, int64_t chunk_tokens, const std::vector<int64_t>& boundaries = {},
@@ -230,6 +239,15 @@ class SessionModel : public PrefillReporting {
   void session_rollback(int req, int accepted, int rows, int snapshot_base);
   void head_dump_flush() {}  // a family may shadow this (QwenModel's head dump)
   void session_close(int req);
+  // Scoring a given continuation in the read-in pass: the next prefill of
+  // slot `req` keeps the head's rows for its last `rows` positions
+  // (Outputs::tail_logits) and reads them as one chunk, whatever the budget
+  // grid or the cuts say. 0 clears; session_close clears. Only a family
+  // whose run_rows honours RowRun::tail_rows (D::kScoreTail) takes rows > 0.
+  void session_set_score_tail(int req, int rows);
+  int session_score_tail_limit() const {
+    return static_cast<int>(std::min<int64_t>(max_tokens_, logits_capacity_rows_));
+  }
   int64_t session_position(int req) const {
     check_req(req, "session_position");
     return session_pos_[static_cast<size_t>(req)];
@@ -479,6 +497,7 @@ class SessionModel : public PrefillReporting {
   bool decode_tail_mirrors_ = true;
 
   std::vector<int64_t> session_pos_;  // [R]; 0 = closed slot (the host mirror)
+  std::vector<int> score_tail_;       // [R] or empty: the scoring tail each slot's next prefill keeps (0: none)
   int64_t* d_session_pos_ = nullptr;  // device [R]: the graphs' positions
   int64_t* h_session_pos_ = nullptr;  // pinned upload mirror
 
@@ -811,6 +830,15 @@ typename SessionModel<D>::Outputs SessionModel<D>::finish_run(const RowRun& run,
                             cudaMemcpyDeviceToHost));
     DGPP_CUDA_OK(cudaMemcpy(out.logits.data(), logits_ + (packed_logits ? 0 : first) * lm_vocab_count_, out.logits.size() * 4,
                             cudaMemcpyDeviceToHost));
+    // The scoring tail: the head ran over the chunk's last tail_rows rows
+    // (a D::kScoreTail family's run_rows), each at its own row of logits_.
+    if (run.tail_rows > 1 && !packed_logits) {
+      const size_t tail = static_cast<size_t>(std::min(run.tail_rows, T));
+      out.tail_rows = static_cast<int>(tail);
+      out.tail_logits.resize(tail * lm_vocab_count_);
+      DGPP_CUDA_OK(cudaMemcpy(out.tail_logits.data(), logits_ + (static_cast<size_t>(T) - tail) * lm_vocab_count_,
+                              out.tail_logits.size() * 4, cudaMemcpyDeviceToHost));
+    }
   }
   return std::move(out);
 }
@@ -844,6 +872,16 @@ typename SessionModel<D>::PrefillCursor SessionModel<D>::prefill_cursor(
   cursor.end = start + count;
   cursor.cuts = prefill_cuts(start, cursor.end, boundaries);
   cursor.snap = snap;
+  cursor.score_tail = static_cast<size_t>(req) < score_tail_.size() ? score_tail_[static_cast<size_t>(req)] : 0;
+  if (cursor.score_tail > 0) {
+    if (count < cursor.score_tail)
+      throw std::invalid_argument("session_prefill: the scoring tail is longer than the rows this prefill reads");
+    // The tail is read as one chunk: no cut inside it.
+    const int64_t tail0 = cursor.end - cursor.score_tail;
+    cursor.cuts.erase(std::remove_if(cursor.cuts.begin(), cursor.cuts.end(),
+                                     [tail0](int64_t cut) { return cut > tail0; }),
+                      cursor.cuts.end());
+  }
   for (auto* at = snap; at != nullptr; at = at->next) {
     if (at->dst == nullptr || at->meta == nullptr)
       throw std::invalid_argument("session_prefill: snapshot request without a buffer");
@@ -866,6 +904,16 @@ void SessionModel<D>::prefill_chunk(PrefillCursor& cursor, int64_t budget) {
   // budget can coalesce future work without crossing a required snapshot.
   // Global grid boundaries preserve the original fixed-budget chunk shapes.
   if (budget > 0) c1 = std::min(c1, (c0 / budget + 1) * budget);
+  // The scoring tail's rows are one chunk's last rows: a boundary that would
+  // fall inside the tail moves back to its start, and a chunk that begins at
+  // the tail runs to the end whatever the grid says.
+  const auto keep_tail_whole = [&](int64_t from, int64_t to) {
+    if (cursor.score_tail <= 0) return to;
+    const int64_t tail0 = end - cursor.score_tail;
+    if (from >= tail0) return end;
+    return to > tail0 && to < end ? tail0 : to;
+  };
+  c1 = keep_tail_whole(c0, c1);
   if (cursor.cut_index < cursor.cuts.size() && c1 == cursor.cuts[cursor.cut_index]) ++cursor.cut_index;
   if (c1 - c0 > max_tokens_)
     throw std::invalid_argument("session_prefill: a chunk of " + std::to_string(c1 - c0) +
@@ -882,6 +930,7 @@ void SessionModel<D>::prefill_chunk(PrefillCursor& cursor, int64_t budget) {
   // snapshot must close the span before its state can be published.
   run.first_chunk = cursor.span_start;
   run.last_chunk = c1 == end;
+  run.tail_rows = c1 == end ? cursor.score_tail : 0;
   for (auto* at = snap; at != nullptr; at = at->next)
     run.last_chunk |= !at->taken && at->position == c1;
   cursor.span_start = run.last_chunk;
@@ -889,6 +938,7 @@ void SessionModel<D>::prefill_chunk(PrefillCursor& cursor, int64_t budget) {
     // The chunk after this one on the same grid and cuts.
     int64_t c2 = cursor.cut_index < cursor.cuts.size() ? cursor.cuts[cursor.cut_index] : end;
     if (budget > 0) c2 = std::min(c2, (c1 / budget + 1) * budget);
+    c2 = keep_tail_whole(c1, c2);
     if (c2 > c1 && c2 - c1 <= max_tokens_) {
       run.next_ids = ids + (c1 - start);
       run.next_T = static_cast<int>(c2 - c1);
@@ -897,6 +947,8 @@ void SessionModel<D>::prefill_chunk(PrefillCursor& cursor, int64_t budget) {
   }
   Outputs chunk = derived().run_rows(run);
   out.logits = std::move(chunk.logits);
+  out.tail_logits = std::move(chunk.tail_logits);
+  out.tail_rows = chunk.tail_rows;
   out.final_hidden_bits = std::move(chunk.final_hidden_bits);
   out.lm_vocab_begin = chunk.lm_vocab_begin;
   out.lm_vocab_count = chunk.lm_vocab_count;
@@ -1443,8 +1495,25 @@ void SessionModel<D>::session_rollback(int req, int accepted, int rows, int snap
 }
 
 template <class D>
+void SessionModel<D>::session_set_score_tail(int req, int rows) {
+  check_req(req, "session_set_score_tail");
+  if (rows != 0) {
+    if constexpr (requires { requires D::kScoreTail; }) {
+    } else {
+      throw std::logic_error("session_set_score_tail: this family's walk keeps no scoring rows");
+    }
+  }
+  if (rows < 0 || rows > session_score_tail_limit())
+    throw std::invalid_argument("session_set_score_tail: " + std::to_string(rows) + " rows outside [0, " +
+                                std::to_string(session_score_tail_limit()) + "]");
+  if (score_tail_.size() != static_cast<size_t>(max_requests_)) score_tail_.assign(static_cast<size_t>(max_requests_), 0);
+  score_tail_[static_cast<size_t>(req)] = rows;
+}
+
+template <class D>
 void SessionModel<D>::session_close(int req) {
   check_req(req, "session_close");
+  if (static_cast<size_t>(req) < score_tail_.size()) score_tail_[static_cast<size_t>(req)] = 0;
   derived().reset_slot_state(req);
   session_pos_[static_cast<size_t>(req)] = 0;
   push_position(req);

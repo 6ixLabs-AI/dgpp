@@ -86,6 +86,31 @@ class FakeEngine : public SchedulerEngine {
     out.swap(pending_lps_[req]);
     return out;
   }
+  // Scoring: with score_on the fake states -(i + 1) / 4 for the i-th token of
+  // the continuation it was armed with ("S:slot:count" in the op stream).
+  bool score_on = false;
+  bool supports_score() const override { return score_on; }
+  int score_limit() const override { return score_on ? 4 : 0; }
+  void configure_score(int req, const std::vector<int32_t>& continuation, int top) override {
+    if (!score_on) {
+      SchedulerEngine::configure_score(req, continuation, top);
+      return;
+    }
+    score_armed_[req] = continuation;
+    if (!continuation.empty()) ops_.push_back("S:" + std::to_string(req) + ":" + std::to_string(continuation.size()));
+  }
+  std::vector<dgpp::sample::Result> take_score(int req) override {
+    std::vector<dgpp::sample::Result> out;
+    for (size_t i = 0; i < score_armed_[req].size(); ++i) {
+      dgpp::sample::Result row;
+      row.token = score_armed_[req][i];
+      row.logprob = -0.25f * static_cast<float>(i + 1);
+      out.push_back(row);
+    }
+    score_armed_[req].clear();
+    return out;
+  }
+  std::map<int, std::vector<int32_t>> score_armed_;
   // Constrained decoding (M6 6g): a sampling-capable fake can mask and
   // records the grammar arming ("G:slot:mode:tools") right after the
   // sampling arming; a greedy fake inherits the base refusal.
@@ -1003,6 +1028,67 @@ DGPP_TEST(scheduler_prefill_shortest_first_admits_a_short_prompt_beside_a_long_r
                 sched.meters().prompt_tokens_computed == 26 && sched.meters().pool_blocks_in_use == 0,
             "both prompts are read in full and both answers complete");
   }
+}
+
+DGPP_TEST(scheduler_scoring_request_gets_its_rows_after_the_prefill_and_is_never_grouped) {
+  // GIVEN an engine that states a continuation's score and two requests
+  // queued together, one of them a scoring request,
+  struct Scores final : dgpp::sched::SchedulerObserver {
+    std::vector<std::string> events;
+    void on_token(const std::string& id, int64_t token, int) override {
+      events.push_back("T:" + id + ":" + std::to_string(token));
+    }
+    void on_retire(const std::string&, const Scheduler::Result&) override {}
+    void on_score(const std::string& id, const std::vector<dgpp::sample::Result>& rows) override {
+      std::string e = "S:" + id;
+      for (const auto& row : rows) e += ":" + std::to_string(row.token) + "@" + std::to_string(static_cast<int>(row.logprob * 100));
+      events.push_back(e);
+    }
+  } observer;
+  GroupFakeEngine engine(/*slots=*/3, /*total_blocks=*/100, /*block_tokens=*/4, /*span=*/8, /*total=*/64);
+  engine.score_on = true;
+  engine.arm(0, {1}, /*max_steps=*/1);
+  engine.arm(0, {4}, /*max_steps=*/1);  // the scoring request retires on its one token; the next reuses its slot
+  Scheduler sched(&engine, {kEos});
+  sched.set_observer(&observer);
+  SchedulerRequest score = make_request("score", 5, 1);
+  score.no_cache = true;
+  score.score_tokens = {41, 42, 43};
+  sched.submit(score);
+  sched.submit(make_request("plain", 5, 1));
+  sched.run_to_completion();
+  // THEN the scoring request is read in alone (never a span of a group),
+  // its slot armed with the continuation before the prefill, and its rows
+  // reach the observer before its first token.
+  const auto at = [&](const std::string& e) {
+    return std::find(observer.events.begin(), observer.events.end(), e) - observer.events.begin();
+  };
+  require(at("S:score:41@-25:42@-50:43@-75") < at("T:score:1") &&
+              at("T:score:1") < static_cast<std::ptrdiff_t>(observer.events.size()),
+          "the rows, one per continuation token, arrive before the request's first token");
+  bool grouped = false, armed = false;
+  for (const std::string& op : engine.ops()) {
+    grouped |= op.rfind("PG:", 0) == 0;
+    armed |= op == "S:0:3";
+  }
+  require(armed && !grouped, "the slot is armed with the continuation and the prefill is not a group");
+  require(sched.find("plain")->status == Scheduler::Result::Status::kDone && sched.meters().pool_blocks_in_use == 0,
+          "the request beside it completes and nothing is left reserved");
+  // AND the refusals: an engine that states no score, a continuation past
+  // the limit or longer than the prompt, and a scoring request left cached.
+  const auto refused = [&](SchedulerEngine* e, SchedulerRequest r) {
+    Scheduler s(e, {kEos});
+    try { s.submit(r); } catch (const std::invalid_argument&) { return true; }
+    return false;
+  };
+  FakeEngine plain_engine(2, 100, 2);
+  SchedulerRequest too_long = score, cached = score, past_prompt = score;
+  too_long.id = "a"; too_long.score_tokens = {1, 2, 3, 4, 5};
+  cached.id = "b"; cached.no_cache = false;
+  past_prompt.id = "c"; past_prompt.prompt.assign(2, 7);
+  require(refused(&plain_engine, score) && refused(&engine, too_long) && refused(&engine, cached) &&
+              refused(&engine, past_prompt),
+          "a scoring request the engine cannot honour is refused at submit");
 }
 
 DGPP_TEST(scheduler_chunked_prefill_budget_rejects_unsupported_and_unaligned_configs) {

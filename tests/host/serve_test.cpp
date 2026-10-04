@@ -169,6 +169,29 @@ class FakeEngine : public SchedulerEngine {
     out.swap(pending_lps_[req]);
     return out;
   }
+  // Scoring (POST /v1/score): the fake states -(i + 1) / 4 for the i-th token
+  // of the continuation, with the next id up as its one alternative when
+  // alternatives are asked for.
+  bool supports_score() const override { return true; }
+  int score_limit() const override { return 4; }
+  void configure_score(int req, const std::vector<int32_t>& continuation, int top) override {
+    score_armed_[req] = continuation;
+    score_top_[req] = top;
+  }
+  std::vector<dgpp::sample::Result> take_score(int req) override {
+    std::vector<dgpp::sample::Result> out;
+    for (size_t i = 0; i < score_armed_[req].size(); ++i) {
+      dgpp::sample::Result row;
+      row.token = score_armed_[req][i];
+      row.logprob = -0.25f * static_cast<float>(i + 1);
+      if (score_top_[req] > 0) row.top_logprobs.push_back({row.token + 1, -2.0f});
+      out.push_back(row);
+    }
+    score_armed_[req].clear();
+    return out;
+  }
+  std::map<int, std::vector<int32_t>> score_armed_;
+  std::map<int, int> score_top_;
   // Constrained decoding (M6 6g): the sampling-capable fake can mask and
   // records every active grammar it is armed with (the request interface's
   // evidence); it does not enforce it — the scripts are the outputs.
@@ -971,6 +994,54 @@ DGPP_TEST(serve_admission_clampsABudgetPastThePositionalCeiling) {
             "clamped to the ceiling: " + served.substr(0, 600));
   }
   require(rig.service.stats().requests_total == 2, "both clamped requests reach admission");
+}
+
+DGPP_TEST(serve_score_statesAGivenContinuationsLogProbabilities) {
+  // GIVEN the service over an engine that states a continuation's score,
+  ServiceRig rig;
+  const auto post = [&](const std::string& body, const char* until) {
+    Client c(rig.port());
+    c.send_all("POST /v1/score HTTP/1.1\r\nHost: t\r\nContent-Type: application/json\r\nContent-Length: " +
+               std::to_string(body.size()) + "\r\n\r\n" + body);
+    return c.read_until(until, 3000);
+  };
+  // WHEN a prompt and a two-token continuation are posted,
+  const std::string ok = post(
+      "{\"model\":\"glm-5.3-flash-fp8\",\"prompt\":\"abcd\",\"continuation\":\"xy\",\"top_logprobs\":1}", "]}]}");
+  // THEN the answer is the score object: the prompt's own token count, one
+  // row per continuation token in order, their sum, the alternatives asked.
+  require(ok.find("200 OK") != std::string::npos && ok.find("\"object\":\"score\"") != std::string::npos &&
+              ok.find("\"prompt_tokens\":4") != std::string::npos &&
+              ok.find("\"continuation_tokens\":2") != std::string::npos &&
+              ok.find("\"sum_logprob\":-0.75") != std::string::npos &&
+              ok.find("{\"token\":\"x\",\"id\":120,\"logprob\":-0.25,\"top_logprobs\":[{\"token\":\"y\",\"id\":121,\"logprob\":-2}]}") != std::string::npos &&
+              ok.find("{\"token\":\"y\",\"id\":121,\"logprob\":-0.5,") != std::string::npos,
+          "the score object: " + ok.substr(0, 700));
+  // AND token ids are taken as given,
+  const std::string by_id = post(
+      "{\"model\":\"glm-5.3-flash-fp8\",\"prompt\":\"abcd\",\"continuation_ids\":[120]}", "]}]}");
+  require(by_id.find("200 OK") != std::string::npos && by_id.find("\"continuation_tokens\":1") != std::string::npos &&
+              by_id.find("\"sum_logprob\":-0.25") != std::string::npos,
+          "continuation_ids: " + by_id.substr(0, 500));
+  const std::string all_ids = post(
+      "{\"model\":\"glm-5.3-flash-fp8\",\"prompt_ids\":[97,98,99,100],\"continuation_ids\":[120,121]}", "]}]}");
+  require(all_ids.find("200 OK") != std::string::npos && all_ids.find("\"prompt_tokens\":4") != std::string::npos &&
+              all_ids.find("\"sum_logprob\":-0.75") != std::string::npos,
+          "prompt_ids: " + all_ids.substr(0, 500));
+  // AND the malformed ones are refused by name before admission.
+  for (const auto& [body, field] : std::vector<std::pair<std::string, std::string>>{
+           {"{\"model\":\"glm-5.3-flash-fp8\",\"prompt\":\"abcd\",\"prompt_ids\":[97],\"continuation\":\"x\"}", "prompt"},
+           {"{\"model\":\"glm-5.3-flash-fp8\",\"prompt\":\"abcd\"}", "continuation"},
+           {"{\"model\":\"glm-5.3-flash-fp8\",\"prompt\":\"abcd\",\"continuation\":\"x\",\"continuation_ids\":[1]}", "continuation"},
+           {"{\"model\":\"glm-5.3-flash-fp8\",\"prompt\":\"abcd\",\"continuation\":\"vwxyz\"}", "continuation"},
+           {"{\"model\":\"glm-5.3-flash-fp8\",\"messages\":[],\"continuation\":\"x\"}", "messages"},
+           {"{\"model\":\"glm-5.3-flash-fp8\",\"continuation\":\"x\"}", "prompt"},
+           {"{\"model\":\"glm-5.3-flash-fp8\",\"prompt\":\"abcd\",\"continuation\":\"x\",\"top_logprobs\":21}", "top_logprobs"}}) {
+    const std::string bad = post(body, "\"code\":");
+    require(bad.find("400 Bad Request") != std::string::npos && bad.find("\"param\":\"" + field + "\"") != std::string::npos,
+            "refused by name (" + field + "): " + bad.substr(0, 400));
+  }
+  require(rig.service.stats().requests_total == 3, "only the three well-formed requests reach admission");
 }
 
 DGPP_TEST(serve_chatNonStream_exactCompletionShape) {

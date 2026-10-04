@@ -160,6 +160,8 @@ class Qwen35Model : public SessionModel<Qwen35Model> {
   // window — and the draft rows read the chunk's final hidden inside the same
   // chunk call. Served that way on the Qwen3Next dialect (2026-10-03).
   static constexpr bool kResumablePrefill = true;
+  // run_rows honours RowRun::tail_rows: a given continuation is scored in the read-in pass.
+  static constexpr bool kScoreTail = true;
   // The two opt-in FP8 levers beyond the checkpoint, set from the cluster
   // config before plan_memory and the constructor read them:
   // engine.prefill_fp8_per_tensor (the per-tensor prefill recipe) and

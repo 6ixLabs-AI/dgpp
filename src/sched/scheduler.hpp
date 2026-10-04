@@ -181,6 +181,24 @@ class SchedulerEngine {
     (void)req;
     return {};
   }
+  // Scoring (6ixServe, 2026-10-04): an engine that can state a GIVEN
+  // continuation's log-probabilities from its read-in pass. The request's
+  // prompt carries the continuation's tokens but the last; configure_score
+  // arms the slot before its prefill (empty: not a scoring request) and
+  // take_score returns one Result per continuation token after it — the
+  // model's own distribution, no sampler transform. score_limit is the
+  // longest continuation it takes.
+  virtual bool supports_score() const { return false; }
+  virtual int score_limit() const { return 0; }
+  virtual void configure_score(int req, const std::vector<int32_t>& continuation, int top) {
+    (void)req;
+    (void)top;
+    if (!continuation.empty()) throw std::logic_error("SchedulerEngine: this engine scores no continuation");
+  }
+  virtual std::vector<sample::Result> take_score(int req) {
+    (void)req;
+    return {};
+  }
 
   // ---- constrained decoding (M6 6g) ----------------------------------------
   // An engine that can mask the pick advertises it; the scheduler then hands
@@ -361,6 +379,14 @@ struct SchedulerRequest {
   // carries N to the sampler). Greedy requests report under the raw
   // distribution.
   int logprobs = -1;
+  // Scoring (6ixServe): the continuation whose log-probabilities the
+  // read-in pass states. `prompt` already ends with all of its tokens but
+  // the last, so the prompt's last score_tokens.size() rows are the model's
+  // distributions for them. score_top alternatives ride with each. Such a
+  // request is never grouped and never cached; it is not journaled, so it
+  // is single-rank.
+  std::vector<int32_t> score_tokens;
+  int score_top = 0;
   // Constrained decoding (M6 6g): the tool-call grammar the pick obeys
   // (tool_choice required / named / none, parallel_tool_calls false). The
   // default is inactive — unconstrained, the exact op stream every gate
@@ -841,6 +867,12 @@ class SchedulerObserver {
     (void)id;
     (void)steps_done;
     (void)logprobs;
+  }
+  // A scoring request's rows, one per continuation token, right after its
+  // prefill and before its first on_token. Default: ignored.
+  virtual void on_score(const std::string& id, const std::vector<sample::Result>& rows) {
+    (void)id;
+    (void)rows;
   }
   // The request left the queue for an engine slot and its prefill begins
   // (every admission path, grouped prefills included). Timing only: the

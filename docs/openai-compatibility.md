@@ -309,6 +309,40 @@ set; it is not the full legacy API. Its streamed object type is
 `text_completion`, with legacy logprobs fields. Model list/retrieve and health
 endpoints remain available. Stored completion routes are not provided.
 
+## Scoring a given continuation (6ixInfer extension)
+
+`POST /v1/score` states the model's own log-probability of a continuation
+you supply, after a prompt you supply. Nothing is sampled.
+
+```json
+{"model": "Qwen3-Next-80B", "prompt": "<rendered prompt text>",
+ "continuation": " Paris", "top_logprobs": 0}
+```
+
+```json
+{"id": "score-…", "object": "score", "model": "Qwen3-Next-80B",
+ "prompt_tokens": 412, "continuation_tokens": 1, "sum_logprob": -0.031,
+ "tokens": [{"token": " Paris", "id": 12095, "logprob": -0.031, "top_logprobs": []}]}
+```
+
+- `continuation` is tokenized on its own and appended to the prompt's
+  tokens; send `continuation_ids` instead to fix the tokens yourself. The
+  response returns the tokens it scored.
+- The numbers are the model's distribution at temperature 1: no top-k or
+  top-p, no penalties, no logit bias, no grammar mask. They are what
+  `logprobs_mode: raw` reports for a generated token.
+- It is computed in the read-in pass: the continuation's tokens but the last
+  ride at the end of the prompt and the output head runs over those rows.
+  One prefill, no decode steps beyond the single token every request
+  generates, which is discarded. The request is never cached.
+- `prompt` is raw text (or send `prompt_ids`, token ids, to fix the
+  tokens yourself). Apply the chat template yourself; `messages` is refused
+  in this version.
+- Limits: 1 to 256 continuation tokens; `top_logprobs` 0 to 20; single-rank
+  deployments of a family whose walk keeps the rows (the `qwen3_5` family:
+  Qwen3-Next-80B and its siblings). Elsewhere the route answers 501
+  `score_unsupported`.
+
 ## Metrics and prefill progress
 
 **OpenAI Chat Completions defines completion usage, not a metrics endpoint or

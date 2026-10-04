@@ -393,6 +393,19 @@ void Scheduler::validate_new(const SchedulerRequest& request) const {
     throw std::invalid_argument(
         "Scheduler: request '" + request.id +
         "' asks for logprobs but the engine reports none");
+  if (!request.score_tokens.empty()) {
+    if (!engine_->supports_score())
+      throw std::invalid_argument("Scheduler: request '" + request.id +
+                                  "' asks for a continuation's score but the engine states none");
+    if (static_cast<int64_t>(request.score_tokens.size()) > engine_->score_limit() ||
+        request.score_tokens.size() > request.prompt.size())
+      throw std::invalid_argument("Scheduler: request '" + request.id + "' scores a continuation of " +
+                                  std::to_string(request.score_tokens.size()) + " tokens (limit " +
+                                  std::to_string(engine_->score_limit()) + ", and never more rows than the prompt has)");
+    if (!request.images.empty() || !request.no_cache)
+      throw std::invalid_argument("Scheduler: request '" + request.id +
+                                  "' is a scoring request: no images, and no prefix cache (its tail is read as one chunk)");
+  }
   if (request.logprobs >= 0 && request.sampling.logprobs != request.logprobs)
     throw std::invalid_argument(
         "Scheduler: request '" + request.id +
@@ -508,6 +521,7 @@ int Scheduler::admit_prepare(int arrival) {
   // grammar with it, so the prefill pick is the first constrained position.
   engine_->configure_sampling(slot, r.spec.sampling, r.spec.seed);
   engine_->configure_logprobs(slot, r.spec.logprobs);
+  engine_->configure_score(slot, r.spec.score_tokens, r.spec.score_top);
   engine_->configure_constraint(slot, r.spec.grammar);
   engine_->configure_logit_bias(slot, r.spec.logit_bias);
   // The slot is taken for the group's other members' free_slot() scans.
@@ -528,6 +542,7 @@ std::vector<int> Scheduler::admissible_group(int first, int64_t budget) {
   if (span_limit <= 0 || total_limit <= 0) return group;
   const auto groupable = [&](const Request& r) {
     if (r.state != State::kQueued || !r.spec.images.empty()) return false;
+    if (!r.spec.score_tokens.empty()) return false;  // a scoring prefill keeps its own tail rows: never a span of a group
     const int64_t P = static_cast<int64_t>(r.spec.prompt.size());
     if (P <= 0 || P > span_limit) return false;
     if (!cache_on(r)) return true;
@@ -957,6 +972,14 @@ void Scheduler::admit_finish(int arrival, int slot, int32_t token, double prefil
       "{}/{} blocks in use) — first token {}",
       r.spec.id, slot, reserve, engine_->pool_blocks_in_use(),
       engine_->pool_blocks_total(), token);
+  if (!r.spec.score_tokens.empty()) {
+    const std::vector<sample::Result> rows = engine_->take_score(slot);
+    if (rows.size() != r.spec.score_tokens.size())
+      throw std::runtime_error("Scheduler: the engine returned " + std::to_string(rows.size()) +
+                               " scoring rows for a continuation of " + std::to_string(r.spec.score_tokens.size()) +
+                               " tokens (request '" + r.spec.id + "')");
+    if (observer_) observer_->on_score(r.spec.id, rows);
+  }
   const std::vector<sample::Result> lps = collect_logprobs(arrival, slot, 1);
   (void)append_token(arrival, token, lps.empty() ? nullptr : &lps[0]);
 }

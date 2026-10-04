@@ -479,6 +479,12 @@ class GenerationService : public HttpHandler,
     std::string carry_reasoning, carry_content, carry_args, carry_text;
     int logprobs = -1;         // -1 none; N = top-N alternatives requested
     std::vector<sample::Result> lps;  // one per id when logprobs >= 0
+    // POST /v1/score: the continuation's ids and, once the prefill is done,
+    // one row per id (on_score). The answer is the score object, not a
+    // completion.
+    bool score = false;
+    std::vector<int32_t> score_ids;
+    std::vector<sample::Result> score_rows;
     std::vector<bool> content_lps;  // generated tokens contributing visible content
     std::vector<bool> lps_reported;
     std::vector<ParserEvent::TokenSpan> content_spans;
@@ -507,6 +513,8 @@ class GenerationService : public HttpHandler,
   void route_chat_completions(const HttpRequest& req,
                               HttpResponseWriter& w);
   void route_completions(const HttpRequest& req, HttpResponseWriter& w);
+  void route_score(const HttpRequest& req, HttpResponseWriter& w);
+  std::string score_body(const StreamRecord& r) const;
   void route_models(const HttpRequest& req, HttpResponseWriter& w);
   void route_health(HttpResponseWriter& w) const;
   void route_metrics(HttpResponseWriter& w);
@@ -584,6 +592,7 @@ class GenerationService : public HttpHandler,
   // (the observer, engine thread) and decodes the text suffix.
   void on_token(const std::string& id, int64_t token,
                 int steps_done) override;
+  void on_score(const std::string& id, const std::vector<sample::Result>& rows) override;
   void on_token_logprobs(const std::string& id, int steps_done,
                          const sample::Result& logprobs) override;
   // Folds one parser event into a chat record (under the lock): the

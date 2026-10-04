@@ -441,6 +441,9 @@ class GraphEngineAdapter final : public sched::SchedulerEngine {
     context_.assign(static_cast<size_t>(slots_), {});
     report_.assign(static_cast<size_t>(slots_), false);
     pending_logprobs_.assign(static_cast<size_t>(slots_), {});
+    score_tokens_.assign(static_cast<size_t>(slots_), {});
+    score_top_.assign(static_cast<size_t>(slots_), 0);
+    score_rows_.assign(static_cast<size_t>(slots_), {});
     slot_sampled_.assign(static_cast<size_t>(slots_), 0);
     slot_fallbacks_.assign(static_cast<size_t>(slots_), 0);
     pending_.assign(static_cast<size_t>(slots_), -1);
@@ -914,6 +917,52 @@ class GraphEngineAdapter final : public sched::SchedulerEngine {
     check_req(req);
     std::vector<sample::Result> out;
     out.swap(pending_logprobs_[static_cast<size_t>(req)]);
+    return out;
+  }
+  // Scoring a given continuation in the read-in pass (6ixServe, 2026-10-04):
+  // the request's prompt carries the continuation's tokens but the last, the
+  // model keeps the head's rows over them (session_set_score_tail), and the
+  // host states each continuation token's log-probability under the model's
+  // own distribution — temperature 1, no top-k/top-p, no penalty, no mask —
+  // exactly as a raw first-token report is stated. Needs the whole head on
+  // this rank (world 1) and a family whose walk keeps the rows.
+  bool supports_score() const override {
+    if constexpr (requires { requires Model::kScoreTail; })
+      return world_ == 1 && model_->lm_vocab_begin() == 0 && static_cast<int64_t>(model_->lm_vocab_count()) == vocab_;
+    else
+      return false;
+  }
+  int score_limit() const override {
+    if constexpr (requires { requires Model::kScoreTail; })
+      return supports_score() ? std::min(model_->session_score_tail_limit(), 256) : 0;
+    else
+      return 0;
+  }
+  void configure_score(int req, const std::vector<int32_t>& continuation, int top) override {
+    check_req(req);
+    score_rows_[static_cast<size_t>(req)].clear();
+    if (continuation.empty()) {
+      if (!score_tokens_[static_cast<size_t>(req)].empty()) {
+        score_tokens_[static_cast<size_t>(req)].clear();
+        if constexpr (requires { requires Model::kScoreTail; }) model_->session_set_score_tail(req, 0);
+      }
+      return;
+    }
+    if (static_cast<int>(continuation.size()) > score_limit())
+      throw std::invalid_argument("graph engine: a continuation of " + std::to_string(continuation.size()) +
+                                  " tokens is past the scoring limit of " + std::to_string(score_limit()));
+    for (const int32_t id : continuation)
+      if (id < 0 || id >= vocab_) throw std::invalid_argument("graph engine: scoring token id out of range");
+    if constexpr (requires { requires Model::kScoreTail; }) {
+      model_->session_set_score_tail(req, static_cast<int>(continuation.size()));
+      score_tokens_[static_cast<size_t>(req)] = continuation;
+      score_top_[static_cast<size_t>(req)] = std::max(top, 0);
+    }
+  }
+  std::vector<sample::Result> take_score(int req) override {
+    check_req(req);
+    std::vector<sample::Result> out;
+    out.swap(score_rows_[static_cast<size_t>(req)]);
     return out;
   }
   // The logit bias (OpenAI's logit_bias, 2026-09-06): the slot's dense row
@@ -1463,7 +1512,31 @@ class GraphEngineAdapter final : public sched::SchedulerEngine {
   // outputs in `out`): the pick or the sampled draw, the sampled context
   // and its device count table, the draft block's first proposal; the
   // slot goes live. The caller reseeds the live feeds after.
+  // The scoring rows of a finished prefill, per continuation token. Row i
+  // of the tail is the model's distribution after the prompt and the
+  // continuation's first i tokens; a one-token continuation's row is the
+  // prefill's own last row.
+  void capture_score(int req, const typename Model::Outputs& out) {
+    const std::vector<int32_t>& want = score_tokens_[static_cast<size_t>(req)];
+    if (want.empty()) return;
+    const DecodeOutputs& d = out;
+    const size_t C = want.size(), V = static_cast<size_t>(vocab_);
+    const float* rows = nullptr;
+    if (C == 1 && d.logits.size() >= V) rows = d.logits.data();
+    if constexpr (requires { out.tail_logits; out.tail_rows; }) {
+      if (C > 1 && static_cast<size_t>(out.tail_rows) == C && out.tail_logits.size() == C * V)
+        rows = out.tail_logits.data();
+    }
+    if (rows == nullptr || d.lm_vocab_begin != 0 || static_cast<int64_t>(d.lm_vocab_count) != vocab_)
+      throw std::runtime_error("graph engine: the prefill returned no scoring rows for slot " + std::to_string(req));
+    std::vector<sample::Result>& result = score_rows_[static_cast<size_t>(req)];
+    result.clear();
+    for (size_t i = 0; i < C; ++i)
+      result.push_back(sample::raw_report_complete(rows + i * V, static_cast<int>(vocab_), want[i],
+                                                   score_top_[static_cast<size_t>(req)]));
+  }
   int32_t open_slot_finish(int req, const std::vector<int64_t>& prompt, const typename Model::Outputs& out) {
+    capture_score(req, out);
     std::unique_ptr<text::GrammarState>& grammar = grammar_[static_cast<size_t>(req)];
     const bool sampled = full_path_slot(req);
     int32_t first = -1;
@@ -1691,6 +1764,8 @@ class GraphEngineAdapter final : public sched::SchedulerEngine {
     context_[static_cast<size_t>(req)].clear();
     report_[static_cast<size_t>(req)] = false;
     pending_logprobs_[static_cast<size_t>(req)].clear();
+    score_tokens_[static_cast<size_t>(req)].clear();
+    score_rows_[static_cast<size_t>(req)].clear();
     grammar_[static_cast<size_t>(req)].reset();
     if (sampling_) {
       push_spec(req, SampleSpec{});
@@ -3325,6 +3400,9 @@ class GraphEngineAdapter final : public sched::SchedulerEngine {
   std::vector<std::vector<int32_t>> context_;  // prompt + decided, per slot
   std::vector<bool> report_;                    // logprobs asked, per slot
   std::vector<std::vector<sample::Result>> pending_logprobs_;
+  std::vector<std::vector<int32_t>> score_tokens_;       // the continuation each slot's prefill scores (empty: none)
+  std::vector<int> score_top_;                           // alternatives reported per scored token
+  std::vector<std::vector<sample::Result>> score_rows_;  // the finished prefill's scores, until take_score
   DecodeSample prefill_sample_;
   uint64_t fallbacks_ = 0;
   uint64_t sampled_steps_ = 0;  // stochastic collects (the fallback rate's base)
