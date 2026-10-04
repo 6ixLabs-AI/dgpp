@@ -20,6 +20,23 @@ need four Unicode predicates on codepoints:
   is_white_space Unicode White_Space property (NOT category Zs alone:
                  0x09-0x0D and 0x85 are White_Space but Cc/Cf)
 
+The cased-word scanner (2026-10-04) implements the two patterns that
+split words on case, the Mistral-Small-4 (tekken) regex
+
+  [^\\r\\n\\p{L}\\p{N}]?[\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\\p{M}]*[\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}]+
+  | [^\\r\\n\\p{L}\\p{N}]?[\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\\p{M}]+[\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}]*
+  | \\p{N} | ?[^\\s\\p{L}\\p{N}]+[\\r\\n/]*
+  | \\s*[\\r\\n]+ | \\s+(?!\\S) | \\s+
+
+and the MiniMax-M2.7 (o200k) one — the same with an optional contraction
+after either word alternative and \\p{N}{1,3} — which need two more:
+
+  is_lowercase_letter            Unicode General_Category Ll
+  is_uppercase_or_titlecase_letter  Unicode General_Category Lu, Lt
+
+(the two word classes are then "a mark, or a letter that is not Ll" and
+"a mark, or a letter that is not Lu/Lt").
+
 The NFC normalizer (Qwen's tokenizer.json normalizer) needs the canonical
 decomposition mappings (one level, 1-2 codepoints; Hangul is algorithmic),
 the nonzero canonical combining classes, the primary composites (the
@@ -36,6 +53,14 @@ this generator's; the differential goldens (tests/data/
 glm_tokenizer_goldens.jsonl) avoid codepoints added after Unicode 13.0, so
 a skew cannot flake the gate — but re-run this script + regen the goldens
 together when bumping either side.
+
+The skew as measured on 2026-10-04 (every codepoint, in 31 contexts, through
+the Mistral-Small-4 and MiniMax-M2.7 tokenizer.json files; tokenizers 0.22.2
+and 0.23.2 agree with each other): HF's regex engine classifies with Unicode
+16.0 — the 5055 codepoints that are unassigned in 15.0 and a letter, mark or
+number in 16.0 split differently, and no others; HF's NFC normalizer does not
+know the combining classes of marks added in Unicode 10.0 or later (it leaves
+their order alone where these tables reorder them).
 
 Usage: tools/gen_unicode_tables.py [output_path]
 """
@@ -79,6 +104,8 @@ def main():
         lambda cp: unicodedata.category(chr(cp)) in ("Pc", "Pd", "Ps", "Pe", "Pi", "Pf", "Po"))
     symbols = ranges_of(
         lambda cp: unicodedata.category(chr(cp)) in ("Sm", "Sc", "Sk", "So"))
+    lowers = ranges_of(lambda cp: unicodedata.category(chr(cp)) == "Ll")
+    uppers = ranges_of(lambda cp: unicodedata.category(chr(cp)) in ("Lu", "Lt"))
     ws_set = set(WHITE_SPACE)
     spaces = ranges_of(lambda cp: cp in ws_set)
 
@@ -178,6 +205,10 @@ namespace dgpp::text::unicode {{
 
 {emit("Symbol", symbols, "General_Category S* (Sm, Sc, Sk, So) — the DeepSeek pattern's \\p{{S}}")}
 
+{emit("LowercaseLetter", lowers, "General_Category Ll — the cased-word patterns' \\p{Ll}")}
+
+{emit("UppercaseLetter", uppers, "General_Category Lu, Lt — the cased-word patterns' [\\p{Lu}\\p{Lt}]")}
+
 {emit("NfcQuick", quick, "NFC quick check: codepoints that are not QC=Yes (No or Maybe)")}
 
 {emit_rows("Ccc", ccc_runs, 3, "Nonzero canonical combining classes as runs {{lo, hi, ccc}}")}
@@ -215,6 +246,12 @@ inline bool is_punctuation(uint32_t cp) {{
 inline bool is_symbol(uint32_t cp) {{
   return in_ranges(kSymbolRanges, std::size(kSymbolRanges), cp);
 }}
+inline bool is_lowercase_letter(uint32_t cp) {{
+  return in_ranges(kLowercaseLetterRanges, std::size(kLowercaseLetterRanges), cp);
+}}
+inline bool is_uppercase_or_titlecase_letter(uint32_t cp) {{
+  return in_ranges(kUppercaseLetterRanges, std::size(kUppercaseLetterRanges), cp);
+}}
 inline bool nfc_quick_no_or_maybe(uint32_t cp) {{
   return in_ranges(kNfcQuickRanges, std::size(kNfcQuickRanges), cp);
 }}
@@ -225,6 +262,7 @@ inline bool nfc_quick_no_or_maybe(uint32_t cp) {{
         f.write(text)
     print(f"wrote {out_path}: {len(letters)} letter, {len(marks)} mark, {len(numbers)} number, "
           f"{len(puncts)} punctuation, {len(symbols)} symbol, "
+          f"{len(lowers)} lowercase-letter, {len(uppers)} uppercase/titlecase-letter, "
           f"{len(spaces)} white-space, {len(quick)} nfc-quick ranges; {len(ccc_runs)} ccc runs, "
           f"{len(decomp_rows)} decompositions, {len(compose_rows)} composites (Unicode "
           f"{unicodedata.unidata_version})")

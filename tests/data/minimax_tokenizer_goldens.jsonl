@@ -1,0 +1,473 @@
+{"model": "lukealonso/MiniMax-M2.7-NVFP4", "tokenizers": "0.23.2", "revision_hash": "fbebca183bacb5f8", "cases": 472}
+{"text": "The capital of France is", "ids": [758, 5505, 300, 5969, 355]}
+{"text": " Paris", "ids": [8261]}
+{"text": ".", "ids": [46]}
+{"text": " In", "ids": [582]}
+{"text": " French,", "ids": [9618, 44]}
+{"text": "camelCase", "ids": [99, 27096, 11766]}
+{"text": "ALLCAPS", "ids": [2131, 10896, 66177]}
+{"text": "Titlecase", "ids": [15627, 8404]}
+{"text": "HTMLParser", "ids": [26132, 17980]}
+{"text": "iPhone", "ids": [105, 10398]}
+{"text": "XMLHttpRequest", "ids": [43766, 12416, 4699]}
+{"text": "getHTTPResponseCode", "ids": [848, 36484, 5933, 6443]}
+{"text": "McDonald", "ids": [28832, 32156]}
+{"text": "eBay", "ids": [101, 38041]}
+{"text": " ALLCAPS", "ids": [9868, 10896, 66177]}
+{"text": " Titlecase", "ids": [21936, 8404]}
+{"text": " camelCase", "ids": [94195, 11766]}
+{"text": "lowerUPPER", "ids": [19413, 85, 144819]}
+{"text": "UPPERlower", "ids": [85, 144819, 19413]}
+{"text": "aB", "ids": [97, 66]}
+{"text": "Ab", "ids": [6922]}
+{"text": "AB", "ids": [4420]}
+{"text": "ab", "ids": [370]}
+{"text": "A", "ids": [65]}
+{"text": "a", "ids": [97]}
+{"text": "aBc", "ids": [97, 137945]}
+{"text": "ABc", "ids": [4420, 99]}
+{"text": "AbC", "ids": [6922, 67]}
+{"text": "aBC", "ids": [97, 7106]}
+{"text": "snake_case_name", "ids": [34783, 804, 64259, 4861]}
+{"text": "kebab-case-name", "ids": [107, 24001, 54072, 28145]}
+{"text": "__init__", "ids": [1138, 3572, 1138]}
+{"text": "_private", "ids": [99435]}
+{"text": ".NET", "ids": [51078]}
+{"text": "CONSTANT_VALUE", "ids": [151512, 11240, 39410]}
+{"text": "x.y.Z", "ids": [120, 10359, 46088]}
+{"text": "(Foo)bar", "ids": [18570, 6451, 41, 3991]}
+{"text": "-Foo", "ids": [8035, 6451]}
+{"text": "\tFoo", "ids": [73706, 6451]}
+{"text": "\tFOO", "ids": [9, 13953, 79]}
+{"text": "\tfoo", "ids": [9, 17658]}
+{"text": "IOError", "ids": [9329, 4085]}
+{"text": "NaN", "ids": [15353, 78]}
+{"text": "OpenAI's GPT", "ids": [12317, 12987, 692, 133485]}
+{"text": "\u01c5", "ids": [199, 133]}
+{"text": "\u01c5ungla", "ids": [199, 133, 1471, 3247]}
+{"text": "a\u01c5", "ids": [97, 199, 133]}
+{"text": "A\u01c5a", "ids": [65, 199, 133, 97]}
+{"text": "\u01c5\u01c5", "ids": [199, 133, 199, 133]}
+{"text": " \u01c5a", "ids": [32, 199, 133, 97]}
+{"text": "\u01c8\u01cb\u01f2", "ids": [199, 136, 199, 139, 199, 178]}
+{"text": "\u01c5A", "ids": [199, 133, 65]}
+{"text": "\u1f88\u03b1", "ids": [225, 190, 136, 11780]}
+{"text": "\u01c6 \u01c4 \u01c5", "ids": [199, 134, 32, 199, 132, 32, 199, 133]}
+{"text": "\u4f60\u597d\u4e16\u754c", "ids": [56658, 4083]}
+{"text": "\u65e5\u672c\u8a9e\u306e\u30c6\u30ad\u30b9\u30c8", "ids": [38196, 410, 54271]}
+{"text": "\ud55c\uad6d\uc5b4 \ud14d\uc2a4\ud2b8", "ids": [47543, 4750, 38753, 141, 30102]}
+{"text": "\u0645\u0631\u062d\u0628\u0627 \u0628\u0627\u0644\u0639\u0627\u0644\u0645", "ids": [9390, 55141, 349, 96013, 11946]}
+{"text": "\u05e9\u05dc\u05d5\u05dd \u05e2\u05d5\u05dc\u05dd", "ids": [63569, 44776, 33154, 157, 121556, 33154, 156, 104990]}
+{"text": "\u0928\u092e\u0938\u094d\u0924\u0947 \u0926\u0941\u0928\u093f\u092f\u093e", "ids": [14196, 17881, 103121, 10338, 42953, 158315, 177712]}
+{"text": "\u0e2a\u0e27\u0e31\u0e2a\u0e14\u0e35\u0e04\u0e23\u0e31\u0e1a", "ids": [115548, 94807, 75993, 115548, 114477, 92574, 141386, 69071, 75993, 118312]}
+{"text": "AB\u30abDE", "ids": [4420, 2201, 4468]}
+{"text": "ab\u30abDE", "ids": [370, 2201, 4468]}
+{"text": "AB\u30abde", "ids": [4420, 2201, 666]}
+{"text": "\u30abA", "ids": [2201, 65]}
+{"text": "\u30aba", "ids": [2201, 97]}
+{"text": "A\u30ab", "ids": [65, 2201]}
+{"text": "a\u30ab", "ids": [97, 2201]}
+{"text": "ABC\u4e2d", "ids": [40618, 700]}
+{"text": "abc\u4e2dDEF", "ids": [34972, 700, 63851]}
+{"text": "\u4e2dABC\u6587def", "ids": [700, 40618, 1513, 2601]}
+{"text": "A\u4e2dB\u6587C", "ids": [65, 700, 66, 1513, 67]}
+{"text": "\u02b0", "ids": [202, 176]}
+{"text": "A\u02b0", "ids": [65, 202, 176]}
+{"text": "\u02b0A", "ids": [202, 176, 65]}
+{"text": "a\u02b0B", "ids": [97, 202, 176, 66]}
+{"text": "x\u00aay", "ids": [120, 19727, 121]}
+{"text": "X\u00baY", "ids": [88, 10071, 89]}
+{"text": "\u0391\u0392\u0393\u03b1\u03b2\u03b3", "ids": [98059, 206, 146, 140337, 11780, 32244, 39296]}
+{"text": "\u041f\u0440\u0438\u0432\u0435\u0442 \u041c\u0418\u0420", "ids": [45775, 31016, 8573, 11706, 10579]}
+{"text": "\u041f\u0420\u0418\u0412\u0415\u0422\u043c\u0438\u0440", "ids": [9421, 111400, 10030, 126751, 99363]}
+{"text": "Stra\u00dfe STRASSE", "ids": [105227, 32853, 39758, 2450, 4869]}
+{"text": "\u0130stanbul", "ids": [112777, 57847]}
+{"text": "na\u00efve caf\u00e9", "ids": [3759, 10802, 342, 22778]}
+{"text": "\u4e2d\u6587 English \u6df7\u5408 text", "ids": [31665, 6091, 32, 29925, 2943]}
+{"text": "\u6771\u4eac\u30bf\u30ef\u30fc\u306f333\u30e1\u30fc\u30c8\u30eb", "ids": [11186, 184667, 23284, 18397, 71117]}
+{"text": "\u0301abc", "ids": [21213, 34972]}
+{"text": "\u0301ABC", "ids": [21213, 40618]}
+{"text": "\u0301", "ids": [21213]}
+{"text": "\u0301\u0302", "ids": [21213, 157234]}
+{"text": " \u0301x", "ids": [165743, 120]}
+{"text": " \u0301X", "ids": [165743, 88]}
+{"text": "A\u0301B", "ids": [19404, 66]}
+{"text": "E\u0301COLE", "ids": [6188, 7600, 2626]}
+{"text": "e\u0301cole", "ids": [337, 18615]}
+{"text": "\u0301 a", "ids": [21213, 258]}
+{"text": "!\u0301a", "ids": [33, 21213, 97]}
+{"text": "!!\u0301a", "ids": [6255, 21213, 97]}
+{"text": "a\u0301 b", "ids": [500, 287]}
+{"text": "AB\u0301", "ids": [4420, 21213]}
+{"text": "AB\u0301C", "ids": [4420, 21213, 67]}
+{"text": "x\u20dd y", "ids": [120, 151765, 157, 330]}
+{"text": "(\u0301)", "ids": [40, 21213, 41]}
+{"text": "1\u0301", "ids": [49, 21213]}
+{"text": "\u0301\u0301A", "ids": [21213, 21213, 65]}
+{"text": "A\u0301\u0302b", "ids": [19404, 157234, 98]}
+{"text": "\u0645\u064f\u062d\u064e\u0645\u0651\u064e\u062f", "ids": [460, 11073, 1374, 141591, 34934, 820]}
+{"text": "Tie\u0302\u0301ng Vie\u0323\u0302t", "ids": [61099, 75659, 2834, 31042, 84408, 116]}
+{"text": "\u0928\u092e\u0938\u094d\u0924\u0947", "ids": [14196, 17881, 103121, 10338]}
+{"text": "\u093f\u0915", "ids": [61918]}
+{"text": "Q\u0301Q", "ids": [81, 21213, 81]}
+{"text": "q\u0301Q", "ids": [113, 21213, 81]}
+{"text": "I don't think it's CAN'T 'LL 'Re we're I'm 'll 'Ve 'd 'm 'T 'S", "ids": [73, 3110, 1817, 3433, 32952, 59982, 722, 18326, 722, 1613, 14154, 4227, 722, 826, 722, 34121, 722, 100, 722, 109, 722, 84, 722, 83]}
+{"text": "can't won't shouldn't they're we've y'all", "ids": [134584, 12132, 26960, 12618, 24962, 330, 53147]}
+{"text": "IT'S", "ids": [2307, 32248]}
+{"text": "it'S", "ids": [277, 32248]}
+{"text": "It'll", "ids": [1838, 5678]}
+{"text": "WE'RE", "ids": [26410, 39, 2380]}
+{"text": "we'REx", "ids": [1018, 39, 2380, 120]}
+{"text": "x's", "ids": [120, 692]}
+{"text": "X'S", "ids": [88, 32248]}
+{"text": "'s", "ids": [692]}
+{"text": " 's", "ids": [722, 115]}
+{"text": "don'tx", "ids": [84464, 120]}
+{"text": "it''s", "ids": [277, 1208, 115]}
+{"text": "it's's", "ids": [50199, 692]}
+{"text": "a'b", "ids": [97, 51756]}
+{"text": "'tis", "ids": [1141, 276]}
+{"text": "o'clock", "ids": [111, 76574]}
+{"text": "rock'n'roll", "ids": [26351, 61804, 39, 2114]}
+{"text": "\u30ab's", "ids": [2201, 692]}
+{"text": "\u4e2d'S", "ids": [700, 32248]}
+{"text": "A\u0301's", "ids": [19404, 692]}
+{"text": "it'\u017f", "ids": [277, 39, 158967]}
+{"text": "IT'\u017fT", "ids": [2307, 39, 158967, 84]}
+{"text": "1's", "ids": [49, 692]}
+{"text": "a\u2019s", "ids": [97, 667]}
+{"text": "they'VE I'M he'D she'LL", "ids": [23428, 39, 22304, 2586, 77, 544, 130212, 1316, 39, 18326]}
+{"text": "McDonald's", "ids": [28832, 128265]}
+{"text": "iPhone's", "ids": [105, 10398, 692]}
+{"text": "USA's", "ids": [29695, 692]}
+{"text": "O'Brien", "ids": [79, 110902]}
+{"text": "a'l", "ids": [97, 99132]}
+{"text": "a'r", "ids": [97, 162734]}
+{"text": "a'v", "ids": [97, 39, 118]}
+{"text": "a'", "ids": [97, 39]}
+{"text": "A'", "ids": [65, 39]}
+{"text": "it'sIT'S", "ids": [50199, 2307, 32248]}
+{"text": "1", "ids": [49]}
+{"text": "12", "ids": [975]}
+{"text": "123", "ids": [10010]}
+{"text": "1234", "ids": [10010, 52]}
+{"text": "12345", "ids": [10010, 2879]}
+{"text": "123456", "ids": [10010, 26551]}
+{"text": "1234567", "ids": [10010, 26551, 55]}
+{"text": " 1234567", "ids": [32, 10010, 26551, 55]}
+{"text": "x1234567y", "ids": [120, 10010, 26551, 55, 121]}
+{"text": "3.14159", "ids": [51, 46, 18745, 6184]}
+{"text": "2026-10-04", "ids": [1421, 54, 45, 726, 45, 4375]}
+{"text": "1,000,000.50", "ids": [49, 44, 1450, 44, 1450, 46, 1371]}
+{"text": "v2.1.0", "ids": [118, 50, 46, 49, 46, 48]}
+{"text": "1st 2nd 3rd", "ids": [49, 358, 32, 50, 6565, 32, 51, 9341]}
+{"text": "\u0661\u0662\u0663\u0664", "ids": [71535, 74189, 128970, 142956]}
+{"text": "\uff11\uff12\uff13\uff14\uff15", "ids": [42568, 7506, 150311]}
+{"text": "\u00bd \u216b \u00b2 \u2153", "ids": [23901, 32, 29437, 171, 32, 21038, 32, 29437, 147]}
+{"text": "a1b22c333d4444", "ids": [97, 49, 98, 1912, 99, 18397, 100, 34457, 52]}
+{"text": "0000", "ids": [1450, 48]}
+{"text": "  5", "ids": [32, 32, 53]}
+{"text": "9a", "ids": [57, 97]}
+{"text": "a9", "ids": [97, 57]}
+{"text": "A1B", "ids": [65, 49, 66]}
+{"text": "phone: +1 (555) 010-9999", "ids": [10017, 58, 1349, 49, 359, 31482, 41, 32, 14864, 45, 13408, 57]}
+{"text": "!\n", "ids": [2867]}
+{"text": "!/", "ids": [57925]}
+{"text": "!\n/", "ids": [2867, 47]}
+{"text": "!\n/\n//x", "ids": [2867, 2171, 630, 120]}
+{"text": "a/b", "ids": [97, 9996]}
+{"text": "http://example.com/path/", "ids": [4736, 1885, 19466, 1592, 112250, 47]}
+{"text": "https://a.b/c?d=e#f", "ids": [2982, 1885, 97, 4761, 8473, 63, 100, 96873, 35, 102]}
+{"text": "//", "ids": [630]}
+{"text": "/\n/", "ids": [2171, 47]}
+{"text": "...\r\n", "ids": [1662, 2535]}
+{"text": "},\n", "ids": [5460]}
+{"text": "*/\n\n", "ids": [40882]}
+{"text": " /", "ids": [1180]}
+{"text": " //x", "ids": [1264, 120]}
+{"text": ")/\nx", "ids": [41, 2171, 120]}
+{"text": "!\r/\r\n/a", "ids": [33, 13, 47, 2535, 47, 97]}
+{"text": "/usr/local/bin", "ids": [137761, 42025, 36573]}
+{"text": "a/\nb", "ids": [97, 2171, 98]}
+{"text": "</div>\n", "ids": [1579, 4073, 1100]}
+{"text": "x /", "ids": [120, 1180]}
+{"text": " !", "ids": [1992]}
+{"text": "  !", "ids": [32, 1992]}
+{"text": " !!\n\n", "ids": [1992, 13440]}
+{"text": "!!!???***", "ids": [26195, 51912, 17409]}
+{"text": "a-b_c+d=e", "ids": [97, 1785, 2555, 80405, 96873]}
+{"text": "~/.bashrc", "ids": [181585, 29508, 4855]}
+{"text": "C++ & C#", "ids": [67, 5076, 638, 347, 35]}
+{"text": "\u20ac100 \u00a35 \u00a53", "ids": [11917, 1524, 14479, 53, 71779, 51]}
+{"text": "\u2192 \u2190 \u2191", "ids": [15022, 119051, 27256]}
+{"text": "\u00abquoted\u00bb", "ids": [6052, 151622, 2992]}
+{"text": "\u2026", "ids": [1585]}
+{"text": "?!x", "ids": [36851, 120]}
+{"text": " ?!x", "ids": [3479, 33, 120]}
+{"text": "!!!\n\nx", "ids": [6255, 13440, 120]}
+{"text": ";\n/", "ids": [92383]}
+{"text": "a.\n/b", "ids": [97, 156744, 98]}
+{"text": "  a", "ids": [32, 258]}
+{"text": "   abc", "ids": [256, 106686]}
+{"text": "\tabc", "ids": [9, 34972]}
+{"text": "\t\tabc", "ids": [9, 9, 34972]}
+{"text": "abc   ", "ids": [34972, 326]}
+{"text": "abc \n", "ids": [34972, 1056]}
+{"text": " \n", "ids": [1056]}
+{"text": "\n\n  x", "ids": [367, 32, 1905]}
+{"text": "a \n b", "ids": [97, 1056, 287]}
+{"text": "a  b", "ids": [97, 32, 287]}
+{"text": "a   B", "ids": [97, 256, 407]}
+{"text": "x\u00a0y", "ids": [120, 1330, 121]}
+{"text": "x\u3000y", "ids": [120, 3466, 121]}
+{"text": "  1", "ids": [32, 32, 49]}
+{"text": " 1", "ids": [32, 49]}
+{"text": "   ", "ids": [326]}
+{"text": " ", "ids": [32]}
+{"text": "  ", "ids": [256]}
+{"text": "\n", "ids": [10]}
+{"text": "\u2028a", "ids": [310, 168, 97]}
+{"text": "a \t\n \t b", "ids": [97, 151540, 24361, 287]}
+{"text": "a\n\n\nb", "ids": [97, 4368, 98]}
+{"text": "\n ", "ids": [10, 32]}
+{"text": " \n ", "ids": [1056, 32]}
+{"text": "a\t", "ids": [97, 9]}
+{"text": "a \t", "ids": [97, 24361]}
+{"text": "A  B", "ids": [65, 32, 407]}
+{"text": "a   ", "ids": [97, 326]}
+{"text": "\n\n", "ids": [367]}
+{"text": "x\n", "ids": [120, 10]}
+{"text": "hello\n\nworld\n", "ids": [37964, 367, 26621, 10]}
+{"text": "\u000bx", "ids": [11, 120]}
+{"text": "\fX", "ids": [12, 88]}
+{"text": "a\u0085b", "ids": [97, 194, 133, 98]}
+{"text": "\r\n", "ids": [2535]}
+{"text": "\r\n\r\n", "ids": [9871]}
+{"text": "a\r\nb", "ids": [97, 2535, 98]}
+{"text": "a \r\n b", "ids": [97, 7117, 287]}
+{"text": "\r", "ids": [13]}
+{"text": "\r\r\n\n", "ids": [106770, 367]}
+{"text": "line1\r\nline2\r\n", "ids": [1182, 49, 2535, 1182, 50, 2535]}
+{"text": "a\r", "ids": [97, 13]}
+{"text": "\rA", "ids": [13, 65]}
+{"text": " \r\n", "ids": [7117]}
+{"text": "emoji \ud83d\udc4d\ud83c\udffd test", "ids": [155923, 141293, 187447, 1618]}
+{"text": "family \ud83d\udc68\u200d\ud83d\udc69\u200d\ud83d\udc67\u200d\ud83d\udc66 walk", "ids": [40996, 57528, 168, 61587, 44026, 169, 61587, 44026, 167, 61587, 44026, 166, 5508]}
+{"text": "\ud83d\udc4d\ud83c\udffd", "ids": [136460, 187447]}
+{"text": "\ud83d\udc68\u200d\ud83d\udc69\u200d\ud83d\udc67", "ids": [44026, 168, 61587, 44026, 169, 61587, 44026, 167]}
+{"text": "a\u200db", "ids": [97, 61587, 98]}
+{"text": "A\u200dB", "ids": [65, 61587, 66]}
+{"text": "\ud83c\uddeb\ud83c\uddf7", "ids": [69715, 171, 69715, 183]}
+{"text": "\u2764\ufe0f", "ids": [119417]}
+{"text": "x\u0000y", "ids": [120, 101676]}
+{"text": "\ufeffbom", "ids": [136868, 98, 312]}
+{"text": "a\u200d", "ids": [97, 61587]}
+{"text": "\u200da", "ids": [61587, 97]}
+{"text": "def add(a, b):\n    return a + b  # inline comment\n\nprint(add(2, 3))\n", "ids": [2601, 1187, 7977, 44, 287, 3345, 326, 1126, 258, 1349, 287, 32, 1621, 25261, 5507, 367, 4539, 101242, 40, 50, 44, 32, 51, 4095]}
+{"text": "code ```python\nprint(1)\n``` end", "ids": [3689, 27447, 25959, 10, 4539, 40, 49, 528, 2765, 1468]}
+{"text": "for (int i = 0; i < n; ++i) { sum += a[i]; }\n", "ids": [2269, 359, 671, 1312, 409, 32, 48, 59, 1312, 877, 311, 59, 16157, 105, 41, 508, 4451, 8606, 258, 5702, 22721, 1260]}
+{"text": "const std::vector<int64_t> ids = tok.encode(text);", "ids": [3351, 6209, 1125, 12480, 18078, 2804, 1705, 62, 50604, 409, 19809, 72850, 36664, 3802]}
+{"text": "#include <cstdint>\n", "ids": [7115, 877, 99, 10138, 671, 1100]}
+{"text": "{\"name\": \"get_weather\", \"arguments\": {\"city\": \"Paris\", \"days\": 3}}", "ids": [16673, 1906, 2803, 494, 848, 95, 51872, 1164, 494, 51854, 2803, 18396, 44044, 2803, 494, 44890, 1164, 494, 29525, 2803, 32, 51, 1427]}
+{"text": "SELECT * FROM users WHERE id = 42;", "ids": [30212, 653, 23484, 5733, 38147, 3056, 409, 32, 5130, 59]}
+{"text": "if __name__ == \"__main__\":\n\tmain()\n", "ids": [369, 6502, 1906, 1138, 2044, 63451, 14355, 119846, 11871, 467, 2675]}
+{"text": "<div class=\"a\">Hi</div>", "ids": [26016, 1445, 1139, 97, 3361, 22700, 1579, 4073, 62]}
+{"text": "path/to/file.txt", "ids": [6812, 60203, 63962, 18937]}
+{"text": "C:\\Users\\x\\file.TXT", "ids": [67, 19139, 21187, 10024, 92, 5348, 5126, 52886]}
+{"text": "The quick brown fox jumps over the lazy dog. 0123456789 !@#$%^&*()", "ids": [758, 4729, 15801, 62222, 58841, 1049, 275, 34810, 6787, 46, 32, 22423, 29544, 44730, 57, 1992, 64, 129880, 37, 94, 38, 42, 911]}
+{"text": "e\u0301", "ids": [337]}
+{"text": "\u00e9", "ids": [337]}
+{"text": "Cafe\u0301 au lait", "ids": [67, 154797, 1267, 34701]}
+{"text": "caf\u00e9", "ids": [103082, 337]}
+{"text": "\u212b \u2126 \u00c5 \u03a9", "ids": [105352, 153434, 74535, 153434]}
+{"text": "\ufb01ne \ufb02ow", "ids": [33112, 729, 160249, 362]}
+{"text": "\u1e9b\u0323", "ids": [20121, 155, 166616]}
+{"text": "s\u0323\u0307", "ids": [37101, 169]}
+{"text": "s\u0307\u0323", "ids": [37101, 169]}
+{"text": "\u1100\u1161\u11a8", "ids": [16788]}
+{"text": "\u1100\u1161", "ids": [2827]}
+{"text": "\ud55c\uad6d\uc5b4", "ids": [47543, 4750]}
+{"text": "x\u0301\u0302y", "ids": [120, 21213, 157234, 121]}
+{"text": "q\u0307\u0323", "ids": [113, 166616, 204, 135]}
+{"text": "\u0327\u0301e", "ids": [124218, 21213, 101]}
+{"text": "A\u030a", "ids": [105352]}
+{"text": "E\u0301E\u0300", "ids": [6188, 60028]}
+{"text": "D\u0307\u0323", "ids": [72474, 140, 204, 135]}
+{"text": "", "ids": []}
+{"text": "x", "ids": [120]}
+{"text": "X", "ids": [88]}
+{"text": "]!p~[", "ids": [200000]}
+{"text": "a]!p~[b", "ids": [97, 200000, 98]}
+{"text": " ]!p~[\n", "ids": [32, 200000, 10]}
+{"text": "<fim_prefix>", "ids": [200001]}
+{"text": "a<fim_prefix>b", "ids": [97, 200001, 98]}
+{"text": " <fim_prefix>\n", "ids": [32, 200001, 10]}
+{"text": "<fim_middle>", "ids": [200002]}
+{"text": "a<fim_middle>b", "ids": [97, 200002, 98]}
+{"text": " <fim_middle>\n", "ids": [32, 200002, 10]}
+{"text": "<fim_suffix>", "ids": [200003]}
+{"text": "a<fim_suffix>b", "ids": [97, 200003, 98]}
+{"text": " <fim_suffix>\n", "ids": [32, 200003, 10]}
+{"text": "<fim_pad>", "ids": [200004]}
+{"text": "a<fim_pad>b", "ids": [97, 200004, 98]}
+{"text": " <fim_pad>\n", "ids": [32, 200004, 10]}
+{"text": "<reponame>", "ids": [200005]}
+{"text": "a<reponame>b", "ids": [97, 200005, 98]}
+{"text": " <reponame>\n", "ids": [32, 200005, 10]}
+{"text": "<filename>", "ids": [200006]}
+{"text": "a<filename>b", "ids": [97, 200006, 98]}
+{"text": " <filename>\n", "ids": [32, 200006, 10]}
+{"text": "<gh_stars>", "ids": [200007]}
+{"text": "a<gh_stars>b", "ids": [97, 200007, 98]}
+{"text": " <gh_stars>\n", "ids": [32, 200007, 10]}
+{"text": "<issue_start>", "ids": [200008]}
+{"text": "a<issue_start>b", "ids": [97, 200008, 98]}
+{"text": " <issue_start>\n", "ids": [32, 200008, 10]}
+{"text": "<issue_comment>", "ids": [200009]}
+{"text": "a<issue_comment>b", "ids": [97, 200009, 98]}
+{"text": " <issue_comment>\n", "ids": [32, 200009, 10]}
+{"text": "<issue_closed>", "ids": [200010]}
+{"text": "a<issue_closed>b", "ids": [97, 200010, 98]}
+{"text": " <issue_closed>\n", "ids": [32, 200010, 10]}
+{"text": "<jupyter_start>", "ids": [200011]}
+{"text": "a<jupyter_start>b", "ids": [97, 200011, 98]}
+{"text": " <jupyter_start>\n", "ids": [32, 200011, 10]}
+{"text": "<jupyter_text>", "ids": [200012]}
+{"text": "a<jupyter_text>b", "ids": [97, 200012, 98]}
+{"text": " <jupyter_text>\n", "ids": [32, 200012, 10]}
+{"text": "<jupyter_code>", "ids": [200013]}
+{"text": "a<jupyter_code>b", "ids": [97, 200013, 98]}
+{"text": " <jupyter_code>\n", "ids": [32, 200013, 10]}
+{"text": "<jupyter_output>", "ids": [200014]}
+{"text": "a<jupyter_output>b", "ids": [97, 200014, 98]}
+{"text": " <jupyter_output>\n", "ids": [32, 200014, 10]}
+{"text": "<empty_output>", "ids": [200015]}
+{"text": "a<empty_output>b", "ids": [97, 200015, 98]}
+{"text": " <empty_output>\n", "ids": [32, 200015, 10]}
+{"text": "<commit_before>", "ids": [200016]}
+{"text": "a<commit_before>b", "ids": [97, 200016, 98]}
+{"text": " <commit_before>\n", "ids": [32, 200016, 10]}
+{"text": "<commit_msg>", "ids": [200017]}
+{"text": "a<commit_msg>b", "ids": [97, 200017, 98]}
+{"text": " <commit_msg>\n", "ids": [32, 200017, 10]}
+{"text": "<commit_after>", "ids": [200018]}
+{"text": "a<commit_after>b", "ids": [97, 200018, 98]}
+{"text": " <commit_after>\n", "ids": [32, 200018, 10]}
+{"text": "]~b]", "ids": [200019]}
+{"text": "a]~b]b", "ids": [97, 200019, 98]}
+{"text": " ]~b]\n", "ids": [32, 200019, 10]}
+{"text": "[e~[", "ids": [200020]}
+{"text": "a[e~[b", "ids": [97, 200020, 98]}
+{"text": " [e~[\n", "ids": [32, 200020, 10]}
+{"text": "]!d~[", "ids": [200021]}
+{"text": "a]!d~[b", "ids": [97, 200021, 98]}
+{"text": " ]!d~[\n", "ids": [32, 200021, 10]}
+{"text": "<function_call>", "ids": [200022]}
+{"text": "a<function_call>b", "ids": [97, 200022, 98]}
+{"text": " <function_call>\n", "ids": [32, 200022, 10]}
+{"text": "<code_interpreter>", "ids": [200023]}
+{"text": "a<code_interpreter>b", "ids": [97, 200023, 98]}
+{"text": " <code_interpreter>\n", "ids": [32, 200023, 10]}
+{"text": "]<]speech[>[", "ids": [200024]}
+{"text": "a]<]speech[>[b", "ids": [97, 200024, 98]}
+{"text": " ]<]speech[>[\n", "ids": [32, 200024, 10]}
+{"text": "]<]image[>[", "ids": [200025]}
+{"text": "a]<]image[>[b", "ids": [97, 200025, 98]}
+{"text": " ]<]image[>[\n", "ids": [32, 200025, 10]}
+{"text": "]<]video[>[", "ids": [200026]}
+{"text": "a]<]video[>[b", "ids": [97, 200026, 98]}
+{"text": " ]<]video[>[\n", "ids": [32, 200026, 10]}
+{"text": "]<]start of speech[>[", "ids": [200027]}
+{"text": "a]<]start of speech[>[b", "ids": [97, 200027, 98]}
+{"text": " ]<]start of speech[>[\n", "ids": [32, 200027, 10]}
+{"text": "]<]end of speech[>[", "ids": [200028]}
+{"text": "a]<]end of speech[>[b", "ids": [97, 200028, 98]}
+{"text": " ]<]end of speech[>[\n", "ids": [32, 200028, 10]}
+{"text": "]<]start of image[>[", "ids": [200029]}
+{"text": "a]<]start of image[>[b", "ids": [97, 200029, 98]}
+{"text": " ]<]start of image[>[\n", "ids": [32, 200029, 10]}
+{"text": "]<]end of image[>[", "ids": [200030]}
+{"text": "a]<]end of image[>[b", "ids": [97, 200030, 98]}
+{"text": " ]<]end of image[>[\n", "ids": [32, 200030, 10]}
+{"text": "]<]start of video[>[", "ids": [200031]}
+{"text": "a]<]start of video[>[b", "ids": [97, 200031, 98]}
+{"text": " ]<]start of video[>[\n", "ids": [32, 200031, 10]}
+{"text": "]<]end of video[>[", "ids": [200032]}
+{"text": "a]<]end of video[>[b", "ids": [97, 200032, 98]}
+{"text": " ]<]end of video[>[\n", "ids": [32, 200032, 10]}
+{"text": "]<]vision pad[>[", "ids": [200033]}
+{"text": "a]<]vision pad[>[b", "ids": [97, 200033, 98]}
+{"text": " ]<]vision pad[>[\n", "ids": [32, 200033, 10]}
+{"text": "]~!b[", "ids": [200034]}
+{"text": "a]~!b[b", "ids": [97, 200034, 98]}
+{"text": " ]~!b[\n", "ids": [32, 200034, 10]}
+{"text": "<jupyter_error>", "ids": [200035]}
+{"text": "a<jupyter_error>b", "ids": [97, 200035, 98]}
+{"text": " <jupyter_error>\n", "ids": [32, 200035, 10]}
+{"text": "<add_file>", "ids": [200036]}
+{"text": "a<add_file>b", "ids": [97, 200036, 98]}
+{"text": " <add_file>\n", "ids": [32, 200036, 10]}
+{"text": "<delete_file>", "ids": [200037]}
+{"text": "a<delete_file>b", "ids": [97, 200037, 98]}
+{"text": " <delete_file>\n", "ids": [32, 200037, 10]}
+{"text": "<rename_file>", "ids": [200038]}
+{"text": "a<rename_file>b", "ids": [97, 200038, 98]}
+{"text": " <rename_file>\n", "ids": [32, 200038, 10]}
+{"text": "<edit_file>", "ids": [200039]}
+{"text": "a<edit_file>b", "ids": [97, 200039, 98]}
+{"text": " <edit_file>\n", "ids": [32, 200039, 10]}
+{"text": "<commit_message>", "ids": [200040]}
+{"text": "a<commit_message>b", "ids": [97, 200040, 98]}
+{"text": " <commit_message>\n", "ids": [32, 200040, 10]}
+{"text": "<empty_source_file>", "ids": [200041]}
+{"text": "a<empty_source_file>b", "ids": [97, 200041, 98]}
+{"text": " <empty_source_file>\n", "ids": [32, 200041, 10]}
+{"text": "<repo_struct>", "ids": [200042]}
+{"text": "a<repo_struct>b", "ids": [97, 200042, 98]}
+{"text": " <repo_struct>\n", "ids": [32, 200042, 10]}
+{"text": "<code_context>", "ids": [200043]}
+{"text": "a<code_context>b", "ids": [97, 200043, 98]}
+{"text": " <code_context>\n", "ids": [32, 200043, 10]}
+{"text": "<file_content>", "ids": [200044]}
+{"text": "a<file_content>b", "ids": [97, 200044, 98]}
+{"text": " <file_content>\n", "ids": [32, 200044, 10]}
+{"text": "<source_files>", "ids": [200045]}
+{"text": "a<source_files>b", "ids": [97, 200045, 98]}
+{"text": " <source_files>\n", "ids": [32, 200045, 10]}
+{"text": "<pr_start>", "ids": [200046]}
+{"text": "a<pr_start>b", "ids": [97, 200046, 98]}
+{"text": " <pr_start>\n", "ids": [32, 200046, 10]}
+{"text": "<review_comment>", "ids": [200047]}
+{"text": "a<review_comment>b", "ids": [97, 200047, 98]}
+{"text": " <review_comment>\n", "ids": [32, 200047, 10]}
+{"text": "<filepath>", "ids": [200048]}
+{"text": "a<filepath>b", "ids": [97, 200048, 98]}
+{"text": " <filepath>\n", "ids": [32, 200048, 10]}
+{"text": "<file_sep>", "ids": [200049]}
+{"text": "a<file_sep>b", "ids": [97, 200049, 98]}
+{"text": " <file_sep>\n", "ids": [32, 200049, 10]}
+{"text": "<think>", "ids": [200050]}
+{"text": "a<think>b", "ids": [97, 200050, 98]}
+{"text": " <think>\n", "ids": [32, 200050, 10]}
+{"text": "</think>", "ids": [200051]}
+{"text": "a</think>b", "ids": [97, 200051, 98]}
+{"text": " </think>\n", "ids": [32, 200051, 10]}
+{"text": "<minimax:tool_call>", "ids": [200052]}
+{"text": "a<minimax:tool_call>b", "ids": [97, 200052, 98]}
+{"text": " <minimax:tool_call>\n", "ids": [32, 200052, 10]}
+{"text": "</minimax:tool_call>", "ids": [200053]}
+{"text": "a</minimax:tool_call>b", "ids": [97, 200053, 98]}
+{"text": " </minimax:tool_call>\n", "ids": [32, 200053, 10]}
+{"text": "]~!b[]~b]system\nYou are a helpful assistant.[e~[\n]~b]user\nHello[e~[\n]~b]ai\n<think>\n", "ids": [200034, 200019, 28463, 10, 2985, 457, 258, 12473, 23413, 46, 200020, 10, 200019, 3995, 10, 19739, 200020, 10, 200019, 1361, 10, 200050, 10]}
+{"text": "plan\n</think>\n\nHi![e~[\n", "ids": [18690, 10, 200051, 367, 22700, 33, 200020, 10]}
+{"text": "<minimax:tool_call>\n<invoke name=\"get_weather\">\n<parameter name=\"city\">Paris</parameter>\n</invoke>\n</minimax:tool_call>", "ids": [200052, 10, 60, 88638, 1925, 1139, 848, 95, 51872, 6143, 60, 24662, 1925, 1139, 44044, 3361, 44890, 1579, 24662, 1100, 1579, 88638, 1100, 200053]}
+{"text": "]~b]tool\n<response>{\"temp\": 21}</response>[e~[\n", "ids": [200019, 45382, 10, 60, 9679, 62, 16673, 40886, 2803, 32, 2254, 30085, 9679, 62, 200020, 10]}
+{"text": "x<think>\nr\n</think>\n\ny[e~[", "ids": [120, 200050, 10, 114, 10, 200051, 367, 121, 200020]}
+{"text": "before ]~b] after", "ids": [17741, 32, 200019, 1619]}
+{"text": "<think></think>", "ids": [200050, 200051]}
+{"text": "<think", "ids": [60, 37959]}
+{"text": "think>", "ids": [37959, 62]}
+{"text": "<THINK>", "ids": [60, 7670, 33635, 62]}
+{"text": "<minimax:tool_call", "ids": [60, 1648, 167360, 58, 45382, 50025]}
+{"text": "]~b", "ids": [93, 126, 98]}
+{"text": "[e~", "ids": [91286, 126]}

@@ -1,0 +1,106 @@
+{"model": "gemma4-mini", "tokenizers": "0.22.2", "revision_hash": "9314ed9d6d7cb405", "cases": 105}
+{"text": "", "ids": [], "skipped": ""}
+{"text": " ", "ids": [267], "skipped": " "}
+{"text": "  ", "ids": [331], "skipped": "  "}
+{"text": "   ", "ids": [334], "skipped": "   "}
+{"text": "    ", "ids": [332], "skipped": "    "}
+{"text": "     ", "ids": [332, 267], "skipped": "     "}
+{"text": "        ", "ids": [333], "skipped": "        "}
+{"text": "         ", "ids": [333, 267], "skipped": "         "}
+{"text": "                 ", "ids": [333, 333, 267], "skipped": "                 "}
+{"text": "\n", "ids": [268], "skipped": "\n"}
+{"text": "\n\n", "ids": [335], "skipped": "\n\n"}
+{"text": "\n\n\n", "ids": [336], "skipped": "\n\n\n"}
+{"text": "\n\n\n\n", "ids": [337], "skipped": "\n\n\n\n"}
+{"text": "\n\n\n\n\n", "ids": [335, 336], "skipped": "\n\n\n\n\n"}
+{"text": "\n\n\n\n\n\n\n\n\n", "ids": [337, 335, 336], "skipped": "\n\n\n\n\n\n\n\n\n"}
+{"text": " \n \n", "ids": [267, 268, 267, 268], "skipped": " \n \n"}
+{"text": "\t\t", "ids": [269, 269], "skipped": "\t\t"}
+{"text": "the", "ids": [339], "skipped": "the"}
+{"text": " the", "ids": [340], "skipped": " the"}
+{"text": "the the", "ids": [339, 340], "skipped": "the the"}
+{"text": " there", "ids": [347], "skipped": " there"}
+{"text": "there", "ids": [339, 346], "skipped": "there"}
+{"text": "then", "ids": [339, 283], "skipped": "then"}
+{"text": "in the there", "ids": [341, 340, 347], "skipped": "in the there"}
+{"text": " in in", "ids": [342, 342], "skipped": " in in"}
+{"text": "a", "ids": [270], "skipped": "a"}
+{"text": "aa", "ids": [348], "skipped": "aa"}
+{"text": "aaa", "ids": [349], "skipped": "aaa"}
+{"text": "aaaa", "ids": [350], "skipped": "aaaa"}
+{"text": "aaaaa", "ids": [348, 349], "skipped": "aaaaa"}
+{"text": "aaaaaa", "ids": [350, 348], "skipped": "aaaaaa"}
+{"text": "aaaaaaa", "ids": [350, 349], "skipped": "aaaaaaa"}
+{"text": "aaaaaaaaaaaaaaaa", "ids": [350, 350, 350, 350], "skipped": "aaaaaaaaaaaaaaaa"}
+{"text": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "ids": [350, 350, 350, 350, 350, 350, 350, 348, 349], "skipped": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+{"text": "ab", "ids": [351], "skipped": "ab"}
+{"text": "abab", "ids": [352], "skipped": "abab"}
+{"text": "ababab", "ids": [352, 351], "skipped": "ababab"}
+{"text": "aba", "ids": [354], "skipped": "aba"}
+{"text": "ababa", "ids": [352, 270], "skipped": "ababa"}
+{"text": "abaab", "ids": [351, 348, 271], "skipped": "abaab"}
+{"text": "baab", "ids": [271, 348, 271], "skipped": "baab"}
+{"text": "aab", "ids": [348, 271], "skipped": "aab"}
+{"text": "aabaab", "ids": [348, 271, 348, 271], "skipped": "aabaab"}
+{"text": "is a model of the user", "ids": [355, 357, 267, 365, 359, 340, 267, 361], "skipped": "is a model of the user"}
+{"text": "user\nmodel\n", "ids": [361, 268, 365, 268], "skipped": "user\nmodel\n"}
+{"text": "123", "ids": [367], "skipped": "123"}
+{"text": "1234", "ids": [367, 305], "skipped": "1234"}
+{"text": "12 23 123", "ids": [366, 267, 368, 267, 367], "skipped": "12 23 123"}
+{"text": "...", "ids": [370], "skipped": "..."}
+{"text": "....", "ids": [369, 369], "skipped": "...."}
+{"text": ".....", "ids": [369, 370], "skipped": "....."}
+{"text": "call:abc{a:1}", "ids": [374, 351, 272, 321, 270, 313, 302, 322], "skipped": "call:abc{a:1}"}
+{"text": "\u4f60\u597d", "ids": [376], "skipped": "\u4f60\u597d"}
+{"text": " \u4f60\u597d", "ids": [375, 329], "skipped": " \u4f60\u597d"}
+{"text": "\u4f60 \u597d", "ids": [328, 267, 329], "skipped": "\u4f60 \u597d"}
+{"text": "\u00e9t\u00e9e", "ids": [327, 289, 377], "skipped": "\u00e9t\u00e9e"}
+{"text": "\u00df", "ids": [330], "skipped": "\u00df"}
+{"text": "\u00e9", "ids": [327], "skipped": "\u00e9"}
+{"text": "z", "ids": [295], "skipped": "z"}
+{"text": "Z", "ids": [101], "skipped": "Z"}
+{"text": "\u00fc", "ids": [206, 199], "skipped": "\u00fc"}
+{"text": "\u20ac", "ids": [237, 141, 183], "skipped": "\u20ac"}
+{"text": "\u65e5\u672c", "ids": [241, 162, 176, 241, 167, 183], "skipped": "\u65e5\u672c"}
+{"text": "\ud83d\udc4d", "ids": [251, 170, 156, 152], "skipped": "\ud83d\udc4d"}
+{"text": "a\u0000b", "ids": [270, 11, 271], "skipped": "a\u0000b"}
+{"text": "\u007f", "ids": [138], "skipped": "\u007f"}
+{"text": "x\u00a0y", "ids": [293, 205, 171, 294], "skipped": "x\u00a0y"}
+{"text": "FGH", "ids": [81, 82, 83], "skipped": "FGH"}
+{"text": "+", "ids": [54], "skipped": "+"}
+{"text": "a+b", "ids": [270, 54, 271], "skipped": "a+b"}
+{"text": "\u2581", "ids": [267], "skipped": " "}
+{"text": "a\u2581b", "ids": [270, 267, 271], "skipped": "a b"}
+{"text": "\u2581\u2581", "ids": [331], "skipped": "  "}
+{"text": "<bos>", "ids": [2], "skipped": ""}
+{"text": "<eos>", "ids": [1], "skipped": ""}
+{"text": "<pad>", "ids": [0], "skipped": ""}
+{"text": "<unk>", "ids": [3], "skipped": ""}
+{"text": "<mask>", "ids": [4], "skipped": ""}
+{"text": "<|turn>", "ids": [5], "skipped": ""}
+{"text": "<turn|>", "ids": [6], "skipped": ""}
+{"text": "<|\"|>", "ids": [7], "skipped": ""}
+{"text": "<|tool>", "ids": [8], "skipped": ""}
+{"text": "<|tool_call>", "ids": [9], "skipped": ""}
+{"text": "<tool_call|>", "ids": [10], "skipped": ""}
+{"text": "<|tool><|tool_call>", "ids": [8, 9], "skipped": ""}
+{"text": "<|tool_call><|tool>", "ids": [9, 8], "skipped": ""}
+{"text": "<bos><|turn>user\nthe<turn|>\n<|turn>model\n", "ids": [2, 5, 361, 268, 339, 6, 268, 5, 365, 268], "skipped": "user\nthe\nmodel\n"}
+{"text": "a<|turn>b", "ids": [270, 5, 271], "skipped": "ab"}
+{"text": "a <turn|> b", "ids": [270, 267, 6, 267, 271], "skipped": "a  b"}
+{"text": "<|\"|>the<|\"|>", "ids": [7, 339, 7], "skipped": "the"}
+{"text": "<|tool_call>call:ab{a:<|\"|>b<|\"|>}<tool_call|>", "ids": [9, 374, 351, 321, 270, 313, 7, 271, 7, 322, 10], "skipped": "call:ab{a:b}"}
+{"text": "<|turn", "ids": [378, 382], "skipped": "<|turn"}
+{"text": "turn|>", "ids": [382, 379], "skipped": "turn|>"}
+{"text": "<|tool_cal>", "ids": [378, 289, 284, 284, 281, 319, 372, 317], "skipped": "<|tool_cal>"}
+{"text": "<|tool_", "ids": [378, 289, 284, 284, 281, 319], "skipped": "<|tool_"}
+{"text": "<| turn>", "ids": [378, 267, 382, 317], "skipped": "<| turn>"}
+{"text": "<bos", "ids": [316, 271, 284, 288], "skipped": "<bos"}
+{"text": "<<bos>>", "ids": [316, 2, 317], "skipped": "<>"}
+{"text": "<|>", "ids": [378, 317], "skipped": "<|>"}
+{"text": "<|\"|", "ids": [378, 323, 318], "skipped": "<|\"|"}
+{"text": "<|tur<|turn>", "ids": [378, 381, 5], "skipped": "<|tur"}
+{"text": "<0x41>", "ids": [316, 301, 293, 305, 302, 317], "skipped": "<0x41>"}
+{"text": "<0xE4>", "ids": [316, 301, 293, 300, 305, 317], "skipped": "<0xE4>"}
+{"text": "the <0x00> in", "ids": [339, 267, 316, 301, 293, 301, 301, 317, 342], "skipped": "the <0x00> in"}
+{"text": "the user is in the model there\n\n    aaaa abab 123 ... \u4f60\u597d \u00e9t\u00e9e\n<|turn>model\n", "ids": [339, 267, 361, 356, 342, 340, 267, 365, 347, 335, 332, 350, 267, 352, 267, 367, 267, 370, 375, 329, 267, 327, 289, 377, 268, 5, 365, 268], "skipped": "the user is in the model there\n\n    aaaa abab 123 ... \u4f60\u597d \u00e9t\u00e9e\nmodel\n"}

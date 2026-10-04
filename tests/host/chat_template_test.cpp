@@ -361,7 +361,12 @@ DGPP_TEST(glm_chat_template_differential_goldens) {
   const BadCase bad[] = {
       {"{% do x = 1 %}", "do", false},
       {"{% include 'x' %}", "include", false},
-      {"{{ x | join(',') }}", "join", false},
+      // (join and list are supported since the Mistral-Small-4 port, and
+      // map('upper') since the Gemma 4 one — this list named `map` as its
+      // unsupported filter until the two met in one tree; the filters still
+      // outside the subset refuse as before.)
+      {"{{ x | reverse }}", "reverse", false},
+      {"{{ x | selectattr('a') | list }}", "selectattr", false},
       {"{{ x is number }}", "number", false},
       {"{% if x %}{% endfor %}", "endfor", false},
       {"{% set a, b = 1, 2 %}", "tuple", false},

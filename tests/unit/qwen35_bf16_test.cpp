@@ -268,9 +268,13 @@ DGPP_TEST(qwen35_bf16_template_is_sequence) {
     return dgpp::text::ChatTemplate::compile(source).render(dgpp::text::Value::from_minijson(parsed.root));
   };
   const std::string globals = R"({"s": "text", "l": [1, 2], "m": {"k": 1}, "n": 3, "b": true})";
+  // `u` is undefined. Jinja's test is "len() and __getitem__ exist", and its lenient Undefined has
+  // both, so `u is sequence` is True: jinja2 3.1.6's sandboxed environment (the one transformers
+  // renders chat templates with) prints True|True|True|False|False|True|True for this line. This
+  // case expected False for it until 2026-10-04, from the interpreter's behaviour, not from Jinja's.
   require(render("{{ s is sequence }}|{{ l is sequence }}|{{ m is sequence }}|{{ n is sequence }}|"
                  "{{ b is sequence }}|{{ u is sequence }}|{{ n is not sequence }}",
-                 globals) == "True|True|True|False|False|False|True",
+                 globals) == "True|True|True|False|False|True|True",
           "is sequence");
   // The template's own expression: structured values through tojson, the rest through str.
   const std::string expr =

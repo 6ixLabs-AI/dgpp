@@ -4,11 +4,14 @@
 // the state machine's contract is pinned on synthetic ids: the reasoning
 // split, exact streamed deltas, schema-typed and inferred values, nested
 // JSON, several calls per turn, and every malformed shape falling back to
-// literal content with no half-parsed call.
+// literal content with no half-parsed call. The same for every later
+// format — Qwen's XML and JSON, DeepSeek's DSML, Mistral's brackets,
+// MiniMax's invokes — each in its own section below.
 #include <cstdint>
 #include <map>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "common/test.hpp"
@@ -1297,6 +1300,645 @@ DGPP_TEST(tool_parser_schemasReadBothToolForms) {
   }
   require(content == "</think><tool_call>f</tool_call>x",
           "literal without markers: " + content);
+}
+
+// ---- the Mistral format (tokenizer v13+ — Mistral-Small-4): the call is
+// "[TOOL_CALLS]NAME[ARGS]{json}" with no closing marker; the two brackets
+// and the [THINK] / [/THINK] pair are ids — SPECIAL ones, so the fake
+// decode drops them like the EOS (the service's decode does) and a
+// malformed call's literal text has to restore them.
+constexpr int64_t kMToolCalls = 1021, kMArgs = 1022, kMThink = 1023, kMThinkClose = 1024;
+// Multi-byte pieces (ids from 2000): a token that carries a closing brace
+// and what follows it, a tag split mid-name — what a byte-per-id stream
+// cannot show.
+std::vector<std::string>& pieces() {
+  static std::vector<std::string> p;
+  return p;
+}
+int64_t piece(const std::string& text) {
+  pieces().push_back(text);
+  return 2000 + static_cast<int64_t>(pieces().size()) - 1;
+}
+constexpr int64_t kMmToolOpen = 1031, kMmToolClose = 1032;
+// The two new formats' decode: fake_decode (bytes, the <think> pair's text,
+// nothing for the Mistral brackets), the pieces, and MiniMax's two markers,
+// which are not special and print.
+std::string port_decode(const std::vector<int64_t>& ids) {
+  std::string out;
+  for (const int64_t id : ids) {
+    if (id >= 2000 && id < 2000 + static_cast<int64_t>(pieces().size()))
+      out += pieces()[static_cast<size_t>(id - 2000)];
+    else if (id == kMmToolOpen)
+      out += "<minimax:tool_call>";
+    else if (id == kMmToolClose)
+      out += "</minimax:tool_call>";
+    else
+      out += fake_decode({id});
+  }
+  return out;
+}
+std::vector<int64_t> ids_from(const std::vector<std::pair<std::string, int64_t>>& table, const std::string& text) {
+  std::vector<int64_t> out;
+  for (size_t i = 0; i < text.size();) {
+    bool matched = false;
+    for (const auto& [s, id] : table) {
+      if (text.compare(i, s.size(), s) == 0) {
+        out.push_back(id);
+        i += s.size();
+        matched = true;
+        break;
+      }
+    }
+    if (!matched) out.push_back(static_cast<unsigned char>(text[i++]));
+  }
+  return out;
+}
+ChatMarkers mistral_markers() {
+  ChatMarkers m;
+  m.think_open = ChatMarker{kMThink, "[THINK]"};
+  m.think_close = ChatMarker{kMThinkClose, "[/THINK]"};
+  m.tool_calls = ChatMarker{kMToolCalls, "[TOOL_CALLS]"};
+  m.args = ChatMarker{kMArgs, "[ARGS]"};
+  m.bracket_think = true;
+  return m;
+}
+std::vector<int64_t> mistral_ids_of(const std::string& text) {
+  return ids_from({{"[TOOL_CALLS]", kMToolCalls}, {"[ARGS]", kMArgs}, {"[/THINK]", kMThinkClose},
+                   {"[THINK]", kMThink}, {"</s>", kEos}},
+                  text);
+}
+// The service's options for a Mistral prompt: it ends in [/INST], so the
+// reply starts as content and the reasoning block is the model's to open.
+ToolCallParser::Options mistral_options() {
+  ToolCallParser::Options opts;
+  opts.start_in_reasoning = false;
+  opts.model_may_open_thinking = true;
+  return opts;
+}
+Run drive_ids(const ChatMarkers& markers, const std::vector<int64_t>& ids, ToolCallParser::Options opts,
+              ToolSchemas schemas = weather_schemas()) {
+  ToolCallParser parser(markers, port_decode, std::move(schemas), opts);
+  std::vector<Event> events;
+  for (const int64_t id : ids) parser.feed(id, &events);
+  parser.finish(&events);
+  return run_of(parser, events);
+}
+Run drive_mistral(const std::string& text) {
+  return drive_ids(mistral_markers(), mistral_ids_of(text), mistral_options());
+}
+
+DGPP_TEST(tool_parser_mistral_format_markers_and_one_call) {
+  const ChatMarkers m = mistral_markers();
+  require(m.tool_format() == dgpp::text::ToolFormat::kMistral && m.tool_calls_available(),
+          "the two brackets are the Mistral format");
+  require(m.reasoning_available(), "[/THINK] splits the reasoning");
+  ChatMarkers half = m;
+  half.args = ChatMarker{};
+  require(half.tool_format() == dgpp::text::ToolFormat::kNone, "[TOOL_CALLS] without [ARGS] is no format");
+  // Every older format outranks it: a tokenizer with the <tool_call> pair
+  // keeps its reading whatever else it carries.
+  ChatMarkers both = qwen_markers();
+  both.tool_calls = m.tool_calls;
+  both.args = m.args;
+  require(both.tool_format() == dgpp::text::ToolFormat::kQwenXml, "the older formats keep their precedence");
+  // The prompt ends in [/INST] (any id that is not a think marker): the
+  // model may open the block, the prompt opened none.
+  require(m.prompt_leaves_thinking_to_model({17, 18, 3, 72, 4}) && !m.prompt_opens_thinking({17, 18, 3, 72, 4}),
+          "a Mistral prompt leaves the reasoning to the model");
+  require(!m.prompt_leaves_thinking_to_model({3, 72, 4, kMThink}) && m.prompt_opens_thinking({3, 72, 4, kMThink}),
+          "a prompt that ends in [THINK] opened it");
+  require(!qwen_markers().prompt_leaves_thinking_to_model({1, 2, 3}), "the rule stays off the <think> families");
+
+  const Run run = drive_mistral("Let me check.[TOOL_CALLS]get_weather[ARGS]{\"city\": \"Paris\", \"days\": 3}</s>");
+  require(run.content == "Let me check.", "the content before the call: '" + run.content + "'");
+  require(run.reasoning.empty() && run.reasoning_closed == 0, "no reasoning");
+  require(run.calls.size() == 1 && run.calls[0].name == "get_weather", "one call, its name");
+  require(run.calls[0].arguments == "{\"city\": \"Paris\", \"days\": 3}", "the arguments: " + run.calls[0].arguments);
+  require(run.order == (std::vector<Kind>{Kind::kContent, Kind::kContent, Kind::kContent, Kind::kContent,
+                                          Kind::kContent, Kind::kContent, Kind::kContent, Kind::kContent,
+                                          Kind::kContent, Kind::kContent, Kind::kContent, Kind::kContent,
+                                          Kind::kContent, Kind::kToolCall}),
+          "thirteen content deltas, then the call");
+}
+
+DGPP_TEST(tool_parser_mistral_format_severalCallsLayoutAndValues) {
+  // Calls follow one another with nothing between them (the template's
+  // spelling); the arguments keep their member order, their nesting and
+  // their raw UTF-8 whatever their layout, and come out in json.dumps form
+  // (1e2 is the float 100.0 there, as in every other format).
+  const Run run = drive_mistral(
+      "[TOOL_CALLS]get_weather[ARGS]{\"city\":\"São Paulo\",\"days\":1e2}"
+      "[TOOL_CALLS]flat_tool[ARGS] {\n  \"x\": 3.0,\n  \"o\": {\"a\": [1, {\"b\": \"}\"}], \"c\": null}\n}"
+      "[TOOL_CALLS]ping[ARGS]{}</s>");
+  require(run.content.empty(), "no content: '" + run.content + "'");
+  require(run.calls.size() == 3, "three calls, got " + std::to_string(run.calls.size()));
+  require(run.calls[0].name == "get_weather" &&
+              run.calls[0].arguments == "{\"city\": \"São Paulo\", \"days\": 100.0}",
+          "compact arguments re-serialized: " + run.calls[0].arguments);
+  require(run.calls[1].name == "flat_tool" &&
+              run.calls[1].arguments == "{\"x\": 3.0, \"o\": {\"a\": [1, {\"b\": \"}\"}], \"c\": null}}",
+          "a brace inside a string closes nothing: " + run.calls[1].arguments);
+  require(run.calls[2].name == "ping" && run.calls[2].arguments == "{}", "no arguments");
+  // A name the tools do not declare is reported as written (the grammar,
+  // not the parser, is what confines the names).
+  const Run other = drive_mistral("[TOOL_CALLS] zebra [ARGS]{\"n\": 1}");
+  require(other.calls.size() == 1 && other.calls[0].name == "zebra", "the name is trimmed, not checked");
+}
+
+DGPP_TEST(tool_parser_mistral_format_reasoningIsTheModelsToOpen) {
+  // reasoning_effort "high": [THINK] is the model's first id.
+  Run run = drive_mistral("[THINK]17 * 3 = 51.[/THINK]51.</s>");
+  require(run.reasoning == "17 * 3 = 51." && run.reasoning_closed == 1 && run.content == "51.",
+          "reasoning '" + run.reasoning + "', content '" + run.content + "'");
+  // Reasoning, then a call, with and without the closing bracket: a call
+  // that opens inside the reasoning closes it.
+  run = drive_mistral("[THINK]I should call the tool.[/THINK][TOOL_CALLS]get_weather[ARGS]{\"city\": \"Paris\"}</s>");
+  require(run.reasoning == "I should call the tool." && run.reasoning_closed == 1 && run.content.empty() &&
+              run.calls.size() == 1,
+          "reasoning, then the call");
+  run = drive_mistral("[THINK]I should call the tool.[TOOL_CALLS]get_weather[ARGS]{\"city\": \"Paris\"}</s>");
+  require(run.reasoning == "I should call the tool." && run.reasoning_closed == 1 && run.calls.size() == 1 &&
+              run.calls[0].arguments == "{\"city\": \"Paris\"}",
+          "an unclosed block ends at the call");
+  // [THINK] is never content: it opens the block after content too, and a
+  // stray [/THINK] prints nothing.
+  run = drive_mistral("Hmm.[THINK]second thoughts[/THINK]Done.[/THINK]</s>");
+  require(run.content == "Hmm.Done." && run.reasoning == "second thoughts" && run.reasoning_closed == 1,
+          "content '" + run.content + "', reasoning '" + run.reasoning + "'");
+  // reasoning_effort "none": the model writes no block; everything is content.
+  run = drive_mistral("Paris.</s>");
+  require(run.content == "Paris." && run.reasoning.empty() && run.reasoning_closed == 0, "plain content");
+  // Without the service's statement (a parser that was not told the block
+  // is the model's to open) the bracket is skipped like any special token.
+  ToolCallParser::Options untold;
+  untold.start_in_reasoning = false;
+  run = drive_ids(mistral_markers(), mistral_ids_of("[THINK]a[/THINK]b"), untold);
+  require(run.content == "ab" && run.reasoning.empty(), "untold: '" + run.content + "'");
+}
+
+DGPP_TEST(tool_parser_mistral_format_malformedCallsFallBackToLiteralContent) {
+  // The brackets are special tokens — the decode drops them — so the
+  // literal text restores them: a client sees what the model wrote.
+  struct Case {
+    const char* what;
+    const char* text;
+    const char* content;
+  };
+  const Case cases[] = {
+      {"the stream ends in the name", "a[TOOL_CALLS]get_weather</s>", "a[TOOL_CALLS]get_weather"},
+      {"the stream ends in the arguments", "[TOOL_CALLS]get_weather[ARGS]{\"city\": \"Par",
+       "[TOOL_CALLS]get_weather[ARGS]{\"city\": \"Par"},
+      {"an inner brace does not close the call", "[TOOL_CALLS]f[ARGS]{\"o\": {\"a\": 1}",
+       "[TOOL_CALLS]f[ARGS]{\"o\": {\"a\": 1}"},
+      {"no arguments at all", "[TOOL_CALLS]get_weather[ARGS]</s>", "[TOOL_CALLS]get_weather[ARGS]"},
+      {"an empty name", "[TOOL_CALLS][ARGS]{\"a\": 1}", "[TOOL_CALLS][ARGS]{\"a\": 1}"},
+      {"a whitespace name", "[TOOL_CALLS] \n[ARGS]{\"a\": 1}", "[TOOL_CALLS] \n[ARGS]{\"a\": 1}"},
+      {"an array of arguments", "[TOOL_CALLS]f[ARGS][{\"a\": 1}]", "[TOOL_CALLS]f[ARGS][{\"a\": 1}]"},
+      {"text before the object", "[TOOL_CALLS]f[ARGS]args: {\"a\": 1}", "[TOOL_CALLS]f[ARGS]args: {\"a\": 1}"},
+      {"a repeated key", "[TOOL_CALLS]f[ARGS]{\"a\": 1, \"a\": 2}", "[TOOL_CALLS]f[ARGS]{\"a\": 1, \"a\": 2}"},
+      {"a member that is not JSON", "[TOOL_CALLS]f[ARGS]{\"a\": nope}", "[TOOL_CALLS]f[ARGS]{\"a\": nope}"},
+      {"the name written with a brace and no [ARGS]", "[TOOL_CALLS]f{\"a\": 1}", "[TOOL_CALLS]f{\"a\": 1}"},
+  };
+  for (const Case& c : cases) {
+    const Run run = drive_mistral(c.text);
+    require(run.calls.empty(), std::string(c.what) + ": no call");
+    require(run.content == c.content, std::string(c.what) + ": '" + run.content + "'");
+  }
+  // A second [TOOL_CALLS] before the first call's object closed: the first
+  // is literal, the second a call; and a call after a malformed one parses.
+  Run run = drive_mistral("[TOOL_CALLS]get_weather[ARGS]{\"city\": [TOOL_CALLS]flat_tool[ARGS]{\"x\": 2}</s>");
+  require(run.content == "[TOOL_CALLS]get_weather[ARGS]{\"city\": " && run.calls.size() == 1 &&
+              run.calls[0].name == "flat_tool" && run.calls[0].arguments == "{\"x\": 2}",
+          "the open call is flushed, the next parsed: '" + run.content + "'");
+  run = drive_mistral("[TOOL_CALLS]nameless[TOOL_CALLS]flat_tool[ARGS]{\"x\": 2}");
+  require(run.content == "[TOOL_CALLS]nameless" && run.calls.size() == 1, "a name without arguments, then a call");
+  // A stray [ARGS] in content is a skipped special token, like the EOS.
+  run = drive_mistral("a[ARGS]b</s>");
+  require(run.content == "ab" && run.calls.empty(), "a stray [ARGS]: '" + run.content + "'");
+}
+
+DGPP_TEST(tool_parser_mistral_format_streamsAndEndsACallAtItsLastBrace) {
+  // Content streams id by id; the call goes out with the id that closes its
+  // object — not at the EOS, there is no closing marker to wait for — and
+  // what follows is content again.
+  const std::vector<int64_t> ids = mistral_ids_of(
+      "Hi[TOOL_CALLS]flat_tool[ARGS]{\"x\": {\"y\": 1}} then[TOOL_CALLS]flat_tool[ARGS]{\"x\": 2}</s>");
+  ToolCallParser parser(mistral_markers(), port_decode, weather_schemas(), mistral_options());
+  std::vector<Event> events;
+  size_t first_call_at = 0, id_index = 0;
+  bool in_call_seen = false;
+  for (const int64_t id : ids) {
+    const size_t before = events.size();
+    parser.feed(id, &events);
+    for (size_t k = before; k < events.size(); ++k)
+      if (events[k].kind == Kind::kToolCall && first_call_at == 0) first_call_at = id_index;
+    in_call_seen = in_call_seen || parser.in_tool_call();
+    ++id_index;
+  }
+  parser.finish(&events);
+  const Run run = run_of(parser, events);
+  require(in_call_seen, "the parser reports the open call");
+  // "Hi" (ids 0-1), [TOOL_CALLS] (2), "flat_tool" (3-11), [ARGS] (12), "{\"x\": {\"y\": 1}}" (13-27).
+  require(first_call_at == 27, "the first call is emitted at its closing brace, id " + std::to_string(first_call_at));
+  require(run.content == "Hi then" && run.calls.size() == 2, "content around the calls: '" + run.content + "'");
+  require(run.calls[0].arguments == "{\"x\": {\"y\": 1}}" && run.calls[1].arguments == "{\"x\": 2}", "both calls");
+  // One piece that closes the object and runs on: the call, then the rest
+  // of the piece as content. One piece that holds the whole object.
+  const std::vector<int64_t> tail = {kMToolCalls, piece("flat"), piece("_tool"), kMArgs, piece("{\"x\""),
+                                     piece(": 2"), piece("}\n\nDone"), piece("."), kEos};
+  const Run straddle = drive_ids(mistral_markers(), tail, mistral_options());
+  require(straddle.calls.size() == 1 && straddle.calls[0].name == "flat_tool" &&
+              straddle.calls[0].arguments == "{\"x\": 2}" && straddle.content == "\n\nDone.",
+          "a piece across the object's end: '" + straddle.content + "'");
+  require(straddle.order == (std::vector<Kind>{Kind::kToolCall, Kind::kContent, Kind::kContent}),
+          "the call, the piece's tail, the next piece");
+  const Run whole = drive_ids(mistral_markers(), {kMToolCalls, piece("ping"), kMArgs, piece("{}"), kEos},
+                              mistral_options());
+  require(whole.calls.size() == 1 && whole.calls[0].name == "ping" && whole.calls[0].arguments == "{}" &&
+              whole.content.empty(),
+          "one piece is the whole object");
+}
+
+DGPP_TEST(tool_parser_mistral_format_malformedCallKeepsTokenProvenance) {
+  // Content logprobs: every byte of a flushed call maps back to the id that
+  // produced it — a restored bracket to its own id.
+  const std::string text = "ok [TOOL_CALLS]get_weather[ARGS]{\"city\": 1";
+  const std::vector<int64_t> ids = mistral_ids_of(text);
+  ToolCallParser::Options opts = mistral_options();
+  opts.track_tokens = true;
+  ToolCallParser parser(mistral_markers(), port_decode, weather_schemas(), opts);
+  std::vector<Event> events;
+  for (const int64_t id : ids) parser.feed(id, &events);
+  parser.finish(&events);
+  std::string content, attributed;
+  for (const Event& ev : events) {
+    require(ev.kind == Kind::kContent, "content only");
+    content += ev.text;
+    size_t end = 0;
+    for (const auto& span : ev.tokens) {
+      require(span.begin == end && span.end <= ev.text.size(), "complete, ordered byte attribution");
+      require(span.token < ids.size(), "source token index");
+      const int64_t id = ids[span.token];
+      const std::string source = id == kMToolCalls ? "[TOOL_CALLS]" : id == kMArgs ? "[ARGS]" : port_decode({id});
+      require(source == ev.text.substr(span.begin, span.end - span.begin), "attributed bytes match source");
+      attributed += source;
+      end = span.end;
+    }
+    require(end == ev.text.size(), "no unattributed content bytes");
+  }
+  require(content == text && attributed == text, "the flushed call retains token provenance: '" + content + "'");
+}
+
+// ---- the MiniMax-M2 format: the outer two markers are ids (not special:
+// they print), the body is "<invoke name=...>" / "<parameter name=...>"
+// text, one block holds one or more invokes, and a value is typed from the
+// tool's schema the way MiniMax's reference parsers type it.
+ChatMarkers minimax_markers() {
+  ChatMarkers m;
+  m.think_open = ChatMarker{kThinkOpen, "<think>"};
+  m.think_close = ChatMarker{kThinkClose, "</think>"};
+  m.tool_call_open = ChatMarker{kMmToolOpen, "<minimax:tool_call>"};
+  m.tool_call_close = ChatMarker{kMmToolClose, "</minimax:tool_call>"};
+  m.minimax_invoke = true;
+  return m;
+}
+std::vector<int64_t> minimax_ids_of(const std::string& text) {
+  return ids_from({{"</minimax:tool_call>", kMmToolClose}, {"<minimax:tool_call>", kMmToolOpen},
+                   {"</think>", kThinkClose}, {"<think>", kThinkOpen}, {"[e~[", kEos}},
+                  text);
+}
+ToolSchemas minimax_schemas() {
+  static const std::string tools =
+      R"([{"type":"function","function":{"name":"search","parameters":{"type":"object","properties":{)"
+      R"("query":{"type":"string"},"top_k":{"type":"integer"},"ratio":{"type":"number"},)"
+      R"("safe":{"type":"boolean"},"filters":{"type":"object"},"tags":{"type":"array"},)"
+      R"("note":{"type":["string","null"]},"limit":{"type":["integer","null"]},)"
+      R"("mode":{"enum":["fast",3,true]},"level":{"anyOf":[{"type":"integer"},{"type":"string"}]},)"
+      R"("when":{"type":"date"},"plain":{"description":"no type"},"shorthand":true,)"
+      R"("code":{"type":"string","pattern":"^[A-Z]{2}[0-9]{2}$"},"count":{"type":"int"}}}}}])";
+  static const dgpp::minijson::ParseResult parsed = dgpp::minijson::parse(tools);
+  return ToolSchemas(parsed.root);
+}
+// The reply after the generation prompt "]~b]ai\n<think>\n": inside the
+// reasoning.
+Run drive_minimax(const std::string& text, bool start_in_reasoning = false) {
+  ToolCallParser::Options opts;
+  opts.start_in_reasoning = start_in_reasoning;
+  return drive_ids(minimax_markers(), minimax_ids_of(text), opts, minimax_schemas());
+}
+
+DGPP_TEST(tool_parser_minimax_format_markers_and_one_call) {
+  const ChatMarkers m = minimax_markers();
+  require(m.tool_format() == dgpp::text::ToolFormat::kMinimaxXml && m.tool_calls_available(),
+          "MiniMax's two markers are the invoke format");
+  ChatMarkers stated = m;
+  stated.json_calls = true;
+  require(stated.tool_format() == dgpp::text::ToolFormat::kMinimaxXml, "the markers decide, not json_calls");
+  require(!m.prompt_leaves_thinking_to_model({1, 2, 3}) && m.prompt_opens_thinking({1, 2, kThinkOpen}),
+          "the prompt opens the reasoning; nothing is left to the model");
+  // The template's own spelling of a turn, after the prompt's "<think>\n".
+  const Run run = drive_minimax(
+      "The user wants a search.\n</think>\n\nLet me look.\n<minimax:tool_call>\n<invoke name=\"search\">\n"
+      "<parameter name=\"query\">print(\"hi\")\nline 2\n</parameter>\n<parameter name=\"top_k\">5</parameter>\n"
+      "<parameter name=\"filters\">{\"a\": 1.5, \"b\": [1, 2, null]}</parameter>\n"
+      "<parameter name=\"safe\">true</parameter>\n</invoke>\n</minimax:tool_call>[e~[",
+      /*start_in_reasoning=*/true);
+  require(run.reasoning == "The user wants a search.\n" && run.reasoning_closed == 1, "the reasoning: '" + run.reasoning + "'");
+  require(run.content == "\n\nLet me look.\n", "the content around the block: '" + run.content + "'");
+  require(run.calls.size() == 1 && run.calls[0].name == "search", "one call");
+  require(run.calls[0].arguments ==
+              "{\"query\": \"print(\\\"hi\\\")\\nline 2\\n\", \"top_k\": 5, "
+              "\"filters\": {\"a\": 1.5, \"b\": [1, 2, null]}, \"safe\": true}",
+          "a string keeps its text, newlines included; the rest is typed: " + run.calls[0].arguments);
+}
+
+DGPP_TEST(tool_parser_minimax_format_severalInvokesAndBlocks) {
+  // One block, two invokes: two calls, in order. A second block, single
+  // quotes around the names, no newlines between the tags, an invoke
+  // without parameters: all calls.
+  const Run run = drive_minimax(
+      "<minimax:tool_call>\n<invoke name=\"search\">\n<parameter name=\"query\">a</parameter>\n</invoke>\n"
+      "<invoke name=\"search\">\n<parameter name=\"query\">b</parameter>\n</invoke>\n</minimax:tool_call>"
+      " and <minimax:tool_call><invoke name='ping'></invoke><invoke name='search'>"
+      "<parameter name='top_k'>7</parameter></invoke></minimax:tool_call>[e~[");
+  require(run.calls.size() == 4, "four calls, got " + std::to_string(run.calls.size()));
+  require(run.calls[0].arguments == "{\"query\": \"a\"}" && run.calls[1].arguments == "{\"query\": \"b\"}",
+          "the first block's two invokes");
+  require(run.calls[2].name == "ping" && run.calls[2].arguments == "{}", "an invoke without parameters");
+  require(run.calls[3].name == "search" && run.calls[3].arguments == "{\"top_k\": 7}", "single quotes");
+  require(run.content == " and ", "the text between the blocks: '" + run.content + "'");
+  require(run.order == (std::vector<Kind>{Kind::kToolCall, Kind::kToolCall, Kind::kContent, Kind::kContent,
+                                          Kind::kContent, Kind::kContent, Kind::kContent, Kind::kToolCall,
+                                          Kind::kToolCall}),
+          "a block's calls arrive together, in arrival order");
+  // A call that opens inside the reasoning closes it.
+  const Run unclosed = drive_minimax(
+      "Search now.\n<minimax:tool_call>\n<invoke name=\"ping\">\n</invoke>\n</minimax:tool_call>[e~[", true);
+  require(unclosed.reasoning == "Search now.\n" && unclosed.reasoning_closed == 1 && unclosed.calls.size() == 1 &&
+              unclosed.content.empty(),
+          "the reasoning ends at the call");
+}
+
+DGPP_TEST(tool_parser_minimax_format_valuesAreTypedFromTheSchema) {
+  const ToolSchemas s = minimax_schemas();
+  using B = ToolSchemas;
+  require(s.type_bits("search", "query") == (B::kStringBit | B::kDeclaredBit), "string");
+  require(s.type_bits("search", "note") == (B::kStringBit | B::kNullBit | B::kDeclaredBit), "a type list");
+  require(s.type_bits("search", "mode") == (B::kStringBit | B::kIntegerBit | B::kBooleanBit | B::kDeclaredBit),
+          "the enum values' types");
+  require(s.type_bits("search", "level") == (B::kStringBit | B::kIntegerBit | B::kDeclaredBit), "the anyOf alternatives'");
+  require(s.type_bits("search", "when") == B::kDeclaredBit, "a type name outside JSON Schema: declared, no type");
+  require(s.type_bits("search", "plain") == (B::kStringBit | B::kDeclaredBit) &&
+              s.type_bits("search", "shorthand") == (B::kStringBit | B::kDeclaredBit),
+          "a schema that names no type is a string's");
+  require(s.type_bits("search", "count") == (B::kIntegerBit | B::kDeclaredBit), "vLLM's aliases");
+  require(s.type_bits("search", "nope") == 0 && s.type_bits("none", "query") == 0, "undeclared: 0");
+
+  // text -> JSON, by the declared types in the reference order (null,
+  // integer, number, boolean, object / array, string), else JSON-or-text.
+  struct Case {
+    const char* key;
+    const char* text;
+    const char* json;
+  };
+  const Case cases[] = {
+      {"query", "Paris", "\"Paris\""},
+      {"query", "123", "\"123\""},            // a string stays one
+      {"query", "null", "\"null\""},          // null is not among its types
+      {"query", " padded \n", "\" padded \\n\""},  // verbatim
+      {"query", "{\"a\": 1}", "\"{\\\"a\\\": 1}\""},
+      {"top_k", "5", "5"},
+      {"top_k", " +007\n", "7"},
+      {"top_k", "-0", "0"},
+      {"top_k", "5.5", "5.5"},                // not an integer: the JSON it parses as
+      {"top_k", "five", "\"five\""},          // nor JSON: the text
+      {"top_k", "null", "null"},              // the fallback's JSON
+      {"ratio", "0.25", "0.25"},
+      {"ratio", "3.0", "3.0"},                // a float stays one (vLLM would say 3)
+      {"ratio", "1e-3", "0.001"},             // json.dumps form, like every JSON value here
+      {"ratio", "+2", "2"},
+      {"ratio", "fast", "\"fast\""},
+      {"safe", "true", "true"},
+      {"safe", "False", "false"},
+      {"safe", "1", "true"},
+      {"safe", "0", "false"},
+      {"safe", "yes", "\"yes\""},             // vLLM's set, not SGLang's yes/on
+      {"filters", "{\"a\": {\"b\": [1, 2]}}", "{\"a\": {\"b\": [1, 2]}}"},
+      {"filters", "{\"a\":1}", "{\"a\": 1}"},
+      {"filters", "{broken", "\"{broken\""},
+      {"tags", "[\"x\", \"y\"]", "[\"x\", \"y\"]"},
+      {"tags", "x, y", "\"x, y\""},
+      {"note", "null", "null"},
+      {"note", "NULL", "null"},
+      {"note", "none", "\"none\""},           // a nullable string is not always null
+      {"note", "", "\"\""},
+      {"limit", "10", "10"},
+      {"limit", "null", "null"},
+      {"limit", "ten", "\"ten\""},
+      {"mode", "fast", "\"fast\""},
+      {"mode", "3", "3"},
+      {"mode", "true", "true"},
+      {"level", "4", "4"},
+      {"level", "high", "\"high\""},
+      {"when", "2026-10-04", "\"2026-10-04\""},  // an unknown type: JSON if it parses
+      {"when", "42", "42"},
+      {"plain", "42", "\"42\""},
+      {"shorthand", "42", "\"42\""},
+      {"count", "42", "42"},
+      {"code", "AB12", "\"AB12\""},
+      {"code", "\"AB12\"", "\"AB12\""},       // the grammar's spelling of a constrained string
+      {"undeclared", "42", "\"42\""},         // not in the schema: the text
+      {"undeclared", "{\"a\": 1}", "\"{\\\"a\\\": 1}\""},
+  };
+  for (const Case& c : cases) {
+    const Run run = drive_minimax(std::string("<minimax:tool_call>\n<invoke name=\"search\">\n<parameter name=\"") +
+                                  c.key + "\">" + c.text + "</parameter>\n</invoke>\n</minimax:tool_call>");
+    require(run.calls.size() == 1, std::string(c.key) + " '" + c.text + "': one call");
+    const std::string want = std::string("{\"") + c.key + "\": " + c.json + "}";
+    require(run.calls[0].arguments == want,
+            std::string(c.key) + " '" + c.text + "': " + run.calls[0].arguments + " (want " + want + ")");
+  }
+  // A function the request does not declare: every value is its text.
+  const Run unknown = drive_minimax(
+      "<minimax:tool_call>\n<invoke name=\"zebra\">\n<parameter name=\"n\">3</parameter>\n</invoke>\n</minimax:tool_call>");
+  require(unknown.calls.size() == 1 && unknown.calls[0].name == "zebra" && unknown.calls[0].arguments == "{\"n\": \"3\"}",
+          "an undeclared function: " + (unknown.calls.empty() ? std::string("no call") : unknown.calls[0].arguments));
+}
+
+DGPP_TEST(tool_parser_minimax_format_malformedBlocksFallBackToContent) {
+  // The markers are not special: the decode prints them, so the literal
+  // block is exactly what the model wrote.
+  const char* blocks[] = {
+      "<minimax:tool_call>\n</minimax:tool_call>",                                             // no invoke
+      "<minimax:tool_call>just text</minimax:tool_call>",
+      "<minimax:tool_call>\n<invoke name=\"search\">\n<parameter name=\"query\">a\n</invoke>\n</minimax:tool_call>",
+      "<minimax:tool_call>\n<invoke name=\"search\">\n<parameter name=\"query\">a</parameter>\n</minimax:tool_call>",
+      ("<minimax:tool_call>\n<invoke name=\"search\">\n<parameter name=\"query\">a</parameter>\n"
+       "<parameter name=\"query\">b</parameter>\n</invoke>\n</minimax:tool_call>"),            // a repeated name
+      "<minimax:tool_call>\n<invoke name=\"\">\n</invoke>\n</minimax:tool_call>",              // an empty name
+      "<minimax:tool_call>\n<invoke name=search>\n</invoke>\n</minimax:tool_call>",            // no quotes
+      "<minimax:tool_call>\n<invoke name=\"search\">\n</invoke>\ntrailing\n</minimax:tool_call>",
+      "<minimax:tool_call>\n<invoke name=\"search\">\nstray\n</invoke>\n</minimax:tool_call>",
+      "<minimax:tool_call>\n<function=search>\n</function>\n</minimax:tool_call>",             // the Qwen XML body
+      "<minimax:tool_call>\n{\"name\": \"search\", \"arguments\": {}}\n</minimax:tool_call>",    // the JSON body
+  };
+  for (const char* block : blocks) {
+    const Run run = drive_minimax(std::string("x ") + block + " y");
+    require(run.calls.empty(), std::string("no call from: ") + block);
+    require(run.content == std::string("x ") + block + " y", std::string("literal content: ") + run.content);
+  }
+  // The stream ends inside a block; a second opener before the first block
+  // closed flushes it and starts over; a stray closer is content.
+  Run run = drive_minimax("a<minimax:tool_call>\n<invoke name=\"search\">\n<parameter name=\"query\">Par");
+  require(run.calls.empty() && run.content == "a<minimax:tool_call>\n<invoke name=\"search\">\n<parameter name=\"query\">Par",
+          "unterminated: '" + run.content + "'");
+  run = drive_minimax("<minimax:tool_call>\n<invoke name=\"search\">\n<minimax:tool_call>\n<invoke name=\"ping\">\n"
+                      "</invoke>\n</minimax:tool_call></minimax:tool_call>");
+  require(run.calls.size() == 1 && run.calls[0].name == "ping" &&
+              run.content == "<minimax:tool_call>\n<invoke name=\"search\">\n</minimax:tool_call>",
+          "a nested opener restarts: '" + run.content + "'");
+  // The same body between the Qwen markers is not this format's (and the
+  // reverse): each tokenizer reads its own.
+  const Run qwen = drive_qwen("<tool_call>\n<invoke name=\"search\">\n</invoke>\n</tool_call>");
+  require(qwen.calls.empty(), "the XML format does not read an invoke");
+}
+
+DGPP_TEST(tool_parser_minimax_format_streamsAndSplitsAnywhere) {
+  // Reasoning and content stream as they arrive; a block's ids buffer until
+  // its closing marker, then its calls go out together. Byte-per-id is every
+  // possible split of the block's text; the pieces below add tokens that
+  // run across the tags' seams.
+  const std::vector<int64_t> ids = minimax_ids_of(
+      "think</think>Hi<minimax:tool_call>\n<invoke name=\"search\">\n<parameter name=\"top_k\">5</parameter>\n"
+      "</invoke>\n</minimax:tool_call>!");
+  ToolCallParser::Options opts;
+  ToolCallParser parser(minimax_markers(), port_decode, minimax_schemas(), opts);
+  std::vector<Event> events;
+  std::vector<size_t> at;  // the id index each event arrived on
+  for (size_t i = 0; i < ids.size(); ++i) {
+    const size_t before = events.size();
+    parser.feed(ids[i], &events);
+    for (size_t k = before; k < events.size(); ++k) at.push_back(i);
+    if (ids[i] == kMmToolOpen) require(parser.in_tool_call(), "the opener opens the block");
+  }
+  parser.finish(&events);
+  const Run run = run_of(parser, events);
+  require(run.reasoning == "think" && run.content == "Hi!" && run.calls.size() == 1 &&
+              run.calls[0].arguments == "{\"top_k\": 5}",
+          "the turn: '" + run.content + "'");
+  // 5 reasoning deltas (ids 0-4), the close (5), 2 content deltas (6, 7),
+  // nothing while the block is open, the call on its closing marker, "!".
+  require(events.size() == 10 && at[7] == 7 && events[8].kind == Kind::kToolCall && at[8] == ids.size() - 2 &&
+              events[9].kind == Kind::kContent,
+          "the call arrives on the closing marker, events " + std::to_string(events.size()));
+  const std::vector<int64_t> split = {
+      piece("Hi"), kMmToolOpen, piece("\n<inv"), piece("oke name=\"sea"), piece("rch\">\n<parameter"),
+      piece(" name=\"query\">S"), piece("\xC3"), piece("\xA3o Pau"), piece("lo</param"), piece("eter>\n<parameter name=\"top_k\">"),
+      piece("1"), piece("2</parameter>\n</invoke>"), piece("\n"), kMmToolClose, kEos};
+  ToolCallParser::Options plain;
+  plain.start_in_reasoning = false;
+  const Run pieces_run = drive_ids(minimax_markers(), split, plain, minimax_schemas());
+  require(pieces_run.content == "Hi" && pieces_run.calls.size() == 1 &&
+              pieces_run.calls[0].arguments == "{\"query\": \"São Paulo\", \"top_k\": 12}",
+          "tokens across the tags' seams and a UTF-8 sequence: " +
+              (pieces_run.calls.empty() ? pieces_run.content : pieces_run.calls[0].arguments));
+}
+
+// ---- the chat-template constructs the two ports added (Mistral-Small-4's
+// and MiniMax-M2.7's templates need them; the differential goldens of the
+// host gates pin whole renders — these pin each construct without a
+// checkpoint, against what jinja2 prints).
+std::string render_with(const std::string& source, const std::string& globals_json) {
+  const dgpp::minijson::ParseResult parsed = dgpp::minijson::parse(globals_json);
+  return dgpp::text::ChatTemplate::compile(source).render(dgpp::text::Value::from_minijson(parsed.root));
+}
+std::string render_error(const std::string& source, const std::string& globals_json) {
+  try {
+    (void)render_with(source, globals_json);
+  } catch (const std::exception& e) {
+    return e.what();
+  }
+  return "(rendered)";
+}
+
+DGPP_TEST(chat_template_constructsOfTheMistralAndMiniMaxTemplates) {
+  struct Case {
+    const char* source;
+    const char* globals;
+    const char* want;
+  };
+  const Case cases[] = {
+      // Dict literals, list concatenation, dict.get, join, list.
+      {"{{ ([1] + [2, 'a'])|tojson }}", "{}", "[1, 2, \"a\"]"},
+      {"{{ {'a': 1, 'b': [1, 2]}|tojson }}", "{}", "{\"a\": 1, \"b\": [1, 2]}"},
+      {"{{ {'a': {'b': 1}}|tojson }}", "{}", "{\"a\": {\"b\": 1}}"},
+      {"{{ {}|tojson }}|{{ {'a': 1, 'a': 2,}|tojson }}", "{}", "{}|{\"a\": 2}"},
+      {"{% set ns = namespace(l=[]) %}{% for m in ms + [{'role': 'end'}] %}"
+       "{% set ns.l = ns.l + [m['role']] %}{% endfor %}{{ ns.l|join('/') }}",
+       "{\"ms\": [{\"role\": \"user\"}, {\"role\": \"tool\"}]}", "user/tool/end"},
+      {"{{ d.get('a') }}|{{ d.get('z') }}|{{ d.get('z', 5) }}|{{ d.get('z', none) is none }}|"
+       "{{ d.get('r', d.get('a', none)) }}",
+       "{\"d\": {\"a\": 1}}", "1|None|5|True|1"},
+      {"{{ ['a', 'b']|join('\\n\\n')|tojson }}|{{ []|join('x') }}|{{ [1, 2]|join }}|{{ ['a', 1]|join(', ') }}|{{ y|join('-') }}",
+       "{}", "\"a\\n\\nb\"||12|a, 1|"},
+      {"{{ ('abc'|list)|tojson }}|{{ (l|list)|tojson }}|{{ (d|list)|tojson }}|{{ (y|list)|tojson }}",
+       "{\"l\": [1, 2], \"d\": {\"k\": 1, \"j\": 2}}", "[\"a\", \"b\", \"c\"]|[1, 2]|[\"k\", \"j\"]|[]"},
+      {"{{ ([x] + c | list)|tojson }}", "{\"x\": 0, \"c\": [1, 2]}", "[0, 1, 2]"},
+      // Macros: keyword arguments, an absent argument undefined, defaults.
+      {"{% macro m(a, b, c=5) %}[{{ a }}|{{ b }}|{{ c }}]{% endmacro %}{{ m(1, c=7) }}{{ m(b=2, a=1) }}{{ m(1, 2, 3) }}",
+       "{}", "[1||7][1|2|5][1|2|3]"},
+      {"{% macro m(a, flag) %}{% if flag and a %}yes{% else %}no{% endif %}:{{ flag is defined }}{% endmacro %}"
+       "{{ m('x') }}|{{ m('x', flag=true) }}",
+       "{}", "no:False|yes:True"},
+      // Undefined values: no iterations, length 0.
+      {"{% for x in m['content'] %}a{% endfor %}b{{ m['content']|length }}", "{\"m\": {}}", "b0"},
+      // A comment is raw text to its end; a tag's own newlines count as lines.
+      {"{# it's \"quoted\" #}{{ 'ok' }}", "{}", "ok"},
+      {"{%- set s = 'a\nb\nc' -%}\n{{ s }}", "{}", "a\nb\nc"},
+      // The whitespace the MiniMax template's unmarked tags leave behind.
+      {"x\n        {% set a = 1 %}\n        {%- if a %}y{% endif %}", "{}", "x\ny"},
+      {"{{- '<p>' }}\n    {% for k, v in d.items() %}\n    {{- k }}={{ v | tojson if v is not string else v }}\n"
+       "    {% endfor %}\n    {{- '</p>' }}",
+       "{\"d\": {\"a\": \"x\", \"n\": 2}}", "<p>\na=x\nn=2\n</p>"},
+      {"{% set ns = namespace(i=-1) %}{{ ns.i }}|{{ l[1:]|tojson }}|{{ 'a</t>b'.split('</t>')[-1].strip('\\n') }}",
+       "{\"l\": [1, 2, 3]}", "-1|[2, 3]|b"},
+  };
+  for (const Case& c : cases) {
+    const std::string got = render_with(c.source, c.globals);
+    require(got == c.want, std::string(c.source) + " rendered '" + got + "', want '" + c.want + "'");
+  }
+  // The template's own refusals surface as its message; the constructs'
+  // misuse is named.
+  struct Bad {
+    const char* source;
+    const char* globals;
+    const char* needle;
+  };
+  const Bad bad[] = {
+      {"{{ raise_exception('Unexpected role \\'' + r + '\\' after role \\'user\\'') }}", "{\"r\": \"tool\"}",
+       "chat-template: Unexpected role 'tool' after role 'user'"},
+      {"{% macro m(a) %}{{ a }}{% endmacro %}{{ m(1, z=7) }}", "{}", "macro 'm' takes no keyword argument 'z'"},
+      {"{% macro m(a) %}{{ a }}{% endmacro %}{{ m(1, a=7) }}", "{}", "macro 'm' takes no keyword argument 'a'"},
+      {"{% macro m(a) %}{{ a }}{% endmacro %}{{ m(1, 2) }}", "{}", "expected at most 1 argument(s)"},
+      {"{{ {1: 2}|tojson }}", "{}", "dict literal: keys must be strings"},
+      {"{{ [1] + 'a' }}", "{}", "two numbers"},
+      {"{{ 'abc'|join(',') }}", "{}", "join: not a list"},
+      {"{{ n|list }}", "{\"n\": 5}", "list: not a list/map/string"},
+      {"{{ n|length }}", "{\"n\": null}", "length: not a list/map/string"},
+      {"{% for x in n %}{% endfor %}", "{\"n\": null}", "cannot iterate a non-list"},
+      {"{{ s.get('a') }}", "{\"s\": \"str\"}", "cannot call a non-callable value"},
+      {"{{ {'a': 1 }}", "{}", "unterminated tag"},
+      {"{# never closed", "{}", "unterminated tag"},
+  };
+  for (const Bad& b : bad) {
+    const std::string got = render_error(b.source, b.globals);
+    require(got.find(b.needle) != std::string::npos, std::string(b.source) + ": expected '" + b.needle + "', got: " + got);
+  }
+  // An error after a 28-line tag names the line the statement stands on.
+  const std::string late = render_error("{%- set s = 'a\nb\nc' %}\n\n{{ raise_exception('x') }}{{ 1 + 'a' }}", "{}");
+  require(late == "chat-template: x", "raise_exception's message alone: " + late);
+  const std::string line = render_error("{%- set s = 'a\nb\nc' %}\n\n{{ 1 + 'a' }}", "{}");
+  require(line.find("line 5:") != std::string::npos, "the line after a multi-line tag: " + line);
 }
 
 }  // namespace

@@ -37,10 +37,14 @@ class TextFrontend : public ModelFrontend {
   // Instruct), so a request's reasoning_effort has nothing to switch and is
   // accepted as a no-op — "none" is already true, and agent clients send the
   // field to every model. Without it the base rule answers 400 to both.
+  // `bos_token` (Gemma 4): the text of the tokenizer's BOS token, which
+  // transformers hands every template as the global of that name and this
+  // family's template prints first ({{ bos_token }}); empty for the
+  // templates that never read it.
   TextFrontend(const dgpp::text::Tokenizer* tok,
               const dgpp::text::ChatTemplate* tpl, bool json_calls = false,
-              bool instruct_only = false)
-      : tok_(tok), tpl_(tpl), instruct_only_(instruct_only) {
+              bool instruct_only = false, std::string bos_token = {})
+      : tok_(tok), tpl_(tpl), instruct_only_(instruct_only), bos_token_(std::move(bos_token)) {
     if (tok_ == nullptr || tpl_ == nullptr)
       throw std::invalid_argument(
           "TextFrontend: tokenizer and chat template must both be loaded");
@@ -85,6 +89,8 @@ class TextFrontend : public ModelFrontend {
     }
     members.emplace_back("add_generation_prompt",
                          dgpp::text::Value::boolean(true));
+    if (!bos_token_.empty())
+      members.emplace_back("bos_token", dgpp::text::Value::string_value(bos_token_));
     return tpl_->render(dgpp::text::Value::map_value(std::move(members)));
   }
 
@@ -99,6 +105,7 @@ class TextFrontend : public ModelFrontend {
   const dgpp::text::Tokenizer* tok_;
   const dgpp::text::ChatTemplate* tpl_;
   bool instruct_only_ = false;
+  std::string bos_token_;
   dgpp::text::ChatMarkers markers_;
 };
 

@@ -375,8 +375,10 @@ void glm_moe_ref_forward(const uint16_t* hidden, const GlmMoeHostWeights& w,
       strict_gemm_raw(act, I, wd.w, 1, H, I, down_out, wd.divisor);
       for (int d = 0; d < H; ++d) acc[d] += we * down_out[d];
     }
-    // Shared expert, weight 1, added last.
-    {
+    // Shared expert, weight 1, added last. A chain without one
+    // (cfg.n_shared_experts 0: MiniMax-M2, 2026-10-04) is the routed
+    // experts alone.
+    if (cfg.n_shared_experts != 0) {
       const Mat wg = weights_for(E * 3 + 0);
       const Mat wu = weights_for(E * 3 + 1);
       const Mat wd = weights_for(E * 3 + 2);

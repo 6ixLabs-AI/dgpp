@@ -36,6 +36,20 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 option(DGPP_WERROR "Treat compiler warnings as errors" OFF)
 option(DGPP_BUILD_BENCHMARKS "Build platform, kernel and transport microbenchmarks" ON)
+# Gemma 4 (2026-10-04): the family's host side — config, tensor table, host
+# reference, tokenizer shape, template forms, tool-call notation — is in the
+# default build and its tests ran on a Mac. Its CUDA side (the attention
+# kernel, the draft forward and gemma4_forward_check) was written with no
+# GPU at hand and has never been compiled: it builds only with this ON, so
+# that it cannot stop a build of main. sixlabs/ports/gemma-4-31b/gpu-steps.md.
+option(DGPP_BUILD_GEMMA_DRAFT "Gemma-4 draft kernels and forward check, not yet compiled on a Spark" OFF)
+# The plain Qwen3 family's GPU side (models/qwen3 loader + model, qwen3_forward_check, the family in
+# the server's registry) was written on 2026-10-04 without nvcc or a GPU: syntax-checked against a
+# header shim, never compiled for a device, never run. OFF keeps it out of every target, so it cannot
+# stop a build of main; the family's host side (config, binding table, host reference, their unit
+# tests, qwen3_bind_check) is compile-checked and unit-tested and is always built.
+# sixlabs/ports/qwen3-vl-30b-a3b/gpu-steps.md is the sequence that turns this on and verifies it.
+option(DGPP_BUILD_QWEN3_PLAIN_DRAFT "Plain Qwen3 / Qwen3-MoE GPU walk: an unverified draft, not yet compiled or run on a Spark" OFF)
 set(DGPP_SANITIZE "" CACHE STRING "Host sanitizer (address or undefined)")
 set_property(CACHE DGPP_SANITIZE PROPERTY STRINGS "" address undefined)
 
@@ -55,6 +69,15 @@ if(DGPP_SANITIZE)
 endif()
 
 option(DGPP_ENABLE_IBV "Build serving and RDMA targets (required even for the single-node server)" ON)
+# The 2026-10-04 overnight ports. What is in the default build for these two
+# families is host-only and was compiled and unit-tested on a Mac (Apple
+# clang): the config parsers, the binding tables, the host references, the
+# bind-check apps. Everything that needs a GPU to be checked — CUDA kernels,
+# model assembly, a serve family — is a DRAFT that has never been compiled by
+# nvcc, loaded a weight or produced a token, and builds only when asked for.
+# With an option OFF the serve binary refuses the family by name.
+option(DGPP_BUILD_MISTRAL_DRAFT "Build the UNVERIFIED Mistral-Small-4 device draft (docs/mistral_small4_plan.md)" OFF)
+option(DGPP_BUILD_MINIMAX_DRAFT "Build the UNVERIFIED MiniMax-M2 device draft (docs/minimax_m27_plan.md)" OFF)
 
 add_library(dgpp_common INTERFACE)
 target_include_directories(dgpp_common INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -242,6 +265,7 @@ dgpp_set_common(dgpp_models_dsa)
 # with its prefix cache index, and the sampler (header-only, src/sample/).
 add_library(dgpp_text STATIC
   src/text/tokenizer.cpp
+  src/text/tokenizer_spm.cpp
   src/text/unicode_normalize.cpp
   src/text/chat_template.cpp
   src/text/dsv41_prompt.cpp
@@ -282,6 +306,29 @@ target_include_directories(dgpp_models_glm4 PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/s
 target_link_libraries(dgpp_models_glm4 PUBLIC dgpp_loaders dgpp_common)
 dgpp_set_common(dgpp_models_glm4)
 
+# Mistral-Small-4 (2026-10-04, docs/mistral_small4_plan.md): the host-side
+# model description — the params.json parser, the expected-tensor table and
+# the attention layer's host reference. No CUDA.
+add_library(dgpp_models_mistral4 STATIC
+  src/models/mistral4/config.cpp
+  src/models/mistral4/binding.cpp
+  src/models/mistral4/mla_reference.cpp)
+target_include_directories(dgpp_models_mistral4 PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(dgpp_models_mistral4 PUBLIC dgpp_loaders dgpp_common dgpp_rope_scaling)
+dgpp_set_common(dgpp_models_mistral4)
+
+# MiniMax-M2.7 (2026-10-04, docs/minimax_m27_plan.md): the host-side model
+# description — the config parser, the expected-tensor table and the
+# attention layer's host reference (GLM-4.7's attention oracle under the
+# per-layer q/k norm). No CUDA.
+add_library(dgpp_models_minimax STATIC
+  src/models/minimax/config.cpp
+  src/models/minimax/binding.cpp
+  src/models/minimax/attn_reference.cpp)
+target_include_directories(dgpp_models_minimax PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(dgpp_models_minimax PUBLIC dgpp_loaders dgpp_common dgpp_models_glm4)
+dgpp_set_common(dgpp_models_minimax)
+
 # The GLM-4.7 resident loader (loaders/resident_stream.hpp + the family's builders).
 add_library(dgpp_models_glm4_loader STATIC
   src/models/glm4/loader.cpp)
@@ -321,6 +368,17 @@ target_include_directories(dgpp_models_nemotron PUBLIC ${CMAKE_CURRENT_SOURCE_DI
 target_link_libraries(dgpp_models_nemotron PUBLIC dgpp_loaders dgpp_common)
 dgpp_set_common(dgpp_models_nemotron)
 
+# Gemma 4 (2026-10-04): the host-side model description — the config
+# parser, the expected-tensor table and the fp32 host reference of the whole
+# text model (the C++ twin of tools/gemma4_reference.py). No CUDA.
+add_library(dgpp_models_gemma4 STATIC
+  src/models/gemma4/config.cpp
+  src/models/gemma4/binding.cpp
+  src/models/gemma4/reference.cpp)
+target_include_directories(dgpp_models_gemma4 PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(dgpp_models_gemma4 PUBLIC dgpp_loaders dgpp_common)
+dgpp_set_common(dgpp_models_gemma4)
+
 # The MiMo resident loader (loaders/resident_stream.hpp + the family's builders).
 add_library(dgpp_models_mimo_loader STATIC
   src/models/mimo/loader.cpp)
@@ -338,6 +396,39 @@ target_include_directories(dgpp_models_mimo_layers PUBLIC ${CMAKE_CURRENT_SOURCE
 target_link_libraries(dgpp_models_mimo_layers
   PUBLIC dgpp_models_mimo dgpp_models_mimo_loader dgpp_models_moe dgpp_models_glm dgpp_kernels CUDA::cudart)
 dgpp_set_common(dgpp_models_mimo_layers)
+
+# The plain Qwen3 family (2026-10-04, sixlabs/ports/qwen3-vl-30b-a3b): Qwen3-MoE, the text path of
+# Qwen3-VL-MoE and the dense retrieval models. The host-side model description: config, the
+# expected-tensor table, and the host reference (the routed-only NVFP4 MoE oracle and the whole
+# forward, against tools/qwen3_reference.py). No CUDA.
+add_library(dgpp_models_qwen3 STATIC
+  src/models/qwen3/config.cpp
+  src/models/qwen3/binding.cpp
+  src/models/qwen3/moe_reference.cpp
+  src/models/qwen3/reference.cpp)
+target_include_directories(dgpp_models_qwen3 PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(dgpp_models_qwen3 PUBLIC dgpp_models_glm4 dgpp_models_glm dgpp_loaders dgpp_common)
+dgpp_set_common(dgpp_models_qwen3)
+
+# Its GPU side: an UNVERIFIED DRAFT (see the option). The loader calls the qwen3_5 loader's NVFP4
+# dequant functions (dgpp_models_qwen_loader); the model runs GLM-4.7's attention layer and K/V pool
+# (dgpp_models_glm4_layers) and the shared routed MoE layer (dgpp_models_moe).
+if(DGPP_BUILD_QWEN3_PLAIN_DRAFT)
+  add_library(dgpp_models_qwen3_loader STATIC
+    src/models/qwen3/loader.cpp)
+  target_include_directories(dgpp_models_qwen3_loader PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(dgpp_models_qwen3_loader
+    PUBLIC dgpp_models_qwen3 dgpp_models_qwen_loader dgpp_loaders CUDA::cudart dgpp_device_ranges)
+  dgpp_set_common(dgpp_models_qwen3_loader)
+
+  add_library(dgpp_models_qwen3_layers STATIC
+    src/models/qwen3/model.cpp)
+  target_include_directories(dgpp_models_qwen3_layers PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(dgpp_models_qwen3_layers
+    PUBLIC dgpp_models_qwen3 dgpp_models_qwen3_loader dgpp_models_glm4_layers dgpp_models_moe dgpp_models_glm
+           dgpp_kernels CUDA::cudart)
+  dgpp_set_common(dgpp_models_qwen3_layers)
+endif()
 
 # The full GLM-5.3 model on the session core (docs/glm53_plan.md G5).
 add_library(dgpp_models_glm_dsa_layers STATIC
@@ -621,6 +712,25 @@ dgpp_set_common(dsv41_bind_check)
 add_executable(qwen35_bind_check apps/qwen35_bind_check.cpp)
 target_link_libraries(qwen35_bind_check PRIVATE dgpp_models_qwen dgpp_loaders)
 dgpp_set_common(qwen35_bind_check)
+# Gemma 4, host-only: the table against a checkpoint's headers, and the host
+# reference's teacher-forced log-probabilities on a checkpoint (no GPU).
+add_executable(gemma4_bind_check apps/gemma4_bind_check.cpp)
+target_link_libraries(gemma4_bind_check PRIVATE dgpp_models_gemma4 dgpp_loaders)
+dgpp_set_common(gemma4_bind_check)
+add_executable(gemma4_host_check apps/gemma4_host_check.cpp)
+target_link_libraries(gemma4_host_check PRIVATE dgpp_models_gemma4 dgpp_loaders)
+dgpp_set_common(gemma4_host_check)
+add_executable(mistral4_bind_check apps/mistral4_bind_check.cpp)
+target_link_libraries(mistral4_bind_check PRIVATE dgpp_models_mistral4 dgpp_loaders)
+dgpp_set_common(mistral4_bind_check)
+add_executable(minimax_bind_check apps/minimax_bind_check.cpp)
+target_link_libraries(minimax_bind_check PRIVATE dgpp_models_minimax dgpp_loaders)
+dgpp_set_common(minimax_bind_check)
+# The plain Qwen3 family's bind check (host only): the headers against the table, the per-rank
+# resident arithmetic, and the host reference forward over a list of token ids.
+add_executable(qwen3_bind_check apps/qwen3_bind_check.cpp)
+target_link_libraries(qwen3_bind_check PRIVATE dgpp_models_qwen3 dgpp_loaders)
+dgpp_set_common(qwen3_bind_check)
 add_executable(dsv4_forward_check apps/dsv4_forward_check.cpp)
 target_include_directories(dsv4_forward_check PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/tests/cuda)
 target_link_libraries(dsv4_forward_check PRIVATE dgpp_models_dsv4_layers dgpp_bus dgpp_loaders dgpp_sched dgpp_text CUDA::cudart Threads::Threads)
@@ -749,6 +859,12 @@ if(DGPP_ENABLE_IBV)
                                              dgpp_serve CUDA::cudart
                                              Threads::Threads)
   dgpp_set_common(dgpp_serve_app)
+  # The plain Qwen3 family joins the server's registry only when its draft is built; without it the
+  # server refuses those checkpoints by name (apps/dgpp_serve.cpp make_family).
+  if(DGPP_BUILD_QWEN3_PLAIN_DRAFT)
+    target_link_libraries(dgpp_serve_app PRIVATE dgpp_models_qwen3_layers)
+    target_compile_definitions(dgpp_serve_app PRIVATE DGPP_QWEN3_PLAIN_DRAFT)
+  endif()
   # 6ixServe: the server binary, and so its process, is 6ix-Serve. dgpp-serve stays beside it as
   # a link for the upstream scripts and tests that name the binary (release.sh, the soak tools).
   set_target_properties(dgpp_serve_app PROPERTIES OUTPUT_NAME 6ix-Serve)
@@ -838,6 +954,9 @@ add_executable(unit_tests
   tests/unit/qwen36_loader_test.cpp
   tests/unit/qwen35_bf16_test.cpp
   tests/unit/qwen35_122b_test.cpp
+  tests/unit/qwen3_config_test.cpp
+  tests/unit/qwen3_binding_test.cpp
+  tests/unit/qwen3_reference_test.cpp
   tests/unit/qwen_dflash2_config_test.cpp
   tests/unit/dflash2_speculator_test.cpp
   tests/unit/qwen_rope_scaling_test.cpp
@@ -857,7 +976,7 @@ add_executable(unit_tests
 target_include_directories(unit_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(unit_tests PRIVATE CUDA::cudart dgpp_loaders
                                         dgpp_models_glm dgpp_models_qwen dgpp_models_qwen_loader
-                                        dgpp_models_glm4
+                                        dgpp_models_glm4 dgpp_models_qwen3
                                         dgpp_models_glm_dsa dgpp_models_dsv41 dgpp_models_dsv4 dgpp_models_mimo
                                         dgpp_rope_scaling
                                         dgpp_net dgpp_serve Threads::Threads)
@@ -865,6 +984,33 @@ target_compile_definitions(unit_tests PRIVATE DGPP_SOURCE_DIR="${CMAKE_CURRENT_S
 dgpp_set_common(unit_tests)
 add_test(NAME unit_tests COMMAND unit_tests)
 target_sources(unit_tests PRIVATE tests/unit/site_options_test.cpp)
+# Gemma 4 (2026-10-04): the config parser; the tensor table against the 31B
+# and 26B-A4B releases' header counts; the host reference against the numpy reference on
+# the synthetic checkpoints — one in the 31B's shape, one in the 26B-A4B's with
+# the MoE block (tests/unit/gemma4_reference_vectors.hpp, written by
+# tools/gemma4_synth.py); the SentencePiece-style BPE on a miniature
+# tokenizer (tests/data/gemma4_mini_tokenizer.json, goldens from HF
+# tokenizers); the Jinja forms the template added; the call notation.
+target_sources(unit_tests PRIVATE
+  tests/unit/gemma4_config_test.cpp
+  tests/unit/gemma4_binding_test.cpp
+  tests/unit/gemma4_reference_test.cpp
+  tests/unit/gemma4_tokenizer_test.cpp
+  tests/unit/gemma4_tool_parser_test.cpp
+  tests/unit/chat_template_gemma4_forms_test.cpp)
+target_link_libraries(unit_tests PRIVATE dgpp_models_gemma4)
+# Mistral-Small-4 and MiniMax-M2.7 (2026-10-04): config, binding table
+# (pinned to the real checkpoints' header counts) and the host references
+# against the numpy references' vectors (tests/unit/*_vectors.hpp, generated
+# by tools/mistral4_synth.py and tools/minimax_m2_synth.py).
+target_sources(unit_tests PRIVATE
+  tests/unit/mistral4_config_test.cpp
+  tests/unit/mistral4_binding_test.cpp
+  tests/unit/mistral4_mla_test.cpp
+  tests/unit/minimax_config_test.cpp
+  tests/unit/minimax_binding_test.cpp
+  tests/unit/minimax_attn_test.cpp)
+target_link_libraries(unit_tests PRIVATE dgpp_models_mistral4 dgpp_models_minimax)
 
 # Nemotron-3 (2026-10-04): the config parser, the binding table against both
 # releases' header counts, and the Mamba2 host reference against the numpy
@@ -938,6 +1084,20 @@ set_tests_properties(glm_dsa_tokenizer_test PROPERTIES SKIP_RETURN_CODE 2)
 add_test(NAME mimo_tokenizer_test
   COMMAND tokenizer_test ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/mimo_tokenizer_goldens.jsonl)
 set_tests_properties(mimo_tokenizer_test PROPERTIES SKIP_RETURN_CODE 2)
+# Gemma 4's SentencePiece-style BPE against HF tokenizers on the release's
+# own tokenizer.json (skips with rc 2 when the model cache is absent).
+add_test(NAME gemma4_tokenizer_test
+  COMMAND tokenizer_test ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/gemma4_tokenizer_goldens.jsonl)
+set_tests_properties(gemma4_tokenizer_test PROPERTIES SKIP_RETURN_CODE 2)
+# Mistral-Small-4 (the tekken pattern: cased letter runs, one number per
+# pretoken) and MiniMax-M2.7 (the o200k pattern under NFC, Split spelled
+# Removed + invert), 2026-10-04.
+add_test(NAME mistral4_tokenizer_test
+  COMMAND tokenizer_test ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/mistral4_tokenizer_goldens.jsonl)
+set_tests_properties(mistral4_tokenizer_test PROPERTIES SKIP_RETURN_CODE 2 LABELS "host;checkpoint")
+add_test(NAME minimax_tokenizer_test
+  COMMAND tokenizer_test ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/minimax_tokenizer_goldens.jsonl)
+set_tests_properties(minimax_tokenizer_test PROPERTIES SKIP_RETURN_CODE 2 LABELS "host;checkpoint")
 
 # M6 Stage 3b: the chat-template differential gate (host). Skips with rc 2
 # when the model cache is absent, same as above.
@@ -970,6 +1130,15 @@ dgpp_set_common(qwen3next_tool_calls_test)
 add_test(NAME qwen3next_tool_calls_test
   COMMAND qwen3next_tool_calls_test ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/qwen3next_chat_template_goldens.jsonl)
 set_tests_properties(qwen3next_tool_calls_test PROPERTIES SKIP_RETURN_CODE 2 LABELS "host;checkpoint")
+# The same gate over the plain Qwen3 checkpoints' corpora (2026-10-04): Qwen3-235B-A22B-Instruct-2507
+# and Qwen3-VL-30B-A3B-Instruct write the 80B's JSON call form over the same tokenizer, with their own
+# templates (the Qwen3 reasoning history; content parts and the vision placeholders).
+add_test(NAME qwen3moe_tool_calls_test
+  COMMAND qwen3next_tool_calls_test ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/qwen3moe_chat_template_goldens.jsonl)
+set_tests_properties(qwen3moe_tool_calls_test PROPERTIES SKIP_RETURN_CODE 2 LABELS "host;checkpoint")
+add_test(NAME qwen3vl_tool_calls_test
+  COMMAND qwen3next_tool_calls_test ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/qwen3vl_chat_template_goldens.jsonl)
+set_tests_properties(qwen3vl_tool_calls_test PROPERTIES SKIP_RETURN_CODE 2 LABELS "host;checkpoint")
 # Qwen3-Coder-Next over its real tokenizer and template (host): the same
 # model class and tokenizer, the XML call form — what the template states,
 # the parser and the forced-call grammar over the tokenizer's own pieces.
@@ -979,6 +1148,68 @@ target_link_libraries(qwen3codernext_tool_calls_test PRIVATE dgpp_models_glm Thr
 dgpp_set_common(qwen3codernext_tool_calls_test)
 add_test(NAME qwen3codernext_tool_calls_test COMMAND qwen3codernext_tool_calls_test)
 set_tests_properties(qwen3codernext_tool_calls_test PROPERTIES SKIP_RETURN_CODE 2 LABELS "host;checkpoint")
+# Mistral-Small-4 over its real tokenizer and template (host): the renders and
+# the template's refusals against the corpus, the [TOOL_CALLS] / [THINK] parser
+# and the forced-call grammar over the tokenizer's own pieces. Skips with rc 2
+# when the model cache is absent.
+add_executable(mistral4_tool_calls_test tests/host/mistral4_tool_calls_test.cpp)
+target_include_directories(mistral4_tool_calls_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(mistral4_tool_calls_test PRIVATE dgpp_models_glm Threads::Threads)
+dgpp_set_common(mistral4_tool_calls_test)
+add_test(NAME mistral4_tool_calls_test
+  COMMAND mistral4_tool_calls_test ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/mistral4_chat_template_goldens.jsonl)
+set_tests_properties(mistral4_tool_calls_test PROPERTIES SKIP_RETURN_CODE 2 LABELS "host;checkpoint")
+# MiniMax-M2.7 likewise: the renders, the invoke / parameter parser typed from
+# the schema; the forced-call grammar does not cover this format (asserted).
+add_executable(minimax_tool_calls_test tests/host/minimax_tool_calls_test.cpp)
+target_include_directories(minimax_tool_calls_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(minimax_tool_calls_test PRIVATE dgpp_models_glm Threads::Threads)
+dgpp_set_common(minimax_tool_calls_test)
+add_test(NAME minimax_tool_calls_test
+  COMMAND minimax_tool_calls_test ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/minimax_chat_template_goldens.jsonl)
+set_tests_properties(minimax_tool_calls_test PROPERTIES SKIP_RETURN_CODE 2 LABELS "host;checkpoint")
+
+# Gemma 4 over its real tokenizer and template (host): the renders and their
+# ids against the jinja2 / HF tokenizers corpus, the markers, the frontend,
+# and the template's own calls parsed back. Skips with rc 2 when the model
+# cache is absent.
+add_executable(gemma4_chat_test tests/host/gemma4_chat_test.cpp)
+target_include_directories(gemma4_chat_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(gemma4_chat_test PRIVATE dgpp_models_glm Threads::Threads)
+dgpp_set_common(gemma4_chat_test)
+add_test(NAME gemma4_chat_test
+  COMMAND gemma4_chat_test ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/gemma4_chat_template_goldens.jsonl)
+set_tests_properties(gemma4_chat_test PROPERTIES SKIP_RETURN_CODE 2 LABELS "host;checkpoint")
+# The 26B-A4B release ships another (earlier) template over the same
+# tokenizer: its own corpus, the same test.
+add_test(NAME gemma4_26b_chat_test
+  COMMAND gemma4_chat_test ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/gemma4_26b_chat_template_goldens.jsonl)
+set_tests_properties(gemma4_26b_chat_test PROPERTIES SKIP_RETURN_CODE 2 LABELS "host;checkpoint")
+
+# Gemma 4's UNVERIFIED DRAFT GPU side (2026-10-04): a plain one-sequence
+# forward and its check. OFF by default — nothing here has been compiled by
+# nvcc. With it ON: gemma4_forward_draft_test first (the synthetic
+# checkpoint against the numpy reference's vectors; no checkpoint needed),
+# then gemma4_forward_check on the release. sixlabs/ports/gemma-4-31b/gpu-steps.md.
+if(DGPP_BUILD_GEMMA_DRAFT)
+  add_library(dgpp_models_gemma4_draft STATIC
+    src/models/gemma4/forward_draft.cu)
+  target_include_directories(dgpp_models_gemma4_draft PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(dgpp_models_gemma4_draft PUBLIC dgpp_models_gemma4 dgpp_loaders CUDA::cudart)
+  dgpp_set_common(dgpp_models_gemma4_draft)
+  add_executable(gemma4_forward_check apps/gemma4_forward_check.cpp)
+  target_link_libraries(gemma4_forward_check PRIVATE dgpp_models_gemma4_draft dgpp_models_gemma4 dgpp_loaders
+                                                     CUDA::cudart Threads::Threads)
+  dgpp_set_common(gemma4_forward_check)
+  add_executable(gemma4_forward_draft_test tests/cuda/gemma4_forward_draft_test.cpp)
+  target_include_directories(gemma4_forward_draft_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
+                                                               ${CMAKE_CURRENT_SOURCE_DIR}/tests/unit)
+  target_link_libraries(gemma4_forward_draft_test PRIVATE dgpp_models_gemma4_draft dgpp_models_gemma4 dgpp_loaders
+                                                          CUDA::cudart Threads::Threads)
+  dgpp_set_common(gemma4_forward_draft_test)
+  add_test(NAME gemma4_forward_draft_test COMMAND gemma4_forward_draft_test)
+  set_tests_properties(gemma4_forward_draft_test PROPERTIES LABELS "gpu")
+endif()
 
 # M6 Stage 4: the serving capstone — HTTP/SSE over epoll + the OpenAI
 # generation service (host-only; the engine adapters live in the apps,
@@ -1270,6 +1501,42 @@ target_include_directories(glm4_attn_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/sr
 target_link_libraries(glm4_attn_test PRIVATE dgpp_models_glm4 dgpp_kernels CUDA::cudart Threads::Threads)
 dgpp_set_common(glm4_attn_test)
 add_test(NAME glm4_attn_test COMMAND glm4_attn_test)
+
+# ---- UNVERIFIED device drafts (2026-10-04), OFF by default --------------------
+# Written overnight with no GPU: syntax-checked with clang's CUDA front end
+# against a qualifier shim, never compiled by nvcc, never run. Each option
+# builds the family's new kernel(s) and the CUDA test that holds them — and,
+# for Mistral, the existing latent-attention kernels in the order a layer
+# must enqueue them — against the family's host reference (which is in the
+# default build and tested). Neither option adds a serve family: the server
+# keeps refusing both by name. sixlabs/ports/<model>/gpu-steps.md says what
+# to run and what a pass looks like.
+if(DGPP_BUILD_MISTRAL_DRAFT)
+  add_library(dgpp_kernels_mistral4_draft STATIC src/kernels/mistral4_attn.cu)
+  target_include_directories(dgpp_kernels_mistral4_draft PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(dgpp_kernels_mistral4_draft PUBLIC CUDA::cudart dgpp_core)
+  dgpp_set_common(dgpp_kernels_mistral4_draft)
+  add_executable(mistral4_attn_test tests/cuda/mistral4_attn_test.cu)
+  target_include_directories(mistral4_attn_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/tests/cuda)
+  target_link_libraries(mistral4_attn_test PRIVATE dgpp_kernels_mistral4_draft dgpp_models_mistral4 dgpp_kernels
+                                                 CUDA::cudart Threads::Threads)
+  dgpp_set_common(mistral4_attn_test)
+  add_test(NAME mistral4_attn_test COMMAND mistral4_attn_test)
+  set_tests_properties(mistral4_attn_test PROPERTIES SKIP_RETURN_CODE 2)
+endif()
+if(DGPP_BUILD_MINIMAX_DRAFT)
+  add_library(dgpp_kernels_minimax_draft STATIC src/kernels/minimax_attn.cu)
+  target_include_directories(dgpp_kernels_minimax_draft PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(dgpp_kernels_minimax_draft PUBLIC CUDA::cudart dgpp_core)
+  dgpp_set_common(dgpp_kernels_minimax_draft)
+  add_executable(minimax_attn_test tests/cuda/minimax_attn_test.cu)
+  target_include_directories(minimax_attn_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/tests/cuda)
+  target_link_libraries(minimax_attn_test PRIVATE dgpp_kernels_minimax_draft dgpp_models_minimax dgpp_models_glm4
+                                                dgpp_kernels CUDA::cudart Threads::Threads)
+  dgpp_set_common(minimax_attn_test)
+  add_test(NAME minimax_attn_test COMMAND minimax_attn_test)
+  set_tests_properties(minimax_attn_test PROPERTIES SKIP_RETURN_CODE 2)
+endif()
 
 add_executable(full_attn_test tests/cuda/full_attn_test.cu)
 target_include_directories(full_attn_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/tests/cuda)
@@ -1636,6 +1903,29 @@ add_test(NAME dsv4_engine_test COMMAND dsv4_engine_test)
 add_executable(glm4_forward_check apps/glm4_forward_check.cpp)
 target_link_libraries(glm4_forward_check PRIVATE dgpp_models_glm4_layers dgpp_bus dgpp_loaders dgpp_sched dgpp_text CUDA::cudart Threads::Threads)
 dgpp_set_common(glm4_forward_check)
+
+# The plain Qwen3-MoE diagnostic forward and its fixture gates (the loader's resident values and rank
+# slices; the cold forward and the session surface against the host reference — on synthetic
+# checkpoints of both NVFP4 containers): part of the unverified draft.
+if(DGPP_BUILD_QWEN3_PLAIN_DRAFT)
+  add_executable(qwen3_forward_check apps/qwen3_forward_check.cpp)
+  target_link_libraries(qwen3_forward_check PRIVATE dgpp_models_qwen3_layers dgpp_bus dgpp_loaders dgpp_sched dgpp_text CUDA::cudart Threads::Threads)
+  dgpp_set_common(qwen3_forward_check)
+
+  add_executable(qwen3_loader_test tests/cuda/qwen3_loader_test.cpp)
+  target_include_directories(qwen3_loader_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/tests/cuda)
+  target_link_libraries(qwen3_loader_test PRIVATE dgpp_models_qwen3_loader CUDA::cudart Threads::Threads)
+  dgpp_set_common(qwen3_loader_test)
+  add_test(NAME qwen3_loader_test COMMAND qwen3_loader_test)
+  set_tests_properties(qwen3_loader_test PROPERTIES LABELS "gpu")
+
+  add_executable(qwen3_forward_test tests/cuda/qwen3_forward_test.cpp)
+  target_include_directories(qwen3_forward_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/tests/cuda)
+  target_link_libraries(qwen3_forward_test PRIVATE dgpp_models_qwen3_layers dgpp_bus dgpp_loaders dgpp_sched dgpp_text CUDA::cudart Threads::Threads)
+  dgpp_set_common(qwen3_forward_test)
+  add_test(NAME qwen3_forward_test COMMAND qwen3_forward_test)
+  set_tests_properties(qwen3_forward_test PROPERTIES LABELS "gpu")
+endif()
 
 add_executable(mimo_forward_check apps/mimo_forward_check.cpp)
 target_link_libraries(mimo_forward_check PRIVATE dgpp_models_mimo_layers dgpp_bus dgpp_loaders dgpp_sched dgpp_text CUDA::cudart Threads::Threads)

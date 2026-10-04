@@ -38,11 +38,62 @@ ChatMarkers ChatMarkers::from_tokenizer(const Tokenizer& tok) {
   m.arg_value_open = lookup("<arg_value>");
   m.arg_value_close = lookup("</arg_value>");
   m.dsml = lookup("｜DSML｜");
+  // Gemma 4 (2026-10-04): the reasoning channel's two tokens and the
+  // tool-call pair under their own spellings, and the string token that
+  // marks the call notation. A tokenizer with <think> / <tool_call> is
+  // another family's and keeps those.
+  if (!m.think_open.available() && !m.think_close.available()) {
+    const ChatMarker open = lookup("<|channel>"), close = lookup("<channel|>");
+    if (open.available() && close.available()) {
+      m.think_open = open;
+      m.think_close = close;
+      m.channel_thinking = true;
+    }
+  }
+  if (!m.tool_call_open.available() && !m.tool_call_close.available()) {
+    const ChatMarker open = lookup("<|tool_call>"), close = lookup("<tool_call|>");
+    const ChatMarker quote = lookup("<|\"|>");
+    if (open.available() && close.available() && quote.available()) {
+      m.tool_call_open = open;
+      m.tool_call_close = close;
+      m.string_quote = quote;
+    }
+  }
+  // MiniMax-M2's outer markers are tokens of their own: they take the two
+  // <tool_call> slots of a tokenizer that has no <tool_call> pair, and the
+  // body is then MiniMax's (kMinimaxXml).
+  if (!m.tool_call_open.available() && !m.tool_call_close.available()) {
+    const ChatMarker open = lookup("<minimax:tool_call>");
+    const ChatMarker close = lookup("</minimax:tool_call>");
+    if (open.available() && close.available()) {
+      m.tool_call_open = open;
+      m.tool_call_close = close;
+      m.minimax_invoke = true;
+    }
+  }
+  // Mistral's brackets: the two call markers, and [THINK] / [/THINK] as the
+  // reasoning pair of a tokenizer that has no <think> one.
+  m.tool_calls = lookup("[TOOL_CALLS]");
+  m.args = lookup("[ARGS]");
+  if (!m.think_open.available() && !m.think_close.available()) {
+    const ChatMarker open = lookup("[THINK]");
+    const ChatMarker close = lookup("[/THINK]");
+    if (open.available() && close.available()) {
+      m.think_open = open;
+      m.think_close = close;
+      m.bracket_think = true;
+    }
+  }
   // The MiMo tokenizers (the Qwen2 vocabulary with the audio / video
   // markers) go with the compact XML call format.
   m.xml_compact = lookup("<|mimo_audio_start|>").available();
   for (const char* role : {"<|system|>", "<|user|>", "<|assistant|>", "<|observation|>",
-                           "<|im_start|>", "<|im_end|>", "<｜System｜>", "<｜User｜>", "<｜Assistant｜>"}) {
+                           "<|im_start|>", "<|im_end|>", "<｜System｜>", "<｜User｜>", "<｜Assistant｜>",
+                           "<|turn>", "<turn|>",
+                           // MiniMax-M2: the header token of every turn ("]~b]system", "]~b]user",
+                           // "]~b]ai", "]~b]tool"); Mistral: what opens a system, user and tool turn
+                           // (an assistant turn has no opener — it follows [/INST] or [/TOOL_RESULTS]).
+                           "]~b]", "[SYSTEM_PROMPT]", "[INST]", "[TOOL_RESULTS]"}) {
     const ChatMarker r = lookup(role);
     if (r.available()) m.role_markers.push_back(r);
   }
@@ -65,6 +116,70 @@ bool chat_template_writes_json_calls(std::string_view source) {
 // Schemas
 // ---------------------------------------------------------------------------
 
+namespace {
+
+// Every type a parameter's schema can name (ToolSchemas::type_bits): vLLM's
+// extract_types_from_schema, which SGLang's MiniMax-M2 detector shares. A
+// type name outside JSON Schema's seven (and the aliases vLLM folds into
+// them) sets no bit, but `named` records that the schema named a type: the
+// value then falls to "JSON if it parses" rather than to a string.
+unsigned schema_type_bits(const minijson::Value& schema, bool* named, int depth = 0) {
+  if (!schema.is_object() || depth > 16) return 0;
+  struct Name {
+    const char* text;
+    unsigned bit;
+  };
+  static constexpr Name kNames[] = {
+      {"null", ToolSchemas::kNullBit},       {"integer", ToolSchemas::kIntegerBit},
+      {"number", ToolSchemas::kNumberBit},   {"boolean", ToolSchemas::kBooleanBit},
+      {"object", ToolSchemas::kObjectBit},   {"array", ToolSchemas::kArrayBit},
+      {"string", ToolSchemas::kStringBit},   {"str", ToolSchemas::kStringBit},
+      {"text", ToolSchemas::kStringBit},     {"int", ToolSchemas::kIntegerBit},
+      {"float", ToolSchemas::kNumberBit},    {"double", ToolSchemas::kNumberBit},
+      {"bool", ToolSchemas::kBooleanBit},    {"dict", ToolSchemas::kObjectBit},
+      {"list", ToolSchemas::kArrayBit}};
+  unsigned bits = 0;
+  const auto name = [&](const minijson::Value& v) {
+    if (!v.is_string()) return;
+    *named = true;
+    for (const Name& n : kNames)
+      if (v.as_string() == n.text) bits |= n.bit;
+  };
+  if (const minijson::Value* type = schema.find("type")) {
+    name(*type);
+    if (type->is_array())
+      for (const minijson::Value& t : type->items()) name(t);
+  }
+  if (const minijson::Value* values = schema.find("enum"); values != nullptr && values->is_array()) {
+    for (const minijson::Value& v : values->items()) {
+      *named = true;
+      switch (v.kind()) {
+        case minijson::Value::Kind::Null: bits |= ToolSchemas::kNullBit; break;
+        case minijson::Value::Kind::Bool: bits |= ToolSchemas::kBooleanBit; break;
+        case minijson::Value::Kind::Int: bits |= ToolSchemas::kIntegerBit; break;
+        case minijson::Value::Kind::Double: bits |= ToolSchemas::kNumberBit; break;
+        case minijson::Value::Kind::String: bits |= ToolSchemas::kStringBit; break;
+        case minijson::Value::Kind::Array: bits |= ToolSchemas::kArrayBit; break;
+        case minijson::Value::Kind::Object: bits |= ToolSchemas::kObjectBit; break;
+      }
+    }
+  }
+  for (const char* choice : {"anyOf", "oneOf", "allOf"}) {
+    const minijson::Value* alternatives = schema.find(choice);
+    if (alternatives == nullptr || !alternatives->is_array()) continue;
+    for (const minijson::Value& alt : alternatives->items()) {
+      // An alternative that names no type is a string there.
+      bool alt_named = false;
+      const unsigned alt_bits = schema_type_bits(alt, &alt_named, depth + 1);
+      *named = true;
+      bits |= alt_named ? alt_bits : static_cast<unsigned>(ToolSchemas::kStringBit);
+    }
+  }
+  return bits;
+}
+
+}  // namespace
+
 ToolSchemas::ToolSchemas(const minijson::Value& tools) {
   for (const minijson::Value& entry : tools.items()) {
     if (!entry.is_object()) continue;
@@ -73,6 +188,7 @@ ToolSchemas::ToolSchemas(const minijson::Value& tools) {
     const minijson::Value* name = tool.find("name");
     if (name == nullptr || !name->is_string()) continue;
     std::map<std::string, Type>& params = types_[std::string(name->as_string())];
+    std::map<std::string, unsigned>& bits = type_bits_[std::string(name->as_string())];
     const minijson::Value* parameters = tool.find("parameters");
     if (parameters == nullptr || !parameters->is_object()) continue;
     const minijson::Value* properties = parameters->find("properties");
@@ -96,6 +212,10 @@ ToolSchemas::ToolSchemas(const minijson::Value& tools) {
           t = Type::kJson;
       }
       params[prop.key] = t;
+      // The types the schema names; one that names none is a string's.
+      bool named = false;
+      const unsigned named_bits = schema_type_bits(prop.value, &named);
+      bits[prop.key] = (named ? named_bits : static_cast<unsigned>(kStringBit)) | kDeclaredBit;
     }
   }
 }
@@ -106,6 +226,13 @@ ToolSchemas::Type ToolSchemas::type_of(const std::string& function,
   if (fn == types_.end()) return Type::kUnknown;
   const auto param = fn->second.find(key);
   return param == fn->second.end() ? Type::kUnknown : param->second;
+}
+
+unsigned ToolSchemas::type_bits(const std::string& function, const std::string& key) const {
+  const auto fn = type_bits_.find(function);
+  if (fn == type_bits_.end()) return 0;
+  const auto param = fn->second.find(key);
+  return param == fn->second.end() ? 0 : param->second;
 }
 
 // ---------------------------------------------------------------------------
@@ -170,7 +297,12 @@ void ToolCallParser::abort_block(std::vector<Event>* out) {
   // model wrote.
   std::string text;
   if (!raw_has_prefix_) text = options_.forced_prefix_text;
-  text += decode_(raw_);
+  // (Gemma's markers and Mistral's brackets ARE special tokens: the decode
+  // skips them, so the literal text is rebuilt with them restored.)
+  const ToolFormat aborted_format = markers_.tool_format();
+  text += aborted_format == ToolFormat::kGemma     ? gemma_text(raw_, /*all_markers=*/true)
+          : aborted_format == ToolFormat::kMistral ? mistral_block_text()
+                                                   : decode_(raw_);
   if (!text.empty()) {
     Event ev;
     ev.kind = Event::Kind::kContent;
@@ -201,10 +333,22 @@ void ToolCallParser::annotate_block(Event* ev, bool dsml) const {
   if (dsml) ev->tokens = dsml_held_tokens_;
   std::vector<int64_t> segment;
   size_t decoded = 0;
+  const bool gemma = markers_.tool_format() == ToolFormat::kGemma;
   for (size_t i = 0; i < raw_.size(); ++i) {
     size_t bytes = 0;
-    if (dsml && is_marker(raw_[i], markers_.dsml)) {
-      bytes = markers_.dsml.text.size();
+    // A marker the decode skips and the block's text restores: the DSML
+    // tag, Gemma's three markers, Mistral's brackets.
+    const ChatMarker* restored = nullptr;
+    if (dsml) {
+      if (is_marker(raw_[i], markers_.dsml)) restored = &markers_.dsml;
+    } else if (gemma) {
+      for (const ChatMarker* m : {&markers_.string_quote, &markers_.tool_call_open, &markers_.tool_call_close})
+        if (is_marker(raw_[i], *m)) restored = m;
+    } else {
+      restored = mistral_marker(raw_[i]);
+    }
+    if (restored != nullptr) {
+      bytes = restored->text.size();
       segment.clear();
       decoded = 0;
     } else {
@@ -526,6 +670,533 @@ bool ToolCallParser::parse_qwen_json_block(const std::string& text) {
     }
   }
   return true;
+}
+
+// ---- the Gemma 4 format ---------------------------------------------------------
+
+namespace {
+
+// The notation of a Gemma 4 call's arguments, read into JSON text:
+//   object := '{' [ key ':' value { ',' key ':' value } ] '}'
+//   key    := bare text up to ':'  |  QUOTE text QUOTE
+//   value  := QUOTE text QUOTE | object | '[' [ value { ',' value } ] ']' | scalar
+//   scalar := a JSON number, true, false, null — None is null (what the
+//             template prints for a null in the history) — and, leniently,
+//             any other bare text up to the next ',' '}' ']' as a string
+//             (vLLM's parsers make the same call for an untyped value)
+// QUOTE is the <|"|> token's text; whitespace between the parts is allowed.
+// The JSON comes out in json.dumps form (", " and ": "), keys in the
+// order written.
+class GemmaReader {
+ public:
+  GemmaReader(std::string_view text, std::string_view quote) : s_(text), quote_(quote) {}
+
+  size_t pos() const { return i_; }
+  void skip_ws() {
+    while (i_ < s_.size() && (s_[i_] == ' ' || s_[i_] == '\n' || s_[i_] == '\r' || s_[i_] == '\t')) ++i_;
+  }
+  bool at_end() {
+    skip_ws();
+    return i_ == s_.size();
+  }
+
+  // '{' ... '}' into `members` (key, JSON text); false when malformed.
+  bool object(std::vector<std::pair<std::string, std::string>>* members, int depth) {
+    if (depth > 64) return false;
+    skip_ws();
+    if (i_ >= s_.size() || s_[i_] != '{') return false;
+    ++i_;
+    skip_ws();
+    if (i_ < s_.size() && s_[i_] == '}') {
+      ++i_;
+      return true;
+    }
+    for (;;) {
+      std::string key;
+      if (!this->key(&key)) return false;
+      skip_ws();
+      if (i_ >= s_.size() || s_[i_] != ':') return false;
+      ++i_;
+      std::string json;
+      if (!value(&json, depth)) return false;
+      members->emplace_back(std::move(key), std::move(json));
+      skip_ws();
+      if (i_ >= s_.size()) return false;
+      if (s_[i_] == ',') {
+        ++i_;
+        continue;
+      }
+      if (s_[i_] == '}') {
+        ++i_;
+        return true;
+      }
+      return false;
+    }
+  }
+
+ private:
+  bool quoted(std::string* out) {
+    if (s_.compare(i_, quote_.size(), quote_) != 0) return false;
+    const size_t begin = i_ + quote_.size();
+    const size_t end = s_.find(quote_, begin);
+    if (end == std::string_view::npos) return false;  // an unclosed string
+    out->assign(s_.substr(begin, end - begin));
+    i_ = end + quote_.size();
+    return true;
+  }
+
+  bool key(std::string* out) {
+    skip_ws();
+    if (s_.compare(i_, quote_.size(), quote_) == 0) return quoted(out) && !out->empty();
+    const size_t begin = i_;
+    while (i_ < s_.size() && s_[i_] != ':' && s_[i_] != ',' && s_[i_] != '{' && s_[i_] != '}' && s_[i_] != '[' &&
+           s_[i_] != ']')
+      ++i_;
+    size_t end = i_;
+    while (end > begin && (s_[end - 1] == ' ' || s_[end - 1] == '\n' || s_[end - 1] == '\r' || s_[end - 1] == '\t')) --end;
+    if (end == begin || s_.substr(begin, end - begin).find(quote_) != std::string_view::npos) return false;
+    out->assign(s_.substr(begin, end - begin));
+    return true;
+  }
+
+  bool value(std::string* json, int depth) {
+    skip_ws();
+    if (i_ >= s_.size()) return false;
+    if (s_.compare(i_, quote_.size(), quote_) == 0) {
+      std::string text;
+      if (!quoted(&text)) return false;
+      *json = Value::string_value(std::move(text)).to_json(/*ensure_ascii=*/false);
+      return true;
+    }
+    if (s_[i_] == '{') {
+      std::vector<std::pair<std::string, std::string>> members;
+      if (!object(&members, depth + 1)) return false;
+      *json = "{";
+      for (size_t k = 0; k < members.size(); ++k) {
+        if (k) *json += ", ";
+        *json += Value::string_value(members[k].first).to_json(false) + ": " + members[k].second;
+      }
+      *json += "}";
+      return true;
+    }
+    if (s_[i_] == '[') {
+      if (depth > 64) return false;
+      ++i_;
+      *json = "[";
+      skip_ws();
+      if (i_ < s_.size() && s_[i_] == ']') {
+        ++i_;
+        *json += "]";
+        return true;
+      }
+      for (bool first = true;; first = false) {
+        std::string item;
+        if (!value(&item, depth + 1)) return false;
+        if (!first) *json += ", ";
+        *json += item;
+        skip_ws();
+        if (i_ >= s_.size()) return false;
+        if (s_[i_] == ',') {
+          ++i_;
+          continue;
+        }
+        if (s_[i_] == ']') {
+          ++i_;
+          *json += "]";
+          return true;
+        }
+        return false;
+      }
+    }
+    // A bare scalar: up to the next separator of the enclosing structure.
+    const size_t begin = i_;
+    while (i_ < s_.size() && s_[i_] != ',' && s_[i_] != '}' && s_[i_] != ']') {
+      if (s_.compare(i_, quote_.size(), quote_) == 0) return false;  // a string must start the value
+      ++i_;
+    }
+    size_t end = i_;
+    while (end > begin && (s_[end - 1] == ' ' || s_[end - 1] == '\n' || s_[end - 1] == '\r' || s_[end - 1] == '\t')) --end;
+    if (end == begin) return false;
+    const std::string text(s_.substr(begin, end - begin));
+    if (text == "true" || text == "false" || text == "null") {
+      *json = text;
+    } else if (text == "None") {
+      *json = "null";
+    } else {
+      const char c = text[0];
+      bool number = false;
+      if (c == '-' || (c >= '0' && c <= '9')) {
+        try {
+          *json = normalized_json(text);
+          number = true;
+        } catch (const std::exception&) {
+          // not a JSON number — a string it is
+        }
+      }
+      if (!number) *json = Value::string_value(text).to_json(false);
+    }
+    return true;
+  }
+
+  std::string_view s_;
+  std::string_view quote_;
+  size_t i_ = 0;
+};
+
+}  // namespace
+
+std::string ToolCallParser::gemma_text(const std::vector<int64_t>& ids, bool all_markers) const {
+  std::string text;
+  std::vector<int64_t> run;
+  const auto flush = [&] {
+    if (!run.empty()) text += decode_(run);
+    run.clear();
+  };
+  for (const int64_t id : ids) {
+    const ChatMarker* marker = nullptr;
+    if (is_marker(id, markers_.string_quote)) marker = &markers_.string_quote;
+    else if (all_markers && is_marker(id, markers_.tool_call_open)) marker = &markers_.tool_call_open;
+    else if (all_markers && is_marker(id, markers_.tool_call_close)) marker = &markers_.tool_call_close;
+    if (marker == nullptr) {
+      run.push_back(id);
+      continue;
+    }
+    flush();
+    text += marker->text;
+  }
+  flush();
+  return text;
+}
+
+// "call:NAME{key:value,...}" — the name is what stands between "call:" and
+// the first '{' (transformers' reader takes \w+; a name with a '-' or a '.'
+// is read here too), the arguments one object in the notation above with
+// distinct keys, and nothing but whitespace after its closing brace.
+bool ToolCallParser::parse_gemma_block(const std::string& text) {
+  size_t b = text.find_first_not_of(" \n\r\t");
+  if (b == std::string::npos || text.compare(b, 5, "call:") != 0) return false;
+  b += 5;
+  const size_t brace = text.find('{', b);
+  if (brace == std::string::npos) return false;
+  size_t name_begin = b, name_end = brace;
+  while (name_begin < name_end && (text[name_begin] == ' ' || text[name_begin] == '\n')) ++name_begin;
+  while (name_end > name_begin && (text[name_end - 1] == ' ' || text[name_end - 1] == '\n')) --name_end;
+  if (name_end == name_begin) return false;
+  const std::string name = text.substr(name_begin, name_end - name_begin);
+  if (name.find(markers_.string_quote.text) != std::string::npos || name.find_first_of(":,[]}") != std::string::npos)
+    return false;
+  GemmaReader reader(std::string_view(text).substr(brace), markers_.string_quote.text);
+  std::vector<std::pair<std::string, std::string>> members;
+  if (!reader.object(&members, 0) || !reader.at_end()) return false;
+  for (size_t i = 0; i < members.size(); ++i)
+    for (size_t j = 0; j < i; ++j)
+      if (members[i].first == members[j].first) return false;  // a repeated key
+  name_ = seeded_name_ + name;
+  args_ = std::move(members);
+  args_json_ = true;
+  return true;
+}
+
+void ToolCallParser::gemma_reasoning_append(int64_t id, std::vector<Event>* out) {
+  static const std::string kHeader = "thought\n";
+  run_.ids.push_back(id);
+  const std::string full = decode_(run_.ids);
+  if (!channel_header_settled_) {
+    if (full.size() >= kHeader.size()) {
+      channel_header_settled_ = true;
+      channel_header_bytes_ = full.compare(0, kHeader.size(), kHeader) == 0 ? kHeader.size() : 0;
+    } else if (kHeader.compare(0, full.size(), full) == 0) {
+      return;  // still (a prefix of) the header: nothing to show yet
+    } else {
+      channel_header_settled_ = true;  // another opening: all of it is the reasoning
+      channel_header_bytes_ = 0;
+    }
+  }
+  const size_t shown = run_.text.size();
+  if (full.size() > channel_header_bytes_ + shown) {
+    Event ev;
+    ev.kind = Event::Kind::kReasoning;
+    ev.text.assign(full, channel_header_bytes_ + shown, std::string::npos);
+    if (options_.track_tokens) ev.tokens.push_back({current_token_, 0, ev.text.size()});
+    out->push_back(std::move(ev));
+  }
+  run_.text = full.substr(channel_header_bytes_);
+}
+
+// ---- the MiniMax format ---------------------------------------------------------
+
+namespace {
+
+constexpr const char* kAsciiSpace = " \t\n\r\x0b\x0c";
+
+std::string trimmed(const std::string& text) {
+  const size_t b = text.find_first_not_of(kAsciiSpace);
+  if (b == std::string::npos) return std::string();
+  return text.substr(b, text.find_last_not_of(kAsciiSpace) - b + 1);
+}
+
+std::string ascii_lower(std::string text) {
+  for (char& c : text)
+    if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+  return text;
+}
+
+// Python's int(text) for a decimal literal, as JSON: an optional sign and
+// digits; the JSON text drops the plus sign and the leading zeros. false
+// for anything else ("3.0", "1e2", "0x10", "").
+bool decimal_integer(const std::string& text, std::string* json) {
+  size_t i = !text.empty() && (text[0] == '-' || text[0] == '+') ? 1 : 0;
+  if (i == text.size()) return false;
+  for (size_t k = i; k < text.size(); ++k)
+    if (text[k] < '0' || text[k] > '9') return false;
+  while (i + 1 < text.size() && text[i] == '0') ++i;
+  const std::string digits = text.substr(i);
+  *json = (text[0] == '-' && digits != "0" ? "-" : "") + digits;
+  return true;
+}
+
+}  // namespace
+
+// What a parameter's text is as a JSON value. The template writes a string
+// raw and every other value through tojson, and MiniMax's reference parsers
+// (vLLM's coerce_to_schema_type; SGLang's detector and the model card's own
+// convert_param_value agree on every point kept here) take the inverse from
+// the tool's schema: a parameter the tool does not declare is its text; a
+// declared one tries the types its schema names in the order null, integer,
+// number, boolean, object / array, string — "null" (any case) for null, a
+// decimal literal for integer, a JSON number for number, true / 1 and
+// false / 0 (any case) for boolean, any JSON text for object and array, the
+// text itself for string — and, when none took and string is not among
+// them, is the JSON value the text parses as, else the text. A number is
+// re-serialized as the other formats' JSON values are (3.0 stays a float;
+// vLLM folds it to 3). A string
+// constrained by pattern / format / anyOf is spelled as a JSON string
+// literal under the forced-call grammar (ToolSchemas), so a text that is
+// one is read as its value.
+std::string ToolCallParser::minimax_value(const std::string& function, const std::string& key,
+                                          const std::string& text) const {
+  const auto as_string = [&] { return Value::string_value(text).to_json(/*ensure_ascii=*/false); };
+  const unsigned bits = schemas_.type_bits(function, key);
+  if (bits == 0) return as_string();
+  const std::string value = trimmed(text);
+  const std::string lower = ascii_lower(value);
+  if ((bits & ToolSchemas::kNullBit) != 0 && lower == "null") return "null";
+  if ((bits & ToolSchemas::kIntegerBit) != 0) {
+    std::string json;
+    if (decimal_integer(value, &json)) return json;
+  }
+  if ((bits & ToolSchemas::kNumberBit) != 0 && !value.empty()) {
+    const std::string number = value[0] == '+' ? value.substr(1) : value;
+    if (!number.empty() && (number[0] == '-' || (number[0] >= '0' && number[0] <= '9'))) {
+      try {
+        return normalized_json(number);
+      } catch (const std::exception&) {
+        // not a JSON number: the next type
+      }
+    }
+  }
+  if ((bits & ToolSchemas::kBooleanBit) != 0) {
+    if (lower == "true" || lower == "1") return "true";
+    if (lower == "false" || lower == "0") return "false";
+  }
+  if ((bits & (ToolSchemas::kObjectBit | ToolSchemas::kArrayBit)) != 0) {
+    try {
+      return normalized_json(text);
+    } catch (const std::exception&) {
+      // not JSON: the next type
+    }
+  }
+  if ((bits & ToolSchemas::kStringBit) != 0) {
+    if (schemas_.type_of(function, key) == ToolSchemas::Type::kJson && value.size() >= 2 &&
+        value.front() == '"' && value.back() == '"') {
+      try {
+        return normalized_json(value);
+      } catch (const std::exception&) {
+        // not a string literal: the text
+      }
+    }
+    return as_string();
+  }
+  try {
+    return normalized_json(text);
+  } catch (const std::exception&) {
+    return as_string();
+  }
+}
+
+// "\n<invoke name=\"NAME\">\n(<parameter name=\"K\">V</parameter>\n)*
+// </invoke>\n", one or more — lenient about the whitespace between the
+// tags (a model may drop or double a newline) and about the quotes around
+// a name (single ones pass, as in the reference parsers), strict about the
+// tags themselves. A value is everything between its parameter tag and the
+// next "</parameter>", verbatim: the template writes it inline, so its
+// whitespace is its own. A block without an invoke, text outside the tags,
+// an empty or repeated parameter name, a missing close: not a call.
+bool ToolCallParser::parse_minimax_block(const std::string& text) {
+  minimax_calls_.clear();
+  size_t i = 0;
+  const auto skip_ws = [&] {
+    while (i < text.size() && (text[i] == '\n' || text[i] == ' ' || text[i] == '\r' || text[i] == '\t')) ++i;
+  };
+  const auto accept = [&](const char* lit) {
+    const size_t n = std::strlen(lit);
+    if (text.compare(i, n, lit) != 0) return false;
+    i += n;
+    return true;
+  };
+  // The quoted attribute value through the tag's ">".
+  const auto attribute = [&](std::string* value) {
+    if (i >= text.size() || (text[i] != '"' && text[i] != '\'')) return false;
+    const char close[3] = {text[i], '>', '\0'};
+    const size_t end = text.find(close, i + 1);
+    if (end == std::string::npos || end == i + 1) return false;
+    *value = text.substr(i + 1, end - i - 1);
+    if (value->find('\n') != std::string::npos || value->find('<') != std::string::npos) return false;
+    i = end + 2;
+    return true;
+  };
+  for (;;) {
+    skip_ws();
+    if (i == text.size()) break;
+    if (!accept("<invoke name=")) return false;
+    Call call;
+    if (!attribute(&call.name)) return false;
+    std::string args = "{";
+    std::vector<std::string> seen;
+    for (;;) {
+      skip_ws();
+      if (accept("</invoke>")) break;
+      if (!accept("<parameter name=")) return false;
+      std::string key;
+      if (!attribute(&key)) return false;
+      if (std::find(seen.begin(), seen.end(), key) != seen.end()) return false;  // a duplicate parameter
+      const size_t close = text.find("</parameter>", i);
+      if (close == std::string::npos) return false;
+      if (!seen.empty()) args += ", ";
+      args += Value::string_value(key).to_json(false);
+      args += ": ";
+      args += minimax_value(call.name, key, text.substr(i, close - i));
+      seen.push_back(std::move(key));
+      i = close + std::strlen("</parameter>");
+    }
+    args += "}";
+    call.arguments = std::move(args);
+    minimax_calls_.push_back(std::move(call));
+  }
+  return !minimax_calls_.empty();
+}
+
+void ToolCallParser::complete_minimax_block(std::vector<Event>* out) {
+  for (Call& c : minimax_calls_) {
+    Event ev;
+    ev.kind = Event::Kind::kToolCall;
+    ev.call = std::move(c);
+    out->push_back(std::move(ev));
+    ++calls_;
+  }
+  minimax_calls_.clear();
+  state_ = State::kContent;
+  run_ = Run{};
+  raw_.clear();
+}
+
+// ---- the Mistral format ---------------------------------------------------------
+
+const ChatMarker* ToolCallParser::mistral_marker(int64_t id) const {
+  if (markers_.tool_format() != ToolFormat::kMistral) return nullptr;
+  if (is_marker(id, markers_.tool_calls)) return &markers_.tool_calls;
+  if (is_marker(id, markers_.args)) return &markers_.args;
+  return nullptr;
+}
+
+// The open call as the model wrote it: the runs between the brackets decode
+// separately and the brackets print as their text.
+std::string ToolCallParser::mistral_block_text() const {
+  std::string text;
+  std::vector<int64_t> segment;
+  for (const int64_t id : raw_) {
+    const ChatMarker* marker = mistral_marker(id);
+    if (marker == nullptr) {
+      segment.push_back(id);
+      continue;
+    }
+    if (!segment.empty()) text += decode_(segment);
+    segment.clear();
+    text += marker->text;
+  }
+  if (!segment.empty()) text += decode_(segment);
+  return text;
+}
+
+// "[TOOL_CALLS]NAME[ARGS]{...}": the ids after [TOOL_CALLS] are the name up
+// to [ARGS], then the arguments — one JSON object, like the JSON format's
+// "arguments" member and read the same way (every value is already JSON, so
+// nothing is typed from the schema; each is re-serialized). Nothing closes the
+// call but its object's last brace: the call goes out there, and whatever
+// follows the brace in the same piece is content. A second [TOOL_CALLS]
+// before that, an empty name, arguments that are not one object with
+// distinct keys, or the stream ending first: the block is literal content.
+void ToolCallParser::mistral_feed(int64_t id, std::vector<Event>* out) {
+  if (is_marker(id, markers_.tool_calls)) {
+    abort_block(out);
+    enter_tool_call(id);
+    mistral_scanned_ = 0;
+    return;
+  }
+  raw_.push_back(id);
+  raw_indices_.push_back(current_token_);
+  if (sub_ == Sub::kName) {
+    if (!is_marker(id, markers_.args)) {
+      name_ids_.push_back(id);
+      return;
+    }
+    name_ = trimmed(seeded_name_ + decode_(name_ids_));
+    if (name_.empty()) {
+      abort_block(out);
+      return;
+    }
+    sub_ = Sub::kValue;
+    value_ids_.clear();
+    mistral_scanned_ = 0;
+    return;
+  }
+  value_ids_.push_back(id);
+  const std::string text = decode_(value_ids_);
+  const bool brace = text.find('}', std::min(mistral_scanned_, text.size())) != std::string::npos;
+  mistral_scanned_ = text.size();
+  if (!brace) return;
+  size_t start = 0;
+  while (start < text.size() && json_ws(text[start])) ++start;
+  if (start == text.size() || text[start] != '{') {
+    abort_block(out);
+    return;
+  }
+  const size_t end = json_value_end(text, start);
+  if (end == std::string_view::npos) return;  // an inner brace: the object is still open
+  JsonMembers members;
+  bool ok = json_object_members(std::string_view(text).substr(start, end - start), &members);
+  args_.clear();
+  args_json_ = true;
+  for (size_t k = 0; ok && k < members.size(); ++k) {
+    try {
+      args_.emplace_back(members[k].first, normalized_json(std::string(members[k].second)));
+    } catch (const std::exception&) {
+      ok = false;  // a member's value is not JSON
+    }
+  }
+  if (!ok) {
+    abort_block(out);
+    return;
+  }
+  const std::string rest = text.substr(end);
+  complete_block(out);
+  if (!rest.empty()) {
+    Event ev;
+    ev.kind = Event::Kind::kContent;
+    ev.text = rest;
+    if (options_.track_tokens) ev.tokens.push_back({current_token_, 0, ev.text.size()});
+    out->push_back(std::move(ev));
+  }
 }
 
 // ---- the DSML format ------------------------------------------------------------
@@ -858,16 +1529,35 @@ void ToolCallParser::feed(int64_t id, std::vector<Event>* out) {
       }
       // The prompt already opened the block; a repeated opener is noise.
       if (is_marker(id, markers_.think_open)) return;
+      // Mistral, MiniMax: a call that opens inside the reasoning closes it
+      // (no </think> id: the event carries no token).
+      if ((markers_.tool_format() == ToolFormat::kMistral && is_marker(id, markers_.tool_calls)) ||
+          (markers_.tool_format() == ToolFormat::kMinimaxXml && is_marker(id, markers_.tool_call_open))) {
+        Event ev;
+        ev.kind = Event::Kind::kReasoningClosed;
+        out->push_back(std::move(ev));
+        content_started_ = true;
+        enter_tool_call(id);
+        mistral_scanned_ = 0;
+        return;
+      }
+      if (markers_.channel_thinking) {
+        gemma_reasoning_append(id, out);
+        return;
+      }
       run_append(&run_, id, Event::Kind::kReasoning, out);
       return;
 
     case State::kContent:
       // The model's own opener (the prompt left it the choice): before any
-      // content, <think> opens the reasoning.
-      if (options_.model_may_open_thinking && !content_started_ && is_marker(id, markers_.think_open) &&
-          markers_.reasoning_available()) {
+      // content, <think> opens the reasoning. Mistral's [THINK] opens it
+      // wherever it stands (a special token is never content).
+      if (options_.model_may_open_thinking && (!content_started_ || markers_.bracket_think) &&
+          is_marker(id, markers_.think_open) && markers_.reasoning_available()) {
         state_ = State::kReasoning;
         run_ = Run{};
+        channel_header_settled_ = false;
+        channel_header_bytes_ = 0;
         return;
       }
       if (markers_.tool_format() == ToolFormat::kDsml) {
@@ -879,6 +1569,12 @@ void ToolCallParser::feed(int64_t id, std::vector<Event>* out) {
           markers_.tool_calls_available()) {
         content_started_ = true;
         enter_tool_call(id);
+        return;
+      }
+      if (markers_.tool_format() == ToolFormat::kMistral && is_marker(id, markers_.tool_calls)) {
+        content_started_ = true;
+        enter_tool_call(id);
+        mistral_scanned_ = 0;
         return;
       }
       content_started_ = true;
@@ -900,6 +1596,11 @@ void ToolCallParser::feed(int64_t id, std::vector<Event>* out) {
     return;
   }
 
+  if (markers_.tool_format() == ToolFormat::kMistral) {
+    mistral_feed(id, out);
+    return;
+  }
+
   // Inside a block. Every marker is structural; anything else is text of
   // the current segment. A wrong marker aborts the block (its id included
   // in the flushed text); a nested <tool_call> aborts and starts over.
@@ -908,9 +1609,32 @@ void ToolCallParser::feed(int64_t id, std::vector<Event>* out) {
   const bool open = is_marker(id, markers_.tool_call_open);
   const bool close = is_marker(id, markers_.tool_call_close);
   const ToolFormat format = markers_.tool_format();
-  if (format == ToolFormat::kQwenXml || format == ToolFormat::kQwenJson) {
-    // The Qwen formats: the block's ids buffer until it closes; the text
-    // between the markers is parsed then (a nested opener restarts).
+  if (format == ToolFormat::kGemma) {
+    // The Gemma format: the block's ids buffer until <tool_call|>; its
+    // text, the string token restored, is parsed then (a nested opener
+    // restarts).
+    if (open) {
+      raw_.pop_back();
+      raw_indices_.pop_back();
+      abort_block(out);
+      enter_tool_call(id);
+      return;
+    }
+    if (!close) return;
+    const std::vector<int64_t> inner(raw_.begin() + (raw_has_prefix_ ? 1 : 0), raw_.end() - 1);
+    std::string text = raw_has_prefix_ ? "" : options_.forced_prefix_text;
+    text += gemma_text(inner, /*all_markers=*/false);
+    if (parse_gemma_block(text))
+      complete_block(out);
+    else
+      abort_block(out);
+    return;
+  }
+  if (format == ToolFormat::kQwenXml || format == ToolFormat::kQwenJson ||
+      format == ToolFormat::kMinimaxXml) {
+    // The Qwen formats (and MiniMax's, between its own two markers): the
+    // block's ids buffer until it closes; the text between the markers is
+    // parsed then (a nested opener restarts).
     if (open) {
       raw_.pop_back();
       raw_indices_.pop_back();
@@ -922,6 +1646,12 @@ void ToolCallParser::feed(int64_t id, std::vector<Event>* out) {
     std::vector<int64_t> inner(raw_.begin() + (raw_has_prefix_ ? 1 : 0), raw_.end() - 1);
     std::string text = raw_has_prefix_ ? "" : options_.forced_prefix_text;
     text += decode_(inner);
+    if (format == ToolFormat::kMinimaxXml) {
+      // One block, one call per invoke.
+      if (parse_minimax_block(text)) complete_minimax_block(out);
+      else abort_block(out);
+      return;
+    }
     if (format == ToolFormat::kQwenJson ? parse_qwen_json_block(text) : parse_qwen_block(text))
       complete_block(out);
     else

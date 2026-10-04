@@ -23,7 +23,7 @@ tools/gen_unicode_tables.py).
 Regenerating: python3 tools/gen_tokenizer_goldens.py
   [--model ORG/NAME] [--tokenizer-json PATH] [--out FILE]
 (the corpus and the default output follow the model's name: GLM, Qwen,
-MiMo, DeepSeek-V4.1-*, DeepSeek-V4-* — e.g.
+MiMo, DeepSeek-V4.1-*, DeepSeek-V4-*, Mistral-Small-4-*, MiniMax-* — e.g.
   .venv/bin/python tools/gen_tokenizer_goldens.py --model deepseek-ai/DeepSeek-V4-Flash-0731
 writes tests/data/dsv4_tokenizer_goldens.jsonl)
 
@@ -256,6 +256,202 @@ MIMO_CASES = QWEN_CASES + [
 ]
 
 
+# The Gemma 4 corpus (2026-10-04): a SentencePiece-style BPE — the space
+# becomes U+2581, a segment between two added tokens is ONE word (newline
+# and space runs merge into their own tokens, across what other tokenizers
+# call word boundaries), characters outside the vocabulary fall back to
+# their UTF-8 bytes' "<0xNN>" tokens — and its own added tokens: the turn,
+# channel, tool and string-escape markers, which sit inside the base
+# vocabulary's id range. The decoder turns every U+2581 into a space, so a
+# text that holds a literal U+2581 round-trips to the space form.
+G_BOS = "<" + "bos>"
+G_TURN = "<|" + "turn>"
+G_TURN_END = "<" + "turn|>"
+G_CHANNEL = "<|" + "channel>"
+G_CHANNEL_END = "<" + "channel|>"
+G_THINK = "<|" + "think|>"
+G_TOOL = "<|" + "tool>"
+G_TOOL_END = "<" + "tool|>"
+G_CALL = "<|" + "tool_call>"
+G_CALL_END = "<" + "tool_call|>"
+G_RESP = "<|" + "tool_response>"
+G_RESP_END = "<" + "tool_response|>"
+G_QUOTE = '<|"|>'
+GEMMA_CASES = [c for c in CASES if USER not in c and ASSIST not in c and EOS not in c
+               and THINK_OPEN not in c and THINK_CLOSE not in c] + [
+    # The added tokens standalone, inline, and where one is a prefix of another.
+    G_BOS, "<" + "eos>", "<" + "pad>", "<" + "unk>", "<" + "mask>", G_TURN, G_TURN_END, G_CHANNEL, G_CHANNEL_END,
+    G_THINK, G_TOOL, G_TOOL_END, G_CALL, G_CALL_END, G_RESP, G_RESP_END, G_QUOTE,
+    "<|image>", "<image|>", "<|image|>", "<|audio>", "<audio|>", "<|audio|>", "<|video|>",
+    G_TOOL + G_CALL + G_RESP, G_TOOL_END + G_CALL_END + G_RESP_END,
+    "a" + G_TURN + "b", "a " + G_TURN_END + " b", "before " + G_TURN + " after", G_QUOTE + "x" + G_QUOTE,
+    # Almost an added token: ordinary pieces.
+    "<|turn", "turn|>", "<|tool_cal>", "<| turn>", "<|\"|", "<bos", "< bos>", "<|think|", "<start_of_turn>",
+    "<end_of_turn>", "<unused5>", "a<unused0>b", "[multimodal]", "<0x41>", "<0xE4><0xBD><0xA0>", "</div>", "<table>",
+    # Template-shaped runs (chat_template.jinja's own strings).
+    G_BOS + G_TURN + "user\nHello" + G_TURN_END + "\n" + G_TURN + "model\n",
+    G_BOS + G_TURN + "system\n" + G_THINK + "\nYou are helpful." + G_TURN_END + "\n" + G_TURN + "user\nHi"
+    + G_TURN_END + "\n" + G_TURN + "model\n",
+    G_TURN + "model\n" + G_CHANNEL + "thought\n" + G_CHANNEL_END,
+    G_CHANNEL + "thought\nThe user wants the weather.\n" + G_CHANNEL_END + "It is sunny." + G_TURN_END + "\n",
+    G_TOOL + "declaration:get_weather{description:" + G_QUOTE + "Get the weather" + G_QUOTE
+    + ",parameters:{properties:{city:{description:" + G_QUOTE + "The city" + G_QUOTE + ",type:" + G_QUOTE + "STRING"
+    + G_QUOTE + "}},required:[" + G_QUOTE + "city" + G_QUOTE + "],type:" + G_QUOTE + "OBJECT" + G_QUOTE + "}}"
+    + G_TOOL_END,
+    G_CALL + "call:get_weather{city:" + G_QUOTE + "Paris" + G_QUOTE + ",days:3,metric:true}" + G_CALL_END + G_RESP,
+    G_RESP + "response:get_weather{temp:21,sky:" + G_QUOTE + "clear" + G_QUOTE + "}" + G_RESP_END,
+    # Whitespace: the space mark, runs that are one token and runs longer than any token, mixed with newlines.
+    " x", "x ", " ", "  ", "   ", " " * 30, " " * 31, " " * 64, " " * 257, "a" + " " * 40 + "b",
+    "\n", "\n\n", "\n" * 3, "\n" * 30, "\n" * 31, "\n" * 100, "\t", "\t\t", "\t" * 30, "\t" * 45,
+    " \n", "\n ", " \n \n ", "\n\n  x", "\n    indented\n        twice\n", "a\n\nb\n\n\nc", "\r\n", "a\r\nb",
+    "trailing space \n", "x\u00a0y", "x\u2003y", "x\u3000y",
+    # A literal U+2581 is the same symbol as a space.
+    "\u2581", "a\u2581b", "\u2581\u2581x", " \u2581 ",
+    # Byte fallback: control characters, private use, unassigned, rare scripts.
+    "\u0000", "\u0001\u0002", "a\u0000b", "\u007f", "\ue000", "\U000f0000", "\U0010ffff", "\ufffe", "\ufffd",
+    "\U00030000", "\U0001fae0", "\U00013000", "\u0f00\u0f01", "\U00011000",
+    # Scripts and marks (no normalization: decomposed stays decomposed).
+    "e\u0301", "\u00e9", "Cafe\u0301 au lait", "\ufb01ne", "\u1100\u1161\u11a8", "\ud55c\uad6d\uc5b4",
+    "\u0928\u092e\u0938\u094d\u0924\u0947", "Ti\u1ebfng Vi\u1ec7t", "日本語のテキスト", "中文 English 混合 text",
+    "\U0001f44d\U0001f3fd", "\U0001f468\u200d\U0001f469\u200d\U0001f467", "a\u200db", "\ufeffbom",
+    # Numbers, punctuation, code.
+    "12345", "3.14159", "2024-10-04", "v2.1.0", "1,000,000.50", "0x1F", "1e-6", "$abc(def)", "a+b=c", "x<y>z", "~/.bashrc",
+    "C++ & C#", "{\"a\": [1, 2, {\"b\": null}]}", "https://example.com/a/b?c=d&e=f#g", "snake_case camelCase kebab-case",
+    "#include <stdio.h>\n\nint main(void) {\n\tprintf(\"hi\\n\");\n\treturn 0;\n}\n",
+    "| a | b |\n|---|---|\n| 1 | 2 |\n", "- item\n  - nested\n    - deeper\n",
+    # Repetition: the merge walk's positions against a long uniform run.
+    "a" * 100, "ab" * 60, "the " * 50, "." * 70, "=" * 80, "-" * 3 + ">" + "-" * 40, "ha" * 33 + "h",
+    "aaa", "aaaa", "aaaaa", "aaaaaa", "aaaaaaa", "abababa", "aabaabaab", "xxxxxxxxxxxxxxxxxyxxxxxxxxxxxxxxxx",
+    # A long mixed sample.
+    ("The Eiffel Tower (French: La tour Eiffel) is a wrought-iron lattice tower on the Champ de Mars in Paris.  "
+     "It is named after the engineer Gustave Eiffel, whose company designed and built the tower from 1887 to 1889.\n\n"
+     "  * Height: 330 m (1,083 ft)\n  * Floors: 3\n\n\"Quoted\" — and an em-dash; naïve café, 東京, emoji 🎉.\n") * 3,
+]
+
+
+# The cased-word corpus (2026-10-04), shared by Mistral-Small-4 (the tekken
+# regex) and MiniMax-M2.7 (the o200k regex, under NFC): the two patterns
+# whose word alternatives split on letter case. It walks that decision
+# surface — mixed-case words (an upper run, then a lower run), titlecase
+# digraphs, caseless letters and marks (in BOTH run classes: the backing-up
+# of the first alternative), a mark at the start of text (prefix or run),
+# contractions in both cases and after capitals (pieces of their own under
+# tekken, word suffixes under o200k, U+017F folding to 's'), digit runs of
+# 1-7 (one per piece / groups of three), punctuation runs with their
+# CR/LF/'/' tail, the whitespace alternatives, CRLF, emoji and format
+# characters, code, and the NFC forms. No codepoint newer than Unicode 9.0:
+# HF's regex tables (Unicode 16.0 in tokenizers 0.22/0.23) and its NFC data
+# (older than Unicode 10) both differ from the C++ tables (15.0.0) on later
+# additions — tools/gen_unicode_tables.py's skew caveat.
+CASED_CASES = [
+    # The anchors.
+    "The capital of France is", " Paris", ".", " In", " French,",
+    # Mixed-case words: the two word alternatives.
+    "camelCase", "ALLCAPS", "Titlecase", "HTMLParser", "iPhone", "XMLHttpRequest", "getHTTPResponseCode", "McDonald",
+    "eBay", " ALLCAPS", " Titlecase", " camelCase", "lowerUPPER", "UPPERlower", "aB", "Ab", "AB", "ab", "A", "a",
+    "aBc", "ABc", "AbC", "aBC", "snake_case_name", "kebab-case-name", "__init__", "_private", ".NET",
+    "CONSTANT_VALUE", "x.y.Z", "(Foo)bar", "-Foo", "\tFoo", "\tFOO", "\tfoo", "IOError", "NaN", "OpenAI's GPT",
+    # Titlecase digraphs (Lt sits with the capitals).
+    "\u01c5", "\u01c5ungla", "a\u01c5", "A\u01c5a", "\u01c5\u01c5", " \u01c5a", "\u01c8\u01cb\u01f2", "\u01c5A",
+    "\u1f88\u03b1", "\u01c6 \u01c4 \u01c5",
+    # Caseless letters (Lo, Lm): members of both run classes.
+    "你好世界", "日本語のテキスト", "한국어 텍스트", "مرحبا بالعالم", "שלום עולם", "नमस्ते दुनिया", "สวัสดีครับ",
+    "AB\u30abDE", "ab\u30abDE", "AB\u30abde", "\u30abA", "\u30aba", "A\u30ab", "a\u30ab", "ABC\u4e2d",
+    "abc\u4e2dDEF", "\u4e2dABC\u6587def", "A\u4e2dB\u6587C", "\u02b0", "A\u02b0", "\u02b0A", "a\u02b0B",
+    "x\u00aay", "X\u00baY", "ΑΒΓαβγ", "Привет МИР", "ПРИВЕТмир", "Straße STRASSE", "İstanbul", "naïve café",
+    "中文 English 混合 text", "東京タワーは333メートル",
+    # Marks: both run classes AND the prefix class.
+    "\u0301abc", "\u0301ABC", "\u0301", "\u0301\u0302", " \u0301x", " \u0301X", "A\u0301B", "E\u0301COLE",
+    "e\u0301cole", "\u0301 a", "!\u0301a", "!!\u0301a", "a\u0301 b", "AB\u0301", "AB\u0301C", "x\u20dd y",
+    "(\u0301)", "1\u0301", "\u0301\u0301A", "A\u0301\u0302b", "\u0645\u064f\u062d\u064e\u0645\u0651\u064e\u062f",
+    "Tie\u0302\u0301ng Vie\u0323\u0302t", "\u0928\u092e\u0938\u094d\u0924\u0947", "\u093f\u0915", "Q\u0301Q", "q\u0301Q",
+    # Contractions: both cases, after capitals, after caseless letters, not after digits.
+    "I don't think it's CAN'T 'LL 'Re we're I'm 'll 'Ve 'd 'm 'T 'S",
+    "can't won't shouldn't they're we've y'all", "IT'S", "it'S", "It'll", "WE'RE", "we'REx", "x's", "X'S", "'s",
+    " 's", "don'tx", "it''s", "it's's", "a'b", "'tis", "o'clock", "rock'n'roll", "\u30ab's", "\u4e2d'S",
+    "A\u0301's", "it'\u017f", "IT'\u017fT", "1's", "a\u2019s", "they'VE I'M he'D she'LL", "McDonald's",
+    "iPhone's", "USA's", "O'Brien", "a'l", "a'r", "a'v", "a'", "A'", "it'sIT'S",
+    # Digit runs of 1-7 and numeric forms.
+    "1", "12", "123", "1234", "12345", "123456", "1234567", " 1234567", "x1234567y", "3.14159", "2026-10-04",
+    "1,000,000.50", "v2.1.0", "1st 2nd 3rd", "١٢٣٤", "１２３４５", "½ Ⅻ ² ⅓", "a1b22c333d4444", "0000", "  5",
+    "9a", "a9", "A1B", "phone: +1 (555) 010-9999",
+    # Punctuation runs and their CR/LF/'/' tail.
+    "!\n", "!/", "!\n/", "!\n/\n//x", "a/b", "http://example.com/path/", "https://a.b/c?d=e#f", "//", "/\n/",
+    "...\r\n", "},\n", "*/\n\n", " /", " //x", ")/\nx", "!\r/\r\n/a", "/usr/local/bin", "a/\nb", "</div>\n", "x /",
+    " !", "  !", " !!\n\n", "!!!???***", "a-b_c+d=e", "~/.bashrc", "C++ & C#", "€100 £5 ¥3", "→ ← ↑", "«quoted»", "…",
+    "?!x", " ?!x", "!!!\n\nx", ";\n/", "a.\n/b",
+    # Whitespace runs: before letters, capitals, digits, punctuation; at end of text.
+    "  a", "   abc", "\tabc", "\t\tabc", "abc   ", "abc \n", " \n", "\n\n  x", "a \n b", "a  b", "a   B", "x\u00a0y",
+    "x\u3000y", "  1", " 1", "   ", " ", "  ", "\n", "\u2028a", "a \t\n \t b", "a\n\n\nb", "\n ", " \n ", "a\t",
+    "a \t", "A  B", "a   ", "\n\n", "x\n", "hello\n\nworld\n", "\x0bx", "\x0cX", "a\u0085b",
+    # CRLF.
+    "\r\n", "\r\n\r\n", "a\r\nb", "a \r\n b", "\r", "\r\r\n\n", "line1\r\nline2\r\n", "a\r", "\rA", " \r\n",
+    # Emoji, ZWJ, format and control characters.
+    "emoji 👍🏽 test", "family 👨‍👩‍👧‍👦 walk", "\U0001f44d\U0001f3fd", "\U0001f468\u200d\U0001f469\u200d\U0001f467",
+    "a\u200db", "A\u200dB", "🇫🇷", "❤\ufe0f", "x\u0000y", "\ufeffbom", "a\u200d", "\u200da",
+    # Code.
+    "def add(a, b):\n    return a + b  # inline comment\n\nprint(add(2, 3))\n",
+    "code ```python\nprint(1)\n``` end",
+    "for (int i = 0; i < n; ++i) { sum += a[i]; }\n",
+    "const std::vector<int64_t> ids = tok.encode(text);",
+    "#include <cstdint>\n",
+    "{\"name\": \"get_weather\", \"arguments\": {\"city\": \"Paris\", \"days\": 3}}",
+    "SELECT * FROM users WHERE id = 42;",
+    "if __name__ == \"__main__\":\n\tmain()\n",
+    "<div class=\"a\">Hi</div>", "path/to/file.txt", "C:\\Users\\x\\file.TXT",
+    "The quick brown fox jumps over the lazy dog. 0123456789 !@#$%^&*()",
+    # NFC forms (normalized under MiniMax, verbatim under Mistral).
+    "e\u0301", "\u00e9", "Cafe\u0301 au lait", "caf\u00e9", "\u212b \u2126 \u00c5 \u03a9", "\ufb01ne \ufb02ow",
+    "\u1e9b\u0323", "s\u0323\u0307", "\u0073\u0307\u0323", "\u1100\u1161\u11a8", "\u1100\u1161", "\ud55c\uad6d\uc5b4",
+    "x\u0301\u0302y", "q\u0307\u0323", "\u0327\u0301e", "A\u030a", "E\u0301E\u0300", "D\u0307\u0323",
+    # Degenerate inputs.
+    "", "x", "X",
+]
+
+
+def cased_cases(model, added):
+    """The cased-word corpus plus the checkpoint's own added tokens: every
+    one standalone and inline between text, and its template's shapes."""
+    cases = list(CASED_CASES)
+    names = [a["content"] for a in added]
+    if "Mistral" in model:
+        # 1000 control tokens (ids 0..999): the named ones one case each
+        # way, the <SPECIAL_n> placeholders in runs of 100 with text between.
+        named = [t for t in names if not t.startswith("<SPECIAL_")]
+        filler = [t for t in names if t.startswith("<SPECIAL_")]
+        for t in named:
+            cases += [t, "a" + t + "b"]
+        for i in range(0, len(filler), 100):
+            cases.append("".join(f"x{t} y" for t in filler[i:i + 100]))
+        bos, eos = "<" + "s>", "</" + "s>"
+        inst, inst_end = "[" + "INST]", "[/" + "INST]"
+        sysp, sysp_end = "[" + "SYSTEM_PROMPT]", "[/" + "SYSTEM_PROMPT]"
+        cases += [
+            bos + sysp + "You are a helpful assistant." + sysp_end + inst + "Hello" + inst_end + "Hi!" + eos,
+            bos + "[" + "MODEL_SETTINGS]{\"reasoning_effort\": \"high\"}[/" + "MODEL_SETTINGS]" + inst + "What is 2+2?" + inst_end,
+            "[" + "THINK]Simple arithmetic.[/" + "THINK]2 + 2 = 4." + eos,
+            "[" + "AVAILABLE_TOOLS][{\"type\": \"function\", \"function\": {\"name\": \"get_weather\"}}][/" + "AVAILABLE_TOOLS]",
+            "[" + "TOOL_CALLS]get_weather[" + "ARGS]{\"city\": \"Paris\"}" + eos,
+            "[" + "TOOL_RESULTS]{\"temp\": 21}[/" + "TOOL_RESULTS]",
+            "before " + inst + " after", inst + inst_end, "[INST", "INST]", "[inst]", "<SPECIAL_1000>", "< s>",
+        ]
+    else:
+        for t in names:
+            cases += [t, "a" + t + "b", " " + t + "\n"]
+        bod, bos, eot = "]~!" + "b[", "]~" + "b]", "[e~" + "["
+        call, call_end = "<" + "minimax:tool_call>", "</" + "minimax:tool_call>"
+        cases += [
+            bod + bos + "system\nYou are a helpful assistant." + eot + "\n" + bos + "user\nHello" + eot + "\n" + bos + "ai\n"
+            + THINK_OPEN + "\n",
+            "plan" + "\n" + THINK_CLOSE + "\n\n" + "Hi!" + eot + "\n",
+            call + "\n<invoke name=\"get_weather\">\n<parameter name=\"city\">Paris</parameter>\n</invoke>\n" + call_end,
+            bos + "tool\n<response>{\"temp\": 21}</response>" + eot + "\n",
+            "x" + THINK_OPEN + "\nr\n" + THINK_CLOSE + "\n\ny" + eot, "before " + bos + " after", THINK_OPEN + THINK_CLOSE,
+            "<think", "think>", "<THINK>", "<minimax:tool_call", "]~b", "[e~",
+        ]
+    return cases
+
+
 def main():
     import argparse
     ap = argparse.ArgumentParser()
@@ -265,13 +461,21 @@ def main():
     ap.add_argument("--out", dest="out_opt", default=None)
     args = ap.parse_args()
     model = args.model
+    is_gemma = "gemma" in model.lower()  # the SentencePiece-style BPE shape
     is_mimo = "MiMo" in model
     is_qwen = "Qwen" in model or is_mimo  # NFC tokenizers
     is_dsv4 = "DeepSeek-V4-" in model  # DeepSeek-V4-Flash-0731 (model_type deepseek_v4), not V4.1
     is_dsv41 = "DeepSeek-V4" in model and not is_dsv4
-    cases = (DSV4_CASES if is_dsv4 else DSV41_CASES if is_dsv41 else MIMO_CASES if is_mimo
+    is_mistral4 = "Mistral-Small-4" in model
+    is_minimax = "MiniMax" in model
+    is_cased = is_mistral4 or is_minimax  # the cased-word patterns; their corpus needs the file's added tokens
+    is_nfc = is_qwen or is_minimax  # NFC tokenizers
+    cases = (GEMMA_CASES if is_gemma else DSV4_CASES if is_dsv4 else DSV41_CASES if is_dsv41 else MIMO_CASES if is_mimo
              else QWEN_CASES if is_qwen else CASES)
     out_path = args.out_opt or args.out or (
+        "tests/data/gemma4_tokenizer_goldens.jsonl" if is_gemma else
+        "tests/data/mistral4_tokenizer_goldens.jsonl" if is_mistral4 else
+        "tests/data/minimax_tokenizer_goldens.jsonl" if is_minimax else
         "tests/data/dsv4_tokenizer_goldens.jsonl" if is_dsv4 else
         "tests/data/dsv41_tokenizer_goldens.jsonl" if is_dsv41 else
         "tests/data/mimo_tokenizer_goldens.jsonl" if is_mimo else
@@ -284,6 +488,8 @@ def main():
         raw = f.read()
     import tokenizers
     tok = tokenizers.Tokenizer.from_file(tok_path)
+    if is_cased:
+        cases = cased_cases(model, json.loads(raw)["added_tokens"])
 
     with open(out_path, "w", encoding="utf-8") as f:
         header = {
@@ -301,7 +507,9 @@ def main():
             decoded = tok.decode(ids, skip_special_tokens=False)
             # An NFC tokenizer round-trips to the NFC form of the input.
             import unicodedata
-            expect = unicodedata.normalize("NFC", text) if is_qwen else text
+            expect = unicodedata.normalize("NFC", text) if is_nfc else text
+            if is_gemma:  # the decoder's Replace: a literal U+2581 comes back as a space
+                expect = text.replace("\u2581", " ")
             if decoded != expect:
                 sys.exit(f"HF verbatim round-trip failed for {text!r} -> {decoded!r}")
             f.write(json.dumps({"text": text, "ids": ids}) + "\n")

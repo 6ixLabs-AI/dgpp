@@ -685,6 +685,759 @@ QWEN3_NEXT_CASES = [
 ]
 
 
+# The Gemma 4 template (2026-10-04; nvidia/Gemma-4-31B-IT-NVFP4's
+# chat_template.jinja): turns as <|turn>ROLE\n ... <turn|>\n with the
+# assistant's role spelled "model"; a system turn that carries <|think|>
+# (enable_thinking), the system text and the tool declarations; an EMPTY
+# thought channel after the generation prompt when thinking is off; tool
+# declarations, calls and responses in the model's own notation —
+#   <|tool>declaration:NAME{description:<|"|>..<|"|>,parameters:{..}}<tool|>
+#   <|tool_call>call:NAME{key:value,..}<tool_call|>
+#   <|tool_response>response:NAME{key:value,..}<tool_response|>
+# keys bare and sorted (dictsort: case-insensitive), strings between <|"|>
+# tokens, numbers / booleans / null bare, schema types upper-cased — and the
+# OpenAI shapes folded into it: role "tool" messages after an assistant's
+# tool_calls become that turn's tool responses, a second assistant message
+# continues the turn. `bos_token` is a global transformers passes from the
+# tokenizer; the engine's frontend passes the same.
+def g4(**kw):
+    kw.setdefault("bos_token", "<bos>")
+    kw.setdefault("add_generation_prompt", True)
+    return kw
+
+
+G4_SEARCH_TOOL = wrapped({
+    "name": "search_docs",
+    "description": "Search the documentation.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "What to look for"},
+            "Limit": {"type": "integer"},
+            "filters": {"type": "object", "description": "Narrowing",
+                        "properties": {"lang": {"type": "string", "enum": ["en", "fr", "de"]},
+                                       "after": {"type": "string", "nullable": True}},
+                        "required": ["lang"]},
+            "tags": {"type": "array", "description": "Any of", "items": {"type": "string"}},
+            "ranges": {"type": "array", "items": {"type": "object",
+                                                 "properties": {"lo": {"type": "number"}, "hi": {"type": "number"}},
+                                                 "required": ["lo"]}},
+            "exact": {"type": "boolean", "nullable": True},
+            "_internal": {"type": ["string", "null"]},
+            "blob": {"type": "object"},
+        },
+        "required": ["query"],
+    },
+})
+
+GEMMA4_CASES = [
+    ("simple_user_gen", g4(messages=[{"role": "user", "content": "The capital of France is"}])),
+    ("simple_user_no_gen", g4(messages=[{"role": "user", "content": "Hello"}], add_generation_prompt=False)),
+    ("system_user_gen", g4(messages=[{"role": "system", "content": "  Be brief.\n"},
+                                     {"role": "user", "content": "写一首关于秋天的诗。"}])),
+    ("developer_role_is_system", g4(messages=[{"role": "developer", "content": "Answer in French."},
+                                              {"role": "user", "content": "Hi"}])),
+    ("thinking_on_no_system", g4(messages=[{"role": "user", "content": "Why is the sky blue?"}], enable_thinking=True)),
+    ("thinking_on_with_system", g4(messages=[{"role": "system", "content": "You are terse."},
+                                             {"role": "user", "content": "Why?"}], enable_thinking=True)),
+    ("thinking_off_explicit", g4(messages=[{"role": "user", "content": "Why?"}], enable_thinking=False)),
+    ("content_parts_text", g4(messages=[
+        {"role": "system", "content": [{"type": "text", "text": "Part one. "}, {"type": "text", "text": " Part two."}]},
+        {"role": "user", "content": [{"type": "text", "text": "  First.  "}, {"type": "text", "text": "Second."}]}])),
+    ("content_parts_image", g4(messages=[
+        {"role": "user", "content": [{"type": "image"}, {"type": "text", "text": "What is this?"}]}])),
+    ("multi_turn", g4(messages=[
+        {"role": "user", "content": "Hi"},
+        {"role": "assistant", "content": "Hello! How can I help?"},
+        {"role": "user", "content": "Tell me a joke.\n\n"},
+        {"role": "assistant", "content": "Why did the chicken cross the road?"},
+        {"role": "user", "content": "Why?"}])),
+    ("assistant_thought_is_stripped", g4(messages=[
+        {"role": "user", "content": "2+2?"},
+        {"role": "assistant", "content": "<|channel>thought\nsimple sum<channel|>4"},
+        {"role": "user", "content": "And 3+3?"},
+        {"role": "assistant", "content": "a<|channel>x<channel|>b<|channel>y<channel|> c "},
+        {"role": "user", "content": "ok"}])),
+    ("consecutive_assistant_messages", g4(messages=[
+        {"role": "user", "content": "Go on."},
+        {"role": "assistant", "content": "First part."},
+        {"role": "assistant", "content": "Second part."},
+        {"role": "user", "content": "More."}])),
+    ("unicode_whitespace_trim", g4(messages=[
+        {"role": "system", "content": "\u3000系统提示\u00a0"},
+        {"role": "user", "content": "\u2003text with a trailing thin space\u2009\n\u2028"},
+        {"role": "assistant", "content": "\u0085answer\u001f"},
+        {"role": "user", "content": "\u200bzero width stays\u200b"}])),
+    ("empty_content", g4(messages=[{"role": "user", "content": ""}])),
+    ("tools_no_system", g4(messages=[{"role": "user", "content": "What's the weather in Paris?"}],
+                           tools=[wrapped(weather_tool())])),
+    ("tools_with_system_and_thinking", g4(messages=[{"role": "system", "content": "Use tools."},
+                                                    {"role": "user", "content": "Weather in Rome?"}],
+                                          tools=[wrapped(weather_tool()), wrapped(RUN_TOOL)], enable_thinking=True)),
+    ("tool_schema_shapes", g4(messages=[{"role": "user", "content": "Find it."}], tools=[G4_SEARCH_TOOL])),
+    ("tool_without_parameters", g4(messages=[{"role": "user", "content": "Ping."}], tools=[
+        wrapped({"name": "ping", "description": "Ping."}),
+        wrapped({"name": "now", "description": "The time.", "parameters": {"type": "object", "properties": {}}}),
+        wrapped({"name": "typed", "description": "With a response.",
+                 "parameters": {"type": "object", "properties": {"x": {"type": "integer"}}},
+                 "response": {"description": "What came back", "type": "object"}})])),
+    ("tool_keys_sort_case_insensitively", g4(messages=[{"role": "user", "content": "Sort."}], tools=[wrapped({
+        "name": "sorter", "description": "Keys in many cases.",
+        "parameters": {"type": "object", "properties": {
+            "zeta": {"type": "string"}, "Alpha": {"type": "string"}, "beta": {"type": "string"},
+            "BETA2": {"type": "string"}, "_under": {"type": "string"}, "a1": {"type": "string"},
+            "A0": {"type": "string"}, "\u00c4rger": {"type": "string"}, "\u00e4hre": {"type": "string"},
+            "\u0401\u0436": {"type": "string"}, "\u0451\u043b\u043a\u0430": {"type": "string"},
+            "\u0394": {"type": "string"}, "\u03b1": {"type": "string"}, "\u57ce\u5e02": {"type": "string"},
+            "\u0160koda": {"type": "string"}, "\u0161ok": {"type": "string"}}}})])),
+    ("tool_call_then_response", g4(messages=[
+        {"role": "user", "content": "Weather in Paris?"},
+        {"role": "assistant", "content": "", "tool_calls": [qwen_call("c1", "get_weather", {"city": "Paris", "days": 3})]},
+        {"role": "tool", "tool_call_id": "c1", "content": "sunny, 21C"}],
+        tools=[wrapped(weather_tool())])),
+    ("tool_call_pending_no_response", g4(messages=[
+        {"role": "user", "content": "Weather in Paris?"},
+        {"role": "assistant", "content": "", "tool_calls": [qwen_call("c1", "get_weather", {"city": "Paris"})]}],
+        tools=[wrapped(weather_tool())])),
+    ("two_calls_two_responses_then_answer", g4(messages=[
+        {"role": "system", "content": "You are a concise assistant."},
+        {"role": "user", "content": "Weather in Paris and Rome? 巴黎呢?"},
+        {"role": "assistant", "content": "Let me check both.",
+         "tool_calls": [qwen_call("c1", "get_weather", {"city": "Paris", "days": 3}),
+                        qwen_call("c2", "get_weather", {"city": "Rome"})]},
+        {"role": "tool", "tool_call_id": "c1", "content": "sunny"},
+        {"role": "tool", "tool_call_id": "c2", "content": "rain"},
+        {"role": "assistant", "content": "Paris is sunny; Rome has rain."},
+        {"role": "user", "content": "And Zürich?"}],
+        tools=[wrapped(weather_tool()), wrapped(RUN_TOOL)])),
+    ("argument_value_types", g4(messages=[
+        {"role": "user", "content": "Run it."},
+        {"role": "assistant", "content": "", "tool_calls": [qwen_call("c1", "run", {
+            "code": "print(\"hi\")\nprint(2)\n", "Zed": None, "flag": True, "off": False, "n": 7, "ratio": 0.5,
+            "big": 12345678901234, "neg": -3, "opts": {"b": [1, 2, "three", {"k": None}], "a": {"x": 1.25, "Y": "y"}},
+            "empty_list": [], "empty_map": {}, "text": "quote \" and <|\"|> and 中文"})]},
+        {"role": "tool", "tool_call_id": "c1", "content": "hi\n2"}],
+        tools=[wrapped(RUN_TOOL)])),
+    ("arguments_as_a_string", g4(messages=[
+        {"role": "user", "content": "Weather?"},
+        {"role": "assistant", "content": "", "tool_calls": [qwen_call("c1", "get_weather", "city:<|\"|>Oslo<|\"|>")]},
+        {"role": "tool", "tool_call_id": "c1", "content": "cold"}],
+        tools=[wrapped(weather_tool())])),
+    ("tool_response_names", g4(messages=[
+        {"role": "user", "content": "Do three things."},
+        {"role": "assistant", "content": "", "tool_calls": [qwen_call("c1", "alpha", {}), qwen_call("c2", "beta", {"x": 1}),
+                                                             qwen_call("c3", "gamma", {})]},
+        {"role": "tool", "tool_call_id": "c2", "content": "second first"},
+        {"role": "tool", "name": "named", "content": "no id, a name"},
+        # (an id that matches no call, on a message without a name, is a TypeError in the template
+        # itself — None + str — and a render error here: not a case)
+        {"role": "tool", "tool_call_id": "nope", "name": "fallback", "content": "an id nothing matches"},
+        {"role": "user", "content": "Thanks."}])),
+    ("tool_response_content_parts", g4(messages=[
+        {"role": "user", "content": "Read it."},
+        {"role": "assistant", "content": "", "tool_calls": [qwen_call("c1", "read", {"path": "/tmp/x"})]},
+        {"role": "tool", "tool_call_id": "c1", "content": [{"type": "text", "text": "line 1\n"},
+                                                           {"type": "image"}, {"type": "text", "text": "line 2"}]}])),
+    ("reasoning_with_tool_calls", g4(messages=[
+        {"role": "user", "content": "Weather in Paris?"},
+        {"role": "assistant", "content": "", "reasoning_content": "I should call the tool.",
+         "tool_calls": [qwen_call("c1", "get_weather", {"city": "Paris"})]},
+        {"role": "tool", "tool_call_id": "c1", "content": "sunny"}],
+        tools=[wrapped(weather_tool())], enable_thinking=True)),
+    ("reasoning_before_last_user_is_dropped", g4(messages=[
+        {"role": "user", "content": "Weather in Paris?"},
+        {"role": "assistant", "content": "", "reasoning": "old thought",
+         "tool_calls": [qwen_call("c1", "get_weather", {"city": "Paris"})]},
+        {"role": "tool", "tool_call_id": "c1", "content": "sunny"},
+        {"role": "assistant", "content": "It is sunny.", "reasoning_content": "no call here"},
+        {"role": "user", "content": "And Rome?"}],
+        tools=[wrapped(weather_tool())])),
+    ("legacy_tool_responses_on_the_assistant", g4(messages=[
+        {"role": "user", "content": "Weather?"},
+        {"role": "assistant", "content": "", "tool_calls": [qwen_call("c1", "get_weather", {"city": "Oslo"})],
+         "tool_responses": [{"name": "get_weather", "response": {"temp": -2, "sky": "clear", "Wind": {"kph": 12}}},
+                            {"response": "plain text"}]},
+        {"role": "user", "content": "Thanks"}])),
+    ("call_then_text_in_the_same_turn", g4(messages=[
+        {"role": "user", "content": "Weather?"},
+        {"role": "assistant", "content": "", "tool_calls": [qwen_call("c1", "get_weather", {"city": "Oslo"})]},
+        {"role": "tool", "tool_call_id": "c1", "content": "cold"},
+        {"role": "assistant", "content": "It is cold in Oslo."},
+        {"role": "assistant", "content": "", "tool_calls": [qwen_call("c2", "get_weather", {"city": "Bergen"})]},
+        {"role": "tool", "tool_call_id": "c2", "content": "wet"}],
+        tools=[wrapped(weather_tool())])),
+]
+
+
+# The Mistral-Small-4 template (mistral-common's tokenizer v15 written as
+# Jinja): <s> first; a default system prompt when the conversation does not
+# open with a system message (its {today} / {yesterday} placeholders are
+# printed as they stand — nothing in the template fills them); the tools as
+# one JSON array in [AVAILABLE_TOOLS] and the reasoning effort in
+# [MODEL_SETTINGS], both before the FIRST user message; [INST]..[/INST]; an
+# assistant turn as its text and [THINK] chunks, then
+# [TOOL_CALLS]name[ARGS]{json} per call, then </s>; [TOOL_RESULTS]. It merges
+# consecutive user / assistant messages, turns a reasoning_content /
+# reasoning field into a leading thinking chunk, validates the role order,
+# and raises (raise_exception) for what it does not render — the "error_"
+# cases pin those messages. There is no generation prompt: the reply follows
+# [/INST] or [/TOOL_RESULTS] directly, so add_generation_prompt changes
+# nothing. The render reads bos_token / eos_token, which transformers passes
+# from the tokenizer's special-tokens map: every case carries them.
+def mistral(messages, **kwargs):
+    out = {"messages": messages, "bos_token": "<s>", "eos_token": "</s>"}
+    out.update(kwargs)
+    return out
+
+
+SEARCH_TOOL = {"name": "search", "description": "Search the web (网页搜索).",
+               "parameters": {"type": "object",
+                              "properties": {"query": {"type": "string"},
+                                             "top_k": {"type": "integer"},
+                                             "filters": {"type": "object"},
+                                             "safe": {"type": "boolean"}},
+                              "required": ["query"]}}
+
+MISTRAL4_CASES = [
+    ("simple_user_gen", mistral(
+        [{"role": "user", "content": "The capital of France is"}],
+        add_generation_prompt=True)),
+    ("simple_user_no_generation_prompt", mistral(
+        [{"role": "user", "content": "The capital of France is"}],
+        add_generation_prompt=False)),
+    ("system_user_gen", mistral(
+        [{"role": "system", "content": "Be brief."},
+         {"role": "user", "content": "写一首关于秋天的诗。"}],
+        add_generation_prompt=True)),
+    ("code_user_gen", mistral(
+        [{"role": "system", "content": "You review code."},
+         {"role": "user", "content": "def add(a, b):\n    return a + b\nExplain this code."}],
+        add_generation_prompt=True)),
+    ("effort_none", mistral(
+        [{"role": "system", "content": "Be brief."}, {"role": "user", "content": "Hi"}],
+        reasoning_effort="none", add_generation_prompt=True)),
+    ("effort_high", mistral(
+        [{"role": "system", "content": "Be brief."}, {"role": "user", "content": "Hi"}],
+        reasoning_effort="high", add_generation_prompt=True)),
+    ("effort_null_is_none", mistral(
+        [{"role": "system", "content": "Be brief."}, {"role": "user", "content": "Hi"}],
+        reasoning_effort=None, add_generation_prompt=True)),
+    ("multi_turn", mistral(
+        [{"role": "system", "content": "You are a concise geography assistant."},
+         {"role": "user", "content": "What is the capital of France?"},
+         {"role": "assistant", "content": "Paris."},
+         {"role": "user", "content": "And of Italy?"},
+         {"role": "assistant", "content": "Rome."},
+         {"role": "user", "content": "And Zürich — is it a capital?"}],
+        add_generation_prompt=True)),
+    ("tools_wrapped_no_system", mistral(
+        [{"role": "user", "content": "What's the weather in Paris?"}],
+        tools=[wrapped(weather_tool()), wrapped(SEARCH_TOOL)], add_generation_prompt=True)),
+    ("tools_flat_with_system_effort_high", mistral(
+        [{"role": "system", "content": "Use the tools."},
+         {"role": "user", "content": "What's the weather in Paris?"}],
+        tools=[weather_tool()], reasoning_effort="high", add_generation_prompt=True)),
+    ("tools_empty_list", mistral(
+        [{"role": "system", "content": "Be brief."}, {"role": "user", "content": "Hi"}],
+        tools=[], add_generation_prompt=True)),
+    ("tools_null", mistral(
+        [{"role": "system", "content": "Be brief."}, {"role": "user", "content": "Hi"}],
+        tools=None, add_generation_prompt=True)),
+    ("tools_before_the_first_user_only", mistral(
+        [{"role": "system", "content": "Be brief."},
+         {"role": "user", "content": "Hi"},
+         {"role": "assistant", "content": "Hello."},
+         {"role": "user", "content": "Weather in Rome?"}],
+        tools=[wrapped(weather_tool())], add_generation_prompt=True)),
+    ("tool_call_object_arguments_and_result", mistral(
+        [{"role": "system", "content": "Use the tools."},
+         {"role": "user", "content": "What's the weather in Paris for 3 days?"},
+         {"role": "assistant", "content": "",
+          "tool_calls": [qwen_call("c1", "get_weather", {"city": "Paris", "days": 3})]},
+         {"role": "tool", "tool_call_id": "c1", "content": "{\"temp\": 21, \"unit\": \"C\"}"}],
+        tools=[wrapped(weather_tool())], add_generation_prompt=True)),
+    ("tool_call_string_arguments_verbatim", mistral(
+        [{"role": "system", "content": "Use the tools."},
+         {"role": "user", "content": "Weather in Paris, then ping."},
+         {"role": "assistant", "content": "",
+          "tool_calls": [qwen_call("c1", "get_weather", "{\"city\":\"Paris\",\"days\":3}"),
+                         qwen_call("c2", "ping", "")]},
+         {"role": "tool", "tool_call_id": "c1", "content": "sunny"},
+         {"role": "tool", "tool_call_id": "c2", "content": "pong"}],
+        tools=[wrapped(weather_tool())], add_generation_prompt=True)),
+    ("tool_calls_several_with_content", mistral(
+        [{"role": "system", "content": "You are a concise assistant."},
+         {"role": "user", "content": "Weather in Paris and Rome? 巴黎呢?"},
+         {"role": "assistant", "content": "Let me check both.",
+          "tool_calls": [qwen_call("c1", "get_weather", {"city": "Paris", "days": 3}),
+                         qwen_call("c2", "get_weather", {"city": "Rome"})]},
+         {"role": "tool", "tool_call_id": "c1", "content": "sunny"},
+         {"role": "tool", "tool_call_id": "c2", "content": "rain"},
+         {"role": "assistant", "content": "",
+          "tool_calls": [qwen_call("c3", "search", {"query": "print(\"hi\")\nline 2\n", "top_k": 5,
+                                                    "filters": {"a": 1.5, "b": [1, 2, None]},
+                                                    "safe": True})]},
+         {"role": "tool", "tool_call_id": "c3", "content": "hi\n2"},
+         {"role": "assistant", "content": "Paris is sunny; Rome has rain."},
+         {"role": "user", "content": "And Zürich?"}],
+        tools=[wrapped(weather_tool()), wrapped(SEARCH_TOOL)], add_generation_prompt=True)),
+    ("tool_call_no_arguments", mistral(
+        [{"role": "system", "content": "Use the tools."},
+         {"role": "user", "content": "Ping it."},
+         {"role": "assistant", "content": "", "tool_calls": [qwen_call("c1", "ping", {})]},
+         {"role": "tool", "tool_call_id": "c1", "content": "pong"}],
+        add_generation_prompt=True)),
+    ("tool_call_without_content_key", mistral(
+        [{"role": "system", "content": "Use the tools."},
+         {"role": "user", "content": "Weather in Paris?"},
+         {"role": "assistant", "tool_calls": [qwen_call("c1", "get_weather", {"city": "Paris"})]},
+         {"role": "tool", "tool_call_id": "c1", "content": "sunny"}],
+        add_generation_prompt=True)),
+    ("tool_call_null_content", mistral(
+        [{"role": "system", "content": "Use the tools."},
+         {"role": "user", "content": "Weather in Paris?"},
+         {"role": "assistant", "content": None,
+          "tool_calls": [qwen_call("c1", "get_weather", {"city": "Paris"})]},
+         {"role": "tool", "tool_call_id": "c1", "content": "sunny"},
+         {"role": "assistant", "content": "It is sunny."}],
+        add_generation_prompt=False)),
+    ("tool_result_text_chunks", mistral(
+        [{"role": "system", "content": "Use the tools."},
+         {"role": "user", "content": "Weather in Paris?"},
+         {"role": "assistant", "content": "",
+          "tool_calls": [qwen_call("c1", "get_weather", {"city": "Paris"})]},
+         {"role": "tool", "tool_call_id": "c1",
+          "content": [{"type": "text", "text": "sunny, "}, {"type": "text", "text": "21 °C"}]}],
+        add_generation_prompt=True)),
+    ("reasoning_content_field", mistral(
+        [{"role": "system", "content": "Be brief."},
+         {"role": "user", "content": "What is 17 * 3?"},
+         {"role": "assistant", "content": "51.", "reasoning_content": "17 * 3 = 51."},
+         {"role": "user", "content": "And 17 * 4?"}],
+        reasoning_effort="high", add_generation_prompt=True)),
+    ("reasoning_field_with_tool_call", mistral(
+        [{"role": "system", "content": "Use the tools."},
+         {"role": "user", "content": "Weather in Paris?"},
+         {"role": "assistant", "content": "", "reasoning": "I should call the tool.",
+          "tool_calls": [qwen_call("c1", "get_weather", {"city": "Paris"})]},
+         {"role": "tool", "tool_call_id": "c1", "content": "sunny"}],
+        tools=[wrapped(weather_tool())], reasoning_effort="high", add_generation_prompt=True)),
+    ("reasoning_field_with_chunk_content", mistral(
+        [{"role": "system", "content": "Be brief."},
+         {"role": "user", "content": "Name two colours."},
+         {"role": "assistant", "reasoning_content": "Any two will do.",
+          "content": [{"type": "text", "text": "Red"}, {"type": "text", "text": " and blue."}]},
+         {"role": "user", "content": "Two more."}],
+        reasoning_effort="high", add_generation_prompt=True)),
+    ("thinking_chunks", mistral(
+        [{"role": "system", "content": "Be brief."},
+         {"role": "user", "content": "What is 17 * 3?"},
+         {"role": "assistant",
+          "content": [{"type": "thinking", "thinking": "17 * 3 = 51.", "closed": True},
+                      {"type": "text", "text": "51."}]},
+         {"role": "user", "content": "And 17 * 4?"},
+         {"role": "assistant",
+          "content": [{"type": "thinking", "thinking": "17 * 4 = 68."},
+                      {"type": "text", "text": "68."}]},
+         {"role": "user", "content": "And 17 * 5?"}],
+        reasoning_effort="high", add_generation_prompt=True)),
+    ("thinking_chunk_left_open", mistral(
+        [{"role": "system", "content": "Be brief."},
+         {"role": "user", "content": "What is 17 * 3?"},
+         {"role": "assistant",
+          "content": [{"type": "thinking", "thinking": "17 * 3 is", "closed": False}]}],
+        reasoning_effort="high", add_generation_prompt=False)),
+    ("user_text_chunks", mistral(
+        [{"role": "system", "content": [{"type": "text", "text": "Be "}, {"type": "text", "text": "brief."}]},
+         {"role": "user", "content": [{"type": "text", "text": "Describe "},
+                                      {"type": "text", "text": "the Alps."}]}],
+        add_generation_prompt=True)),
+    ("user_text_then_image_puts_the_image_first", mistral(
+        [{"role": "system", "content": "Be brief."},
+         {"role": "user", "content": [{"type": "text", "text": "What is in this picture?"},
+                                      {"type": "image_url", "image_url": {"url": "x"}}]},
+         {"role": "assistant", "content": "A cat."},
+         {"role": "user", "content": [{"type": "image", "image": "y"},
+                                      {"type": "text", "text": "And in this one?"},
+                                      {"type": "text", "text": " Briefly."}]}],
+        add_generation_prompt=True)),
+    ("consecutive_users_merge", mistral(
+        [{"role": "system", "content": "Be brief."},
+         {"role": "user", "content": "First part."},
+         {"role": "user", "content": [{"type": "text", "text": "Second "}, {"type": "text", "text": "part."}]},
+         {"role": "user", "content": "Third part."}],
+        add_generation_prompt=True)),
+    ("consecutive_assistants_merge_calls", mistral(
+        [{"role": "system", "content": "Use the tools."},
+         {"role": "user", "content": "Weather in Paris and Rome?"},
+         {"role": "assistant", "content": "Checking Paris.",
+          "tool_calls": [qwen_call("c1", "get_weather", {"city": "Paris"})]},
+         {"role": "assistant", "content": "Checking Rome.",
+          "tool_calls": [qwen_call("c2", "get_weather", {"city": "Rome"})]},
+         {"role": "tool", "tool_call_id": "c1", "content": "sunny"},
+         {"role": "tool", "tool_call_id": "c2", "content": "rain"}],
+        add_generation_prompt=True)),
+    ("system_mid_conversation", mistral(
+        [{"role": "user", "content": "Hi"},
+         {"role": "assistant", "content": "Hello."},
+         {"role": "user", "content": "Tell me a joke."},
+         {"role": "system", "content": "From now on answer in French."},
+         {"role": "user", "content": "Please."}],
+        add_generation_prompt=True)),
+    ("unicode", mistral(
+        [{"role": "system", "content": "Réponds en français — 简短回答。"},
+         {"role": "user", "content": "Où est Zürich? 🙂 naïve café"},
+         {"role": "assistant", "content": "",
+          "tool_calls": [qwen_call("c1", "search", {"query": "Zürich 天气 🙂", "top_k": 3})]},
+         {"role": "tool", "tool_call_id": "c1", "content": "晴 — 21 °C"}],
+        tools=[wrapped(SEARCH_TOOL)], add_generation_prompt=True)),
+    ("error_effort_medium", mistral(
+        [{"role": "user", "content": "Hi"}], reasoning_effort="medium")),
+    ("error_starts_with_assistant", mistral(
+        [{"role": "assistant", "content": "Hello."}, {"role": "user", "content": "Hi"}])),
+    ("error_tool_after_user", mistral(
+        [{"role": "user", "content": "Hi"},
+         {"role": "tool", "tool_call_id": "c1", "content": "sunny"}])),
+    ("error_system_after_assistant", mistral(
+        [{"role": "user", "content": "Hi"},
+         {"role": "assistant", "content": "Hello."},
+         {"role": "system", "content": "Be brief."}])),
+    ("error_unknown_role", mistral(
+        [{"role": "user", "content": "Hi"}, {"role": "function", "content": "x"}])),
+    ("error_assistant_without_content_or_calls", mistral(
+        [{"role": "user", "content": "Hi"}, {"role": "assistant", "content": ""}])),
+    ("error_user_audio_chunk", mistral(
+        [{"role": "user", "content": [{"type": "text", "text": "Listen: "},
+                                      {"type": "input_audio", "input_audio": {"data": "x"}}]}])),
+    ("error_user_thinking_chunk", mistral(
+        [{"role": "user", "content": [{"type": "thinking", "thinking": "hm"}]}])),
+    ("error_system_image_chunk", mistral(
+        [{"role": "system", "content": [{"type": "image", "image": "x"}]},
+         {"role": "user", "content": "Hi"}])),
+    ("error_assistant_image_chunk", mistral(
+        [{"role": "user", "content": "Hi"},
+         {"role": "assistant", "content": [{"type": "image", "image": "x"}]}])),
+    ("error_tool_thinking_chunk", mistral(
+        [{"role": "user", "content": "Weather in Paris?"},
+         {"role": "assistant", "content": "",
+          "tool_calls": [qwen_call("c1", "get_weather", {"city": "Paris"})]},
+         {"role": "tool", "tool_call_id": "c1",
+          "content": [{"type": "thinking", "thinking": "hm"}]}])),
+    ("error_tool_without_content", mistral(
+        [{"role": "user", "content": "Weather in Paris?"},
+         {"role": "assistant", "content": "",
+          "tool_calls": [qwen_call("c1", "get_weather", {"city": "Paris"})]},
+         {"role": "tool", "tool_call_id": "c1", "content": []}])),
+    ("error_reasoning_field_and_thinking_chunk", mistral(
+        [{"role": "user", "content": "Hi"},
+         {"role": "assistant", "reasoning_content": "hm",
+          "content": [{"type": "thinking", "thinking": "hm"}, {"type": "text", "text": "Hello."}]}])),
+]
+
+
+# The MiniMax-M2.7 template: ]~!b[ (the BOS) and a system turn always —
+# the conversation's leading system message, else the model identity — with
+# the tools one <tool>{json}</tool> line each inside <tools> and the call
+# format's instructions after them; turns as ]~b]ROLE\n ... [e~[\n (the
+# assistant is "ai"); tool calls as
+#   \n<minimax:tool_call>\n<invoke name="NAME">\n
+#   <parameter name="K">V</parameter>\n ... </invoke>\n</minimax:tool_call>
+# with a string value raw and every other value through tojson; consecutive
+# tool messages grouped into one ]~b]tool turn of <response> blocks; the
+# reasoning of the turns AFTER the last user message kept as
+# <think>\n..\n</think>\n\n (interleaved thinking) and dropped before it,
+# taken from reasoning_content or split off a content that carries
+# </think>; the generation prompt ends in "<think>\n". A system message
+# anywhere but first is not rendered; a tool message with no tool call
+# before it raises.
+def flat_call(name, arguments):
+    return {"name": name, "arguments": arguments}
+
+
+MINIMAX_CASES = [
+    ("simple_user_gen", {
+        "messages": [{"role": "user", "content": "The capital of France is"}],
+        "add_generation_prompt": True,
+    }),
+    ("simple_user_no_generation_prompt", {
+        "messages": [{"role": "user", "content": "The capital of France is"}],
+        "add_generation_prompt": False,
+    }),
+    ("empty_conversation_gen", {
+        "messages": [],
+        "add_generation_prompt": True,
+    }),
+    ("system_user_gen", {
+        "messages": [{"role": "system", "content": "Be brief."},
+                     {"role": "user", "content": "写一首关于秋天的诗。"}],
+        "add_generation_prompt": True,
+    }),
+    ("system_text_chunks_date_and_location", {
+        "messages": [{"role": "system",
+                      "content": [{"type": "text", "text": "Be "}, "brief", {"type": "text", "text": "."}],
+                      "current_date": "2026-10-04", "current_location": "Zürich"},
+                     {"role": "user", "content": "What day is it?"}],
+        "add_generation_prompt": True,
+    }),
+    ("model_identity", {
+        "messages": [{"role": "user", "content": "Who are you?"}],
+        "model_identity": "You are Six, an assistant of 6ixLabs.",
+        "add_generation_prompt": True,
+    }),
+    ("later_system_message_is_not_rendered", {
+        "messages": [{"role": "user", "content": "Hi"},
+                     {"role": "system", "content": "From now on answer in French."},
+                     {"role": "user", "content": "Tell me a joke."}],
+        "add_generation_prompt": True,
+    }),
+    ("code_user_gen", {
+        "messages": [{"role": "user", "content":
+                      "def add(a, b):\n    return a + b\nExplain this code."}],
+        "add_generation_prompt": True,
+    }),
+    ("reasoning_before_the_last_user_is_dropped", {
+        "messages": [
+            {"role": "system", "content": "Be brief."},
+            {"role": "user", "content": "What is 17 * 3?"},
+            {"role": "assistant", "content": "51.", "reasoning_content": "17 * 3 = 51."},
+            {"role": "user", "content": "And 17 * 4?"},
+        ],
+        "add_generation_prompt": True,
+    }),
+    ("interleaved_thinking_after_the_last_user_is_kept", {
+        "messages": [
+            {"role": "user", "content": "What is 17 * 3?"},
+            {"role": "assistant", "content": "51.", "reasoning_content": "17 * 3 = 51."},
+            {"role": "user", "content": "Weather in Paris and Rome?"},
+            {"role": "assistant", "content": "Paris first.",
+             "reasoning_content": "Two cities: one call each.\nParis first.",
+             "tool_calls": [qwen_call("c1", "get_weather", {"city": "Paris", "days": 3})]},
+            {"role": "tool", "tool_call_id": "c1", "content": "sunny"},
+            {"role": "assistant", "content": "", "reasoning_content": "Now Rome.",
+             "tool_calls": [qwen_call("c2", "get_weather", {"city": "Rome"})]},
+            {"role": "tool", "tool_call_id": "c2", "content": "rain"},
+        ],
+        "tools": [wrapped(weather_tool())], "add_generation_prompt": True,
+    }),
+    ("trailing_assistant_reasoning_and_answer", {
+        "messages": [
+            {"role": "user", "content": "What is 17 * 3?"},
+            {"role": "assistant", "content": "51.", "reasoning_content": "17 * 3 = 51."},
+        ],
+        "add_generation_prompt": False,
+    }),
+    ("think_markers_in_content", {
+        "messages": [
+            {"role": "user", "content": "What is 17 * 3?"},
+            {"role": "assistant", "content": THINK_OPEN + "\n17 * 3 = 51.\n" + THINK_CLOSE + "\n\n51."},
+            {"role": "user", "content": "And 17 * 4?"},
+            {"role": "assistant", "content": THINK_OPEN + "\n17 * 4 = 68.\n" + THINK_CLOSE + "\n\n68."},
+        ],
+        "add_generation_prompt": False,
+    }),
+    ("think_close_without_open", {
+        "messages": [
+            {"role": "user", "content": "What is 17 * 3?"},
+            {"role": "assistant", "content": "17 * 3 = 51." + THINK_CLOSE + "51."},
+        ],
+        "add_generation_prompt": False,
+    }),
+    ("tools_wrapped", {
+        "messages": [{"role": "user", "content": "What's the weather in Paris?"}],
+        "tools": [wrapped(weather_tool()), wrapped(SEARCH_TOOL)], "add_generation_prompt": True,
+    }),
+    ("tools_with_system", {
+        "messages": [{"role": "system", "content": "Use the tools."},
+                     {"role": "user", "content": "What's the weather in Paris?"}],
+        "tools": [wrapped(weather_tool())], "add_generation_prompt": True,
+    }),
+    ("tool_call_string_and_json_arguments", {
+        "messages": [
+            {"role": "user", "content": "Search it."},
+            {"role": "assistant", "content": "",
+             "tool_calls": [qwen_call("c1", "search", {"query": "print(\"hi\")\nline 2\n", "top_k": 5,
+                                                       "filters": {"a": 1.5, "b": [1, 2, None]},
+                                                       "safe": True})]},
+            {"role": "tool", "tool_call_id": "c1", "content": "hi\n2"},
+        ],
+        "tools": [wrapped(SEARCH_TOOL)], "add_generation_prompt": True,
+    }),
+    ("tool_calls_several_in_one_turn", {
+        "messages": [
+            {"role": "system", "content": "You are a concise assistant."},
+            {"role": "user", "content": "Weather in Paris and Rome? 巴黎呢?"},
+            {"role": "assistant", "content": "Let me check both.",
+             "tool_calls": [qwen_call("c1", "get_weather", {"city": "Paris", "days": 3}),
+                            qwen_call("c2", "get_weather", {"city": "Rome"})]},
+            {"role": "tool", "tool_call_id": "c1", "content": "sunny"},
+            {"role": "tool", "tool_call_id": "c2", "content": "rain"},
+            {"role": "assistant", "content": "Paris is sunny; Rome has rain."},
+            {"role": "user", "content": "And Zürich?"},
+        ],
+        "tools": [wrapped(weather_tool())], "add_generation_prompt": True,
+    }),
+    ("tool_call_no_arguments", {
+        "messages": [
+            {"role": "user", "content": "Ping it."},
+            {"role": "assistant", "content": "", "tool_calls": [qwen_call("c1", "ping", {})]},
+            {"role": "tool", "tool_call_id": "c1", "content": "pong"},
+        ],
+        "tools": [wrapped({"name": "ping", "description": "Ping.",
+                           "parameters": {"type": "object", "properties": {}}})],
+        "add_generation_prompt": True,
+    }),
+    ("tool_call_flat_form", {
+        "messages": [
+            {"role": "user", "content": "Weather in Paris?"},
+            {"role": "assistant", "content": "",
+             "tool_calls": [flat_call("get_weather", {"city": "Paris", "days": 1})]},
+            {"role": "tool", "content": "sunny"},
+        ],
+        "tools": [wrapped(weather_tool())], "add_generation_prompt": True,
+    }),
+    ("tool_result_parts", {
+        "messages": [
+            {"role": "user", "content": "Weather in Paris?"},
+            {"role": "assistant", "content": "",
+             "tool_calls": [qwen_call("c1", "get_weather", {"city": "Paris"})]},
+            {"role": "tool", "tool_call_id": "c1",
+             "content": [{"name": "get_weather", "type": "text", "text": "{\"weather\": \"Sunny\"}"},
+                         {"output": "21 °C"},
+                         "a bare string"]},
+        ],
+        "tools": [wrapped(weather_tool())], "add_generation_prompt": True,
+    }),
+    ("user_content_parts", {
+        "messages": [{"role": "user",
+                      "content": [{"type": "text", "text": "Describe "},
+                                  {"type": "image", "image": "x"},
+                                  "the Alps",
+                                  {"type": "text", "text": "."}]}],
+        "add_generation_prompt": True,
+    }),
+    ("assistant_null_content_prints_None", {
+        "messages": [
+            {"role": "user", "content": "Weather in Paris?"},
+            {"role": "assistant", "content": None,
+             "tool_calls": [qwen_call("c1", "get_weather", {"city": "Paris"})]},
+            {"role": "tool", "tool_call_id": "c1", "content": "sunny"},
+        ],
+        "add_generation_prompt": True,
+    }),
+    ("assistant_without_content_key", {
+        "messages": [
+            {"role": "user", "content": "Weather in Paris?"},
+            {"role": "assistant",
+             "tool_calls": [qwen_call("c1", "get_weather", {"city": "Paris"})]},
+            {"role": "tool", "tool_call_id": "c1", "content": "sunny"},
+        ],
+        "add_generation_prompt": True,
+    }),
+    ("unicode", {
+        "messages": [
+            {"role": "system", "content": "Réponds en français — 简短回答。"},
+            {"role": "user", "content": "Où est Zürich? 🙂 naïve café"},
+            {"role": "assistant", "content": "", "reasoning_content": "Cherchons « Zürich ».",
+             "tool_calls": [qwen_call("c1", "search", {"query": "Zürich 天气 🙂", "top_k": 3,
+                                                       "filters": {"région": "ZH"}})]},
+            {"role": "tool", "tool_call_id": "c1", "content": "晴 — 21 °C"},
+        ],
+        "tools": [wrapped(SEARCH_TOOL)], "add_generation_prompt": True,
+    }),
+    ("error_tool_message_first", {
+        "messages": [{"role": "tool", "content": "sunny"}],
+    }),
+    ("error_tool_after_assistant_without_calls", {
+        "messages": [
+            {"role": "user", "content": "Weather in Paris?"},
+            {"role": "assistant", "content": "I cannot look that up."},
+            {"role": "tool", "content": "sunny"},
+        ],
+    }),
+]
+
+
+# The plain Qwen3 templates (2026-10-04). Both write the 80B's JSON tool calls
+# over the same tokenizer, so the 80B's cases run on both, plus what each
+# template adds:
+#   Qwen3-235B-A22B-Instruct-2507 — the Qwen3 reasoning history: an assistant
+#     turn's reasoning (the reasoning_content field, or <think>..</think> inside
+#     its content) is re-rendered as a <think> block only AFTER the last real
+#     user query (a multi-step tool exchange) and dropped before it.
+#   Qwen3-VL-30B-A3B-Instruct — content given as a list of parts (text parts
+#     concatenated; an image / video part renders the checkpoint's placeholder
+#     triple, which the engine never produces: it refuses image inputs for this
+#     family — the case pins the interpreter, not a served path), and no
+#     default system turn.
+QWEN3_MOE_CASES = QWEN3_NEXT_CASES + [
+    ("reasoning_history_dropped_before_the_last_query", {
+        "messages": [
+            {"role": "user", "content": "2+2?"},
+            {"role": "assistant", "content": "4", "reasoning_content": "simple sum"},
+            {"role": "user", "content": "And 3+3?"},
+        ],
+        "add_generation_prompt": True,
+    }),
+    ("reasoning_kept_inside_a_tool_exchange", {
+        "messages": [
+            {"role": "user", "content": "Weather in Paris?"},
+            {"role": "assistant", "content": "", "reasoning_content": "\nneed the tool\n",
+             "tool_calls": [qwen_call("c1", "get_weather", {"city": "Paris"})]},
+            {"role": "tool", "tool_call_id": "c1", "content": "sunny"},
+        ],
+        "tools": [wrapped(weather_tool())], "add_generation_prompt": True,
+    }),
+    ("think_markers_inside_content", {
+        "messages": [
+            {"role": "user", "content": "Weather in Rome? 罗马呢?"},
+            {"role": "assistant", "content": THINK_OPEN + "\ncheck Rome\n" + THINK_CLOSE + "\n\nLooking it up.",
+             "tool_calls": [qwen_call("c1", "get_weather", {"city": "Rome", "days": 2})]},
+            {"role": "tool", "tool_call_id": "c1", "content": "rain"},
+            {"role": "assistant", "content": "Rain in Rome."},
+        ],
+        "tools": [wrapped(weather_tool())], "add_generation_prompt": False,
+    }),
+    ("mid_conversation_system_turn", {
+        "messages": [
+            {"role": "system", "content": "Be brief."},
+            {"role": "user", "content": "Hi"},
+            {"role": "assistant", "content": "Hello."},
+            {"role": "system", "content": "Now answer in French."},
+            {"role": "user", "content": "How are you?"},
+        ],
+        "add_generation_prompt": True,
+    }),
+]
+
+QWEN3_VL_CASES = QWEN3_NEXT_CASES + [
+    ("content_as_text_parts", {
+        "messages": [
+            {"role": "system", "content": [{"type": "text", "text": "Be brief."}]},
+            {"role": "user", "content": [{"type": "text", "text": "Describe "}, {"type": "text", "text": "秋天。"}]},
+            {"role": "assistant", "content": [{"type": "text", "text": "Leaves fall."}]},
+            {"role": "user", "content": "Shorter."},
+        ],
+        "add_generation_prompt": True,
+    }),
+    ("tool_result_as_text_parts", {
+        "messages": [
+            {"role": "user", "content": "Weather in Paris?"},
+            {"role": "assistant", "content": "", "tool_calls": [qwen_call("c1", "get_weather", {"city": "Paris"})]},
+            {"role": "tool", "tool_call_id": "c1", "content": [{"type": "text", "text": "sunny"}]},
+        ],
+        "tools": [wrapped(weather_tool())], "add_generation_prompt": True,
+    }),
+    ("image_and_video_parts_render_the_placeholders", {
+        "messages": [
+            {"role": "user", "content": [{"type": "image", "image": "x.png"}, {"type": "text", "text": "What is this?"},
+                                         {"type": "video", "video": "y.mp4"},
+                                         {"type": "image_url", "image_url": {"url": "z.png"}}]},
+        ],
+        "add_generation_prompt": True, "add_vision_id": True,
+    }),
+]
+
+
 def main():
     import argparse
     ap = argparse.ArgumentParser()
@@ -699,14 +1452,26 @@ def main():
     ap.add_argument("--render-only", action="store_true")
     args = ap.parse_args()
     model = args.model
+    is_mistral4 = "Mistral-Small-4" in model
+    is_minimax = "MiniMax" in model
     is_qwen3_next = "Qwen3-Next" in model
-    is_qwen = "Qwen" in model and not is_qwen3_next
+    is_qwen3_vl = "Qwen3-VL" in model
+    is_qwen3_moe = "Qwen3-235B" in model
+    is_qwen = "Qwen" in model and not is_qwen3_next and not is_qwen3_vl and not is_qwen3_moe
     is_glm4 = "GLM-4" in model
     is_mimo = "MiMo" in model
-    cases = (QWEN3_NEXT_CASES if is_qwen3_next else
+    is_gemma = "gemma" in model.lower()
+    cases = (GEMMA4_CASES if is_gemma else MISTRAL4_CASES if is_mistral4 else MINIMAX_CASES if is_minimax else
+             QWEN3_NEXT_CASES if is_qwen3_next else QWEN3_VL_CASES if is_qwen3_vl else
+             QWEN3_MOE_CASES if is_qwen3_moe else
              MIMO_CASES if is_mimo else QWEN_CASES if is_qwen else GLM4_CASES if is_glm4 else CASES)
     out_path = args.out_opt or args.out or (
+        "tests/data/gemma4_chat_template_goldens.jsonl" if is_gemma else
+        "tests/data/mistral4_chat_template_goldens.jsonl" if is_mistral4 else
+        "tests/data/minimax_chat_template_goldens.jsonl" if is_minimax else
         "tests/data/qwen3next_chat_template_goldens.jsonl" if is_qwen3_next else
+        "tests/data/qwen3vl_chat_template_goldens.jsonl" if is_qwen3_vl else
+        "tests/data/qwen3moe_chat_template_goldens.jsonl" if is_qwen3_moe else
         "tests/data/mimo_chat_template_goldens.jsonl" if is_mimo else
         "tests/data/qwen_chat_template_goldens.jsonl" if is_qwen else
         "tests/data/glm4_chat_template_goldens.jsonl" if is_glm4 else "tests/data/glm_chat_template_goldens.jsonl")
@@ -720,7 +1485,8 @@ def main():
     tok_raw = pathlib.Path(tok_path).read_bytes()
     template_hash = f"{fnv1a64(tpl_raw):016x}"
     tok_hash = f"{fnv1a64(tok_raw):016x}"
-    if not is_qwen3_next and not is_qwen and not is_glm4 and not is_mimo and tok_hash != "700b4469fc43f23b":
+    if (not is_gemma and not is_mistral4 and not is_minimax and not is_qwen3_next and not is_qwen3_vl
+            and not is_qwen3_moe and not is_qwen and not is_glm4 and not is_mimo and tok_hash != "700b4469fc43f23b"):
         sys.exit(f"unexpected tokenizer revision {tok_hash} — the tokenizer "
                  "goldens are keyed to 700b4469fc43f23b")
 
@@ -732,18 +1498,34 @@ def main():
         tok = tokenizers.Tokenizer.from_file(tok_path)
 
     with open(out_path, "w", encoding="utf-8") as f:
+        import jinja2
         header = {
             "model": model,
-            "jinja2": jinja_env.jinja2.__version__ if hasattr(
-                jinja_env, "jinja2") else "3.1.2",
+            "jinja2": jinja2.__version__,
             "template_hash": template_hash,
             "tokenizer_revision": tok_hash,
             "cases": len(cases),
         }
         if tok is None:
             header["ids"] = False
+        else:
+            header["tokenizers"] = tokenizers.__version__
         f.write(json.dumps(header, ensure_ascii=False) + "\n")
         for name, kwargs in cases:
+            # An "error_" case pins a raise_exception message of the template
+            # (transformers raises it as a TemplateError): the corpus line
+            # carries "error" in place of "render" and "ids".
+            if name.startswith("error_"):
+                try:
+                    template.render(**kwargs)
+                except jinja2.exceptions.TemplateError as e:
+                    if type(e) is not jinja2.exceptions.TemplateError or not e.message:
+                        sys.exit(f"case {name} failed outside raise_exception: {e!r}")
+                    f.write(json.dumps({"name": name, "kwargs": kwargs, "error": e.message},
+                                       ensure_ascii=False) + "\n")
+                    print(f"{name:42s} raises: {e.message}")
+                    continue
+                sys.exit(f"case {name} rendered — it must raise")
             rendered = template.render(**kwargs)
             if not rendered:
                 sys.exit(f"case {name} rendered empty — generator bug")

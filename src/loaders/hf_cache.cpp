@@ -112,8 +112,10 @@ std::string model_dir_in_root(const std::string& cache_root,
 
   // The GLM loader needs config.json in the snapshot; a broken symlink or a
   // half-finished blob fails HERE, in the cache's vocabulary, instead of
-  // deep inside safetensors parsing.
-  if (!fs::is_regular_file(snapshot / "config.json")) {
+  // deep inside safetensors parsing. A Mistral-native release (2026-10-04,
+  // loaders/architecture.hpp) is described by params.json instead and ships
+  // no config.json: either file marks a snapshot whose description landed.
+  if (!fs::is_regular_file(snapshot / "config.json") && !fs::is_regular_file(snapshot / "params.json")) {
     *error = "snapshot " + snapshot.string() +
              " has no readable config.json (incomplete download?)";
     return {};

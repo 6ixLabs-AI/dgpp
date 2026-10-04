@@ -126,6 +126,7 @@ class CheckNotices(unittest.TestCase):
 
     def test_branch_model_marked_as_runnable(self):
         def edit(r):
+            r["models"]["gemma-4-31b"]["branch"] = "ports/gemma-4"       # as it was before it landed
             r["models"]["gemma-4-31b"]["checkpoints"][0]["status"] = "compiled"
         self.assertTrue(any("not on main" in b for b in self.broken(edit)))
 

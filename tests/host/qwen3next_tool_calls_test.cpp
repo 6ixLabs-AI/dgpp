@@ -83,7 +83,13 @@ struct World {
     else
       eos.push_back(e.as_int());
     const std::string config = read_text_file((snap / "config.json").string());
-    vocab = dgpp::minijson::parse(config).root.at("vocab_size").as_int();
+    // A flat config names its vocabulary at the root; a nested one (the
+    // Qwen3-VL-MoE corpus, 2026-10-04) in text_config.
+    const dgpp::minijson::ParseResult cfg = dgpp::minijson::parse(config);
+    const dgpp::minijson::Value* text_config = cfg.root.find("text_config");
+    vocab = (cfg.root.find("vocab_size") != nullptr ? cfg.root : text_config != nullptr ? *text_config : cfg.root)
+                .at("vocab_size")
+                .as_int();
     const std::vector<int64_t> end = tok.encode("<|im_end|>");
     require(end.size() == 1, "<|im_end|> is one added token");
     im_end = end[0];
@@ -141,6 +147,12 @@ std::vector<Turn> golden_turns() {
       const dgpp::minijson::Value& msg = messages.items()[k];
       const dgpp::minijson::Value* tcs = msg.find("tool_calls");
       if (msg.at("role").as_string() != "assistant" || tcs == nullptr) continue;
+      // A turn that carries reasoning (the field, or <think> inside its
+      // content) pins the template's history rendering, not a form the
+      // model writes: the Qwen3-235B corpus has two (2026-10-04).
+      if (msg.find("reasoning_content") != nullptr || !msg.at("content").is_string() ||
+          msg.at("content").as_string().find("<think>") != std::string_view::npos)
+        continue;
       const auto render_through = [&](size_t count) {
         std::vector<dgpp::text::Value> ms;
         for (size_t j = 0; j < count; ++j) ms.push_back(dgpp::text::Value::from_minijson(messages.items()[j]));
@@ -161,6 +173,12 @@ std::vector<Turn> golden_turns() {
                   text.compare(text.size() - kEnd.size(), kEnd.size(), kEnd) == 0,
               turn.where + ": the turn sits between the assistant header and <|im_end|>: " + text);
       text = text.substr(kAssistant.size(), text.size() - kAssistant.size() - kEnd.size());
+      // The Qwen3-235B-2507 template renders a TRAILING assistant turn
+      // behind an empty reasoning block (the Qwen3 reasoning-history branch
+      // it inherits; the Instruct checkpoint writes none): template text,
+      // not part of what the model produces.
+      const std::string kEmptyThink = "<think>\n\n</think>\n\n";
+      if (text.compare(0, kEmptyThink.size(), kEmptyThink) == 0) text = text.substr(kEmptyThink.size());
       turn.ids = w.tok.encode(text);
       turn.ids.push_back(w.im_end);
       // The template writes the content, a newline before the first block

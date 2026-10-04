@@ -212,10 +212,20 @@ class PortabilityTest(unittest.TestCase):
             "Qwen/Qwen3.6-35B-A3B-FP8": "qwen3.6-35b-a3b_fp8",
             "Qwen/Qwen3.5-0.8B": "qwen3.5-0.8b_bf16",
             "nvidia/Qwen3.5-122B-A10B-NVFP4": "qwen3.5-122b-a10b_nvfp4",
+            "nvidia/Gemma-4-31B-IT-NVFP4": "gemma-4-31b_nvfp4",
+            "bg-digitalservices/Gemma-4-26B-A4B-it-NVFP4A16": "gemma-4-26b-a4b_nvfp4",
+            "mistralai/Mistral-Small-4-119B-2603-NVFP4": "mistral-small-4_nvfp4",
+            "lukealonso/MiniMax-M2.7-NVFP4": "minimax-m2.7_nvfp4",
+            "ig1/Qwen3-VL-30B-A3B-Instruct-NVFP4": "qwen3-vl-30b-a3b_nvfp4",
         }
         # Checkpoints that carry no draft layer (no `mtp.*` tensors): there is
         # no MTP to enable, so their templates run the plain decode graph.
-        no_draft = {"RedHatAI/Qwen3-Coder-Next-NVFP4"}
+        # (MiniMax-M2.7's config.json declares one; no published checkpoint
+        # has its tensors.)
+        no_draft = {"RedHatAI/Qwen3-Coder-Next-NVFP4", "nvidia/Gemma-4-31B-IT-NVFP4",
+                    "bg-digitalservices/Gemma-4-26B-A4B-it-NVFP4A16",
+                    "mistralai/Mistral-Small-4-119B-2603-NVFP4", "lukealonso/MiniMax-M2.7-NVFP4",
+                    "ig1/Qwen3-VL-30B-A3B-Instruct-NVFP4"}
         values = {**site_env.DEFAULTS, "DGPP_NODES": "head peer1 peer2 peer3", "DGPP_SSH_USER": "ops"}
         templates = list((ROOT / "deploy").glob("*.example.json"))
         self.assertTrue(templates)

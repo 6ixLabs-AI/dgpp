@@ -12,6 +12,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -68,6 +69,11 @@ DGPP_TEST(glm_tokenizer_differential_goldens) {
   const bool mimo = model_id.find("MiMo") != std::string::npos;
   const bool qwen = model_id.find("Qwen") != std::string::npos || mimo;  // the NFC tokenizers
   const bool dsv41 = model_id.find("DeepSeek-V4") != std::string::npos;
+  // Gemma 4 (2026-10-04): the SentencePiece-style BPE shape, not ByteLevel.
+  const bool gemma = model_id.find("Gemma") != std::string::npos || model_id.find("gemma") != std::string::npos;
+  const bool mistral4 = model_id.find("Mistral-Small-4") != std::string::npos;
+  const bool minimax = model_id.find("MiniMax") != std::string::npos;
+  const bool nfc_tokenizer = qwen || minimax;  // verbatim round trips land on the NFC form
   std::string err;
   const std::string snap = dgpp::hf::model_dir(model_id, &err);
   if (snap.empty()) {
@@ -81,7 +87,61 @@ DGPP_TEST(glm_tokenizer_differential_goldens) {
   const dgpp::text::Tokenizer tok = dgpp::text::Tokenizer::load(tok_path);
 
   // Hand-carried anchors: the fabric-run prompt and first generations.
-  if (dsv41) {
+  if (gemma) {
+    // The Gemma 4 corpus's anchors (HF tokenizers 0.22.2 on the release's
+    // tokenizer.json, 2026-10-04): a leading space is the U+2581 of the
+    // piece, the turn markers are single ids inside the base range.
+    require(tok.sentencepiece_bpe(), "the Gemma tokenizer.json did not load as the SentencePiece-style shape");
+    require(tok.encode("The capital of France is") == std::vector<int64_t>{818, 5279, 529, 7001, 563},
+            "gemma anchor prompt does not encode to the recorded ids");
+    require(tok.encode(" Paris") == std::vector<int64_t>{9079}, "gemma anchor ' Paris' != id 9079");
+    require(tok.decode(std::vector<int64_t>{9079, 236761}, false) == " Paris.", "gemma anchor does not decode to ' Paris.'");
+    require(tok.encode("<bos><|turn>user\nHi<turn|>\n<|turn>model\n") ==
+                std::vector<int64_t>{2, 105, 2364, 107, 10979, 106, 107, 105, 4368, 107},
+            "gemma anchor turn does not encode to the recorded ids");
+    // skip_special_tokens drops the markers; the text between stays.
+    require(tok.decode(std::vector<int64_t>{2, 105, 2364, 107, 10979, 106, 107}, true) == "user\nHi\n",
+            "gemma anchor does not decode with the special tokens skipped");
+    // A character outside the vocabulary is its UTF-8 bytes' tokens (ids 238 + byte).
+    require(tok.encode(std::string_view("\0", 1)) == std::vector<int64_t>{238}, "gemma anchor NUL != <0x00>");
+    require(tok.max_id() == 262143, "gemma max id");
+  } else if (mistral4) {
+    // The Mistral-Small-4 corpus's anchors (HF tokenizers 0.23.2 on the
+    // snapshot, 2026-10-04): the tekken vocabulary's plain words, and its
+    // control tokens — added tokens at ids 0..999, BELOW the BPE range, all
+    // of them special in tokenizer.json ([THINK] and [/THINK] included,
+    // which tekken.json marks is_control=false): skip_special_tokens drops
+    // every one, the verbatim decode keeps them.
+    require(tok.encode("The capital of France is") == std::vector<int64_t>{1784, 8961, 1307, 5498, 1395},
+            "mistral anchor prompt does not encode to the recorded ids");
+    require(tok.encode(" Paris") == std::vector<int64_t>{6993}, "mistral anchor ' Paris' != id 6993");
+    require(tok.decode(std::vector<int64_t>{6993, 1046}, false) == " Paris.", "mistral anchor does not decode to ' Paris.'");
+    const std::vector<int64_t> turn{1, 3, 37133, 4};
+    require(tok.encode("<s>[INST]Hi[/INST]") == turn, "mistral control tokens do not encode to their ids");
+    require(tok.decode(turn) == "Hi" && tok.decode(turn, false) == "<s>[INST]Hi[/INST]",
+            "mistral control tokens: skip_special_tokens must drop them and the verbatim decode keep them");
+    require(tok.decode(std::vector<int64_t>{34, 1662, 35, 16860, 2}) == "okYes" &&
+                tok.decode(std::vector<int64_t>{34, 1662, 35, 16860, 2}, false) == "[THINK]ok[/THINK]Yes</s>",
+            "mistral [THINK] markers: special in tokenizer.json, dropped under skip_special_tokens");
+    require(tok.max_id() == 131071, "mistral max_id must be the BPE range's last id, not the last added token's (999)");
+  } else if (minimax) {
+    // The MiniMax-M2.7 corpus's anchors (HF tokenizers 0.23.2 on the
+    // snapshot, 2026-10-04): the o200k-pattern vocabulary's plain words, and
+    // its added tokens — the role markers are special, <think>, </think> and
+    // the tool-call tags are NOT: those survive skip_special_tokens.
+    require(tok.encode("The capital of France is") == std::vector<int64_t>{758, 5505, 300, 5969, 355},
+            "minimax anchor prompt does not encode to the recorded ids");
+    require(tok.encode(" Paris") == std::vector<int64_t>{8261}, "minimax anchor ' Paris' != id 8261");
+    require(tok.decode(std::vector<int64_t>{8261, 46}, false) == " Paris.", "minimax anchor does not decode to ' Paris.'");
+    const std::vector<int64_t> turn{200019, 1361, 10, 200050, 10, 609, 10, 200051, 367, 9927, 200020};
+    require(tok.encode("]~b]ai\n<think>\nok\n</think>\n\nYes[e~[") == turn, "minimax added tokens do not encode to their ids");
+    require(tok.decode(turn) == "ai\n<think>\nok\n</think>\n\nYes" &&
+                tok.decode(turn, false) == "]~b]ai\n<think>\nok\n</think>\n\nYes[e~[",
+            "minimax added tokens: skip_special_tokens must drop the role markers and keep the think tags");
+    require(tok.decode(std::vector<int64_t>{200052, 120, 200053}) == "<minimax:tool_call>x</minimax:tool_call>",
+            "minimax tool-call tags are not special: skip_special_tokens must keep them");
+    require(tok.max_id() == 200053, "minimax max_id must be the last added token's id");
+  } else if (dsv41) {
     // The DeepSeek-V4.1 corpus's first cases (HF tokenizers 0.23.2 on the
     // snapshot, 2026-09-13): the three-stage pre-tokenizer's plain words.
     require(tok.encode("The capital of France is") == std::vector<int64_t>{671, 6102, 294, 8760, 344},
@@ -221,8 +281,20 @@ DGPP_TEST(glm_tokenizer_differential_goldens) {
                      text + "): got " + std::to_string(got.size()) +
                      " ids, want " + std::to_string(want.size()));
     const std::string rt = tok.decode(got, /*skip_special_tokens=*/false);
-    // An NFC tokenizer round-trips to the NFC form of the input.
-    require(rt == text || (qwen && rt == dgpp::text::unicode::nfc(text)),
+    // An NFC tokenizer round-trips to the NFC form of the input; the
+    // SentencePiece-style decoder turns a literal U+2581 into a space.
+    std::string spaced;
+    if (gemma) {
+      for (size_t k = 0; k < text.size();) {
+        if (text.compare(k, 3, "\xE2\x96\x81") == 0) {
+          spaced.push_back(' ');
+          k += 3;
+        } else {
+          spaced.push_back(text[k++]);
+        }
+      }
+    }
+    require(rt == text || (nfc_tokenizer && rt == dgpp::text::unicode::nfc(text)) || (gemma && rt == spaced),
                  "verbatim round-trip mismatch on case " +
                      std::to_string(i) + ": got " + rt);
     ++checked;
@@ -248,7 +320,10 @@ DGPP_TEST(glm_tokenizer_boundary_contracts) {
   // the pinned-pattern message.
   // In the working directory (the build tree under ctest): a fixed /tmp
   // subdirectory came and went with other tools.
-  const std::string tmp = "glm_tokenizer_test_bad_tokenizer.json";
+  // One file per corpus: every tokenizer gate is this same binary, and a
+  // parallel ctest runs them side by side in one working directory.
+  const std::string tmp = "glm_tokenizer_test_bad_tokenizer." +
+                          std::to_string(std::hash<std::string>{}(golden_path(g_argc, g_argv))) + ".json";
   {
     std::ofstream f(tmp);
     f << R"({"version":"1.0","truncation":null,"padding":null,
@@ -275,6 +350,57 @@ DGPP_TEST(glm_tokenizer_boundary_contracts) {
                "a non-pinned Split pattern must refuse loudly (got: " + msg +
                    ")");
   std::remove(tmp.c_str());
+
+  // The cased-word patterns pin their Split spelling too: the tekken regex
+  // (Mistral-Small-4) is Isolated with invert=false, the o200k regex
+  // (MiniMax-M2.7) Removed with invert=true — each loads as its own file
+  // spells it and refuses the other's spelling. (The regexes as the JSON
+  // carries them: every backslash doubled.)
+  const std::string tekken_regex =
+      R"rx([^\\r\\n\\p{L}\\p{N}]?[\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\\p{M}]*[\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}]+)rx"
+      R"rx(|[^\\r\\n\\p{L}\\p{N}]?[\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\\p{M}]+[\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}]*)rx"
+      R"rx(|\\p{N}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n/]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+)rx";
+  const std::string o200k_regex =
+      R"rx([^\\r\\n\\p{L}\\p{N}]?[\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\\p{M}]*[\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}]+(?i:'s|'t|'re|'ve|'m|'ll|'d)?)rx"
+      R"rx(|[^\\r\\n\\p{L}\\p{N}]?[\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\\p{M}]+[\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}]*(?i:'s|'t|'re|'ve|'m|'ll|'d)?)rx"
+      R"rx(|\\p{N}{1,3}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n/]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+)rx";
+  // The load error for a minimal file with this Split stage ("" = loaded).
+  const auto load_error = [&](const std::string& regex, const char* behavior, const char* invert) {
+    {
+      std::ofstream f(tmp);
+      f << R"({"version":"1.0","truncation":null,"padding":null,"added_tokens":[],"normalizer":null,
+"pre_tokenizer":{"type":"Sequence","pretokenizers":[
+ {"type":"Split","pattern":{"Regex":")"
+        << regex << R"("},"behavior":")" << behavior << R"(","invert":)" << invert << R"(},
+ {"type":"ByteLevel","add_prefix_space":false,"trim_offsets":true,"use_regex":false}]},
+"post_processor":null,
+"decoder":{"type":"ByteLevel","add_prefix_space":true,"trim_offsets":true,"use_regex":true},
+"model":{"type":"BPE","dropout":null,"unk_token":null,"continuing_subword_prefix":null,
+"end_of_word_suffix":null,"fuse_unk":false,"byte_fallback":false,"ignore_merges":true,
+"vocab":{},"merges":[]}})";
+    }
+    std::string what;
+    try {
+      (void)dgpp::text::Tokenizer::load(tmp);
+    } catch (const std::exception& e) {
+      what = e.what();
+    }
+    std::remove(tmp.c_str());
+    return what;
+  };
+  msg = load_error(tekken_regex, "Isolated", "false");
+  require(msg.empty(), "the tekken regex as Isolated/invert=false must load (got: " + msg + ")");
+  msg = load_error(o200k_regex, "Removed", "true");
+  require(msg.empty(), "the o200k regex as Removed/invert=true must load (got: " + msg + ")");
+  msg = load_error(tekken_regex, "Removed", "true");
+  require(msg.find("do not fit the pattern") != std::string::npos,
+          "the tekken regex as Removed/invert=true must refuse (got: " + msg + ")");
+  msg = load_error(o200k_regex, "Isolated", "false");
+  require(msg.find("do not fit the pattern") != std::string::npos,
+          "the o200k regex as Isolated/invert=false must refuse (got: " + msg + ")");
+  msg = load_error(o200k_regex, "Removed", "false");
+  require(msg.find("Split behavior is not Isolated") != std::string::npos,
+          "the o200k regex as Removed/invert=false must refuse (got: " + msg + ")");
 }
 
 }  // namespace

@@ -67,6 +67,22 @@
 // the head and opens the object; "\"}}\n" closes a string, the object and
 // the frame), so a token is allowed iff its bytes carry through the parts
 // in order.
+//
+// THE MISTRAL CALL FORMAT (ToolFormat::kMistral — Mistral-Small-4). No
+// block: every call opens with the [TOOL_CALLS] id and ends where its
+// arguments object closes:
+//   call     := [TOOL_CALLS] NAME [ARGS] ARGS
+//   NAME     := one of the tool names (the text automaton; [ARGS] closes it)
+//   ARGS     := one JSON object under the 6h machine, composed and typed as
+//               the JSON call format's — no whitespace before its brace, and
+//               no token whose bytes run past its closing brace (the next id
+//               is [TOOL_CALLS], the turn's EOS or, under auto, content)
+// The reasoning block is the model's to open ([THINK] as the first id), and
+// a [TOOL_CALLS] inside it opens a call as it does for the parser — so it is
+// offered there only while a call may open.
+//
+// MiniMax-M2's invoke format (ToolFormat::kMinimaxXml) is not covered:
+// GrammarVocab::usable() is false for it and GrammarState refuses it by name.
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -227,7 +243,17 @@ class GrammarVocab {
   // object's machine cannot judge alone (empty under every other format).
   const std::vector<int32_t>& json_call_end_ids() const { return json_call_end_ids_; }
   bool is_eos(int64_t id) const;
-  bool usable() const { return markers_.tool_calls_available() && !eos_.empty(); }
+  // Whether the grammar covers the tokenizer's call format. It does not
+  // cover MiniMax-M2's invoke format (ToolFormat::kMinimaxXml) or the
+  // Gemma 4 call notation (ToolFormat::kGemma) yet: a vocabulary of such a
+  // format is not usable, so an engine built on it reports no constrained
+  // decoding and the service refuses what only a masked pick can guarantee
+  // (tool_choice required / named, parallel_tool_calls false,
+  // response_format) instead of masking with another format's grammar.
+  static bool covers(ToolFormat format) { return format != ToolFormat::kMinimaxXml && format != ToolFormat::kGemma; }
+  bool usable() const {
+    return markers_.tool_calls_available() && !eos_.empty() && covers(markers_.tool_format());
+  }
   // The JSON grammar's per-vocabulary tables (M6 6h), built once on first
   // use — or eagerly here, so a serving rank pays the second or so at
   // boot rather than on the first json request. Copies share them.
@@ -342,6 +368,11 @@ class GrammarState {
     // JSON machine, the tail is a literal; kQClose then closes the block.
     kJHead,  // "\n{\"name\": \"" NAME "\", \"arguments\": "
     kJArgs,  // the arguments object, then "}\n"
+    // The Mistral format: [TOOL_CALLS] opened the call; the name is a target
+    // of the text automaton closed by the [ARGS] id, the arguments object
+    // runs under a JSON machine and its closing brace ends the call.
+    kMName,  // NAME, then [ARGS]
+    kMArgs,  // the arguments object
   };
   // The automaton over token texts: the targets still consistent with the
   // bytes emitted so far, and those bytes.
@@ -384,6 +415,13 @@ class GrammarState {
   bool qwen() const;
   bool qwen_json() const;
   bool dsml() const;
+  bool mistral() const;
+  // The id that opens a call at the top: <tool_call>, or Mistral's
+  // [TOOL_CALLS] (DSML opens with text and its tag — not asked here).
+  int64_t call_opener() const;
+  // What follows the arguments object inside a call's text: the JSON
+  // format's "}\n", nothing under Mistral.
+  const std::string& json_call_tail() const;
   // The JSON call format (kJHead / kJArgs). The call's body is one byte
   // stream — head, arguments, tail — and a token may run across either
   // seam: json_call_text commits a token's bytes through the parts,

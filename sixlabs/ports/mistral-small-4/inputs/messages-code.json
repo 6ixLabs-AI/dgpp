@@ -1,0 +1,5 @@
+{"messages": [
+  {"role": "system", "content": "You are a careful programming assistant."},
+  {"role": "user", "content": "Write a Python function that returns the n-th Fibonacci number iteratively, and say in one sentence why it is O(n)."},
+  {"role": "assistant", "content": "def fib(n):\n    a, b = 0, 1\n    for _ in range(n):\n        a, b = b, a + b\n    return a\n\nIt is O(n) because the loop body runs exactly n times and does a constant amount of work each time."}
+], "add_generation_prompt": false}
