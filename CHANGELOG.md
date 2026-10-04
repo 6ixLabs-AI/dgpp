@@ -23,6 +23,11 @@ The history by milestone. The dated engineering record in
   instructions share the mma pipe's issue slots), with `kernels/fp8w_gemm`
   (63–66 TF, both scale forms, `fp8w_gemm_test`) kept for the scale GEMM's
   26 TF tile route (#89) and `fp8_gemm_bench --27b` reporting every lever.
+  One recipe per world size (2026-10-04): the single-node template is the
+  DFlash2 drafter's (`cluster_qwen3.8-27b_fp8_w1`), its MTP depth-2 and plain
+  worlds the knobs `--no-dflash --mtp --mtp-depth 2 --decode-graph` and
+  `--no-dflash`; the two-node template is MTP depth 2 until the drafter runs
+  past world 1.
   `engine.bf16_weights: bf12` now packs this family's bf16 decode matrices
   too (#88: the drafter's five layers and fc taps, the MTP fc, a bf16 lm
   head), the bf16 bytes staying resident for the stacked redrafts' mma form.
@@ -59,7 +64,8 @@ The history by milestone. The dated engineering record in
   top-1). The 27B family's own GEMM instance takes the streaming mma form
   for 17..128-row decode batches (the drafter's weights read once per
   step); other families' dispatch is unchanged. Template
-  `deploy/cluster_qwen3.8-27b_fp8_w1_dflash2.example.json`; references in
+  `deploy/cluster_qwen3.8-27b_fp8_w1.example.json` (the world-1 recipe since 2026-10-04: the drafter is the faster
+  single-node world on every class, so the MTP world is this template's mode, not a second file); references in
   `dflash2_kernels_test`, the host contract in `dflash2_speculator_test`,
   the config gates in `unit_tests`. Measured on one GB10 (greedy, exact
   numerics): 164 ms/step at C1 for 2.5–6.4 tokens per step by class —

@@ -78,7 +78,7 @@ rows alike) feeds the planes at its positions; the block forward then runs
 `[bonus, mask x 7]` and proposes seven tokens.
 
 Serve it with `engine.dflash_model` and `mtp` / `decode_graph` off
-(`deploy/cluster_qwen3.8-27b_fp8_w1_dflash2.example.json`; `--no-dflash` runs
+(`deploy/cluster_qwen3.8-27b_fp8_w1.example.json`; `--no-dflash` runs
 the same recipe plain). Acceptance is the ordinary greedy verify: the fed
 rows (the pending token plus the drafts) run through the target, the accepted
 prefix commits, the rest rolls back, and the step returns the tokens it
