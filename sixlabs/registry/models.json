@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "engine": "Infer",
+  "engine": "6ix.cpp",
   "updated": "2026-10-04",
 
   "statuses": {
@@ -141,7 +141,7 @@
       "baselines": [
         {"engine": "vllm", "checkpoint": "Qwen/Qwen3.6-35B-A3B-FP8", "date": "2026-10-04", "box": "DGXone", "source": "sixlabs/ports/qwen3.6-35b-a3b/results-2026-10-04-dgxone.md",
          "load_cold_s": 404, "gpu_gib": 44.51, "tok_s": {"single_prose": 50.1, "single_code": 50.1, "c2": 62.6, "c4": 105.9, "c8": 190.0},
-         "notes": "The fleet's slot qwen3.6-35b@dgxone, same box and tools, one run. A different quantization from the Infer row."},
+         "notes": "The fleet's slot qwen3.6-35b@dgxone, same box and tools, one run. A different quantization from the 6ix.cpp row."},
         {"engine": "atlas", "checkpoint": "nvidia/Qwen3.6-35B-A3B-NVFP4", "source": "Atlas recipes README (published, not measured here)", "tok_s": {"single_prose": 116.5}}
       ]
     },

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""registry.py — Infer's model registry: what the engine serves, how each model is launched,
+"""registry.py — 6ix.cpp's model registry: what the engine serves, how each model is launched,
 and how far each one has been verified. The data is models.json beside this file; README.md
 describes the format.
 
@@ -177,7 +177,7 @@ def _speed(t):
 
 
 def table(reg, only=None):
-    """One row per engine per model: Infer first, then the baselines it is compared with."""
+    """One row per engine per model: 6ix.cpp first, then the baselines it is compared with."""
     rows = ["| Model | Engine | Status | Load cold / warm (s) | Memory (GiB) | Single stream tok/s (prose / code) | 2 / 4 / 8 streams |",
             "|---|---|---|---|---|---|---|"]
     for mid, m in sorted(reg["models"].items(), key=lambda kv: (ORDER.index(model_status(kv[1])), kv[0])):
@@ -191,7 +191,7 @@ def table(reg, only=None):
         load_ = " / ".join(x for x in (_num(ms.get("load_cold_s")), _num(ms.get("load_warm_s"))) if x)
         mem = _num(ms.get("gpu_gib")) or (_num(ms.get("plan_gib")) + " planned" if ms.get("plan_gib") else "")
         single, multi = _speed(ms.get("tok_s"))
-        label = f"Infer, {c.get('format', '?')}" + (f", {world} Spark{'s' if world != '1' else ''}" if world else "")
+        label = f"6ix.cpp, {c.get('format', '?')}" + (f", {world} Spark{'s' if world != '1' else ''}" if world else "")
         rows.append(f"| {m['title']} | {label} | {st} | {load_} | {mem} | {single} | {multi} |")
         for b in m.get("baselines", []):
             single, multi = _speed(b.get("tok_s"))
@@ -258,7 +258,7 @@ def site_config_path(reg, model_id, prov, root=ROOT):
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(description="Infer model registry")
+    ap = argparse.ArgumentParser(description="6ix.cpp model registry")
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("check")
     t = sub.add_parser("table")

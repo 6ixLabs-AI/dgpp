@@ -309,7 +309,7 @@ set; it is not the full legacy API. Its streamed object type is
 `text_completion`, with legacy logprobs fields. Model list/retrieve and health
 endpoints remain available. Stored completion routes are not provided.
 
-## Scoring a given continuation (Infer extension)
+## Scoring a given continuation (6ix.cpp extension)
 
 `POST /v1/score` states the model's own log-probability of a continuation
 you supply, after a prompt you supply. Nothing is sampled.

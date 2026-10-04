@@ -1,4 +1,4 @@
-# Qwen3.6-35B-A3B on Infer — bring-up results (DGXone)
+# Qwen3.6-35B-A3B on 6ix.cpp — bring-up results (DGXone)
 
 **Finished 2026-10-04 05:20 EDT.** Nothing below is claimed beyond what the quoted output shows.
 
@@ -500,7 +500,7 @@ The reference's `mtp` mode (the CPU-side cross-check of the gate/up order with
 `--variant stacked=up_gate`) was not run: the engine-side acceptance above already answers the
 question it exists for.
 
-## C. Measurements — Infer, checkpoint A (NVFP4) — done
+## C. Measurements — 6ix.cpp, checkpoint A (NVFP4) — done
 
 Config as shipped in the template: 8 request slots, 262,144-token K/V pool (BF16), `dense_weights`
 `fp8`, MTP depth 2, 4 GiB prefix cache, decode graph on. Served alias `Qwen3.6-35B-A3B`.
@@ -659,7 +659,7 @@ Container gone (`docker ps -a` has no `qwen3.6-35b`), port 8221 closed, `nvidia-
 back to the five that were there before, 97.4 GiB available, the slot marked stopped again as it
 was before I started it. `unloaded.txt` written at 05:18.
 
-## F. Checkpoint B (FP8) on Infer — NOT booted, NOT measured
+## F. Checkpoint B (FP8) on 6ix.cpp — NOT booted, NOT measured
 
 It fails the final numerical gate on the code text (section 4.11: one greedy disagreement at a
 1.31 nat reference margin; the reference shows the same flip against itself at BF16
@@ -671,11 +671,11 @@ forward check and the one-step check (4.11).
 
 ## G. The table
 
-One DGX Spark (DGXone). Infer: the template's settings (8 slots, 262,144-token BF16 K/V pool,
+One DGX Spark (DGXone). 6ix.cpp: the template's settings (8 slots, 262,144-token BF16 K/V pool,
 MTP depth 2, `dense_weights` `fp8`, 4 GiB prefix cache). vLLM: the fleet's recipe as written
 (24 seats, 131,072 context, FP8 KV capped at 8 GiB).
 
-| | Infer, NVFP4 (`nvidia/…-NVFP4`) | Infer, FP8 (`Qwen/…-FP8`) | vLLM, FP8 (`Qwen/…-FP8`) |
+| | 6ix.cpp, NVFP4 (`nvidia/…-NVFP4`) | 6ix.cpp, FP8 (`Qwen/…-FP8`) | vLLM, FP8 (`Qwen/…-FP8`) |
 |---|---|---|---|
 | numerical gate | passes the final gate 4 of 4 (failed the original 3 of 4) | **fails the final gate on 1 of 2 texts** | not applicable |
 | load time, to serving | **47.5 s** cold on a quiet box (36.4 s on the first, busier boot); 9.0 s from the resident image | not measured | **404 s** |
@@ -697,28 +697,28 @@ MTP depth 2, `dense_weights` `fp8`, 4 GiB prefix cache). vLLM: the fleet's recip
 
 How to read it, and what it does not show:
 
-- **The two measured columns are different weights.** Infer ran the NVFP4 release (4-bit
-  experts), vLLM the FP8 release. The like-for-like column — Infer on the FP8 weights — is
-  the one that is empty. The FP8 checkpoint is 13 GiB larger in memory on Infer (34.06 GiB of
+- **The two measured columns are different weights.** 6ix.cpp ran the NVFP4 release (4-bit
+  experts), vLLM the FP8 release. The like-for-like column — 6ix.cpp on the FP8 weights — is
+  the one that is empty. The FP8 checkpoint is 13 GiB larger in memory on 6ix.cpp (34.06 GiB of
   weights against 20.93) and I have no speed figure for it.
-- **Decode: Infer is about 2× vLLM at one stream** (97.7–120.1 against 50.1 by `bench_decode`;
+- **Decode: 6ix.cpp is about 2× vLLM at one stream** (97.7–120.1 against 50.1 by `bench_decode`;
   107.4 against 49.3 by DecodeBench; 106.8 against 49.6 by llama-benchy) and 1.4–1.8× at eight
   streams by `bench_decode` and DecodeBench (271 / 257 against 190 / 142). By llama-benchy at
   eight streams the two are level (116.8 against 114.0): there the prompts are 2,048 tokens and
-  Infer's prefill is the bottleneck.
-- **Prefill: vLLM is about 3× Infer alone and 8× at eight concurrent** (5,651 against 1,977
-  tok/s; 5,024 against 598), and its time to first response stays under 2.5 s where Infer's
-  reaches 23 s. At 16K of context with 4–8 concurrent requests Infer's generation collapses
+  6ix.cpp's prefill is the bottleneck.
+- **Prefill: vLLM is about 3× 6ix.cpp alone and 8× at eight concurrent** (5,651 against 1,977
+  tok/s; 5,024 against 598), and its time to first response stays under 2.5 s where 6ix.cpp's
+  reaches 23 s. At 16K of context with 4–8 concurrent requests 6ix.cpp's generation collapses
   (15.6 / 13.7 tok/s in total) because the requests queue for K/V pool blocks; vLLM's does not.
 - **Load: 47.5 s against 404 s; memory: 38.55 against 44.51 GiB** — with different context and
-  seat settings on the two sides (Infer: 262,144-token pool, 8 seats; vLLM: 131,072, 24 seats).
+  seat settings on the two sides (6ix.cpp: 262,144-token pool, 8 seats; vLLM: 131,072, 24 seats).
 - **The tool-eval scores are not like for like either.** The vLLM slot serves with thinking off
-  by default (`--default-chat-template-kwargs '{"enable_thinking": false}'`); Infer serves
+  by default (`--default-chat-template-kwargs '{"enable_thinking": false}'`); 6ix.cpp serves
   with thinking on. Same model family, different weights, different default mode: 93 / 89
   against 90 / 85 says both work, not that one is better.
 - Every figure is one run. `bench_decode` was run once per engine, as asked, right after boot;
   I have no run-to-run spread for it.
 - On the earlier record for this hardware: vLLM was noted at 63.6 GiB and a 430 s load; tonight
   it measured 44.51 GiB and 404 s (its KV cache is capped at 8 GiB in the current recipe).
-  Atlas's published 116.5 tok/s single stream sits inside Infer's 97.7 (prose) – 120.1
+  Atlas's published 116.5 tok/s single stream sits inside 6ix.cpp's 97.7 (prose) – 120.1
   (code) range; I did not run Atlas.

@@ -1,9 +1,12 @@
-# 6ixServe
+# 6ix.cpp
+
+Named 6ixServe, then 6ixInfer and Infer, until 2026-10-04; the server binary is still `6ix-Serve` and
+this file keeps its name.
 
 6ixLabs' inference serving engine for NVIDIA DGX Spark (GB10): one box first, the same build across
 two or more over RoCE.
 
-**6ixServe is built on [DGPP](https://github.com/HawkBearPig/dgpp)** (Apache-2.0, © its authors — see
+**6ix.cpp is built on [DGPP](https://github.com/HawkBearPig/dgpp)** (Apache-2.0, © its authors — see
 `LICENSE` and `NOTICE`, which stay as they are). `main` here is DGPP's `master` plus 6ixLabs' work;
 the engine keeps DGPP's names (`dgpp-serve`, `scripts/dgpp-cluster`, the `DGPP_*` settings) so
 upstream changes keep merging cleanly. Everything in `README.md` and `docs/` is DGPP's own
