@@ -87,9 +87,12 @@ QwenMoeWeights moe_view35(const QwenMoeResident& m) {
   return w;
 }
 
-// The routed chain's shape for the MoE dialect at world 1.
-GlmMoeConfig moe_config35(const Qwen35TextConfig& c) {
-  return QwenMoeLayer::routed_config(c.hidden_size, c.moe_intermediate_size, c.num_experts,
+// The routed chain's shape for the MoE dialect: every rank routes over all
+// the experts and holds I/W of each one's intermediate rows (the loader's
+// local_moe_inter; the whole moe_intermediate_size at world 1), as
+// QwenModel sizes Flash-Next's chain from its local_inter.
+GlmMoeConfig moe_config35(const Qwen35TextConfig& c, int64_t local_moe_inter) {
+  return QwenMoeLayer::routed_config(c.hidden_size, static_cast<int>(local_moe_inter), c.num_experts,
                                      c.num_experts_per_tok, c.norm_topk_prob);
 }
 
@@ -240,14 +243,9 @@ Qwen35Model::Qwen35Model(const Qwen35TextConfig& cfg, const std::string& checkpo
   if (world < 1 || rank < 0 || rank >= world) throw std::invalid_argument("Qwen35Model: rank / world out of range");
   if (world > 1 && boundary == nullptr) throw std::invalid_argument("Qwen35Model: a TP world needs a boundary reducer");
   if (world == 1 && boundary != nullptr) throw std::invalid_argument("Qwen35Model: world 1 takes no boundary reducer");
-  // The tensor-parallel worlds are the dense dialect's (Qwen3.8-27B, #86).
-  // The routed MoE here is the world-1 chain (moe_config35 sizes it from the
-  // whole moe_intermediate_size) and has never run sharded: refused by name
-  // rather than folded world times over.
-  if (world > 1 && cfg_.moe())
-    throw std::invalid_argument(
-        "Qwen35Model: the routed-MoE dialects (Qwen3-Next, Qwen3.6-35B-A3B, Qwen3.5-122B-A10B) run at "
-        "world 1 only; the tensor-parallel worlds serve the dense dialect");
+  // The tensor-parallel worlds take both dialects: the dense one (#86) and
+  // the routed MoE, whose chain is sized from the rank's slice (moe_config35)
+  // and whose partial sum meets the other ranks' in the MLP fold.
   if (cfg_.eos_token_ids.empty()) throw std::invalid_argument("Qwen35Model: the config names no EOS token");
   if (mtp_ && cfg_.mtp_layer() < 0)
     throw std::invalid_argument("Qwen35Model: the config has no draft layer (mtp)");
@@ -266,7 +264,7 @@ Qwen35Model::Qwen35Model(const Qwen35TextConfig& cfg, const std::string& checkpo
         "dense stack is BF16 — set engine.dense_weights to fp8 with it");
   if (cfg_.next() && !dflash2_dir.empty())
     throw std::invalid_argument("Qwen35Model: the DFlash2 drafter is a Qwen3.8-27B drafter");
-  if (cfg_.moe()) moe_cfg_ = moe_config35(cfg_);
+  if (cfg_.moe()) moe_cfg_ = moe_config35(cfg_, loader_.geometry().local_moe_inter);
   if (!dflash2_dir.empty()) {
     if (mtp_)
       throw std::invalid_argument("Qwen35Model: dflash2 replaces the MTP draft; enable one or the other");
@@ -999,10 +997,6 @@ MemoryPlan Qwen35Model::plan_memory(const Qwen35TextConfig& cfg, int max_tokens,
     throw std::invalid_argument("plan_memory: max_requests out of range");
   if (mtp && cfg.mtp_layer() < 0)
     throw std::invalid_argument("plan_memory: the config has no draft layer (mtp)");
-  if (world > 1 && cfg.moe())  // the constructor's refusal, before a plan is printed for it
-    throw std::invalid_argument(
-        "plan_memory: the routed-MoE dialects (Qwen3-Next, Qwen3.6-35B-A3B, Qwen3.5-122B-A10B) run at "
-        "world 1 only; the tensor-parallel worlds serve the dense dialect");
   std::unique_ptr<DFlash2Config> dfcfg;
   if (!dflash2_dir.empty()) {
     if (mtp)
@@ -1062,12 +1056,14 @@ MemoryPlan Qwen35Model::plan_memory(const Qwen35TextConfig& cfg, int max_tokens,
     // The routed MoE's own scratch (QwenModel::plan_memory's two lines): the
     // decode-row slots, the shared expert, a graph table per MoE layer; and
     // the NVFP4 experts' activation workspace.
-    const GlmMoeConfig moe_cfg = moe_config35(cfg);
+    // Sized from the rank's slice, as the constructor's chain is.
+    const Qwen35LocalGeometry moe_geo = Qwen35LocalGeometry::from_config(cfg, rank, world, head);
+    const GlmMoeConfig moe_cfg = moe_config35(cfg, moe_geo.local_moe_inter);
     size_t moe_pinned = 0;
     const int table_slots =
         residency == LoaderResidency::Resident ? cfg.num_hidden_layers + (mtp ? 1 : 0) : 0;
     const int rows = std::max({kDecodeRows, decode_rows, max_requests});
-    const size_t moe_dev = QwenMoeLayer::scratch_bytes(moe_cfg, cfg.shared_expert_intermediate_size,
+    const size_t moe_dev = QwenMoeLayer::scratch_bytes(moe_cfg, moe_geo.local_shared_inter,
                                                        max_tokens, &moe_pinned, rows, table_slots);
     plan.add("moe scratch (routed slots, shared expert, graph tables)", moe_dev, moe_pinned);
     plan.add("moe W4A4 activation workspace",
@@ -1305,8 +1301,8 @@ void Qwen35Model::mtp_run_rows(int req, const int64_t* tokens, int64_t first_pos
   fold(ao, H);
   // Fused residual-add + post norm (bitwise the pair): one launch.
   qwen_add_rmsnorm_bf16(mtp_r_, ao, r.post_norm, x_, T, H, eps, stream_);
-  // The routed MoE runs at world 1 only (the constructor refuses it above
-  // that): stage hands back mlp_out_ and the fold is a no-op there.
+  // The draft layer's MLP fold: the routed MoE's partial sum (its chain is
+  // sized from the rank's slice) or the dense MLP's; a no-op at world 1.
   uint16_t* mo = stage(mlp_out_, H);
   if (cfg_.moe())
     moe_mlp(x_, mo, T, decode_row, capture ? cfg_.num_hidden_layers : -1, stream_);
@@ -1621,6 +1617,9 @@ void Qwen35Model::prefetch_fp8(const GlmQuantMatrix& q) {
 // up, down); the window's budget takes the leading bytes.
 void Qwen35Model::prefetch_ffn_side(const Qwen35LayerResident& r) {
   if (!prefetch_.enabled() || world_ < 2) return;
+  // The MoE dialect has no dense MLP to prefetch (r.mlp is empty), and which
+  // experts a row takes is not known until the router has run.
+  if (cfg_.moe()) return;
   const size_t H = static_cast<size_t>(cfg_.hidden_size);
   prefetch_.open_window(stream_, prefetch_window_bytes_, prefetch_.boundary_rate());
   const Qwen35DenseMlpResident& m = r.mlp;
