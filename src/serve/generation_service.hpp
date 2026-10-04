@@ -651,6 +651,12 @@ class GenerationService : public HttpHandler,
   std::atomic<size_t> pending_file_count_{0};  // observed by shutdown drain
   dgpp::sched::SchedulerEngine* engine_;
   const ModelFrontend* frontend_;
+  // Whether the chat template loses a text-only content array (throws on it
+  // or renders nothing for it): probed once, on the first chat request, by
+  // rendering one tiny message both ways. See chat_content.hpp.
+  mutable std::once_flag text_parts_probe_once_;
+  mutable std::atomic<bool> template_loses_text_parts_{false};
+  bool template_loses_text_parts() const;
   dgpp::text::ChatMarkers markers_;
   std::vector<int64_t> boundary_ids_;  // the frontend's, sorted (M7)
   dgpp::sched::Scheduler sched_;  // engine thread only (except try_submit

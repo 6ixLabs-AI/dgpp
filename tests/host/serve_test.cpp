@@ -534,6 +534,9 @@ class FakeFrontend : public ModelFrontend {
   // A template written for string content: it throws on a content array, the
   // way Qwen3-Coder-Next's does (it concatenates message.content).
   std::atomic<bool> string_content_only{false};
+  // A template that renders nothing for a content array and does not throw
+  // (Qwen3-Next's): the request is accepted and the message is lost.
+  std::atomic<bool> drops_array_content{false};
   std::string render_chat(const dgpp::minijson::Value& globals) const override {
     {
       std::lock_guard<std::mutex> lock(mu_);
@@ -547,6 +550,8 @@ class FakeFrontend : public ModelFrontend {
         throw std::runtime_error("chat-template: line 98: '+' needs two numbers (or, for '+', two strings)");
       if (content->is_string()) {
         out.append(content->as_string());
+      } else if (drops_array_content) {
+        continue;
       } else {
         for (const auto& part : content->items())
           if (const auto* text = part.find("text")) out.append(text->as_string());
@@ -1113,9 +1118,8 @@ DGPP_TEST(serve_chatContentParts_aStringOnlyTemplateGetsTheTextsJoined) {
           "the template was handed a string: " + rig.frontend.last_globals());
 }
 
-DGPP_TEST(serve_chatContentParts_aTemplateThatAcceptsTheArrayGetsTheTextsJoinedToo) {
-  // GIVEN a template that does not throw on a content array (the default
-  // fake reads the parts; Qwen3-Next's renders nothing for them),
+DGPP_TEST(serve_chatContentParts_aTemplateThatReadsPartsStillGetsThem) {
+  // GIVEN a template that reads content parts itself (the default fake),
   ServiceRig rig;
   Client c(rig.port());
 
@@ -1124,8 +1128,27 @@ DGPP_TEST(serve_chatContentParts_aTemplateThatAcceptsTheArrayGetsTheTextsJoinedT
       c, chat_body_with_content("[{\"type\":\"text\",\"text\":\"ab\"},{\"type\":\"text\",\"text\":\"cd\"}]", 3),
       "usage");
 
-  // THEN it is still served as the string "ab\ncd" (5 tokens), not left to
-  // what the template makes of an array.
+  // THEN the array reaches the template as sent: it renders "abcd", 4 tokens.
+  require(resp.find("200 OK") != std::string::npos, "status: " + resp);
+  require(resp.find("\"prompt_tokens\":4,\"completion_tokens\":3") != std::string::npos,
+          "the parts were rendered by the template: " + resp);
+  require(rig.frontend.last_globals().find("\"content\":[") != std::string::npos,
+          "the template was handed the array: " + rig.frontend.last_globals());
+}
+
+DGPP_TEST(serve_chatContentParts_aTemplateThatDropsTheArrayGetsTheTextsJoined) {
+  // GIVEN a template that renders nothing for a content array and does not
+  // throw (Qwen3-Next's: the model would answer an empty message),
+  ServiceRig rig;
+  rig.frontend.drops_array_content = true;
+  Client c(rig.port());
+
+  // WHEN the user message is two text parts,
+  const std::string resp = post_chat(
+      c, chat_body_with_content("[{\"type\":\"text\",\"text\":\"ab\"},{\"type\":\"text\",\"text\":\"cd\"}]", 3),
+      "usage");
+
+  // THEN it is served as the string "ab\ncd" (5 tokens), not as nothing.
   require(resp.find("200 OK") != std::string::npos, "status: " + resp);
   require(resp.find("\"prompt_tokens\":5,\"completion_tokens\":3") != std::string::npos,
           "the joined text is the prompt: " + resp);

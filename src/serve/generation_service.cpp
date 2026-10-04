@@ -662,6 +662,36 @@ constexpr int kMaxChoices = 128;         // OpenAI's schema bound; queue capacit
 constexpr size_t kMaxLogitBias = 1024;   // logit_bias entries
 }  // namespace
 
+
+// One tiny user message as a string and as a one-part text array: a template
+// that reads content parts renders the same prompt for both. Fewer tokens
+// for the array, or a throw, means the template loses it.
+bool GenerationService::template_loses_text_parts() const {
+  std::call_once(text_parts_probe_once_, [this] {
+    static const std::string as_string =
+        R"({"messages":[{"role":"user","content":"content parts probe"}],"add_generation_prompt":true})";
+    static const std::string as_parts =
+        R"({"messages":[{"role":"user","content":[{"type":"text","text":"content parts probe"}]}],"add_generation_prompt":true})";
+    size_t want = 0;
+    try {
+      want = frontend_->prepare_chat(dgpp::minijson::parse(as_string).root).tokens.size();
+    } catch (const std::exception&) {
+      return;  // the template cannot render the probe at all: nothing learned
+    }
+    bool loses = false;
+    try {
+      loses = frontend_->prepare_chat(dgpp::minijson::parse(as_parts).root).tokens.size() < want;
+    } catch (const std::exception&) {
+      loses = true;
+    }
+    template_loses_text_parts_.store(loses, std::memory_order_relaxed);
+    if (loses)
+      DGPP_LOG_INFO("serve: this chat template does not read text content parts; text-only arrays are rendered as "
+                    "their joined text");
+  });
+  return template_loses_text_parts_.load(std::memory_order_relaxed);
+}
+
 bool GenerationService::parse_n(const dgpp::minijson::Value& body,
                                 HttpResponseWriter& w, int* n) {
   *n = 1;
@@ -2065,14 +2095,33 @@ void GenerationService::route_chat_completions(const HttpRequest& req,
     validate_image_inputs(images, prompt.size());
   };
   // OpenAI's array-of-text-parts content means its texts joined, and the
-  // templates disagree on it: Qwen3-Coder-Next's throws on the array,
-  // Qwen3-Next's renders nothing for it and the model answers an empty
-  // message. So a text-only array is always rendered as its joined string;
-  // the request as sent is rendered when it has no such content. An array
-  // with any other part (image_url) is left to the template.
+  // templates disagree on it: some read the parts themselves (the request is
+  // rendered as sent), Qwen3-Coder-Next's throws on the array and
+  // Qwen3-Next's renders nothing for it (the model then answers an empty
+  // message). Where the template loses the array (probed once), a text-only
+  // array is rendered as its joined string; a template that throws on a
+  // request the probe did not predict still gets that one retry.
   try {
     const auto flat = flatten_text_content(plan.globals);
-    render(flat ? *flat : plan.globals);
+    if (flat && template_loses_text_parts()) {
+      render(*flat);
+    } else {
+      try {
+        render(plan.globals);
+      } catch (const ImageInputError&) {
+        throw;
+      } catch (const std::exception&) {
+        const std::exception_ptr first = std::current_exception();
+        if (!flat) throw;
+        try {
+          render(*flat);
+        } catch (const ImageInputError&) {
+          throw;
+        } catch (const std::exception&) {
+          std::rethrow_exception(first);
+        }
+      }
+    }
   } catch (const ImageInputError& e) {
     respond_error(w, 400, e.what(), "invalid_request_error", e.param, "invalid_image");
     return;
