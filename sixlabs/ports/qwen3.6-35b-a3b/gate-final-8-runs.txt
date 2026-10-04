@@ -1,0 +1,137 @@
+=== q36A code exact
+tokens 113: mean logprob engine -2.03082 reference -1.96647
+|engine - reference|: mean 0.07846  median 0.00426  max 0.63291 (position 36)  pearson 0.999296
+far-tail positions excluded (reference logprob < -15): 1 of 112
+  position 26: reference -16.75, engine -16.59, |difference| 0.165
+|engine - reference| over the 111 gated positions: mean 0.07768  median 0.00377  max 0.63291 (position 36)  pearson 0.999269
+  argmax differs at row 94: engine 6136, reference 709 (reference margin 0.0075 nat, a near tie)
+  argmax differs at row 102: engine 6570, reference 264 (reference margin 0.0521 nat, a near tie)
+  argmax differs at row 108: engine 18971, reference 854 (reference margin 0.0965 nat, a near tie)
+greedy next token: 110/113 rows agree; disagreements where the reference's margin exceeds 0.5: 0 counted, 0 on the first 2 rows not counted
+  [ok] pearson 0.999269 >= 0.995
+  [ok] mean 0.07768 <= 0.1
+  [ok] greedy token agrees wherever the reference margin > 0.5 (rows from 2 on)
+  [reported, not bounded] max 0.63291 at position 36
+original gate (mean <= 0.06, max <= 0.5, all positions; for reference only): would fail
+first restatement (the three conditions over all positions and rows; for reference only): would pass
+PASS (gate: pearson >= 0.995, mean <= 0.1, greedy agreement above a 0.5 nat margin; reference logprob >= -15; greedy rows from 2)
+rc=0
+=== q36A prose exact
+tokens 87: mean logprob engine -2.03555 reference -2.02267
+|engine - reference|: mean 0.05843  median 0.02468  max 0.37438 (position 62)  pearson 0.999335
+far-tail positions excluded (reference logprob < -15): 0 of 86
+  argmax differs at row 33: engine 1521, reference 22602 (reference margin 0.2989 nat, a near tie)
+greedy next token: 86/87 rows agree; disagreements where the reference's margin exceeds 0.5: 0 counted, 0 on the first 2 rows not counted
+  [ok] pearson 0.999335 >= 0.995
+  [ok] mean 0.05843 <= 0.1
+  [ok] greedy token agrees wherever the reference margin > 0.5 (rows from 2 on)
+  [reported, not bounded] max 0.37438 at position 62
+original gate (mean <= 0.06, max <= 0.5, all positions; for reference only): would pass
+first restatement (the three conditions over all positions and rows; for reference only): would pass
+PASS (gate: pearson >= 0.995, mean <= 0.1, greedy agreement above a 0.5 nat margin; reference logprob >= -15; greedy rows from 2)
+rc=0
+=== q36A code -fp8
+tokens 113: mean logprob engine -1.96008 reference -1.96647
+|engine - reference|: mean 0.06098  median 0.00727  max 0.86169 (position 7)  pearson 0.999157
+far-tail positions excluded (reference logprob < -15): 1 of 112
+  position 26: reference -16.75, engine -16.54, |difference| 0.215
+|engine - reference| over the 111 gated positions: mean 0.05959  median 0.00637  max 0.86169 (position 7)  pearson 0.999038
+  argmax differs at row 51: engine 1590, reference 25 (reference margin 0.0958 nat, a near tie)
+  argmax differs at row 94: engine 6136, reference 709 (reference margin 0.0075 nat, a near tie)
+  argmax differs at row 102: engine 6570, reference 264 (reference margin 0.0521 nat, a near tie)
+greedy next token: 110/113 rows agree; disagreements where the reference's margin exceeds 0.5: 0 counted, 0 on the first 2 rows not counted
+  [ok] pearson 0.999038 >= 0.995
+  [ok] mean 0.05959 <= 0.1
+  [ok] greedy token agrees wherever the reference margin > 0.5 (rows from 2 on)
+  [reported, not bounded] max 0.86169 at position 7
+original gate (mean <= 0.06, max <= 0.5, all positions; for reference only): would fail
+first restatement (the three conditions over all positions and rows; for reference only): would pass
+PASS (gate: pearson >= 0.995, mean <= 0.1, greedy agreement above a 0.5 nat margin; reference logprob >= -15; greedy rows from 2)
+rc=0
+=== q36A prose -fp8
+tokens 87: mean logprob engine -2.02093 reference -2.02267
+|engine - reference|: mean 0.06906  median 0.02814  max 0.49421 (position 29)  pearson 0.998726
+far-tail positions excluded (reference logprob < -15): 0 of 86
+greedy next token: 87/87 rows agree; disagreements where the reference's margin exceeds 0.5: 0 counted, 0 on the first 2 rows not counted
+  [ok] pearson 0.998726 >= 0.995
+  [ok] mean 0.06906 <= 0.1
+  [ok] greedy token agrees wherever the reference margin > 0.5 (rows from 2 on)
+  [reported, not bounded] max 0.49421 at position 29
+original gate (mean <= 0.06, max <= 0.5, all positions; for reference only): would fail
+first restatement (the three conditions over all positions and rows; for reference only): would pass
+PASS (gate: pearson >= 0.995, mean <= 0.1, greedy agreement above a 0.5 nat margin; reference logprob >= -15; greedy rows from 2)
+rc=0
+=== n80 code exact
+tokens 107: mean logprob engine -2.20710 reference -2.26460
+|engine - reference|: mean 0.10475  median 0.00030  max 5.10672 (position 106)  pearson 0.994186
+far-tail positions excluded (reference logprob < -15): 3 of 106
+  position 50: reference -21.81, engine -21.77, |difference| 0.035
+  position 90: reference -21.63, engine -21.99, |difference| 0.359
+  position 106: reference -24.27, engine -19.17, |difference| 5.107
+|engine - reference| over the 103 gated positions: mean 0.05439  median 0.00024  max 1.51856 (position 82)  pearson 0.998015
+  argmax differs at row 0: engine 5122, reference 25 (reference margin 0.7289 nat — above the margin, but one of the first 2 rows: listed, not counted)
+  argmax differs at row 30: engine 1128, reference 3425 (reference margin 0.0726 nat, a near tie)
+greedy next token: 105/107 rows agree; disagreements where the reference's margin exceeds 0.5: 0 counted, 1 on the first 2 rows not counted
+  [ok] pearson 0.998015 >= 0.995
+  [ok] mean 0.05439 <= 0.1
+  [ok] greedy token agrees wherever the reference margin > 0.5 (rows from 2 on)
+  [reported, not bounded] max 1.51856 at position 82
+original gate (mean <= 0.06, max <= 0.5, all positions; for reference only): would fail
+first restatement (the three conditions over all positions and rows; for reference only): would fail
+PASS (gate: pearson >= 0.995, mean <= 0.1, greedy agreement above a 0.5 nat margin; reference logprob >= -15; greedy rows from 2)
+rc=0
+=== n80 prose exact
+tokens 83: mean logprob engine -2.66828 reference -2.65983
+|engine - reference|: mean 0.05435  median 0.01510  max 1.18045 (position 15)  pearson 0.999268
+far-tail positions excluded (reference logprob < -15): 2 of 82
+  position 18: reference -21.05, engine -21.05, |difference| 0.002
+  position 25: reference -15.22, engine -15.15, |difference| 0.071
+|engine - reference| over the 80 gated positions: mean 0.05479  median 0.01510  max 1.18045 (position 15)  pearson 0.998780
+  argmax differs at row 62: engine 323, reference 773 (reference margin 0.0633 nat, a near tie)
+  argmax differs at row 72: engine 23418, reference 1815 (reference margin 0.0508 nat, a near tie)
+greedy next token: 81/83 rows agree; disagreements where the reference's margin exceeds 0.5: 0 counted, 0 on the first 2 rows not counted
+  [ok] pearson 0.998780 >= 0.995
+  [ok] mean 0.05479 <= 0.1
+  [ok] greedy token agrees wherever the reference margin > 0.5 (rows from 2 on)
+  [reported, not bounded] max 1.18045 at position 15
+original gate (mean <= 0.06, max <= 0.5, all positions; for reference only): would fail
+first restatement (the three conditions over all positions and rows; for reference only): would pass
+PASS (gate: pearson >= 0.995, mean <= 0.1, greedy agreement above a 0.5 nat margin; reference logprob >= -15; greedy rows from 2)
+rc=0
+=== n80 code -fp8
+tokens 107: mean logprob engine -2.25147 reference -2.26460
+|engine - reference|: mean 0.06356  median 0.00040  max 1.86588 (position 106)  pearson 0.999040
+far-tail positions excluded (reference logprob < -15): 3 of 106
+  position 50: reference -21.81, engine -21.79, |difference| 0.012
+  position 90: reference -21.63, engine -21.68, |difference| 0.050
+  position 106: reference -24.27, engine -22.41, |difference| 1.866
+|engine - reference| over the 103 gated positions: mean 0.04669  median 0.00033  max 0.45648 (position 10)  pearson 0.999359
+  argmax differs at row 30: engine 1128, reference 3425 (reference margin 0.0726 nat, a near tie)
+greedy next token: 106/107 rows agree; disagreements where the reference's margin exceeds 0.5: 0 counted, 0 on the first 2 rows not counted
+  [ok] pearson 0.999359 >= 0.995
+  [ok] mean 0.04669 <= 0.1
+  [ok] greedy token agrees wherever the reference margin > 0.5 (rows from 2 on)
+  [reported, not bounded] max 0.45648 at position 10
+original gate (mean <= 0.06, max <= 0.5, all positions; for reference only): would fail
+first restatement (the three conditions over all positions and rows; for reference only): would pass
+PASS (gate: pearson >= 0.995, mean <= 0.1, greedy agreement above a 0.5 nat margin; reference logprob >= -15; greedy rows from 2)
+rc=0
+=== n80 prose -fp8
+tokens 83: mean logprob engine -2.65788 reference -2.65983
+|engine - reference|: mean 0.08572  median 0.02546  max 0.75394 (position 23)  pearson 0.999261
+far-tail positions excluded (reference logprob < -15): 2 of 82
+  position 18: reference -21.05, engine -20.71, |difference| 0.337
+  position 25: reference -15.22, engine -14.88, |difference| 0.340
+|engine - reference| over the 80 gated positions: mean 0.07940  median 0.02505  max 0.75394 (position 23)  pearson 0.998914
+  argmax differs at row 4: engine 22870, reference 32420 (reference margin 0.0312 nat, a near tie)
+  argmax differs at row 8: engine 279, reference 432 (reference margin 0.0169 nat, a near tie)
+  argmax differs at row 72: engine 23418, reference 1815 (reference margin 0.0508 nat, a near tie)
+greedy next token: 80/83 rows agree; disagreements where the reference's margin exceeds 0.5: 0 counted, 0 on the first 2 rows not counted
+  [ok] pearson 0.998914 >= 0.995
+  [ok] mean 0.07940 <= 0.1
+  [ok] greedy token agrees wherever the reference margin > 0.5 (rows from 2 on)
+  [reported, not bounded] max 0.75394 at position 23
+original gate (mean <= 0.06, max <= 0.5, all positions; for reference only): would fail
+first restatement (the three conditions over all positions and rows; for reference only): would pass
+PASS (gate: pearson >= 0.995, mean <= 0.1, greedy agreement above a 0.5 nat margin; reference logprob >= -15; greedy rows from 2)
+rc=0
