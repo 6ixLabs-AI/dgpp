@@ -1406,7 +1406,7 @@ bool Scheduler::quantum() {
       }
     }
     const int64_t align = engine_->prefill_chunk_alignment();
-    if (any_active && readers > 1)
+    if (any_active && readers > 1 && policy_.prefill_budget_per_reader)
       budget = std::min<int64_t>(engine_->prefill_chunk_limit() / align * align, budget * readers);
     chunk_tick = readers > 0 && !decode_only_tick;
   }

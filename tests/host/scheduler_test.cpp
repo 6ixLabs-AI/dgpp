@@ -1091,6 +1091,48 @@ DGPP_TEST(scheduler_scoring_request_gets_its_rows_after_the_prefill_and_is_never
           "a scoring request the engine cannot honour is refused at submit");
 }
 
+DGPP_TEST(scheduler_group_advance_busy_budget_is_per_reader_or_the_walks_total) {
+  // GIVEN an engine that reads in-flight prompts in one walk, an answer in
+  // progress, and two prompts arriving together at a busy budget of 4:
+  // by the original rule the walk carries a quantum per prompt (4 + 4);
+  // with prefill_budget_per_reader off it carries 4 in all (2 + 2), so the
+  // answer's wait per tick does not grow with the number of prompts.
+  for (const bool per_reader : {true, false}) {
+    class GroupAdvance : public ChunkFakeEngine {
+     public:
+      GroupAdvance() : ChunkFakeEngine(1000, 4) {}
+      bool prefill_group_advance() const override { return true; }
+      std::vector<PrefillProgress> advance_prefill_group(const std::vector<int>& reqs,
+                                                         const std::vector<int64_t>& budgets) override {
+        std::string op = "GA";
+        for (const int64_t b : budgets) op += ":" + std::to_string(b);
+        ops_.push_back(op);
+        return ChunkFakeEngine::advance_prefill_group(reqs, budgets);
+      }
+    } engine;
+    engine.arm(0, {10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29}, 20);
+    engine.arm(1, {30, 31}, 2);
+    engine.arm(2, {40, 41}, 2);
+    dgpp::sched::AdmissionPolicy policy;
+    policy.prefill_budget_tokens = 4;
+    policy.prefill_budget_per_reader = per_reader;
+    Scheduler sched(&engine, {}, 0, policy);
+    sched.submit(make_request("answer", 2, 20));
+    sched.tick();
+    sched.submit(make_request("a", 30, 2));
+    sched.submit(make_request("b", 30, 2));
+    sched.tick();
+    const std::string want = per_reader ? "GA:4:4" : "GA:2:2";
+    require(std::count(engine.ops().begin(), engine.ops().end(), want) == 1,
+            per_reader ? "a quantum per reading prompt" : "the busy budget is the walk's total");
+    sched.run_to_completion();
+    require(sched.find("a")->generated == std::vector<int64_t>({30, 31}) &&
+                sched.find("b")->generated == std::vector<int64_t>({40, 41}) &&
+                sched.meters().pool_blocks_in_use == 0,
+            "both prompts are read in full either way");
+  }
+}
+
 DGPP_TEST(scheduler_chunked_prefill_budget_rejects_unsupported_and_unaligned_configs) {
   FakeEngine old(2, 100, 2);
   ChunkFakeEngine chunked;

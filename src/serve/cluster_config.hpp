@@ -236,6 +236,9 @@ struct ClusterConfig {
     // In-flight prompts as the spans of one walk: "on", "off", or "auto" (on
     // where the family can and does not mark itself opt-in).
     std::string prefill_group = "auto";
+    // With a shared walk and answers in progress: the busy budget per reading
+    // prompt (true, the original rule) or for the whole walk (false).
+    bool prefill_budget_per_reader = true;
     double bulk_pace_gbps = -1.0;  // derived from the port rate
     int bulk_inflight = -1;
     int rendezvous_timeout_ms = 120000;

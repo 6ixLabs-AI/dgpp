@@ -37,7 +37,7 @@ for c in $CONFIGS; do
         decode_passes_per_prefill=$passes prefill_order=$order > $O/up_$label.log 2>&1; then
     ERR=$((ERR + 1)); say $i "$label: engine did not come up: $(tail -2 $O/up_$label.log | tr '\n' ' ' | cut -c1-200)"; continue
   fi
-  t_run=$(date -u +%Y-%m-%dT%H:%M:%S)
+  t_run=$(date -u +%Y-%m-%dT%H:%M:%SZ)   # with the Z: docker reads a bare timestamp as local time and counts nothing
   ( nvidia-smi pmon -c 150 -s u 2>/dev/null | awk '$4+0 > 5 && $NF !~ /6ix-Serve/ {print $NF}' | sort | uniq -c > $O/pmon_$label.txt ) &
   python3 sixlabs/bench/mixed_load.py --base $BASE --model Qwen3-Next-80B --label $label --writers 4 --readers 2 \
       --lines 530 --seconds 50 --out $O/mixed.jsonl > $O/run_$label.log 2>&1 || ERR=$((ERR + 1))

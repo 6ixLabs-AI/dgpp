@@ -1583,6 +1583,7 @@ int main(int argc, char** argv) {
   int decode_passes_per_prefill = 1;
   std::string prefill_order = "fair";
   std::string prefill_group = "auto";
+  bool prefill_budget_per_reader = true;
   std::string max_tokens_overflow = "refuse";
   // The prefix cache's entry policy (2026-09-28): no entry below the floor,
   // and a cold prompt keeps the cut at its first structural boundary.
@@ -1712,6 +1713,7 @@ int main(int argc, char** argv) {
     decode_passes_per_prefill = e.decode_passes_per_prefill;
     prefill_order = e.prefill_order;
     prefill_group = e.prefill_group;
+    prefill_budget_per_reader = e.prefill_budget_per_reader;
     prefix_min_tokens = e.prefix_min_tokens;
     prefix_head_snapshots = e.prefix_head_snapshots;
     bulk_pace_gbps = e.bulk_pace_gbps;
@@ -1824,6 +1826,7 @@ int main(int argc, char** argv) {
     else if (a == "--decode-passes-per-prefill") decode_passes_per_prefill = std::stoi(next());
     else if (a == "--prefill-order") prefill_order = next();
     else if (a == "--prefill-group") prefill_group = next();
+    else if (a == "--prefill-budget-total") prefill_budget_per_reader = false;
     else if (a == "--prefix-min-tokens") prefix_min_tokens = std::stoi(next());
     else if (a == "--prefix-head-snapshots") prefix_head_snapshots = true;
     else if (a == "--no-prefix-head-snapshots") prefix_head_snapshots = false;
@@ -2390,12 +2393,12 @@ int main(int argc, char** argv) {
     DGPP_LOG_ERROR("--prefill-group must be auto, on or off");
     return 1;
   }
-  if ((decode_passes_per_prefill > 1 || prefill_order != "fair") && world > 1) {
+  if ((decode_passes_per_prefill > 1 || prefill_order != "fair" || !prefill_budget_per_reader) && world > 1) {
     // The warm record does not carry these knobs yet, so the ranks could not
     // check they agree on them: refuse rather than run a world whose ranks
     // might tick differently.
-    DGPP_LOG_ERROR("engine.decode_passes_per_prefill above 1 and engine.prefill_order shortest are single-rank "
-                   "only for now (world_size {})", world);
+    DGPP_LOG_ERROR("engine.decode_passes_per_prefill above 1, engine.prefill_order shortest and "
+                   "engine.prefill_budget_per_reader false are single-rank only for now (world_size {})", world);
     return 1;
   }
   if (prefix_min_tokens < 0 || prefix_min_tokens > (1 << 30)) {
@@ -2772,6 +2775,7 @@ int main(int argc, char** argv) {
     knobs.admission.prefill_idle_budget_tokens = prefill_idle_budget_tokens;
     knobs.admission.decode_passes_per_prefill = decode_passes_per_prefill;
     knobs.admission.prefill_shortest_first = prefill_order == "shortest";
+    knobs.admission.prefill_budget_per_reader = prefill_budget_per_reader;
     knobs.admission.prefix_min_tokens = prefix_min_tokens;
     knobs.admission.prefix_head_snapshots = prefix_head_snapshots;
     knobs.default_max_tokens = default_max_tokens;
@@ -2905,7 +2909,9 @@ int main(int argc, char** argv) {
                         rank, knobs.admission.prefill_budget_tokens,
                         knobs.admission.prefill_idle_budget_tokens > 0 ? knobs.admission.prefill_idle_budget_tokens
                                                                        : knobs.admission.prefill_budget_tokens,
-                        graph_engine->engine()->prefill_group_advance() ? "; in-flight prompts share one walk" : "",
+                        !graph_engine->engine()->prefill_group_advance() ? ""
+                            : knobs.admission.prefill_budget_per_reader ? "; in-flight prompts share one walk"
+                                                                        : "; in-flight prompts share one walk, the busy budget its total",
                         knobs.admission.decode_passes_per_prefill,
                         knobs.admission.prefill_shortest_first ? "shortest prompt read first" : "equal shares");
           // engine.logprobs_mode: how a sampled request's logprobs are reported.

@@ -456,6 +456,15 @@ struct AdmissionPolicy {
   // longer prompt waits while shorter ones keep arriving; that is the trade.
   // Ties go to the earlier arrival. Not applied to an engine's group walk.
   bool prefill_shortest_first = false;
+  // An engine that reads its in-flight prompts in one walk: with answers in
+  // progress, is the busy budget a quantum PER reading prompt (true, the
+  // original rule: N prompts make the walk N times as long, up to the
+  // engine's limit) or the walk's total (false: the pause an answer sees
+  // stays the one the budget was chosen for, however many prompts are being
+  // read). Measured on the 80B, 4 answers beside 2 fresh 17k prompts at
+  // budget 1024: per prompt, answers 12.7 tokens/s each with pauses of
+  // 0.7-1.0 s; one prompt a walk, 20.3 with 0.2-0.5 s (2026-10-04).
+  bool prefill_budget_per_reader = true;
   // The prefix cache's entry policy (2026-09-28), rank-identical like the
   // rest of the record. No snapshot below prefix_min_tokens: a 45-token
   // probe's entries must not push a 180K conversation out of the arena
@@ -471,6 +480,7 @@ struct AdmissionPolicy {
            prefill_idle_budget_tokens == o.prefill_idle_budget_tokens &&
            decode_passes_per_prefill == o.decode_passes_per_prefill &&
            prefill_shortest_first == o.prefill_shortest_first &&
+           prefill_budget_per_reader == o.prefill_budget_per_reader &&
            prefix_min_tokens == o.prefix_min_tokens && prefix_head_snapshots == o.prefix_head_snapshots;
   }
   bool operator!=(const AdmissionPolicy& o) const { return !(*this == o); }

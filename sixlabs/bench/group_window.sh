@@ -30,7 +30,7 @@ for mode in $MODES; do
   fi
   L=$(ls -t $D/log/deployments/*/serve_r0.log | head -1)
   echo "   $(grep 'prefill budget' "$L" | tail -1 | cut -c40-300)"
-  t_run=$(date -u +%Y-%m-%dT%H:%M:%S)
+  t_run=$(date -u +%Y-%m-%dT%H:%M:%SZ)   # with the Z: docker reads a bare timestamp as local time and counts nothing
   ( nvidia-smi pmon -c 240 -s u 2>/dev/null | awk '$4+0 > 5 && $NF !~ /6ix-Serve/ {print $NF}' | sort | uniq -c > $O/pmon_$mode.txt ) &
   python3 sixlabs/bench/group_check.py --base $BASE --model Qwen3-Next-80B --label $mode --out $O/group.jsonl 2>&1 | tee $O/check_$mode.txt
   grep -q "^RESULT: ok" $O/check_$mode.txt || ERR=$((ERR + 1))
