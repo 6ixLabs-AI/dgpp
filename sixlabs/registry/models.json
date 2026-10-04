@@ -130,7 +130,7 @@
           "repo": "RedHatAI/Qwen3.6-35B-A3B-NVFP4",
           "format": "nvfp4-compressed-tensors",
           "status": "refused",
-          "notes": "Refused by name at config parse (group_1.weights missing). The copy in DGXone's cache is an incomplete download."
+          "notes": "Refused by name at config parse (group_1.weights missing). The copy in DGXone's cache is an incomplete download. Removed from DGXone's cache on 2026-10-04 to free disk; download it again before running anything against it."
         }
       ],
       "baselines": [
@@ -250,7 +250,7 @@
           "status": "compiled",
           "tensors": 76323,
           "gpu_steps": "sixlabs/ports/qwen3.5-122b-a10b/gpu-steps.md",
-          "notes": "117.59 GiB resident: does not fit one Spark with a K/V pool. Bind-checkable only until this family has world 2."
+          "notes": "117.59 GiB resident: does not fit one Spark with a K/V pool. Bind-checkable only until this family has world 2. Removed from DGXone's cache on 2026-10-04 to free disk; download it again before running anything against it."
         },
         {"repo": "Intel/Qwen3.5-122B-A10B-int4-AutoRound", "format": "int4-autoround", "status": "refused", "notes": "Refused by name at config parse."}
       ],
@@ -449,7 +449,7 @@
       "title": "Qwen3-235B-A22B", "family": "qwen3",
       "text": {"tool_calls": "checkpoint-template", "thinking": false, "vision": "none"},
       "checkpoints": [{"repo": "nvidia/Qwen3-235B-A22B-Instruct-2507-NVFP4", "revision": "1c4ec358", "format": "nvfp4-modelopt", "status": "groundwork", "default": true, "tensors": 145703,
-                       "notes": "On a branch, not on main. 133.86 GiB resident: needs two Sparks (67.56 GiB each by the sharding plan)."}]
+                       "notes": "On a branch, not on main. 133.86 GiB resident: needs two Sparks (67.56 GiB each by the sharding plan). Removed from DGXone's cache on 2026-10-04 to free disk; download it again before running anything against it."}]
     }
   }
 }

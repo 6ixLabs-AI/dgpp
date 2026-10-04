@@ -85,6 +85,11 @@ Coder cannot, because that form fails the gate.
 
 Draft-head tensors, from the safetensors headers in DGXone's cache on 2026-10-04:
 
+(Later the same day these were removed from that cache to free disk: `Qwen/Qwen3-Coder-Next-FP8`,
+`Qwen/Qwen3.5-122B-A10B-FP8`, `nvidia/Qwen3-235B-A22B-Instruct-2507-NVFP4`,
+`Sehyo/Qwen3.5-35B-A3B-NVFP4`, `RedHatAI/gemma-4-26B-A4B-it-NVFP4`. The counts below are what
+their headers said before that.)
+
 | Has a draft head | None |
 |---|---|
 | Qwen3-Next-80B (nvidia NVFP4 1,553; Qwen FP8 3,096) | Qwen3-Coder-Next (FP8, NVFP4, int4) |
