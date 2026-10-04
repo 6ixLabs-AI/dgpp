@@ -1,6 +1,6 @@
 # Benchmarks
 
-Measured 2026-10-04 (UTC), using source revision `e6e928a10dec` and one release binary across the cluster. All results on this page come from this campaign. [Raw results, exact configurations and commands](../benchmarks/results/2026-10-04-qwen3.8-27b/README.md).
+Measured 2026-10-04 (UTC), using source revision `d97649b2a41d` and one release binary across the cluster. All results on this page come from this campaign. [Raw results, exact configurations and commands](../benchmarks/results/2026-10-04-qwen3.8-27b/README.md).
 
 [Performance](#serving-performance) · [Configuration](#hardware-and-configuration) · [Method](#workload-and-timing) · [Decode modes](#decode-modes) · [Quality](#quality-and-correctness) · [Long context](#long-context) · [Reproduce](#reproduce)
 
@@ -13,8 +13,8 @@ Rows are grouped by model family and node count, with configuration options next
 | Model / weights | Nodes | Options | C1 engine tok/s | Loaded wall tok/s | Cold prefill seconds: ~2K / ~8K / ~32K |
 |---|---|---|---|---|---|
 | Qwen3.8-27B FP8 | 1 | DFlash2 drafter, FP8 head, 256K BF16 KV, 8 slots | 17.0–40.8 | C8: 45.4–96.3 | 2.145 / 6.997 / 30.480 |
-| Qwen3.8-27B FP8 | 2 | MTP depth 3, FP8 head, 256K BF16 KV, 8 slots | 30.4–45.6 | C8: 136.3–216.3 | 1.480 / 4.923 / 21.009 |
-| Qwen3.8-27B FP8 | 4 | MTP depth 3, FP8 head, 256K BF16 KV, 8 slots | 48.8–77.4 | C8: 187.2–304.9 | 1.047 / 3.719 / 15.521 |
+| Qwen3.8-27B FP8 | 2 | MTP depth 3, FP8 head, 256K BF16 KV, 8 slots | 30.9–46.4 | C8: 136.4–217.4 | 1.477 / 4.916 / 21.155 |
+| Qwen3.8-27B FP8 | 4 | MTP depth 3, FP8 head, 256K BF16 KV, 8 slots | 50.4–79.9 | C8: 203.0–308.1 | 1.054 / 3.726 / 15.627 |
 
 Rows cover the checked-in deployment templates, the GLM Flash FP8 checkpoint, and the three configuration variants described below. For Qwen NVFP4, the Options column identifies the dense projection format; the expert weights remain NVFP4 in both cases. All Qwen NVFP4 rows map the n-gram table from NVMe. YaRN 512K denotes the extended-context configuration.
 
@@ -55,8 +55,8 @@ Engine tokens/s, greedy; median of three repetitions.
 | Model / weights | Nodes | Options | Prose | Code | JSON | Math | Chat |
 |---|---|---|---|---|---|---|---|
 | Qwen3.8-27B FP8 | 1 | DFlash2 drafter, FP8 head, 256K BF16 KV, 8 slots | 17.8 | 28.6 | 40.8 | 32.9 | 17.0 |
-| Qwen3.8-27B FP8 | 2 | MTP depth 3, FP8 head, 256K BF16 KV, 8 slots | 33.4 | 39.7 | 45.6 | 41.9 | 30.4 |
-| Qwen3.8-27B FP8 | 4 | MTP depth 3, FP8 head, 256K BF16 KV, 8 slots | 55.4 | 67.3 | 77.4 | 71.2 | 48.8 |
+| Qwen3.8-27B FP8 | 2 | MTP depth 3, FP8 head, 256K BF16 KV, 8 slots | 34.0 | 40.5 | 46.4 | 42.6 | 30.9 |
+| Qwen3.8-27B FP8 | 4 | MTP depth 3, FP8 head, 256K BF16 KV, 8 slots | 57.9 | 69.9 | 79.9 | 73.3 | 50.4 |
 
 ## Decode modes
 
@@ -65,8 +65,8 @@ Single-request engine tokens/s, shown as the range of the five class medians. Pl
 | Model / weights | Nodes | Options | Plain | Template default | Other MTP depth | DFlash2 drafter |
 |---|---|---|---|---|---|---|
 | Qwen3.8-27B FP8 | 1 | DFlash2 drafter, FP8 head, 256K BF16 KV, 8 slots | 8.8 | 17.0–40.8 | 16.1–22.0 | the template |
-| Qwen3.8-27B FP8 | 2 | MTP depth 3, FP8 head, 256K BF16 KV, 8 slots | 15.8–15.9 | 30.4–45.6 | 28.6–38.9 | 30.8–74.1 |
-| Qwen3.8-27B FP8 | 4 | MTP depth 3, FP8 head, 256K BF16 KV, 8 slots | 28.6–28.7 | 48.8–77.4 | 49.7–67.5 | 51.4–122.9 |
+| Qwen3.8-27B FP8 | 2 | MTP depth 3, FP8 head, 256K BF16 KV, 8 slots | 16.5 | 30.9–46.4 | 29.7–40.2 | 31.6–76.4 |
+| Qwen3.8-27B FP8 | 4 | MTP depth 3, FP8 head, 256K BF16 KV, 8 slots | 31.1–31.2 | 50.4–79.9 | 53.0–71.9 | 53.9–129.5 |
 
 A dash means that mode was not part of that deployment's mode sweep. "Other MTP depth" is depth two for the Qwen3.8-27B two- and four-node templates (whose default is depth three) and the MTP depth-two world for its one-node drafter template; "DFlash2 drafter" is the block drafter run as a two- or four-node template's mode (the one-node template is the drafter itself). Prompt-dependent acceptance is included in these rates; pass times and committed tokens per pass are recorded separately.
 

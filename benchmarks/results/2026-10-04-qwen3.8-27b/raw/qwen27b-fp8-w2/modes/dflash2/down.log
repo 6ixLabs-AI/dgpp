@@ -1,7 +1,7 @@
-2026-10-04 11:45:28.837 === SIGINT rank 0 (3374393) — the stop record releases the peers
-2026-10-04 11:45:30.838 === waiting for the peers to drain
-2026-10-04 11:45:32.137 === op-stream identity (every rank)
-2026-10-04 11:45:32.137 60a1566511c8b2d0663e2542a81fff26  /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/qwen27b-fp8-w2/modes/dflash2/server/serve_rank0.ops
-2026-10-04 11:45:32.137 60a1566511c8b2d0663e2542a81fff26  /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/qwen27b-fp8-w2/modes/dflash2/server/serve_rank1.ops
-2026-10-04 11:45:32.137 op streams: identical across 2 ranks
-2026-10-04 11:45:32.137 === logs in /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/qwen27b-fp8-w2/modes/dflash2/server
+2026-10-04 16:26:34.308 === SIGINT rank 0 (3930105) — the stop record releases the peers
+2026-10-04 16:26:36.309 === waiting for the peers to drain
+2026-10-04 16:26:37.646 === op-stream identity (every rank)
+2026-10-04 16:26:37.647 e1cfef3b337dda6bc58cee7335d8ee80  /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/qwen27b-fp8-w2/modes/dflash2/server/serve_rank0.ops
+2026-10-04 16:26:37.647 e1cfef3b337dda6bc58cee7335d8ee80  /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/qwen27b-fp8-w2/modes/dflash2/server/serve_rank1.ops
+2026-10-04 16:26:37.647 op streams: identical across 2 ranks
+2026-10-04 16:26:37.647 === logs in /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/qwen27b-fp8-w2/modes/dflash2/server

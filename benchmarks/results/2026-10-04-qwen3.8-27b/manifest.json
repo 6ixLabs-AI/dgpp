@@ -1,6 +1,6 @@
 {
- "started_at": "2026-10-04T10:21:50.240558+00:00",
- "commit": "e6e928a10dec8ed7303c9d6446ef68c4d62fb1bf",
+ "started_at": "2026-10-04T15:51:01.629450+00:00",
+ "commit": "d97649b2a41d579e88b81f8a24c54afa56d2a66e",
  "tracked_diff": "",
  "site_settings": {
   "DGPP_HTTP_PORT": "18080",
@@ -56,8 +56,8 @@
    "50307d4c4cde6860d4eee73e2547cd786fe8e8a4"
   ]
  },
- "binary_sha256": "6304d81458ab092e7e563db1abf51b3b2bc271d65b31010bcd79c39d6df0052e",
- "version": "dgpp-serve 0.1.0+gecf0e33adc0e.dirty (git ecf0e33adc0e, cuda 13.0)",
+ "binary_sha256": "cdae62350588feaf3400d9b6546add25b394d2f33c061fe010c3b516dcb5770e",
+ "version": "dgpp-serve 0.1.0+gd97649b2a41d (git d97649b2a41d, cuda 13.0)",
  "benchmark_environment": {
   "CUDA_DEVICE_MAX_CONNECTIONS": "32"
  },
@@ -80,5 +80,5 @@
   }
  },
  "note": "The Qwen3.8-27B-FP8 campaign (2026-10-04): the family's first measurement on the tree that merged it (#79, #80) and closed its review follow-ups (#84-#90); the other deployments' numbers are the earlier campaigns'. The campaign configs are the templates without `http` (the runner expects :18080) and without `model_alias` (the runner matches the served id to the checkpoint id).",
- "completed_at": "2026-10-04T12:50:48+00:00"
+ "completed_at": "2026-10-04T16:32:07+00:00"
 }

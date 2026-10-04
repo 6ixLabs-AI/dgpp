@@ -16,7 +16,7 @@
     "/home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/qwen27b-fp8-w2/modes/depth2/greedy.json"
   ],
   "cwd": "/home/stephen/workspace/dgpp",
-  "started_at": "2026-10-04T11:41:32.682784+00:00",
+  "started_at": "2026-10-04T16:22:44.280744+00:00",
   "returncode": 0,
-  "finished_at": "2026-10-04T11:43:29.910080+00:00"
+  "finished_at": "2026-10-04T16:24:37.780578+00:00"
 }

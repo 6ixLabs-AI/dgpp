@@ -4,7 +4,7 @@
     {
       "id": "Qwen/Qwen3.8-27B-FP8",
       "object": "model",
-      "created": 1791114351,
+      "created": 1791131217,
       "owned_by": "dgpp",
       "sampling": {
         "available": true,

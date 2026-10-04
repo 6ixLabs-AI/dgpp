@@ -33,8 +33,8 @@ Rows are grouped by model family and node count, with configuration options next
 | MiMo-V2.6-Flash MXFP4/FP8 | 2 | 256K FP8 KV, 4 slots | 39.9–48.2 | C4: 72.1–78.5 | 3.486 / 13.201 / 58.513 |
 | MiMo-V2.6-Flash MXFP4/FP8 | 4 | 128K BF16 KV, 4 slots | 75.8–85.8 | C4: 128.7–142.1 | 1.771 / 6.547 / 28.428 |
 | Qwen3.8-27B FP8 | 1 | DFlash2 drafter, FP8 head, 256K BF16 KV, 8 slots | 17.0–40.8 | C8: 45.4–96.3 | 2.145 / 6.997 / 30.480 |
-| Qwen3.8-27B FP8 | 2 | MTP depth 3, FP8 head, 256K BF16 KV, 8 slots | 30.4–45.6 | C8: 136.3–216.3 | 1.480 / 4.923 / 21.009 |
-| Qwen3.8-27B FP8 | 4 | MTP depth 3, FP8 head, 256K BF16 KV, 8 slots | 48.8–77.4 | C8: 187.2–304.9 | 1.047 / 3.719 / 15.521 |
+| Qwen3.8-27B FP8 | 2 | MTP depth 3, FP8 head, 256K BF16 KV, 8 slots | 30.9–46.4 | C8: 136.4–217.4 | 1.477 / 4.916 / 21.155 |
+| Qwen3.8-27B FP8 | 4 | MTP depth 3, FP8 head, 256K BF16 KV, 8 slots | 50.4–79.9 | C8: 203.0–308.1 | 1.054 / 3.726 / 15.627 |
 
 Rows cover the checked-in deployment templates, the GLM Flash FP8 checkpoint, and the three configuration variants described below. The AutoRound int4/int8 hybrid has two rows: the exact default chain, and the same deployment with the two prefill levers its template turns on (`engine.prefill_bf16_partials`, `engine.prefill_fp8_gemm`; not bitwise the default chain — see the README's accuracy and correctness section); the levers touch prefill-shaped launches only, and the levers-on decode cells were re-measured under them. The Qwen3.8-Flash-Next AutoRound int4/int8 row is the single-Spark hybrid (`Saren/Qwen3.8-Flash-Next-W4A16-AutoRound-hybrid-MTP_int4RTN`, `deploy/cluster_qwen-3.8-flash-next_autoround-int4_w1.json`), measured 2026-09-29 on the `qwen-autoround-int4` branch with the head in bit planes and MTP depth 3 ([record](../benchmarks/results/2026-09-28-qwen-autoround-int4/README.md), `serve_docrows_r18/` for the decode cells and the long-context parcels, session U (round 18) for the prefill probe — after the wide packed-int expert GEMM, the prefill's combine inside the next norm pass, the batched page advice, the compact tile list over the routed segments and the wide kernel's L2 prefetch — round 15 for the task-level quality, `serve_docrows/` for the plain and deeper decode modes and the consistency checks); its optional draft vocabulary slice (`engine.draft_vocab`) is not in the row. Its decode step at context, measured through the endpoint after round 16's attention gather: 52.6 ms at under 200 prompt tokens, 56.3–56.5 ms from 12K to 47K (the sparse attention's selection budget is fixed, so its cost is), with prefill at 0.63–0.65 ms per token to 47K before round 17 (0.55 at 8K–32K after rounds 17–18). The MiMo-V2.6-Flash rows cover its two templates (four nodes with a 128K BF16 pool; two nodes with a 256K FP8 pool) and the two-node template's BF16-cache variant at 128K. The DeepSeek-V4-Flash rows are its two templates (the 0731 release as shipped, the model's full 1M-token context, the DSpark draft under the confidence-scheduled verify depth); its cached attention rows are BF16 rows holding the release's own FP8-quantized values, with no `kv_dtype` choice. The same four-node deployment under llama-benchy (pp2048 / tg128, the checkpoint's default sampling at temperature 1, thinking on) generates 64.3–65.1 tokens/s over three 40-run legs and processes the prompt at about 1,380 tokens/s ([record](../benchmarks/results/2026-10-01-deepseek-v4-flash/notes.md)). For Qwen NVFP4, the Options column identifies the dense projection format; the expert weights remain NVFP4 in both cases. All Qwen NVFP4 rows map the n-gram table from NVMe. YaRN 512K denotes the extended-context configuration.
 
@@ -113,8 +113,8 @@ Engine tokens/s, greedy; median of three repetitions.
 | MiMo-V2.6-Flash MXFP4/FP8 | 2 | 256K FP8 KV, 4 slots | 43.2 | 44.6 | 48.2 | 46.8 | 39.9 |
 | MiMo-V2.6-Flash MXFP4/FP8 | 4 | 128K BF16 KV, 4 slots | 76.8 | 81.3 | 85.8 | 83.9 | 75.8 |
 | Qwen3.8-27B FP8 | 1 | DFlash2 drafter, FP8 head, 256K BF16 KV, 8 slots | 17.8 | 28.6 | 40.8 | 32.9 | 17.0 |
-| Qwen3.8-27B FP8 | 2 | MTP depth 3, FP8 head, 256K BF16 KV, 8 slots | 33.4 | 39.7 | 45.6 | 41.9 | 30.4 |
-| Qwen3.8-27B FP8 | 4 | MTP depth 3, FP8 head, 256K BF16 KV, 8 slots | 55.4 | 67.3 | 77.4 | 71.2 | 48.8 |
+| Qwen3.8-27B FP8 | 2 | MTP depth 3, FP8 head, 256K BF16 KV, 8 slots | 34.0 | 40.5 | 46.4 | 42.6 | 30.9 |
+| Qwen3.8-27B FP8 | 4 | MTP depth 3, FP8 head, 256K BF16 KV, 8 slots | 57.9 | 69.9 | 79.9 | 73.3 | 50.4 |
 
 ## Decode modes
 
@@ -142,8 +142,8 @@ Single-request engine tokens/s, shown as the range of the five class medians. Pl
 | MiMo-V2.6-Flash MXFP4/FP8 | 2 | 256K FP8 KV, 4 slots | 33.1–33.4 | 39.9–48.2 | — |
 | MiMo-V2.6-Flash MXFP4/FP8 | 4 | 128K BF16 KV, 4 slots | 57.4–57.9 | 75.8–85.8 | — |
 | Qwen3.8-27B FP8 | 1 | DFlash2 drafter, FP8 head, 256K BF16 KV, 8 slots | 8.8 | 17.0–40.8 | 16.1–22.0 |
-| Qwen3.8-27B FP8 | 2 | MTP depth 3, FP8 head, 256K BF16 KV, 8 slots | 15.8–15.9 | 30.4–45.6 | 28.6–38.9 |
-| Qwen3.8-27B FP8 | 4 | MTP depth 3, FP8 head, 256K BF16 KV, 8 slots | 28.6–28.7 | 48.8–77.4 | 49.7–67.5 |
+| Qwen3.8-27B FP8 | 2 | MTP depth 3, FP8 head, 256K BF16 KV, 8 slots | 16.5 | 30.9–46.4 | 29.7–40.2 |
+| Qwen3.8-27B FP8 | 4 | MTP depth 3, FP8 head, 256K BF16 KV, 8 slots | 31.1–31.2 | 50.4–79.9 | 53.0–71.9 |
 
 A dash means that deeper MTP was not part of that deployment's mode sweep. Prompt-dependent acceptance is included in these rates; pass times and committed tokens per pass are recorded separately.
 

@@ -18,7 +18,7 @@
     "/home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/qwen27b-fp8-w4/performance/default/sampled.json"
   ],
   "cwd": "/home/stephen/workspace/dgpp",
-  "started_at": "2026-10-04T11:21:39.297746+00:00",
+  "started_at": "2026-10-04T16:14:38.536180+00:00",
   "returncode": 0,
-  "finished_at": "2026-10-04T11:24:55.674156+00:00"
+  "finished_at": "2026-10-04T16:17:47.592389+00:00"
 }

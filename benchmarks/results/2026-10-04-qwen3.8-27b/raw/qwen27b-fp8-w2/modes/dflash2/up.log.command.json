@@ -11,7 +11,7 @@
     "/home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/qwen27b-fp8-w2/modes/dflash2/server"
   ],
   "cwd": "/home/stephen/workspace/dgpp",
-  "started_at": "2026-10-04T11:43:33.750137+00:00",
+  "started_at": "2026-10-04T16:24:41.554926+00:00",
   "returncode": 0,
-  "finished_at": "2026-10-04T11:43:57.211057+00:00"
+  "finished_at": "2026-10-04T16:25:05.079758+00:00"
 }
