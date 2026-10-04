@@ -1034,6 +1034,12 @@ std::unique_ptr<ServeFamily> make_family(const std::string& ckpt, int world,
     return std::make_unique<QwenFamily>(ckpt, rope_scaling, fp8_head_mma);
   if (arch == dgpp::ModelArchitecture::Qwen3Next) return std::make_unique<Qwen35Family>(ckpt, rope_scaling);
   if (arch == dgpp::ModelArchitecture::Qwen3_5) return std::make_unique<Qwen35Family>(ckpt);
+  // Nemotron-3 has a config parser and a tensor table (models/nemotron) and
+  // no model assembly yet: refused by name, not left to the GLM family below.
+  if (arch == dgpp::ModelArchitecture::NemotronH)
+    throw std::invalid_argument(
+        "NemotronH (Nemotron-3) checkpoints bind but are not served yet: the Mamba2 kernels and the "
+        "model assembly have not landed (docs/nemotron3_plan.md)");
   if (arch == dgpp::ModelArchitecture::Glm4Moe) return std::make_unique<Glm4Family>(ckpt);
   if (arch == dgpp::ModelArchitecture::GlmMoeDsa) return std::make_unique<GlmDsaFamily>(ckpt, world, kv_format);
   return std::make_unique<GlmFamily>(ckpt, world, kv_format);

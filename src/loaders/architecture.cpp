@@ -56,6 +56,12 @@ ModelArchitecture detect_architecture(const minijson::Value& root) {
   // Flash-Next routed MoE in place of the dense MLP.
   if (arch.rfind("Qwen3Next", 0) == 0 || (arch.empty() && type == "qwen3_next"))
     return ModelArchitecture::Qwen3Next;
+  // Nemotron-3 Nano / Super (2026-10-04, docs/nemotron3_plan.md):
+  // `NemotronHForCausalLM` / `nemotron_h` — a flat config. Recognized for
+  // the config parser and the binding table (models/nemotron); the model
+  // assembly has not landed, so no app serves it yet.
+  if (arch.rfind("NemotronH", 0) == 0 || (arch.empty() && type == "nemotron_h"))
+    return ModelArchitecture::NemotronH;
   throw std::runtime_error(
       "config.json: unsupported architecture '" + arch + "' (model_type '" +
       type + "'); the engine implements Glm5*, Qwen4Exp*, Glm4Moe*, GlmMoeDsa*, DeepseekV41*, DeepseekV4*, MiMoV2*, Qwen3_5* and Qwen3Next*");

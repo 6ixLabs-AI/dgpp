@@ -310,6 +310,17 @@ target_include_directories(dgpp_models_mimo PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/s
 target_link_libraries(dgpp_models_mimo PUBLIC dgpp_loaders dgpp_common)
 dgpp_set_common(dgpp_models_mimo)
 
+# Nemotron-3 Nano / Super (2026-10-04, docs/nemotron3_plan.md): the host-side
+# model description and the Mamba2 host reference. No kernels and no model
+# assembly yet.
+add_library(dgpp_models_nemotron STATIC
+  src/models/nemotron/config.cpp
+  src/models/nemotron/binding.cpp
+  src/models/nemotron/mamba2_reference.cpp)
+target_include_directories(dgpp_models_nemotron PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(dgpp_models_nemotron PUBLIC dgpp_loaders dgpp_common)
+dgpp_set_common(dgpp_models_nemotron)
+
 # The MiMo resident loader (loaders/resident_stream.hpp + the family's builders).
 add_library(dgpp_models_mimo_loader STATIC
   src/models/mimo/loader.cpp)
@@ -855,6 +866,14 @@ dgpp_set_common(unit_tests)
 add_test(NAME unit_tests COMMAND unit_tests)
 target_sources(unit_tests PRIVATE tests/unit/site_options_test.cpp)
 
+# Nemotron-3 (2026-10-04): the config parser, the binding table against both
+# releases' header counts, and the Mamba2 host reference against the numpy
+# reference's vectors (tests/unit/nemotron_mamba2_vectors.hpp).
+target_sources(unit_tests PRIVATE
+  tests/unit/nemotron_config_test.cpp
+  tests/unit/nemotron_binding_test.cpp
+  tests/unit/nemotron_mamba2_test.cpp)
+target_link_libraries(unit_tests PRIVATE dgpp_models_nemotron)
 # The vLLM YaRN oracle, offline (2026-09-19): tests/python/qwen_yarn_oracle.py
 # --emit records the recipe's rope goldens — the YaRN table, the attention
 # mscale, the bf16 cos/sin cache rows and rotated Q/K at several positions,
