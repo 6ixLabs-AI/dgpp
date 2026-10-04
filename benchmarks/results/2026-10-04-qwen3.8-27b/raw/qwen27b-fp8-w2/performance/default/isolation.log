@@ -1,0 +1,11 @@
+model Qwen/Qwen3.8-27B-FP8
+warm 0: status 200 tokens 64
+== isolation: prompt 0 alone (256 tokens) vs beside 7 others (256 tokens): IDENTICAL
+== chat concurrency 1: 11:14:05.148 .. 11:14:13.692  wall 8.5 s
+   req 0: status 200 finish=length tokens 256 chunks 256 ttft 154 ms  client update pace 32.90 ms/update
+   aggregate wall: 256 tokens in 8.54 s = 29.96 tok/s (prefill included)
+   legacy output-span aggregate: 30.51458304193348 tok/s (initial TTFT excluded; later admissions included)
+== per-class wall aggregate tokens/s (prefill included), greedy, max_tokens 256
+| class | c=1 |
+|---|---|
+| chat | 30.0 |

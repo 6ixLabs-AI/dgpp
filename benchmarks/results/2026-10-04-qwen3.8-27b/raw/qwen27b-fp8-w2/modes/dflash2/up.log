@@ -1,0 +1,41 @@
+OK   rank 0 (<node-0>) platform: Linux aarch64; supported target is Linux/aarch64 GB10
+OK   rank 0 (<node-0>) Python: 3.12.3; Python 3.10+ is required
+OK   rank 0 (<node-0>) commands: python3, timeout, ldd, ssh, scp, curl, jq
+OK   rank 0 (<node-0>) node address: rank 0 address <node-0> belongs to this host
+OK   rank 0 (<node-0>) GPU: NVIDIA GB10, 12.1, [N/A]
+OK   rank 0 (<node-0>) logs/staging: /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/qwen27b-fp8-w2/modes/dflash2/server: parent /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/qwen27b-fp8-w2/modes/dflash2/server, 720.6 GiB free
+OK   rank 0 (<node-0>) resident cache: ~/.cache/dgpp/resident: parent /home/stephen/.cache/dgpp/resident, 720.6 GiB free
+OK   rank 0 (<node-0>) model cache: /home/stephen/.cache/huggingface/hub: parent /home/stephen/.cache/huggingface/hub, 720.6 GiB free
+OK   rank 0 (<node-0>) checkpoint: /home/stephen/.cache/huggingface/hub/models--Qwen--Qwen3.8-27B-FP8/snapshots/017b9c7af6b5689d5dd426a76e0bc077eb5ca20a: 28.7 GiB; all indexed shards have consistent lengths (not a content hash check)
+OK   rank 0 (<node-0>) available memory: 117.0 GiB; startup enforces the exact model memory plan
+OK   rank 0 (<node-0>) HTTP port: 0.0.0.0:18080 is available
+OK   rank 0 (<node-0>) fabric port: 0.0.0.0:29970 is available
+OK   rank 0 (<node-0>) journal port: 0.0.0.0:29971 is available
+WARN rank 0 (<node-0>) RoCE selection: auto-selected active devices; set DGPP_ROCE_DEVICES explicitly on multi-fabric hosts
+OK   rank 0 (<node-0>) RoCE roceP2p1s0f0: port 1, routable v2 GIDs: [('3', '0000:0000:0000:0000:0000:ffff:c0a8:590b')]; verify these subnets connect corresponding lanes on every node
+OK   rank 0 (<node-0>) RoCE rocep1s0f0: port 1, routable v2 GIDs: [('3', '0000:0000:0000:0000:0000:ffff:c0a8:580b')]; verify these subnets connect corresponding lanes on every node
+OK   rank 0 (<node-0>) runtime libraries: all binary dependencies resolve
+OK   rank 0 (<node-0>) server version: dgpp-serve 0.1.0+gecf0e33adc0e.dirty (git ecf0e33adc0e, cuda 13.0)
+OK   rank 1 (<node-1>) platform: Linux aarch64; supported target is Linux/aarch64 GB10
+OK   rank 1 (<node-1>) Python: 3.12.3; Python 3.10+ is required
+OK   rank 1 (<node-1>) commands: python3, timeout, ldd
+OK   rank 1 (<node-1>) node address: rank 1 address <node-1> belongs to this host
+OK   rank 1 (<node-1>) GPU: NVIDIA GB10, 12.1, [N/A]
+OK   rank 1 (<node-1>) logs/staging: /tmp/bus4/deployments/bb503c0b4dde495c: parent /tmp/bus4/deployments, 913.8 GiB free
+OK   rank 1 (<node-1>) resident cache: ~/.cache/dgpp/resident: parent /home/stephen/.cache/dgpp/resident, 913.8 GiB free
+OK   rank 1 (<node-1>) model cache: /home/stephen/.cache/huggingface/hub: parent /home/stephen/.cache/huggingface/hub, 913.8 GiB free
+OK   rank 1 (<node-1>) checkpoint: /home/stephen/.cache/huggingface/hub/models--Qwen--Qwen3.8-27B-FP8/snapshots/017b9c7af6b5689d5dd426a76e0bc077eb5ca20a: 28.7 GiB; all indexed shards have consistent lengths (not a content hash check)
+OK   rank 1 (<node-1>) available memory: 117.3 GiB; startup enforces the exact model memory plan
+WARN rank 1 (<node-1>) RoCE selection: auto-selected active devices; set DGPP_ROCE_DEVICES explicitly on multi-fabric hosts
+OK   rank 1 (<node-1>) RoCE roceP2p1s0f0: port 1, routable v2 GIDs: [('3', '0000:0000:0000:0000:0000:ffff:c0a8:590c')]; verify these subnets connect corresponding lanes on every node
+OK   rank 1 (<node-1>) RoCE rocep1s0f0: port 1, routable v2 GIDs: [('3', '0000:0000:0000:0000:0000:ffff:c0a8:580c')]; verify these subnets connect corresponding lanes on every node
+OK   rank 1 (<node-1>) peer runtime libraries: libibverbs.so, libcudart.so.13, libcublasLt.so.13, libstdc++.so
+WARN rank 1 (<node-1>) peer binary: development binary will be staged; verify identical OS/compiler runtime compatibility
+Preflight: 0 failed check(s). No files were installed and no services were started or stopped.
+2026-10-04 11:43:34.902 === staging dgpp-serve and the config to the peers
+2026-10-04 11:43:36.471 === rank 0 on <node-0> (HTTP :18080, fabric :29970, journal :29971)
+2026-10-04 11:43:36.471 head pid 3374393
+2026-10-04 11:43:38.472 journal listening: ok (2s)
+2026-10-04 11:43:38.472 === peers <node-1>
+2026-10-04 11:43:57.149 rank 0 serving: ok (18s)
+2026-10-04 11:43:57.149 READY — curl http://<node-0>:18080/v1/models  (stop: python3 /home/stephen/workspace/dgpp/scripts/dgpp-cluster down --config /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/qwen27b-fp8-w2/modes/dflash2/config.json --log-dir /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/qwen27b-fp8-w2/modes/dflash2/server)

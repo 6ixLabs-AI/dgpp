@@ -1,0 +1,115 @@
+=== build 09:45:15
+BUILD_EXIT=0
+[ OK ] dflash2_block_stage_feed_and_publish
+[ OK ] dflash2_block_batched_stage_feed_and_publish
+8 tests, 0 failed
+=== legs 09:46:20
+
+=== 09:46:20 glm down
+2026-10-04 09:46:28.827 === logs in /home/stephen/dgpp/log/deployments/a911a2d7c4b3be6a
+
+=== 09:46:28 w4-dflash2-v2 up
+2026-10-04 09:46:55.485 READY — curl http://<node-0>:8000/v1/models  (stop: python3 /home/stephen/workspace/dgpp/scripts/dgpp-cluster down --config /home/stephen/workspace/dgpp/deploy/cluster_qwen3.8-27b_fp8_w4_dflash2.json --log-dir /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/drafter-tp/w4-dflash2-v2/server)
+
+=== 09:46:55 w4-dflash2-v2 transcripts vs w4-mtp5
+chat   256 tokens    6.63 s    25.9 ms/token (wall, prefill included) length | We need answer user: "Explain, in a few paragraphs, why a CU
+code   256 tokens    3.68 s    14.4 ms/token (wall, prefill included) length | We need answer user: "Write a Python function that parses an
+math   256 tokens    2.92 s    11.4 ms/token (wall, prefill included) length | We need answer user: "A train leaves city A at 60 km/h and a
+json   256 tokens    3.30 s    12.9 ms/token (wall, prefill included) length | We need to respond to user: "Return a JSON array of 8 object
+identical transcripts: 4 of 4
+
+=== 09:47:12 w4-dflash2-v2 timed_load greedy C1
+== per-class wall aggregate tokens/s (prefill included), greedy, max_tokens 256
+| class | c=1 |
+|---|---|
+| prose | 52.4 |
+| code | 82.5 |
+| json | 115.9 |
+| math | 97.1 |
+| chat | 50.2 |
+
+=== 09:47:49 w4-dflash2-v2 timed_load sampled C1
+== per-class wall aggregate tokens/s (prefill included), sampled T=1.0, max_tokens 256
+| class | c=1 |
+|---|---|
+| prose | 43.9 |
+| code | 73.7 |
+| json | 110.9 |
+| math | 88.6 |
+| chat | 40.8 |
+
+=== 09:48:32 w4-dflash2-v2 llama-benchy
+
+=== 09:54:57 w4-dflash2-v2 down
+2026-10-04 09:55:04.845 === logs in /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/drafter-tp/w4-dflash2-v2/server
+
+=== 09:55:04 w2-dflash2-v2 up
+2026-10-04 09:55:26.771 READY — curl http://<node-0>:8000/v1/models  (stop: python3 /home/stephen/workspace/dgpp/scripts/dgpp-cluster down --config /home/stephen/workspace/dgpp/deploy/cluster_qwen3.8-27b_fp8_w2_dflash2.json --log-dir /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/drafter-tp/w2-dflash2-v2/server)
+
+=== 09:55:26 w2-dflash2-v2 transcripts vs w2-mtp5
+chat   256 tokens   11.18 s    43.7 ms/token (wall, prefill included) length | We need answer user: "Explain, in a few paragraphs, why a CU
+code   256 tokens    6.01 s    23.5 ms/token (wall, prefill included) length | We need answer user: "Write a Python function that parses an
+math   256 tokens    4.46 s    17.4 ms/token (wall, prefill included) length | We need answer user: "A train leaves city A at 60 km/h and a
+json   256 tokens    5.45 s    21.3 ms/token (wall, prefill included) length | We need to respond to user: "Return a JSON array of 8 object
+identical transcripts: 4 of 4
+
+=== 09:55:53 w2-dflash2-v2 timed_load greedy C1
+== per-class wall aggregate tokens/s (prefill included), greedy, max_tokens 256
+| class | c=1 |
+|---|---|
+| prose | 32.1 |
+| code | 50.3 |
+| json | 71.0 |
+| math | 57.6 |
+| chat | 30.3 |
+
+=== 09:56:55 w2-dflash2-v2 timed_load sampled C1
+== per-class wall aggregate tokens/s (prefill included), sampled T=1.0, max_tokens 256
+| class | c=1 |
+|---|---|
+| prose | 27.3 |
+| code | 52.0 |
+| json | 64.5 |
+| math | 57.4 |
+| chat | 25.3 |
+
+=== 09:58:03 w2-dflash2-v2 llama-benchy
+
+=== 10:07:30 w2-dflash2-v2 down
+2026-10-04 10:07:34.430 === logs in /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/drafter-tp/w2-dflash2-v2/server
+
+=== 10:07:34 w4-mtp3-nsys up (nsys)
+2026-10-04 10:07:55.073 READY — curl http://<node-0>:8000/v1/models  (stop: python3 /home/stephen/workspace/dgpp/scripts/dgpp-cluster down --config /home/stephen/workspace/dgpp/deploy/cluster_qwen3.8-27b_fp8_w4.json --log-dir /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/drafter-tp/w4-mtp3-nsys/server)
+
+=== 10:07:55 w4-mtp3-nsys transcripts
+chat   256 tokens    5.86 s    22.9 ms/token (wall, prefill included) length | We need answer user: "Explain, in a few paragraphs, why a CU
+code   256 tokens    4.72 s    18.5 ms/token (wall, prefill included) length | We need answer user: "Write a Python function that parses an
+math   256 tokens    3.78 s    14.8 ms/token (wall, prefill included) length | We need answer user: "A train leaves city A at 60 km/h and a
+json   256 tokens    3.69 s    14.4 ms/token (wall, prefill included) length | We need to respond to user: "Return a JSON array of 8 object
+
+=== 10:08:13 w4-mtp3-nsys wait for the profile
+0
+
+=== 10:09:28 w4-mtp3-nsys down
+2026-10-04 10:09:39.300 === logs in /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/drafter-tp/w4-mtp3-nsys/server
+
+=== 10:09:39 w4-dflash2-v2-nsys up (nsys)
+2026-10-04 10:10:04.857 READY — curl http://<node-0>:8000/v1/models  (stop: python3 /home/stephen/workspace/dgpp/scripts/dgpp-cluster down --config /home/stephen/workspace/dgpp/deploy/cluster_qwen3.8-27b_fp8_w4_dflash2.json --log-dir /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/drafter-tp/w4-dflash2-v2-nsys/server)
+
+=== 10:10:04 w4-dflash2-v2-nsys transcripts
+chat   256 tokens    6.62 s    25.9 ms/token (wall, prefill included) length | We need answer user: "Explain, in a few paragraphs, why a CU
+code   256 tokens    3.68 s    14.4 ms/token (wall, prefill included) length | We need answer user: "Write a Python function that parses an
+math   256 tokens    2.92 s    11.4 ms/token (wall, prefill included) length | We need answer user: "A train leaves city A at 60 km/h and a
+json   256 tokens    3.29 s    12.9 ms/token (wall, prefill included) length | We need to respond to user: "Return a JSON array of 8 object
+
+=== 10:10:21 w4-dflash2-v2-nsys wait for the profile
+0
+
+=== 10:11:36 w4-dflash2-v2-nsys down
+2026-10-04 10:11:46.537 === logs in /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/drafter-tp/w4-dflash2-v2-nsys/server
+
+=== 10:11:46 glm up
+2026-10-04 10:12:24.910 READY — curl http://<node-0>:18080/v1/models  (stop: python3 /home/stephen/workspace/dgpp/scripts/dgpp-cluster down --config /home/stephen/workspace/dgpp/deploy/cluster_glm-5.3-flash_nvfp4-fp8_w4.json --log-dir /home/stephen/dgpp/log/deployments/a911a2d7c4b3be6a)
+
+V2_DONE 10:12:24
+V2_SCRIPT_EXIT=0

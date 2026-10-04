@@ -1,0 +1,71 @@
+{
+  "object": "list",
+  "data": [
+    {
+      "id": "Qwen/Qwen3.8-27B-FP8",
+      "object": "model",
+      "created": 1791114515,
+      "owned_by": "dgpp",
+      "sampling": {
+        "available": true,
+        "defaults": {
+          "temperature": 1,
+          "top_p": 0.95,
+          "top_k": 20,
+          "min_p": 0,
+          "repetition_penalty": 1
+        }
+      },
+      "tools": {
+        "available": true,
+        "constrained": true
+      },
+      "response_format": {
+        "json_object": true,
+        "json_schema": true
+      },
+      "reasoning": {
+        "in_content": false,
+        "effort_mapping": {
+          "none": {
+            "enable_thinking": false
+          },
+          "minimal": {
+            "enable_thinking": true,
+            "reasoning_effort": "low"
+          },
+          "low": {
+            "enable_thinking": true,
+            "reasoning_effort": "low"
+          },
+          "medium": {
+            "enable_thinking": true,
+            "reasoning_effort": "medium"
+          },
+          "high": {
+            "enable_thinking": true,
+            "reasoning_effort": "xhigh"
+          },
+          "xhigh": {
+            "enable_thinking": true,
+            "reasoning_effort": "xhigh"
+          },
+          "max": {
+            "enable_thinking": true,
+            "reasoning_effort": "xhigh"
+          }
+        }
+      },
+      "default_chat_template_kwargs": {},
+      "input_modalities": [
+        "text"
+      ],
+      "context": {
+        "request_limit_tokens": 262144,
+        "position_ceiling_tokens": null,
+        "kv_pool_tokens": 262144,
+        "limited_by": "kv-pool"
+      }
+    }
+  ]
+}

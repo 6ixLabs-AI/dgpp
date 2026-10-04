@@ -1,0 +1,41 @@
+
+=== 08:00:15 glm down
+2026-10-04 08:00:21.018 === logs in /home/stephen/dgpp/log/deployments/a911a2d7c4b3be6a
+
+=== 08:00:21 w1-graph up
+  2026-10-04 08:00:49.981 ERROR serve: device pick: the sampling verdict decides T=1 rows or an MTP verify of up to 6 rows
+cluster configuration: rank 0 did not become ready
+
+
+=== 08:10:21 w1-graph transcripts
+                ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/socket.py", line 852, in create_connection
+    raise exceptions[0]
+  File "/usr/lib/python3.12/socket.py", line 837, in create_connection
+    sock.connect(sa)
+ConnectionRefusedError: [Errno 111] Connection refused
+
+=== 08:10:21 w1-graph timed_load greedy C1
+  File "/usr/lib/python3.12/http/client.py", line 1030, in connect
+    self.sock = self._create_connection(
+                ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/socket.py", line 852, in create_connection
+    raise exceptions[0]
+  File "/usr/lib/python3.12/socket.py", line 837, in create_connection
+    sock.connect(sa)
+ConnectionRefusedError: [Errno 111] Connection refused
+
+=== 08:10:21 w1-graph timed_load sampled C1
+  File "/usr/lib/python3.12/http/client.py", line 1030, in connect
+    self.sock = self._create_connection(
+                ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/socket.py", line 852, in create_connection
+    raise exceptions[0]
+  File "/usr/lib/python3.12/socket.py", line 837, in create_connection
+    sock.connect(sa)
+ConnectionRefusedError: [Errno 111] Connection refused
+
+=== 08:10:21 w1-graph down
+2026-10-04 08:10:21.871 === logs in /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/drafter-tp/w1-graph/server
+
+=== 08:10:21 w2-dflash2 up

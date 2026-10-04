@@ -1,0 +1,22 @@
+{
+  "command": [
+    "/usr/bin/python3",
+    "/home/stephen/workspace/dgpp/scripts/serve_load.py",
+    "127.0.0.1",
+    "18080",
+    "--concurrency",
+    "1",
+    "--max-tokens",
+    "256",
+    "--isolation",
+    "8",
+    "--classes",
+    "chat",
+    "--json-out",
+    "/home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/qwen27b-fp8-w4/performance/default/isolation.json"
+  ],
+  "cwd": "/home/stephen/workspace/dgpp",
+  "started_at": "2026-10-04T11:24:55.674671+00:00",
+  "returncode": 1,
+  "finished_at": "2026-10-04T11:25:12.508778+00:00"
+}

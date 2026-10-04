@@ -1,0 +1,37 @@
+
+=== 09:13:15 glm down
+2026-10-04 09:13:22.890 === logs in /home/stephen/dgpp/log/deployments/a911a2d7c4b3be6a
+
+=== 09:13:22 w2-plain up
+2026-10-04 09:13:40.828 READY — curl http://<node-0>:8000/v1/models  (stop: python3 /home/stephen/workspace/dgpp/scripts/dgpp-cluster down --config /home/stephen/workspace/dgpp/deploy/cluster_qwen3.8-27b_fp8_w2.json --log-dir /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/drafter-tp/w2-plain/server)
+
+=== 09:13:40 w2-plain transcripts vs w2-dflash2
+code   256 tokens   16.30 s    63.7 ms/token (wall, prefill included) length | We need answer user: "Write a Python function that parses an
+math   256 tokens   16.35 s    63.9 ms/token (wall, prefill included) length | We need answer user: "A train leaves city A at 60 km/h and a
+json   256 tokens   16.50 s    64.4 ms/token (wall, prefill included) length | We need to respond to user: "Return a JSON array of 8 object
+chat  DIFFERS at character 296 of 1356/1379 (tokens 256 vs 256): 'ead, driver overhead, API call overhead, synchronization, co' | 'ead, driver overhead, API calls, synchronization, command bu'
+math  DIFFERS at character 513 of 710/725 (tokens 256 vs 256): 't train leaves A. First train position from A: 60t. Second l' | 't train leaves A. First train distance from A: 60t. Second l'
+identical transcripts: 2 of 4
+
+=== 09:14:46 w2-plain down
+2026-10-04 09:14:50.038 === logs in /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/drafter-tp/w2-plain/server
+
+=== 09:14:50 w4-plain up
+2026-10-04 09:15:10.127 READY — curl http://<node-0>:8000/v1/models  (stop: python3 /home/stephen/workspace/dgpp/scripts/dgpp-cluster down --config /home/stephen/workspace/dgpp/deploy/cluster_qwen3.8-27b_fp8_w4.json --log-dir /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/drafter-tp/w4-plain/server)
+
+=== 09:15:10 w4-plain transcripts vs w4-dflash2
+json   256 tokens    9.11 s    35.6 ms/token (wall, prefill included) length | We need to respond to user: "Return a JSON array of 8 object
+chat  DIFFERS at character 407 of 1354/1388 (tokens 256 vs 256): ', fewer context switches, can precompute dependencies, batch' | ', fewer context switches, can capture dependencies and execu'
+code  DIFFERS at character 1005 of 1167/1090 (tokens 256 vs 256): '601 timestamp" could be simple: accept \'YYYY-MM-DDTHH:MM:SS\'' | '601 timestamp" could be simple. Need three doctests. Could i'
+math  DIFFERS at character 193 of 778/712 (tokens 256 vs 256): 'd where they meet." Need solve step by step. Need be careful' | 'd where they meet." Need solve. Need be careful: Train A lea'
+json  DIFFERS at character 375 of 761/971 (tokens 256 vs 256): "utput only JSON, no markdown. Ensure 8 objects. Let's craft " | 'utput only JSON, no markdown. Need maybe ensure 8 objects. L'
+identical transcripts: 0 of 4
+
+=== 09:15:46 w4-plain down
+2026-10-04 09:15:54.074 === logs in /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/drafter-tp/w4-plain/server
+
+=== 09:15:54 glm up
+2026-10-04 09:16:34.353 READY — curl http://<node-0>:18080/v1/models  (stop: python3 /home/stephen/workspace/dgpp/scripts/dgpp-cluster down --config /home/stephen/workspace/dgpp/deploy/cluster_glm-5.3-flash_nvfp4-fp8_w4.json --log-dir /home/stephen/dgpp/log/deployments/a911a2d7c4b3be6a)
+
+REFS_DONE 09:16:34
+REFS_EXIT=0
