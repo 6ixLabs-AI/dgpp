@@ -897,6 +897,114 @@ DGPP_TEST(scheduler_idle_prefill_budget_applies_to_first_chunk_and_groups) {
   }
 }
 
+DGPP_TEST(scheduler_decode_passes_per_prefill_gives_answers_n_passes_per_chunk) {
+  // GIVEN an answer in progress and a 23-token prompt read in 4-token chunks,
+  // with three decode passes per chunk: the prompt advances on one tick in
+  // three, the answer on every tick, and once the answer retires the prompt
+  // is read on every tick again.
+  ChunkFakeEngine engine;
+  engine.arm(0, {10, 11, 12, 13, 14, 15, 16, 17, 18, 19}, 9);
+  engine.arm(1, {20, 21}, 2);
+  dgpp::sched::AdmissionPolicy policy;
+  policy.prefill_budget_tokens = 4;
+  policy.decode_passes_per_prefill = 3;
+  Scheduler sched(&engine, {}, 0, policy);
+  sched.submit(make_request("peer", 2, 9));
+  sched.tick();
+  sched.submit(make_request("long", 23, 2));
+  std::vector<int64_t> computed;
+  std::vector<int64_t> peer_tokens;  // every token so far is the peer's: the long prompt is still being read
+  for (int i = 0; i < 7; ++i) {
+    sched.tick();
+    computed.push_back(sched.meters().prompt_tokens_computed);
+    peer_tokens.push_back(sched.meters().tokens_generated);
+  }
+  // 2 (peer) + the long prompt's chunks: begun on the first tick, then one
+  // chunk on every third tick.
+  require(computed == std::vector<int64_t>({6, 6, 6, 10, 10, 10, 14}),
+          "the prompt advances one chunk in three ticks while an answer is in progress");
+  for (size_t i = 1; i < peer_tokens.size(); ++i)
+    require(peer_tokens[i] == peer_tokens[i - 1] + 1, "the answer advances on every tick, chunk or not");
+  require(sched.find("peer")->status == Scheduler::Result::Status::kDone && sched.find("peer")->generated.size() == 9,
+          "the answer finishes on its last pass, complete");
+  sched.tick();
+  sched.tick();
+  require(sched.meters().prompt_tokens_computed == 22,
+          "with nothing decoding the prompt is read on every tick again");
+  sched.run_to_completion();
+  require(sched.find("long")->generated == std::vector<int64_t>({20, 21}) &&
+              sched.meters().prompt_tokens_computed == 25 && sched.meters().pool_blocks_in_use == 0,
+          "the skipped ticks cost nothing in completion, accounting or reservations");
+  policy.decode_passes_per_prefill = 0;
+  bool rejected = false;
+  try { Scheduler bad(&engine, {}, 0, policy); }
+  catch (const std::invalid_argument&) { rejected = true; }
+  require(rejected, "zero decode passes per chunk is refused");
+}
+
+DGPP_TEST(scheduler_prefill_shortest_first_reads_the_short_prompt_before_the_long_one) {
+  // GIVEN a 23-token prompt being read in 4-token ticks and a 9-token one
+  // arriving behind it: with shortest-first the tick's budget goes to the
+  // short prompt until it is read, then back to the long one.
+  for (const bool shortest : {true, false}) {
+    ChunkFakeEngine engine;
+    engine.arm(0, {10, 11}, 2);
+    engine.arm(1, {20, 21}, 2);
+    dgpp::sched::AdmissionPolicy policy;
+    policy.prefill_budget_tokens = 4;
+    policy.prefill_shortest_first = shortest;
+    Scheduler sched(&engine, {}, 0, policy);
+    sched.submit(make_request("long", 23, 2));
+    sched.tick();
+    require(sched.meters().prompt_tokens_computed == 4, "the long prompt begins alone on the whole budget");
+    sched.submit(make_request("short", 9, 2));
+    sched.tick();
+    sched.tick();
+    require(sched.meters().prompt_tokens_computed == 12 && sched.meters().prefilling == 2,
+            "two ticks read eight tokens either way");
+    sched.tick();
+    // Shortest-first: 4 + 4 + its last token, read by the fourth tick (the
+    // long prompt took that tick's other chunk). Equal shares: 2 + 2 + 2 of 9.
+    require(sched.meters().prefilling == (shortest ? 1 : 2),
+            shortest ? "the short prompt is read first" : "equal shares leave both prompts unfinished");
+    sched.run_to_completion();
+    require(sched.find("long")->generated == std::vector<int64_t>({10, 11}) &&
+                sched.find("short")->generated == std::vector<int64_t>({20, 21}) &&
+                sched.meters().prompt_tokens_computed == 32 && sched.meters().pool_blocks_in_use == 0,
+            "both prompts are read in full and both answers complete");
+  }
+}
+
+DGPP_TEST(scheduler_prefill_shortest_first_admits_a_short_prompt_beside_a_long_read) {
+  // GIVEN a 23-token prompt being read in 4-token ticks and a 3-token chat
+  // prompt arriving behind it: with shortest-first the chat prompt is read
+  // on the next tick, out of that tick's budget; with equal shares it waits
+  // until no read-in is in flight.
+  for (const bool shortest : {true, false}) {
+    ChunkFakeEngine engine;
+    engine.arm(0, {10, 11}, 2);
+    engine.arm(0, {20, 21, 22}, 3);  // equal shares: the chat prompt waits and reuses the long one's slot
+    engine.arm(1, {20, 21, 22}, 3);  // shortest-first: it is seated beside the read-in
+    dgpp::sched::AdmissionPolicy policy;
+    policy.prefill_budget_tokens = 4;
+    policy.prefill_shortest_first = shortest;
+    Scheduler sched(&engine, {}, 0, policy);
+    sched.submit(make_request("long", 23, 2));
+    sched.tick();
+    sched.submit(make_request("chat", 3, 3));
+    sched.tick();
+    require(sched.meters().prompt_tokens_computed == (shortest ? 7 : 8) &&
+                sched.meters().active == (shortest ? 2 : 1) && sched.meters().prefilling == 1,  // active counts seated requests
+            shortest ? "the chat prompt is admitted beside the read-in, out of the tick's budget"
+                     : "equal shares give the tick to the read-in and the chat prompt waits");
+    sched.run_to_completion();
+    require(sched.find("long")->generated == std::vector<int64_t>({10, 11}) &&
+                sched.find("chat")->generated == std::vector<int64_t>({20, 21, 22}) &&
+                sched.meters().prompt_tokens_computed == 26 && sched.meters().pool_blocks_in_use == 0,
+            "both prompts are read in full and both answers complete");
+  }
+}
+
 DGPP_TEST(scheduler_chunked_prefill_budget_rejects_unsupported_and_unaligned_configs) {
   FakeEngine old(2, 100, 2);
   ChunkFakeEngine chunked;

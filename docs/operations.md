@@ -502,6 +502,16 @@ Smaller chunks trade prefill throughput and TTFT for shorter pauses in
 other streams. Request reservations are held before the first yield, and
 cancellation releases the unfinished slot and its prefix references.
 
+`engine.decode_passes_per_prefill` (`--decode-passes-per-prefill`, 6ixServe,
+default 1) gives the answers in progress that many decode passes per prefill
+chunk. With 1 every tick reads a chunk and then runs one decode pass, so a
+stream advances once per chunk walk; where a chunk's walk costs several decode
+passes (the 80B: about 0.25 s for 256 tokens against 35 ms), a stream beside a
+long prompt crawls. With N, N - 1 ticks in N skip admission and the chunk and
+only decode. The prompt is read that much slower, and only while something is
+decoding; a queued request waits at most N - 1 decode passes. Single-rank
+only for now: the warm record does not carry the knob.
+
 `engine.prefill_idle_budget_tokens` (`--prefill-idle-budget-tokens`) optionally
 uses larger chunks when no request is actively decoding. It must be at least
 the enabled busy budget, use the same alignment and fit the prefill scratch

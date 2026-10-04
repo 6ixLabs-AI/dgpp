@@ -163,6 +163,7 @@ struct ServeKnobs {
   int queue_limit = 64;
   int admission_gather_ms = 3;
   int default_max_tokens = 256;
+  bool clamp_max_tokens = false;  // engine.max_tokens_overflow = clamp
   dgpp::sample::Params sampling_defaults = dgpp::sample::greedy_params();
   std::optional<uint64_t> fixed_seed;
   bool reasoning_in_content = false;
@@ -891,12 +892,40 @@ struct Qwen35Family final : ServeFamily {
   std::vector<int64_t> eos_;
   std::vector<int64_t> extra_stops_;
   std::unique_ptr<dgpp::Qwen35Model> model;
-  Qwen35Family(const std::string& checkpoint)
+  Qwen35Family(const std::string& checkpoint, const std::optional<dgpp::RopeScaling>& rope_scaling = std::nullopt)
       : cfg(dgpp::Qwen35TextConfig::from_json_file((fs::path(checkpoint) / "config.json").string())),
         ckpt(checkpoint) {
     if (cfg.eos_token_ids.empty())
       throw std::invalid_argument("Qwen3.5: the config names no EOS token");
     for (int64_t id : cfg.eos_token_ids) eos_.push_back(id);
+    // engine.rope_scaling on the Qwen3Next dialect (6ixServe): the YaRN ramp
+    // Qwen validated this model with (factor 2 for 524,288, 4 for 1M). The
+    // checkpoint has a plain 1-D rope — no mrope sections — so the ramp's
+    // correction band is computed from the original positions themselves
+    // (transformers' and vLLM's plain YaRN), not from the 4x mrope cache the
+    // Qwen3.8 recipe uses: mrope_cache_factor is 1 here whatever the knob
+    // carries. The 27B has not been run with a ramp and keeps refusing it.
+    if (rope_scaling.has_value()) {
+      if (!cfg.next())
+        throw std::invalid_argument(
+            "engine.rope_scaling is wired for the Qwen3-Next dialect of this family, not Qwen3.8-27B");
+      dgpp::RopeScaling rs = *rope_scaling;
+      rs.mrope_cache_factor = 1.0;
+      rs.validate("engine.rope_scaling");
+      if (rs.original_max_position_embeddings != cfg.max_position_embeddings)
+        DGPP_LOG_WARN(
+            "engine.rope_scaling: original_max_position_embeddings {} differs from the "
+            "checkpoint's max_position_embeddings {} — the ramp band is computed from the "
+            "knob's value",
+            rs.original_max_position_embeddings, cfg.max_position_embeddings);
+      cfg.rope_scaling = rs;
+      DGPP_LOG_INFO(
+          "qwen3_next: YaRN rope on — factor {}, original {} positions, correction band from {} "
+          "(plain 1-D rope), beta_fast {} beta_slow {}, attention factor {:.10g} (mscale {:.10g}); "
+          "one request may reach {} tokens",
+          rs.factor, rs.original_max_position_embeddings, rs.correction_max_position(), rs.beta_fast,
+          rs.beta_slow, rs.attn_factor, static_cast<double>(rs.mscale()), cfg.context_limit());
+    }
     // engine.dense_weights = fp8 on the Qwen3Next dialect also encodes the
     // checkpoint's BF16 / NVFP4 dense projections to block FP8 at load (the
     // form this stack's decode paths are built around; the Qwen3.8-27B
@@ -930,11 +959,11 @@ struct Qwen35Family final : ServeFamily {
   int prefill_chunk_tokens() const override { return dgpp::Qwen35Model::prefill_chunk_tokens(); }
   std::string pool_check(int64_t) const override { return ""; }
   const char* kv_format_name() const override { return "bf16"; }
-  // Qwen3-Next's rope was trained to max_position_embeddings (262,144) and
-  // this stack has no YaRN ramp yet: a pool larger than that seats more
-  // requests, and no single request passes the ceiling. (The 27B keeps the
-  // family's "no ceiling of its own".)
-  int64_t position_limit() const override { return cfg.next() ? cfg.max_position_embeddings : 0; }
+  // Qwen3-Next's rope was trained to max_position_embeddings (262,144):
+  // a pool larger than that seats more requests, and no single request
+  // passes the ceiling unless engine.rope_scaling lifts it (the YaRN ramp:
+  // original x factor). (The 27B keeps the family's "no ceiling of its own".)
+  int64_t position_limit() const override { return cfg.next() ? cfg.context_limit() : 0; }
   int decode_rows_cap() const override { return dgpp::Qwen35Model::decode_rows_cap(); }
   size_t lat_slot_bytes(int decode_rows) const override {
     return static_cast<size_t>(decode_rows) * static_cast<size_t>(cfg.hidden_size) * 2;
@@ -993,8 +1022,8 @@ std::unique_ptr<ServeFamily> make_family(const std::string& ckpt, int world,
   if (arch == dgpp::ModelArchitecture::MimoV2) return std::make_unique<MimoFamily>(ckpt, kv_format);
   if (arch == dgpp::ModelArchitecture::Qwen4Exp)
     return std::make_unique<QwenFamily>(ckpt, rope_scaling, fp8_head_mma);
-  if (arch == dgpp::ModelArchitecture::Qwen3_5 || arch == dgpp::ModelArchitecture::Qwen3Next)
-    return std::make_unique<Qwen35Family>(ckpt);
+  if (arch == dgpp::ModelArchitecture::Qwen3Next) return std::make_unique<Qwen35Family>(ckpt, rope_scaling);
+  if (arch == dgpp::ModelArchitecture::Qwen3_5) return std::make_unique<Qwen35Family>(ckpt);
   if (arch == dgpp::ModelArchitecture::Glm4Moe) return std::make_unique<Glm4Family>(ckpt);
   if (arch == dgpp::ModelArchitecture::GlmMoeDsa) return std::make_unique<GlmDsaFamily>(ckpt, world, kv_format);
   return std::make_unique<GlmFamily>(ckpt, world, kv_format);
@@ -1149,6 +1178,7 @@ int serve_openai(dgpp::sched::SchedulerEngine* engine, int64_t vocab_size,
   scfg.file_inputs = k.file_inputs;
   scfg.model_id = model_display;
   scfg.default_max_tokens = k.default_max_tokens;
+  scfg.clamp_max_tokens = k.clamp_max_tokens;
   scfg.queue_limit = k.queue_limit;
   scfg.admission_gather_ms = k.admission_gather_ms;
   scfg.sse_ping_interval = k.sse_ping_interval;
@@ -1515,6 +1545,9 @@ int main(int argc, char** argv) {
   int admission_window = 256;
   int prefill_budget_tokens = -1;
   int prefill_idle_budget_tokens = 0;
+  int decode_passes_per_prefill = 1;
+  std::string prefill_order = "fair";
+  std::string max_tokens_overflow = "refuse";
   // The prefix cache's entry policy (2026-09-28): no entry below the floor,
   // and a cold prompt keeps the cut at its first structural boundary.
   int prefix_min_tokens = 1024;
@@ -1608,6 +1641,7 @@ int main(int argc, char** argv) {
     rope_scaling = e.rope_scaling;
     embed_sharding = e.embed_sharding;
     default_max_tokens = e.default_max_tokens;
+    max_tokens_overflow = e.max_tokens_overflow;
     file_inputs = e.file_inputs;
     queue_limit = e.queue_limit;
     admission_gather_ms = e.admission_gather_ms;
@@ -1639,6 +1673,8 @@ int main(int argc, char** argv) {
     model_alias = e.model_alias;
     prefill_budget_tokens = e.prefill_budget_tokens;
     prefill_idle_budget_tokens = e.prefill_idle_budget_tokens;
+    decode_passes_per_prefill = e.decode_passes_per_prefill;
+    prefill_order = e.prefill_order;
     prefix_min_tokens = e.prefix_min_tokens;
     prefix_head_snapshots = e.prefix_head_snapshots;
     bulk_pace_gbps = e.bulk_pace_gbps;
@@ -1708,6 +1744,7 @@ int main(int argc, char** argv) {
     else if (a == "--queue-limit") queue_limit = std::stoi(next());
     else if (a == "--admission-gather-ms") admission_gather_ms = std::stoi(next());
     else if (a == "--default-max-tokens") default_max_tokens = std::stoi(next());
+    else if (a == "--max-tokens-overflow") max_tokens_overflow = next();
     else if (a == "--max-connections") max_connections = std::stoi(next());
     else if (a == "--no-eos") no_eos = true;
     else if (a == "--decode-graph") decode_graph = true;
@@ -1747,6 +1784,8 @@ int main(int argc, char** argv) {
     else if (a == "--admission-window") admission_window = std::stoi(next());
     else if (a == "--prefill-budget-tokens") prefill_budget_tokens = std::stoi(next());
     else if (a == "--prefill-idle-budget-tokens") prefill_idle_budget_tokens = std::stoi(next());
+    else if (a == "--decode-passes-per-prefill") decode_passes_per_prefill = std::stoi(next());
+    else if (a == "--prefill-order") prefill_order = next();
     else if (a == "--prefix-min-tokens") prefix_min_tokens = std::stoi(next());
     else if (a == "--prefix-head-snapshots") prefix_head_snapshots = true;
     else if (a == "--no-prefix-head-snapshots") prefix_head_snapshots = false;
@@ -2297,6 +2336,26 @@ int main(int argc, char** argv) {
     DGPP_LOG_ERROR("--prefill-idle-budget-tokens must be 0 or at least the enabled busy budget, at most 1073741824");
     return 1;
   }
+  if (max_tokens_overflow != "refuse" && max_tokens_overflow != "clamp") {
+    DGPP_LOG_ERROR("--max-tokens-overflow must be refuse or clamp");
+    return 1;
+  }
+  if (decode_passes_per_prefill < 1 || decode_passes_per_prefill > 64) {
+    DGPP_LOG_ERROR("--decode-passes-per-prefill must be in [1, 64]");
+    return 1;
+  }
+  if (prefill_order != "fair" && prefill_order != "shortest") {
+    DGPP_LOG_ERROR("--prefill-order must be fair or shortest");
+    return 1;
+  }
+  if ((decode_passes_per_prefill > 1 || prefill_order != "fair") && world > 1) {
+    // The warm record does not carry these knobs yet, so the ranks could not
+    // check they agree on them: refuse rather than run a world whose ranks
+    // might tick differently.
+    DGPP_LOG_ERROR("engine.decode_passes_per_prefill above 1 and engine.prefill_order shortest are single-rank "
+                   "only for now (world_size {})", world);
+    return 1;
+  }
   if (prefix_min_tokens < 0 || prefix_min_tokens > (1 << 30)) {
     DGPP_LOG_ERROR("--prefix-min-tokens must be in [0, 1073741824]");
     return 1;
@@ -2349,7 +2408,8 @@ int main(int argc, char** argv) {
       DGPP_LOG_ERROR("engine.fp8_head mma requires the Qwen family and engine.dense_weights fp8");
       return 1;
     }
-    if (rope_scaling.has_value() && std::string(family->name()) != "qwen4_exp") {
+    if (rope_scaling.has_value() && std::string(family->name()) != "qwen4_exp" &&
+        std::string(family->name()) != "qwen3_next") {
       // A refused start, not a warning (review item 8, 2026-09-18): a WARN
       // scrolls past in a boot log and the world then serves with a knob the
       // operator asked for left unapplied — the same config digest on every
@@ -2359,8 +2419,8 @@ int main(int argc, char** argv) {
       // answer here is to stop and name what to change.
       DGPP_LOG_ERROR(
           "engine.rope_scaling is set but the loaded model is the {} family; this override "
-          "currently supports the Qwen3.8-Flash-Next family (qwen4_exp) only. Remove "
-          "engine.rope_scaling, or point --checkpoint at a Qwen3.8-Flash-Next checkpoint.",
+          "supports the Qwen3.8-Flash-Next (qwen4_exp) and Qwen3-Next (qwen3_next) families only. "
+          "Remove engine.rope_scaling, or point --checkpoint at one of those checkpoints.",
           family->name());
       return 1;
     }
@@ -2668,9 +2728,12 @@ int main(int argc, char** argv) {
     knobs.admission.window_tokens = admission_window;
     knobs.admission.prefill_budget_tokens = prefill_budget_tokens;
     knobs.admission.prefill_idle_budget_tokens = prefill_idle_budget_tokens;
+    knobs.admission.decode_passes_per_prefill = decode_passes_per_prefill;
+    knobs.admission.prefill_shortest_first = prefill_order == "shortest";
     knobs.admission.prefix_min_tokens = prefix_min_tokens;
     knobs.admission.prefix_head_snapshots = prefix_head_snapshots;
     knobs.default_max_tokens = default_max_tokens;
+    knobs.clamp_max_tokens = max_tokens_overflow == "clamp";
     knobs.file_inputs = file_inputs;
     knobs.sampling_defaults = sampling_defaults;
     knobs.fixed_seed = fixed_seed;
@@ -2794,11 +2857,14 @@ int main(int argc, char** argv) {
                                         &grammar_vocab, prefix_slots, mtp_depth, compact_batches);
           knobs.admission = dgpp::serve::resolve_prefill_policy(knobs.admission, *graph_engine->engine());
           peer_policy = knobs.admission;
-          DGPP_LOG_INFO("rank {}: prefill budget {} tokens/tick (0 = full prompt), {} with nothing decoding{}",
+          DGPP_LOG_INFO("rank {}: prefill budget {} tokens/tick (0 = full prompt), {} with nothing decoding{}; "
+                        "{} decode pass(es) per chunk while both are in flight; {}",
                         rank, knobs.admission.prefill_budget_tokens,
                         knobs.admission.prefill_idle_budget_tokens > 0 ? knobs.admission.prefill_idle_budget_tokens
                                                                        : knobs.admission.prefill_budget_tokens,
-                        graph_engine->engine()->prefill_group_advance() ? "; in-flight prompts share one walk" : "");
+                        graph_engine->engine()->prefill_group_advance() ? "; in-flight prompts share one walk" : "",
+                        knobs.admission.decode_passes_per_prefill,
+                        knobs.admission.prefill_shortest_first ? "shortest prompt read first" : "equal shares");
           // engine.logprobs_mode: how a sampled request's logprobs are reported.
           // raw needs the whole head on this rank, so "auto" is raw at world 1.
           if (graph_engine->engine()->supports_logprobs()) {

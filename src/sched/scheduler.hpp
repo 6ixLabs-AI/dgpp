@@ -410,6 +410,26 @@ struct AdmissionPolicy {
   int window_tokens = 256;  // grow: the initial headroom and the growth step
   int prefill_budget_tokens = 0;  // 0: monolithic; otherwise total prefill tokens per tick
   int prefill_idle_budget_tokens = 0;  // 0: use the same budget; otherwise larger chunks without active decode
+  // Decode passes per prefill chunk while both are in flight (6ixServe,
+  // 2026-10-04). 1 is the original loop: every tick reads a chunk, then runs
+  // one decode pass, so an answer in progress advances once per chunk walk.
+  // On the 80B a 256-token chunk walks most of the experts (about 0.25 s)
+  // against a 35 ms decode pass: under a retrieval benchmark's long prompts a
+  // chat stream ran at 8.6 tokens/s at budget 256, and 3.4 at 4096. With N,
+  // N - 1 ticks out of N skip admission and the chunk and only decode — the
+  // answers get N passes per chunk, the prompt is read that much slower, and
+  // only while something is decoding. A pure function of the tick sequence,
+  // so every rank takes the same ticks.
+  int decode_passes_per_prefill = 1;
+  // How a tick's prefill budget is split among the prompts being read in
+  // (6ixServe, 2026-10-04). false: equal shares, the original split. true:
+  // the prompt with the least left to read takes what it needs first, then
+  // the next — a chat message read beside two 100k-token batch prompts gets
+  // the whole budget instead of a third of it (measured on the 80B: a
+  // 17k-token prompt took 47 s to its first token on an equal share). A
+  // longer prompt waits while shorter ones keep arriving; that is the trade.
+  // Ties go to the earlier arrival. Not applied to an engine's group walk.
+  bool prefill_shortest_first = false;
   // The prefix cache's entry policy (2026-09-28), rank-identical like the
   // rest of the record. No snapshot below prefix_min_tokens: a 45-token
   // probe's entries must not push a 180K conversation out of the arena
@@ -423,6 +443,8 @@ struct AdmissionPolicy {
   bool operator==(const AdmissionPolicy& o) const {
     return mode == o.mode && window_tokens == o.window_tokens && prefill_budget_tokens == o.prefill_budget_tokens &&
            prefill_idle_budget_tokens == o.prefill_idle_budget_tokens &&
+           decode_passes_per_prefill == o.decode_passes_per_prefill &&
+           prefill_shortest_first == o.prefill_shortest_first &&
            prefix_min_tokens == o.prefix_min_tokens && prefix_head_snapshots == o.prefix_head_snapshots;
   }
   bool operator!=(const AdmissionPolicy& o) const { return !(*this == o); }
@@ -707,7 +729,8 @@ class Scheduler {
   // The oldest queued request whose reservation fits a free slot (no
   // head-of-line blocking), or -1. With the prefix cache on it may EVICT
   // unattached entries (LRU) to make the blocks a request needs.
-  int next_admissible();
+  // oneshot_budget >= 0: only requests a single tick reads in whole (no chunked read-in) are considered.
+  int next_admissible(int64_t oneshot_budget = -1);
   // The queued requests that admit together with `first` this tick: cold
   // prompts within the engine's group span limit, no prefix-cache plan,
   // fitting the free slots and blocks; empty when the engine has no group
@@ -738,7 +761,7 @@ class Scheduler {
   // either consumes the remaining cap. Other one-shots/groups must fit
   // the cap. Returns false when nothing admitted. A zero policy budget
   // retains one monolithic admission event per tick.
-  bool admit_fitting(int64_t& tick_cap, int64_t budget, bool first_prefill);
+  bool admit_fitting(int64_t& tick_cap, int64_t budget, bool first_prefill, bool oneshots_only = false);
   void step_batch(const std::vector<int>& arrivals);
   // Appends one token and applies terminal conditions in their canonical
   // order. Returns true when the request retired. `logprobs` (optional)
@@ -773,6 +796,7 @@ class Scheduler {
   std::vector<Result> results_;     // parallel to requests_
   int cursor_ = -1;                // last-stepped arrival (round-robin)
   int prefill_cursor_ = -1;        // last-advanced prefill (round-robin when the budget shrinks)
+  int decode_only_ticks_ = 0;      // ticks since the last prefill chunk that only decoded (decode_passes_per_prefill)
   int deferred_logged_ = -1;       // arrival of the current deferral log
   SchedulerObserver* observer_ = nullptr;
   bool keep_retired_ = true;       // the batch contract (set_keep_retired)

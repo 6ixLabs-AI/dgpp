@@ -163,6 +163,9 @@ struct ClusterConfig {
     // the A/B target applies YaRN from the launcher's --hf-overrides.
     std::optional<dgpp::RopeScaling> rope_scaling;
     int default_max_tokens = 256;
+    // "refuse" (a limit past the context is a 400) or "clamp" (cut it to the
+    // room the prompt leaves; the limit is a runaway stop, not a reservation).
+    std::string max_tokens_overflow = "refuse";
     FileInputConfig file_inputs;
     int queue_limit = 64;
     // Rank 0 holds the first arrival at an idle engine this long for the
@@ -228,6 +231,8 @@ struct ClusterConfig {
     int prefill_budget_tokens = -1;  // automatic on engines with resumable prefill
     std::string model_alias = "";  // override the served model name (display only)
     int prefill_idle_budget_tokens = 0;
+    int decode_passes_per_prefill = 1;  // decode passes per prefill chunk while both are in flight (1: the original loop)
+    std::string prefill_order = "fair";  // "fair": equal shares of a tick's budget; "shortest": least left to read first
     double bulk_pace_gbps = -1.0;  // derived from the port rate
     int bulk_inflight = -1;
     int rendezvous_timeout_ms = 120000;

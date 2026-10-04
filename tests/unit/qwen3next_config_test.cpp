@@ -4,11 +4,15 @@
 // table is the checkpoint's — 297,728 tensors for
 // nvidia/Qwen3-Next-80B-A3B-Instruct-NVFP4 @ 8fb2682f, counted from its
 // safetensors headers.
+#include <algorithm>
+#include <cmath>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 #include "common/test.hpp"
+#include "kernels/rope_scaling.hpp"
 #include "loaders/architecture.hpp"
 #include "loaders/minijson.hpp"
 #include "models/qwen/binding35.hpp"
@@ -296,4 +300,64 @@ DGPP_TEST(qwen3next_tp_geometry) {
     threw = true;
   }
   require(threw, "world 3 does not divide the heads");
+}
+
+// engine.rope_scaling on this dialect: the YaRN ramp over a PLAIN 1-D rope
+// (no mrope sections), so the correction band comes from the original
+// 262,144 positions — transformers' _compute_yarn_parameters and vLLM's
+// YaRNScalingRotaryEmbedding for this model. The table the full-attention
+// layers build is checked here against the formula restated in fp64, and
+// the config's ceiling against original x factor.
+DGPP_TEST(qwen3next_yarn_ramp_is_the_plain_rope_recipe) {
+  dgpp::Qwen35TextConfig c = parse(release_json());
+  require(c.context_limit() == 262144, "the checkpoint's own ceiling without the knob");
+  dgpp::RopeScaling rs;
+  rs.factor = 2.0;
+  rs.original_max_position_embeddings = c.max_position_embeddings;
+  rs.mrope_cache_factor = 1.0;  // what the server sets for this dialect
+  rs.validate("test");
+  c.rope_scaling = rs;
+  require(c.context_limit() == 524288, "factor 2 lifts one request to 524,288");
+  require(std::abs(static_cast<double>(rs.mscale()) - (0.1 * std::log(2.0) + 1.0)) < 1e-6,
+          "the attention factor is 0.1 ln(factor) + 1");
+  require(rs.correction_max_position() == 262144, "the band is computed from the original positions");
+
+  const int rotary = c.rotary_dim, half = rotary / 2;
+  require(rotary == 64, "partial rotary 0.25 of head_dim 256");
+  std::vector<float> inv(static_cast<size_t>(half));
+  dgpp::yarn_rope_inv_freq_host(rotary, c.rope_theta, rs.correction_max_position(), rs.factor,
+                                rs.beta_fast, rs.beta_slow, inv.data());
+  const double pi = 3.14159265358979323846;
+  const auto corrected = [&](double rotations) {
+    return rotary * std::log(262144.0 / (rotations * 2.0 * pi)) / (2.0 * std::log(c.rope_theta));
+  };
+  const int low = std::max(static_cast<int>(std::floor(corrected(32.0))), 0);
+  const int high = std::min(static_cast<int>(std::ceil(corrected(1.0))), rotary - 1);
+  require(low > 0 && high > low && high < half, "the band sits inside the table: " +
+                                                    std::to_string(low) + ".." + std::to_string(high));
+  int kept = 0, halved = 0;
+  for (int i = 0; i < half; ++i) {
+    const double plain = std::pow(c.rope_theta, -static_cast<double>(2 * i) / rotary);
+    const double ramp = std::min(std::max((static_cast<double>(i) - low) / (high - low), 0.0), 1.0);
+    const double want = plain / 2.0 * ramp + plain * (1.0 - ramp);
+    const double got = inv[static_cast<size_t>(i)];
+    require(std::abs(got - want) <= 4e-6 * want,
+            "entry " + std::to_string(i) + " differs from the recipe: " + std::to_string(got) + " vs " +
+                std::to_string(want));
+    if (i <= low) ++kept;
+    if (i >= high) ++halved;
+    if (i <= low) require(std::abs(got - plain) <= 4e-6 * plain, "high frequencies are kept");
+    if (i >= high) require(std::abs(got - plain / 2.0) <= 4e-6 * plain, "low frequencies are interpolated by the factor");
+  }
+  require(kept > 0 && halved > 0, "both ends of the ramp exist");
+
+  // The knob off: the plain table.
+  std::vector<float> plain_tbl(static_cast<size_t>(half));
+  dgpp::yarn_rope_inv_freq_host(rotary, c.rope_theta, /*correction_max_position=*/0, 1.0, 32.0, 1.0,
+                                plain_tbl.data());
+  for (int i = 0; i < half; ++i)
+    require(std::abs(plain_tbl[static_cast<size_t>(i)] -
+                     std::pow(c.rope_theta, -static_cast<double>(2 * i) / rotary)) <=
+                4e-6 * std::pow(c.rope_theta, -static_cast<double>(2 * i) / rotary),
+            "the plain table entry " + std::to_string(i));
 }

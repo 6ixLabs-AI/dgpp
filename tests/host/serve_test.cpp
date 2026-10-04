@@ -682,7 +682,8 @@ struct ServiceRig {
                       bool resumable_prefill = false, bool with_dsml = false,
                       std::string default_chat_template_kwargs = "{}",
                       int sse_ping_interval = dgpp::serve::kDefaultSsePingInterval,
-                      dgpp::text::DsmlDialect dsml_dialect = dgpp::text::DsmlDialect::kV41)
+                      dgpp::text::DsmlDialect dsml_dialect = dgpp::text::DsmlDialect::kV41,
+                      bool clamp_max_tokens = false)
       : engine(kSlots, /*total_blocks=*/100, /*block_tokens=*/4, can_sample),
         frontend(with_markers, with_dsml, dsml_dialect),
         cfg([&] {
@@ -702,6 +703,7 @@ struct ServiceRig {
           c.file_inputs = std::move(file_inputs);
           c.default_chat_template_kwargs = std::move(default_chat_template_kwargs);
           c.sse_ping_interval = sse_ping_interval;
+          c.clamp_max_tokens = clamp_max_tokens;
           return c;
         }()),
         service((engine.set_prefix_arena(prefix_slots, 4), cfg), &engine, &frontend, {kFakeEos}),
@@ -943,6 +945,32 @@ DGPP_TEST(serve_admission_refusesABudgetPastThePositionalCeiling) {
     require(fits.find("200 OK") != std::string::npos, "at the ceiling: " + fits.substr(0, 400));
   }
   require(rig.service.stats().requests_total == 2, "only the fitting requests reach admission");
+}
+
+DGPP_TEST(serve_admission_clampsABudgetPastThePositionalCeiling) {
+  // GIVEN the same 12-token ceiling with engine.max_tokens_overflow = clamp:
+  // the limit is a runaway stop, so a generous one is cut to the room the
+  // prompt leaves instead of refusing the request.
+  ServiceRig rig(8, dgpp::sample::greedy_params(), false, std::nullopt, false, false, {}, 0, {},
+                 std::nullopt, /*position_ceiling=*/12, /*kv_pool_tokens=*/400, false, false, "{}",
+                 dgpp::serve::kDefaultSsePingInterval, dgpp::text::DsmlDialect::kV41, /*clamp_max_tokens=*/true);
+  for (bool chat : {true, false}) {
+    Client c(rig.port());
+    const std::string body =
+        chat ? std::string("{\"model\":\"glm-5.3-flash-fp8\",\"messages\":[{\"role\":\"user\",\"content\":\"abcd\"}],\"max_tokens\":65536}")
+             : std::string("{\"model\":\"glm-5.3-flash-fp8\",\"prompt\":\"abcd\",\"max_tokens\":65536}");
+    c.send_all(std::string("POST ") + (chat ? "/v1/chat/completions" : "/v1/completions") +
+               " HTTP/1.1\r\nHost: t\r\nContent-Type: application/json\r\nContent-Length: " +
+               std::to_string(body.size()) + "\r\n\r\n" + body);
+    // WHEN a 4-id prompt asks for 65,536 tokens, THEN it is served, and stops
+    // at the ceiling: 8 tokens, finish_reason length.
+    const std::string served = c.read_until("\"total_tokens\"", 3000);
+    require(served.find("200 OK") != std::string::npos &&
+                served.find("\"finish_reason\":\"length\"") != std::string::npos &&
+                served.find("\"completion_tokens\":8") != std::string::npos,
+            "clamped to the ceiling: " + served.substr(0, 600));
+  }
+  require(rig.service.stats().requests_total == 2, "both clamped requests reach admission");
 }
 
 DGPP_TEST(serve_chatNonStream_exactCompletionShape) {

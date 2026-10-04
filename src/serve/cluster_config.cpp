@@ -286,6 +286,11 @@ ClusterConfig parse_cluster_config(const std::string& json, const std::string& w
           e.rope_scaling = rs;
         } else if (p.key == "default_max_tokens")
           e.default_max_tokens = static_cast<int>(integer(x, ek, what, 1, 1 << 30));
+        else if (p.key == "max_tokens_overflow") {
+          e.max_tokens_overflow = text(p.value, ek, what);
+          if (e.max_tokens_overflow != "refuse" && e.max_tokens_overflow != "clamp")
+            fail(what, "'" + ek + "' must be \"refuse\" or \"clamp\"");
+        }
         else if (p.key == "file_inputs") {
           if (!x.is_object()) fail(what, "engine.file_inputs must be an object");
           for (const auto& f : x.members()) {
@@ -359,6 +364,12 @@ ClusterConfig parse_cluster_config(const std::string& json, const std::string& w
         else if (p.key == "prefill_budget_tokens") e.prefill_budget_tokens = static_cast<int>(integer(x, ek, what, -1, 1 << 30));
         else if (p.key == "model_alias") e.model_alias = text(p.value, ek, what);
         else if (p.key == "prefill_idle_budget_tokens") e.prefill_idle_budget_tokens = static_cast<int>(integer(x, ek, what, 0, 1 << 30));
+        else if (p.key == "decode_passes_per_prefill") e.decode_passes_per_prefill = static_cast<int>(integer(x, ek, what, 1, 64));
+        else if (p.key == "prefill_order") {
+          e.prefill_order = text(p.value, ek, what);
+          if (e.prefill_order != "fair" && e.prefill_order != "shortest")
+            fail(what, "'" + ek + "' must be \"fair\" or \"shortest\"");
+        }
         else if (p.key == "bulk_pace_gbps") e.bulk_pace_gbps = number(x, ek, what);
         else if (p.key == "bulk_inflight") e.bulk_inflight = static_cast<int>(integer(x, ek, what, -1, 1 << 20));
         else if (p.key == "rendezvous_timeout_ms") e.rendezvous_timeout_ms = static_cast<int>(integer(x, ek, what, 1, 1 << 30));

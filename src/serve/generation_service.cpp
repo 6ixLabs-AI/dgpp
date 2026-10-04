@@ -1833,6 +1833,19 @@ bool GenerationService::validate_chat_parameters(const minijson::Value& body, Ht
   return true;
 }
 
+// engine.max_tokens_overflow = clamp: cut an answer limit that runs past the
+// positional ceiling or the pool to the room the prompt leaves. The pool's
+// room keeps a few tokens back for the speculative rows a decode pass stages
+// past the committed position. With no room the limit is left alone, and the
+// refusals after this call name what the prompt did not fit.
+void GenerationService::clamp_steps_to_context(int64_t prompt_tokens, int* steps) const {
+  if (!cfg_.clamp_max_tokens) return;
+  int64_t room = std::numeric_limits<int64_t>::max();
+  if (cfg_.position_ceiling > 0) room = std::min(room, cfg_.position_ceiling - prompt_tokens);
+  if (cfg_.kv_pool_tokens > 0) room = std::min(room, cfg_.kv_pool_tokens - prompt_tokens - 8);
+  if (room >= 1 && *steps > room) *steps = static_cast<int>(room);
+}
+
 bool GenerationService::parse_max_tokens(const minijson::Value& body, HttpResponseWriter& w,
                                          int* steps, bool chat) {
   const auto* modern = chat ? optional_field(body, "max_completion_tokens") : nullptr;
@@ -2060,6 +2073,7 @@ void GenerationService::route_chat_completions(const HttpRequest& req,
   popts.start_in_reasoning = opens_thinking;
   popts.model_may_open_thinking = markers_.prompt_leaves_thinking_to_model(prompt);
 
+  clamp_steps_to_context(static_cast<int64_t>(prompt.size()), &steps);
   // The positional ceiling (review item 7): a pool past it seats more
   // requests, never a longer one — beyond the ceiling the model has no
   // positions to encode and the engine stages no rows.
@@ -2272,6 +2286,7 @@ void GenerationService::route_completions(const HttpRequest& req,
                   "invalid_request_error", "prompt");
     return;
   }
+  clamp_steps_to_context(static_cast<int64_t>(ids.size()), &steps);
   if (cfg_.position_ceiling > 0 &&
       static_cast<int64_t>(ids.size()) + steps > cfg_.position_ceiling) {
     respond_error(w, 400,
@@ -2438,6 +2453,10 @@ void GenerationService::route_metrics_prometheus(HttpResponseWriter& w) {
             int64_t{policy.prefill_budget_tokens});
   out.gauge("dgpp_admission_prefill_idle_budget_tokens", "Prefill tokens per tick without active decode.",
             int64_t{policy.prefill_idle_budget_tokens});
+  out.gauge("dgpp_admission_decode_passes_per_prefill", "Decode passes per prefill chunk while both are in flight.",
+            int64_t{policy.decode_passes_per_prefill});
+  out.gauge("dgpp_admission_prefill_shortest_first", "1: a tick's prefill budget goes to the shortest remaining prompt first.",
+            int64_t{policy.prefill_shortest_first ? 1 : 0});
 
   // Occupancy.
   out.gauge("dgpp_num_requests_running", "Requests holding an engine slot (prefilling included).", int64_t{m.active});

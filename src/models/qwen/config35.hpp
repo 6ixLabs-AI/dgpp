@@ -12,8 +12,11 @@
 // SwiGLU MLP, between two RMSNorms. Text-only scope: vision_config is
 // ignored (image requests stay refused until the tower lands).
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
+
+#include "kernels/rope_scaling.hpp"
 
 #include "loaders/minijson.hpp"
 
@@ -116,7 +119,19 @@ struct Qwen35TextConfig {
   int num_full_layers() const;
   // Layer index of the MTP draft layer (num_hidden_layers), -1 when absent.
   int mtp_layer() const { return mtp_num_layers == 1 ? num_hidden_layers : -1; }
-  int64_t context_limit() const { return static_cast<int64_t>(max_position_embeddings); }
+  // The opt-in YaRN ramp (engine.rope_scaling), set by the serving layer on
+  // the parsed config for the Qwen3Next dialect — never by the checkpoint,
+  // whose rope must stay unscaled. Qwen validated this model to 1M tokens
+  // with YaRN (factor 4 over 262,144; factor 2 for 524,288). The full
+  // attention layers build the ramp's table and its attention scale from it
+  // (QwenFullAttnLayer); the GDN layers have no positions to scale. Empty =
+  // the plain table, bit for bit what this stack built before.
+  std::optional<RopeScaling> rope_scaling;
+  // One request's positional ceiling: the checkpoint's, or the ramp's.
+  int64_t context_limit() const {
+    return rope_scaling.has_value() ? rope_scaling->context_limit()
+                                    : static_cast<int64_t>(max_position_embeddings);
+  }
 };
 
 }  // namespace dgpp

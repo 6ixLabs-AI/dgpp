@@ -11,7 +11,7 @@
 //                        --ids 1,2,3,... | --ids-json FILE
 //                        [--topk K] [--layers N] [--resident] [--image-dir DIR|off]
 //                        [--dump-states FILE] [--plan SLOTS,CONTEXT]
-//                        [--dense-weights checkpoint|fp8]
+//                        [--dense-weights checkpoint|fp8] [--rope-scaling FACTOR]
 //
 // --layers N runs the first N layers (the head then reads a residual the
 //   checkpoint never trained it on: for layer-by-layer comparison only).
@@ -61,6 +61,7 @@ std::vector<int64_t> read_ids_json(const std::string& path) {
 
 int main(int argc, char** argv) {
   std::string model_id, ckpt, ids_text, ids_json, dump_states, image_dir, plan_text, dense_weights;
+  double rope_factor = 0.0;  // --rope-scaling: the YaRN factor (0: the plain rope)
   int topk = 5, layers = -1;
   bool resident = false;
   auto next = [&](int& i) -> std::string {
@@ -81,6 +82,7 @@ int main(int argc, char** argv) {
       else if (a == "--image-dir") image_dir = next(i);
       else if (a == "--plan") plan_text = next(i);
       else if (a == "--dense-weights") dense_weights = next(i);
+      else if (a == "--rope-scaling") rope_factor = std::stod(next(i));
       else throw std::runtime_error("unknown argument " + a);
     }
     if (ckpt.empty()) {
@@ -94,6 +96,21 @@ int main(int argc, char** argv) {
     if (arch != dgpp::ModelArchitecture::Qwen3_5 && arch != dgpp::ModelArchitecture::Qwen3Next)
       throw std::runtime_error("not a qwen3_5 or qwen3_next checkpoint: " + ckpt);
     dgpp::Qwen35TextConfig cfg = dgpp::Qwen35TextConfig::from_json_file(cfg_path);
+    // --rope-scaling FACTOR: the YaRN ramp as the server's engine.rope_scaling
+    // sets it on this dialect (plain 1-D rope: the band from the original
+    // positions), to check the ramp against tools/qwen3next_reference.py --yarn-factor.
+    if (rope_factor > 0.0) {
+      if (!cfg.next()) throw std::runtime_error("--rope-scaling is for the Qwen3-Next dialect");
+      dgpp::RopeScaling rs;
+      rs.factor = rope_factor;
+      rs.original_max_position_embeddings = cfg.max_position_embeddings;
+      rs.mrope_cache_factor = 1.0;
+      rs.validate("--rope-scaling");
+      cfg.rope_scaling = rs;
+      std::printf("rope scaling: yarn x%g over %d positions, mscale %.10g, context limit %lld\n", rs.factor,
+                  cfg.max_position_embeddings, static_cast<double>(rs.mscale()),
+                  static_cast<long long>(cfg.context_limit()));
+    }
     constexpr double kGiB = 1024.0 * 1024.0 * 1024.0;
     // engine.dense_weights: the block-FP8 lm head, and on the Qwen3Next
     // dialect the dense projections encoded to block FP8 at load.

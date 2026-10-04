@@ -52,6 +52,7 @@ QwenTextConfig qwen_text_adapter(const Qwen35TextConfig& c) {
   q.head_dim = c.head_dim;
   q.rotary_dim = c.rotary_dim;
   q.rope_theta = c.rope_theta;
+  q.rope_scaling = c.rope_scaling;  // the YaRN ramp, when the engine set one (QwenFullAttnLayer reads it)
   q.rms_norm_eps = c.rms_norm_eps;
   q.gdn_key_heads = c.gdn_key_heads;
   q.gdn_value_heads = c.gdn_value_heads;
@@ -295,7 +296,7 @@ Qwen35Model::Qwen35Model(const Qwen35TextConfig& cfg, const std::string& checkpo
   sp.hidden = H;
   sp.lm_vocab_begin = 0;
   sp.lm_vocab_count = cfg_.vocab_size;
-  sp.max_position_embeddings = cfg_.max_position_embeddings;
+  sp.max_position_embeddings = static_cast<int>(cfg_.context_limit());  // the ramp's ceiling under engine.rope_scaling
   sp.block_tokens = kv_block_tokens_static();
   sp.snapshot_align = 1;
   sp.draft_width = mtp_ ? H : 0;
@@ -933,7 +934,7 @@ MemoryPlan Qwen35Model::plan_memory(const Qwen35TextConfig& cfg, int max_tokens,
        kv_block_tokens_static()) *
       kv_block_tokens_static();
   MemoryPlan plan;
-  plan.context_tokens = std::min<int64_t>(cache_tokens, cfg.max_position_embeddings);
+  plan.context_tokens = std::min<int64_t>(cache_tokens, cfg.context_limit());
   const size_t M = static_cast<size_t>(max_tokens);
   const size_t H = static_cast<size_t>(cfg.hidden_size);
   // The MoE dialect has no dense MLP: no [M, I] intermediates, no per-tensor recipe.

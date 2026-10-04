@@ -87,6 +87,7 @@ for _v in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXP
 import argparse  # noqa: E402
 import glob  # noqa: E402
 import json  # noqa: E402
+import math  # noqa: E402
 import mmap  # noqa: E402
 import resource  # noqa: E402
 import struct  # noqa: E402
@@ -119,6 +120,9 @@ VARIANT_DEFAULTS = {
     "gdnnorm": "plain",    # plain: w | 1p: (1 + w)                      (the DeltaNet output norm)
     "qscale": "on",        # on: q *= 1/sqrt(128) in the DeltaNet | off
     "renorm": "on",        # on: top-k router weights renormalized | off
+    # Not a layout assumption either: the YaRN ramp (the engine's rope_scaling). 0: the plain rope;
+    # 2 or 4: Qwen's long-context recipe over max_position_embeddings (plain 1-D rope).
+    "yarn_factor": "0",
     # Not a layout assumption: an NVFP4 encode/decode round trip of BF16 matrices, to measure what
     # an engine that re-quantizes them to 4 bits at load (Atlas does) loses. none | atlas (= all
     # four classes) | any of qkv, qkvz, router, lm_head joined by '+'.
@@ -323,6 +327,7 @@ class Model:
         self.head_dim = c["head_dim"]
         self.rot_dim = int(self.head_dim * c.get("partial_rotary_factor", 1.0))
         self.theta = float(c["rope_theta"])
+        self.max_pos = int(c.get("max_position_embeddings", 262144))
         # gated deltanet
         self.nk = c["linear_num_key_heads"]
         self.nv = c["linear_num_value_heads"]
@@ -430,9 +435,28 @@ class Model:
         if self.var["rope"] == "none":
             return x
         inv = self.theta ** (-np.arange(h, dtype=np.float64) / h)       # theta^(-2i/rot_dim)
+        mscale = 1.0
+        yf = float(self.var.get("yarn_factor") or 0.0)
+        if yf > 1.0:
+            # YaRN, as transformers' _compute_yarn_parameters and vLLM's
+            # YaRNScalingRotaryEmbedding write it for a plain 1-D rope: interpolate the
+            # frequencies by `factor`, keep the high ones (extrapolation) through a linear
+            # ramp between the correction band's ends, and scale cos/sin by the attention
+            # factor 0.1 ln(factor) + 1.
+            orig = float(self.max_pos)
+            def corr_dim(rot):
+                return (r * math.log(orig / (rot * 2 * math.pi))) / (2 * math.log(self.theta))
+            low = max(math.floor(corr_dim(32.0)), 0)
+            high = min(math.ceil(corr_dim(1.0)), r - 1)
+            if low == high:
+                high += 0.001
+            ramp = np.clip((np.arange(h, dtype=np.float64) - low) / (high - low), 0.0, 1.0)
+            extrap = 1.0 - ramp                                          # 1: keep the original frequency
+            inv = (inv / yf) * (1.0 - extrap) + inv * extrap
+            mscale = 0.1 * math.log(yf) + 1.0
         ang = np.asarray(pos, np.float64)[:, None] * inv[None, :]        # [n, h]
-        cos = np.cos(ang).astype(self.dt)[:, None, :]
-        sin = np.sin(ang).astype(self.dt)[:, None, :]
+        cos = (np.cos(ang) * mscale).astype(self.dt)[:, None, :]
+        sin = (np.sin(ang) * mscale).astype(self.dt)[:, None, :]
         out = x.copy()
         if self.var["rope"] == "half":
             x1, x2 = x[..., :h], x[..., h:r]

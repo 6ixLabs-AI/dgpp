@@ -71,6 +71,7 @@ Rules that keep the numbers comparable:
 | key | moves | trades |
 |---|---|---|
 | `engine.prefill_budget_tokens`, `engine.prefill_idle_budget_tokens` (Qwen) | how many prompt rows a scheduler tick runs before yielding to live decodes | smaller budgets keep decodes moving under a long prompt; larger ones finish the prompt sooner; the idle budget applies when nothing else is live |
+| `engine.decode_passes_per_prefill` (6ixServe, world 1) | decode passes per prefill chunk while a prompt is read beside live answers | more passes keep a chat stream at reading speed under long prompts; the prompt is read slower for as long as something decodes |
 | `engine.admission`, `engine.admission_window` | grouping queued cold prompts into one forward pass | throughput against per-request latency; group admission is bitwise the prompts alone |
 | `engine.prefill` (DeepSeek) | `bounded` (the model's own recipe) or `exact` | about half the prefill work against parity with the full walk |
 | `engine.prefill_bf16_partials` (Qwen AutoRound hybrid) | the packed expert chain's down projection in bf16, partials summed from bf16 | −3 to −7 % cold prefill (2K to 32K); not bitwise the fp32 chain |

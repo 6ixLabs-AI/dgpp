@@ -171,6 +171,13 @@ struct ServiceConfig {
   // What /v1/models reports and what requests must name in "model".
   std::string model_id;
   int default_max_tokens = 256;  // when the request omits max_tokens
+  // engine.max_tokens_overflow = clamp (6ixServe, 2026-10-04): an answer
+  // limit that runs past the positional ceiling or the pool is cut to the
+  // room the prompt leaves, instead of refusing the request. The limit is a
+  // runaway stop, not a reservation: a client that sends a flat, generous
+  // one (or none, under a generous default) must not be refused for a long
+  // prompt. A prompt that leaves no room at all is still a 400.
+  bool clamp_max_tokens = false;
   int queue_limit = 64;          // admission bound; beyond → 503
   int admission_gather_ms = 3;   // an idle engine's wait for the rest of an arriving burst (0: none)
   int sse_ping_interval = kDefaultSsePingInterval;  // seconds; -1 disables
@@ -511,6 +518,7 @@ class GenerationService : public HttpHandler,
                   const std::vector<dgpp::PrefillMonitor::Request>& prefills) const;
   bool validate_chat_parameters(const minijson::Value& body, HttpResponseWriter& w);
   bool parse_max_tokens(const minijson::Value& body, HttpResponseWriter& w, int* steps, bool chat);
+  void clamp_steps_to_context(int64_t prompt_tokens, int* steps) const;
   // OpenAI's ignore_eos: generate to the token limit whatever is drawn.
   bool parse_ignore_eos(const minijson::Value& body, HttpResponseWriter& w, bool* ignore);
   bool parse_sse_ping_interval(const minijson::Value& body, HttpResponseWriter& w, bool stream,
