@@ -35,6 +35,8 @@ def question(seed, lines):
 def ask(a, prompt, max_tokens=12, stream_stats=False):
     body = {"model": a.model, "messages": [{"role": "user", "content": prompt}], "max_tokens": max_tokens,
             "temperature": 0, "logprobs": True, "top_logprobs": 1, "stream": True, "stream_options": {"include_usage": True}}
+    if a.thinking_off:
+        body["chat_template_kwargs"] = {"enable_thinking": False}
     req = urllib.request.Request(a.base + "/v1/chat/completions", json.dumps(body).encode(), {"Content-Type": "application/json"})
     t0, ttft, text, lps, usage = time.time(), None, [], [], {}
     with urllib.request.urlopen(req, timeout=900) as r:
@@ -79,6 +81,9 @@ def main():
     ap.add_argument("--model", required=True)
     ap.add_argument("--label", required=True)
     ap.add_argument("--out", required=True)
+    ap.add_argument("--thinking-off", action="store_true",
+                    help="send chat_template_kwargs.enable_thinking false: a model that reasons by default (Qwen3.5/3.6) "
+                         "spends these short answers' token budgets on reasoning otherwise, and every row fails")
     a = ap.parse_args()
     s0 = int(time.time()) % 40000 + 100
     fails, row = 0, {"label": a.label}

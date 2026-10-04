@@ -26,9 +26,12 @@ def filler(seed, lines):
                      for i in range(lines))
 
 
+EXTRA = {}      # merged into every request body (--thinking-off)
+
+
 def stream(base, body, deadline, timeout=900):
     """One streamed request. Returns (ttft_s, [gap_s between content chunks], usage, error)."""
-    body = dict(body, stream=True, stream_options={"include_usage": True})
+    body = dict(body, stream=True, stream_options={"include_usage": True}, **EXTRA)
     req = urllib.request.Request(base + "/v1/chat/completions", json.dumps(body).encode(), {"Content-Type": "application/json"})
     t0, last, ttft, gaps, usage = time.time(), None, None, [], {}
     try:
@@ -150,7 +153,12 @@ def main():
     ap.add_argument("--seconds", type=float, default=60)
     ap.add_argument("--phases", default="writers_alone,readers_alone,mixed",
                     help="which phases to run; writers_alone under someone else's load measures what a person chatting sees")
+    ap.add_argument("--thinking-off", action="store_true",
+                    help="send chat_template_kwargs.enable_thinking false: the gaps are measured between content chunks, "
+                         "and a model that reasons by default (Qwen3.5/3.6) streams reasoning first")
     a = ap.parse_args()
+    if a.thinking_off:
+        EXTRA["chat_template_kwargs"] = {"enable_thinking": False}
     every = {"writers_alone": (a.writers, 0), "readers_alone": (0, a.readers), "mixed": (a.writers, a.readers)}
     phases = [(n, *every[n]) for n in a.phases.split(",")]
     t0, err = time.time(), 0
