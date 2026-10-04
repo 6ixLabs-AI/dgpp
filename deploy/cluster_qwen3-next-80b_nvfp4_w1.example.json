@@ -15,13 +15,14 @@
     "prefix_cache_gib": 4,
     "admission": "grow",
     "admission_window": 256,
-    "prefill_budget_tokens": 256,
+    "prefill_budget_tokens": 1024,
     "model_alias": "Qwen3-Next-80B",
     "sampling_candidates": 128,
     "stats_interval_s": 10,
     "max_tokens_overflow": "clamp",
     "prefill_idle_budget_tokens": 4096,
-    "decode_passes_per_prefill": 4
+    "decode_passes_per_prefill": 8,
+    "prefill_order": "shortest"
   },
   "paths": {
     "resident_cache": ""
