@@ -2,7 +2,10 @@
 //
 // The Qwen3Next dialect (Qwen3-Next-80B-A3B, 2026-10-03) runs the same walk
 // with Flash-Next's routed MoE (QwenMoeLayer) in the dense MLP's place and
-// the checkpoint's BF16 projections bound as they ship (cfg.moe()).
+// the checkpoint's BF16 projections bound as they ship (cfg.moe()). So does
+// the Qwen3.5 dialect's own MoE model (Qwen3.6-35B-A3B, 2026-10-04): the
+// walk branches on the MLP's kind and on which form each resident matrix
+// carries, never on the dialect.
 //
 // 48 GDN layers (swish gate) + 16 Full GQA layers, dense SwiGLU MLPs. Text
 // only: no vision tower, no hyperconnections / PLE / MoE. GDN recurrent +
@@ -235,10 +238,12 @@ Qwen35Model::Qwen35Model(const Qwen35TextConfig& cfg, const std::string& checkpo
   if (cfg_.eos_token_ids.empty()) throw std::invalid_argument("Qwen35Model: the config names no EOS token");
   if (mtp_ && cfg_.mtp_layer() < 0)
     throw std::invalid_argument("Qwen35Model: the config has no draft layer (mtp)");
-  if (cfg_.next() && prefill_fp8_per_tensor_)
+  // The per-tensor recipe requantizes the dense stack's block-FP8 matrices,
+  // the dense MLP's among them: a routed MoE has no such MLP (either dialect).
+  if (cfg_.moe() && prefill_fp8_per_tensor_)
     throw std::invalid_argument(
-        "Qwen35Model: engine.prefill_fp8_per_tensor requantizes the FP8 release's matrices; the "
-        "Qwen3Next dialect ships BF16 and NVFP4 and has no per-tensor recipe");
+        "Qwen35Model: engine.prefill_fp8_per_tensor requantizes the dense FP8 release's matrices; a "
+        "routed-MoE checkpoint (Qwen3-Next, Qwen3.6-35B-A3B) has no per-tensor recipe");
   if (cfg_.next() && !dflash2_dir.empty())
     throw std::invalid_argument("Qwen35Model: the DFlash2 drafter is a Qwen3.8-27B drafter");
   if (cfg_.moe()) moe_cfg_ = moe_config35(cfg_);
@@ -939,7 +944,7 @@ MemoryPlan Qwen35Model::plan_memory(const Qwen35TextConfig& cfg, int max_tokens,
   const size_t H = static_cast<size_t>(cfg.hidden_size);
   // The MoE dialect has no dense MLP: no [M, I] intermediates, no per-tensor recipe.
   const size_t I = cfg.moe() ? 0 : static_cast<size_t>(cfg.intermediate_size);
-  const bool per_tensor = prefill_fp8_per_tensor_ && !cfg.next();
+  const bool per_tensor = prefill_fp8_per_tensor_ && !cfg.moe();
   if (residency == LoaderResidency::Resident) {
     plan.add("model weights (resident)",
              Qwen35LayerStream::resident_bytes(cfg, rank, world, head, mtp));

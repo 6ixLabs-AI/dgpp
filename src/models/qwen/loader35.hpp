@@ -184,13 +184,17 @@ struct Qwen35LayerStream : ResidentLayerStream<Qwen35LoaderFamily> {
   static void set_resident_image_dir(const std::string& dir);
   static const std::string& resident_image_dir();
   const std::string& image_dir() const override;
-  // The Qwen3Next dialect's dense stack form (engine.dense_weights): false =
-  // BF16 (the default); true = every dense projection (GDN qkv/z/out, the
-  // attention q/k/v/o, the shared expert) encoded to block FP8 at load, the
-  // form the Qwen3.5 release ships and the model's fp8 paths read. Process-
-  // wide; set before the stream is built — the byte formulas follow it, and
-  // it is part of loader_format(), so a resident image of one form is never
-  // restored for the other. The Qwen3.5 dialect is FP8 as shipped either way.
+  // The dense stack's form for what a checkpoint ships outside block FP8
+  // (engine.dense_weights): false = as shipped (BF16, or NVFP4 dequantized
+  // to BF16 — the default); true = every such dense projection (GDN
+  // qkv/z/out, the attention q/k/v/o, the shared expert) encoded to block FP8
+  // at load, the form the Qwen3.5 FP8 release ships and the model's fp8 paths
+  // read. That is the Qwen3Next dialect's whole dense stack, and the NVFP4
+  // mixed release's shared expert and draft layer. Process-wide; set before
+  // the stream is built — the byte formulas follow it, and it is part of
+  // loader_format(), so a resident image of one form is never restored for
+  // the other. A release that is block FP8 throughout loads the same bytes
+  // either way.
   static void set_dense_weights_fp8(bool on);
   static bool dense_weights_fp8();
 };

@@ -1,6 +1,8 @@
 #pragma once
 // Qwen3.8-27B (Qwen3_5ForConditionalGeneration) text-model configuration,
-// parsed from the checkpoint's config.json text_config. Same policy as the
+// parsed from the checkpoint's config.json text_config — and, with the
+// routed MoE in the dense MLP's place, Qwen3.6-35B-A3B's
+// (Qwen3_5MoeForConditionalGeneration, text_config type qwen3_5_moe_text). Same policy as the
 // other families: every field the assembly consumes is parsed into a
 // known-supported value or rejected with a message naming the field, at
 // load time. The reference is transformers' modular_qwen3_5.py.
@@ -26,7 +28,13 @@ enum class Qwen35LayerKind : int { Gdn, Full };
 
 enum class Qwen35QuantKind : int {
   Fp8Block,   // e4m3 + BF16 128x128 block scales, dynamic activations
-  Nvfp4Mixed, // compressed-tensors mixed: MLP nvfp4 group16, attn FP8, kv 8b hint
+  // The NVIDIA Qwen3.6-35B-A3B release (modelopt MIXED_PRECISION, 2026-10-04):
+  // an 8-bit float group — the GDN in_proj_qkv / in_proj_z / out_proj and the
+  // attention q/k/v/o as e4m3 codes x ONE F32 scale per tensor — and a 4-bit
+  // float group per 16 — the routed experts, the shared expert and the lm
+  // head as the modelopt NVFP4 set; the draft layer BF16 (its experts as two
+  // stacked tensors). The binding table exists for the MoE shape only.
+  Nvfp4Mixed,
   // The NVIDIA Qwen3-Next release (modelopt): the routed experts, the shared
   // expert, the attention o_proj and the GDN out_proj as e2m1 codes x e4m3
   // scales per 16 x an F32 per-tensor scale; every other matrix BF16.
@@ -90,7 +98,7 @@ struct Qwen35TextConfig {
   // --- dense SwiGLU MLP ----------------------------------------------------
   int intermediate_size = 17408;
 
-  // --- routed MoE (the Qwen3Next dialect; 0 experts = the dense MLP) ---------
+  // --- routed MoE (Qwen3Next, Qwen3_5Moe; 0 experts = the dense MLP) ---------
   // Softmax top-k routed experts plus a shared expert weighted by
   // sigmoid(x . g): Flash-Next's block (models/qwen/moe_layer.hpp) on the
   // plain residual. Every layer is sparse (decoder_sparse_step 1, no

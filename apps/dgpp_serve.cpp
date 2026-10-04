@@ -881,7 +881,9 @@ struct MimoFamily final : ServeFamily {
   }
 };
 
-// Qwen3.8-27B dense family (FP8 text-only, bf16 K/V pool, the MTP draft layer).
+// Qwen3.8-27B dense family (FP8 text-only, bf16 K/V pool, the MTP draft layer),
+// and on the same stack the routed-MoE models: the Qwen3Next dialect
+// (Qwen3-Next-80B-A3B, Qwen3-Coder-Next) and Qwen3.6-35B-A3B.
 // engine.dense_weights = fp8 requantizes its BF16 lm head to block FP8 and
 // engine.prefill_fp8_per_tensor selects the per-tensor prefill recipe; both
 // are static settings on Qwen35Model applied before the plan and the build.
@@ -926,12 +928,14 @@ struct Qwen35Family final : ServeFamily {
           rs.factor, rs.original_max_position_embeddings, rs.correction_max_position(), rs.beta_fast,
           rs.beta_slow, rs.attn_factor, static_cast<double>(rs.mscale()), cfg.context_limit());
     }
-    // engine.dense_weights = fp8 on the Qwen3Next dialect also encodes the
-    // checkpoint's BF16 / NVFP4 dense projections to block FP8 at load (the
-    // form this stack's decode paths are built around; the Qwen3.8-27B
-    // release ships FP8 already, so its stream keeps its image identity).
-    // Set before the memory plan and the loader read it.
-    if (cfg.next())
+    // engine.dense_weights = fp8 also encodes a checkpoint's BF16 / NVFP4
+    // dense projections to block FP8 at load (the form this stack's decode
+    // paths are built around): the Qwen3Next dialect's, and what the Qwen3.5
+    // dialect's NVFP4 mixed release ships outside FP8 (its shared expert and
+    // draft layer). A release that ships block FP8 throughout (Qwen3.8-27B,
+    // Qwen3.6-35B-A3B-FP8) has nothing to encode, and its stream keeps its
+    // image identity. Set before the memory plan and the loader read it.
+    if (cfg.next() || cfg.quant_kind != dgpp::Qwen35QuantKind::Fp8Block)
       dgpp::Qwen35LayerStream::set_dense_weights_fp8(dgpp::Qwen35Model::dense_weights_fp8());
     // Qwen3-Next-80B-Instruct can run past its answer into a fabricated next
     // turn; `<|im_start|>` opens one, so it ends the generation like an EOS

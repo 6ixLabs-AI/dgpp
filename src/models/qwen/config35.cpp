@@ -86,6 +86,32 @@ std::vector<int64_t> require_int_array(const minijson::Value& v, std::string_vie
   return out;
 }
 
+// The routed MoE's fields (Qwen3Next's flat config and Qwen3_5Moe's
+// text_config spell them alike): softmax top-k routed experts plus a shared
+// expert, every layer sparse. `v` is the object that holds them.
+void parse_moe_fields(const minijson::Value& v, Qwen35TextConfig& c) {
+  c.num_experts = require_int(v, "num_experts");
+  c.num_experts_per_tok = require_int(v, "num_experts_per_tok");
+  c.moe_intermediate_size = require_int(v, "moe_intermediate_size");
+  c.shared_expert_intermediate_size = require_int(v, "shared_expert_intermediate_size");
+  c.norm_topk_prob = optional_bool(v, "norm_topk_prob", true);
+  if (c.num_experts <= 0 || c.num_experts > 4096) reject("num_experts", "must be in [1, 4096]");
+  if (c.num_experts_per_tok <= 0 || c.num_experts_per_tok > c.num_experts ||
+      c.num_experts_per_tok > 16)
+    reject("num_experts_per_tok", "must be in [1, min(num_experts, 16)]");
+  if (c.moe_intermediate_size <= 0 || c.moe_intermediate_size % 16 != 0)
+    reject("moe_intermediate_size", "must be a positive multiple of 16");
+  if (c.shared_expert_intermediate_size <= 0 || c.shared_expert_intermediate_size % 16 != 0)
+    reject("shared_expert_intermediate_size", "must be a positive multiple of 16");
+  if (!c.norm_topk_prob) reject("norm_topk_prob", "the router renormalizes the top-k (true)");
+  if (optional_int(v, "decoder_sparse_step", 1) != 1)
+    reject("decoder_sparse_step", "every layer is a routed MoE (1)");
+  if (const minijson::Value* mo = v.find("mlp_only_layers"); mo && !mo->is_null()) {
+    if (!mo->is_array()) reject("mlp_only_layers", "not an array");
+    if (!mo->items().empty()) reject("mlp_only_layers", "dense-MLP layers are not implemented");
+  }
+}
+
 std::string read_file(const std::string& path) {
   FILE* f = std::fopen(path.c_str(), "rb");
   if (!f)
@@ -105,9 +131,13 @@ Qwen35TextConfig Qwen35TextConfig::parse(const minijson::Value& tc,
                                         const minijson::Value* quantization_config) {
   if (!tc.is_object()) reject("text_config", "not an object");
   Qwen35TextConfig c;
+  // qwen3_5_text: the dense family (Qwen3.8-27B). qwen3_5_moe_text: the same
+  // stack with the routed MoE in the dense MLP's place
+  // (Qwen3_5MoeForConditionalGeneration: Qwen3.6-35B-A3B).
   const std::string model_type = optional_string(tc, "model_type", "qwen3_5_text");
-  if (model_type != "qwen3_5_text")
-    reject("model_type", "expected qwen3_5_text, got " + model_type);
+  if (model_type != "qwen3_5_text" && model_type != "qwen3_5_moe_text")
+    reject("model_type", "expected qwen3_5_text or qwen3_5_moe_text, got " + model_type);
+  const bool moe = model_type == "qwen3_5_moe_text";
 
   c.hidden_size = require_int(tc, "hidden_size");
   c.vocab_size = require_int(tc, "vocab_size");
@@ -226,9 +256,19 @@ Qwen35TextConfig Qwen35TextConfig::parse(const minijson::Value& tc,
   if (!c.attn_output_gate)
     reject("attn_output_gate", "the checkpoint stacks [q | gate] in q_proj");
 
-  // --- dense MLP ----------------------------------------------------------------
-  c.intermediate_size = require_int(tc, "intermediate_size");
-  if (c.intermediate_size <= 0) reject("intermediate_size", "must be positive");
+  // --- the MLP: dense SwiGLU, or the routed MoE -------------------------------------
+  if (moe) {
+    // Qwen3_5MoeTopKRouter always renormalizes its top-k and every layer is
+    // sparse; the config carries neither switch, and one that did would be
+    // held to those values.
+    c.intermediate_size = optional_int(tc, "intermediate_size", 0);  // unused: no dense layer
+    parse_moe_fields(tc, c);
+  } else {
+    c.intermediate_size = require_int(tc, "intermediate_size");
+    if (c.intermediate_size <= 0) reject("intermediate_size", "must be positive");
+    if (optional_int(tc, "num_experts", 0) != 0)
+      reject("num_experts", "a routed MoE needs model_type qwen3_5_moe_text");
+  }
 
   // --- MTP ----------------------------------------------------------------------
   c.mtp_num_layers = optional_int(tc, "mtp_num_hidden_layers", 0);
@@ -250,8 +290,11 @@ Qwen35TextConfig Qwen35TextConfig::parse(const minijson::Value& tc,
     const minijson::Value& q = *quantization_config;
     if (const minijson::Value* groups = q.find("config_groups");
         groups != nullptr && groups->is_object()) {
-      // The NVFP4 mixed release (compressed-tensors / modelopt): group_1 is
-      // the MLP's 4-bit float per 16; the loader slice interprets the rest.
+      // The NVFP4 mixed release (modelopt MIXED_PRECISION, config35.hpp):
+      // group_0 is the 8-bit float class (per-tensor FP8: the GDN and
+      // attention projections), group_1 the 4-bit float per 16 (NVFP4: the
+      // experts, the shared expert, the head). The binding table holds the
+      // checkpoint to which tensor is in which.
       const minijson::Value* g1 = groups->find("group_1");
       const minijson::Value* w = g1 != nullptr ? g1->find("weights") : nullptr;
       if (w == nullptr || !w->is_object())
@@ -260,6 +303,13 @@ Qwen35TextConfig Qwen35TextConfig::parse(const minijson::Value& tc,
       const int64_t group = require_int(*w, "group_size");
       if (bits != 4 || group != 16)
         throw std::runtime_error("Qwen3.5 quantization_config.config_groups: only NVFP4 (4-bit, group 16) is implemented");
+      const minijson::Value* g0 = groups->find("group_0");
+      const minijson::Value* w0 = g0 != nullptr ? g0->find("weights") : nullptr;
+      if (w0 == nullptr || !w0->is_object() || require_int(*w0, "num_bits") != 8 ||
+          optional_string(*w0, "type", "float") != "float")
+        throw std::runtime_error(
+            "Qwen3.5 quantization_config.config_groups: group_0.weights must be the 8-bit float "
+            "class (FP8) beside group_1's NVFP4");
       c.quant_kind = Qwen35QuantKind::Nvfp4Mixed;
       return c;
     }
@@ -396,26 +446,7 @@ Qwen35TextConfig Qwen35TextConfig::parse_qwen3_next(const minijson::Value& root)
 
   // --- routed MoE ---------------------------------------------------------------
   c.intermediate_size = optional_int(root, "intermediate_size", 0);  // unused: no dense layer
-  c.num_experts = require_int(root, "num_experts");
-  c.num_experts_per_tok = require_int(root, "num_experts_per_tok");
-  c.moe_intermediate_size = require_int(root, "moe_intermediate_size");
-  c.shared_expert_intermediate_size = require_int(root, "shared_expert_intermediate_size");
-  c.norm_topk_prob = optional_bool(root, "norm_topk_prob", true);
-  if (c.num_experts <= 0 || c.num_experts > 4096) reject("num_experts", "must be in [1, 4096]");
-  if (c.num_experts_per_tok <= 0 || c.num_experts_per_tok > c.num_experts ||
-      c.num_experts_per_tok > 16)
-    reject("num_experts_per_tok", "must be in [1, min(num_experts, 16)]");
-  if (c.moe_intermediate_size <= 0 || c.moe_intermediate_size % 16 != 0)
-    reject("moe_intermediate_size", "must be a positive multiple of 16");
-  if (c.shared_expert_intermediate_size <= 0 || c.shared_expert_intermediate_size % 16 != 0)
-    reject("shared_expert_intermediate_size", "must be a positive multiple of 16");
-  if (!c.norm_topk_prob) reject("norm_topk_prob", "the router renormalizes the top-k (true)");
-  if (optional_int(root, "decoder_sparse_step", 1) != 1)
-    reject("decoder_sparse_step", "every layer is a routed MoE (1)");
-  if (const minijson::Value* mo = root.find("mlp_only_layers"); mo && !mo->is_null()) {
-    if (!mo->is_array()) reject("mlp_only_layers", "not an array");
-    if (!mo->items().empty()) reject("mlp_only_layers", "dense-MLP layers are not implemented");
-  }
+  parse_moe_fields(root, c);
 
   // --- quantization ---------------------------------------------------------------
   // Two NVFP4 containers of this model class are implemented, told apart by

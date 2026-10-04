@@ -1,7 +1,8 @@
 #pragma once
 // Synthetic mini-checkpoints for the qwen3_5 stack's later ports (2026-10-04:
 // Qwen3-Coder-Next's compressed-tensors NVFP4 container on the Qwen3Next
-// dialect): a small config written as config.json and its binding table
+// dialect; Qwen3.6-35B-A3B's two containers on the Qwen3.5 dialect with the
+// routed MoE): a small config written as config.json and its binding table
 // written as one safetensors shard, so fixture and table cannot disagree.
 // Values are deterministic per tensor name (glm_rng's scheme); the fixture
 // keeps every tensor's bytes so a test can state what the loader must hold.
@@ -55,6 +56,41 @@ inline const char* coder_next_config_json() {
 })json";
 }
 
+// Qwen3.6-35B-A3B: the nested config with the routed MoE and a draft layer,
+// around a quantization_config — the modelopt NVFP4 mixed recipe or the FP8
+// release's.
+inline std::string qwen36_config_json(const char* quantization_config) {
+  return std::string(R"json({
+  "architectures": ["Qwen3_5MoeForConditionalGeneration"], "model_type": "qwen3_5_moe",
+  "text_config": {
+    "model_type": "qwen3_5_moe_text", "attention_bias": false, "attn_output_gate": true,
+    "bos_token_id": 1, "eos_token_id": 1, "full_attention_interval": 4, "head_dim": 256,
+    "hidden_act": "silu", "hidden_size": 256,
+    "layer_types": ["linear_attention", "linear_attention", "linear_attention", "full_attention"],
+    "linear_conv_kernel_dim": 4, "linear_key_head_dim": 128, "linear_num_key_heads": 4,
+    "linear_num_value_heads": 8, "linear_value_head_dim": 128, "mamba_ssm_dtype": "float32",
+    "max_position_embeddings": 4096, "moe_intermediate_size": 64, "mtp_num_hidden_layers": 1,
+    "mtp_use_dedicated_embeddings": false, "num_attention_heads": 4, "num_experts": 4,
+    "num_experts_per_tok": 2, "num_hidden_layers": 4, "num_key_value_heads": 2,
+    "rms_norm_eps": 1e-06,
+    "rope_parameters": {"mrope_interleaved": true, "mrope_section": [11, 11, 10],
+                        "partial_rotary_factor": 0.25, "rope_theta": 10000000, "rope_type": "default"},
+    "shared_expert_intermediate_size": 512, "tie_word_embeddings": false, "vocab_size": 64},
+  "vision_config": {"depth": 2},
+  "quantization_config": )json") + quantization_config + "\n}";
+}
+inline const char* kQuantModeloptMixed = R"json({
+    "config_groups": {
+      "group_0": {"input_activations": {"dynamic": false, "num_bits": 8, "type": "float"},
+                  "weights": {"dynamic": false, "num_bits": 8, "type": "float"}},
+      "group_1": {"input_activations": {"dynamic": false, "num_bits": 4, "type": "float", "group_size": 16},
+                  "weights": {"dynamic": false, "num_bits": 4, "type": "float", "group_size": 16}}},
+    "ignore": ["mtp.layers.0*", "mtp*"], "quant_algo": "MIXED_PRECISION",
+    "producer": {"name": "modelopt", "version": "0.37.0"}, "quant_method": "modelopt"})json";
+inline const char* kQuantFp8Block = R"json({
+    "activation_scheme": "dynamic", "fmt": "e4m3", "quant_method": "fp8",
+    "weight_block_size": [128, 128]})json";
+
 struct Fixture {
   Qwen35TextConfig cfg;
   std::string dir;
@@ -87,20 +123,30 @@ inline std::vector<uint8_t> tensor_bytes(const QwenExpectedTensor& e, const Qwen
   for (size_t i = 0; i < n; ++i) {
     switch (e.dtype) {
       case dgpp::DType::BF16: {
-        const uint16_t bits = dgpp::float_to_bf16_bits(0.05f * rng.normal3());
+        // A block-FP8 scale partner is a positive scale; the rest are weights.
+        const float v = e.role == QwenTensorRole::Fp8Scale ? 0.004f + 0.002f * rng.unit()
+                                                           : 0.05f * rng.normal3();
+        const uint16_t bits = dgpp::float_to_bf16_bits(v);
         std::memcpy(&out[i * 2], &bits, 2);
         break;
       }
       case dgpp::DType::U8:  // two e2m1 codes: every byte is valid
         out[i] = static_cast<uint8_t>(rng.next() & 0xFFu);
         break;
-      case dgpp::DType::F8_E4M3:  // a positive block scale in [2^-3, 2^2): never the NaN code
-        out[i] = static_cast<uint8_t>(0x20u + (rng.next() % 0x28u));
+      case dgpp::DType::F8_E4M3:
+        if (e.role == QwenTensorRole::Fp8Payload) {  // an FP8 weight code: any but the two NaN codes
+          uint8_t b = static_cast<uint8_t>(rng.next() & 0xFFu);
+          if ((b & 0x7Fu) == 0x7Fu) b ^= 0x01u;
+          out[i] = b;
+        } else {  // an NVFP4 block scale in [2^-3, 2^2): positive, never the NaN code
+          out[i] = static_cast<uint8_t>(0x20u + (rng.next() % 0x28u));
+        }
         break;
       case dgpp::DType::F32: {
         // The NVFP4 per-tensor scale: modelopt's small multiplier, or
         // compressed-tensors' large divisor. Every other scalar: positive.
         float v = 0.5f + 0.25f * rng.unit();
+        if (e.role == QwenTensorRole::Fp8TensorScale) v = 0.004f + 0.002f * rng.unit();
         if (e.role == QwenTensorRole::Fp4Global)
           v = cfg.quant_kind == dgpp::Qwen35QuantKind::Nvfp4Packed ? 400.0f + 100.0f * rng.unit()
                                                                  : 0.002f + 0.001f * rng.unit();
@@ -148,6 +194,13 @@ inline Fixture write_fixture(const std::string& dir, const char* config_json) {
               std::to_string(data.size() + b.size()) + "]}";
     data.insert(data.end(), b.begin(), b.end());
     fx.src.emplace(e.name, std::move(b));
+  }
+  // The Qwen3.5 dialect's checkpoints carry a vision tower the text stack
+  // skips: one such tensor beside the table.
+  if (!fx.cfg.next()) {
+    header += ",\"model.visual.patch_embed.proj.weight\":{\"dtype\":\"BF16\",\"shape\":[4,2],\"data_offsets\":[" +
+              std::to_string(data.size()) + "," + std::to_string(data.size() + 16) + "]}";
+    data.insert(data.end(), 16, uint8_t{0});
   }
   header += "}";
   std::FILE* f = std::fopen((root / "model.safetensors").c_str(), "wb");

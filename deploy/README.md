@@ -12,7 +12,7 @@ user and the ports from the site's `.env` (`scripts/site_env.py`).
 
 - Model names are `glm-5.3-flash`, `glm-5.3` (the full model), `glm-4.7`,
   `qwen-3.8-flash-next`, `qwen3.8-27b`, `qwen3-next-80b`, `qwen3-coder-next`,
-  `deepseek-v4.1-flash` and `mimo-v2.6-flash`.
+  `qwen3.6-35b-a3b`, `deepseek-v4.1-flash` and `mimo-v2.6-flash`.
 - The quant names the checkpoint representation: `fp8`, `nvfp4`,
   `nvfp4-fp8` for the custom GLM-5.3-Flash hybrid, `int4-int8` for the full
   GLM-5.3's pack-quantized release (int4 group-64 routed experts, int8
@@ -60,6 +60,8 @@ a template does not name are knobs appended at boot:
 | [cluster_qwen3-next-80b_nvfp4_w1.example.json](cluster_qwen3-next-80b_nvfp4_w1.example.json) | Qwen3-Next-80B-A3B-Instruct NVFP4 on one Spark (the Qwen3Next dialect of the `qwen3_5` stack, [6IXSERVE.md](../6IXSERVE.md)): MTP depth 2, the dense projections and the head FP8 at load, eight request slots, a 524288-token pool, interleaved prefill (256-token busy / 4096-token idle budgets, four decode passes a chunk), answer limits clamped | the BF16 dense stack: `--dense-weights checkpoint`; T=1: `--no-mtp` |
 | [cluster_qwen3-next-80b_nvfp4_w1_yarn512k.example.json](cluster_qwen3-next-80b_nvfp4_w1_yarn512k.example.json) | the same with the opt-in YaRN ramp (`engine.rope_scaling` yarn ×2 over the checkpoint's 262 144 positions: one request reaches 524 288 tokens), four request slots, a 565 248-token pool; unit-tested, not yet verified on a GPU | the plain 262K template: [cluster_qwen3-next-80b_nvfp4_w1.example.json](cluster_qwen3-next-80b_nvfp4_w1.example.json) |
 | [cluster_qwen3-coder-next_nvfp4_w1.example.json](cluster_qwen3-coder-next_nvfp4_w1.example.json) | Qwen3-Coder-Next on one Spark from `RedHatAI/Qwen3-Coder-Next-NVFP4` (the same model class in its compressed-tensors NVFP4 container: attention q/k/v/o, shared expert and routed experts NVFP4, the Gated DeltaNet and the router BF16): no draft layer in the checkpoint, so no MTP — the plain decode graph; the 80B template's slots, pool and prefill budgets; tool calls in the template's `<function=...>` XML form. Written 2026-10-04 from the checkpoint's headers; NOT yet run on a GPU | the BF16 dense stack (the checkpoint's own values, no FP8 re-encode): `--dense-weights checkpoint` |
+| [cluster_qwen3.6-35b-a3b_nvfp4_w1.example.json](cluster_qwen3.6-35b-a3b_nvfp4_w1.example.json) | Qwen3.6-35B-A3B on one Spark from `nvidia/Qwen3.6-35B-A3B-NVFP4` (the Qwen3.5 dialect of the `qwen3_5` stack with the routed MoE: 256 experts top-8; modelopt mixed precision — NVFP4 experts, shared expert and head, per-tensor FP8 Gated-DeltaNet and attention projections, a BF16 draft layer): MTP depth 2 with the decode graph, eight request slots, a 262144-token pool, about 21 GiB of weights; text only (the vision tower is not served). Written 2026-10-04 from the checkpoint's headers; NOT yet run on a GPU | the shared expert and draft layer as shipped: `--dense-weights checkpoint`; T=1: `--no-mtp` |
+| [cluster_qwen3.6-35b-a3b_fp8_w1.example.json](cluster_qwen3.6-35b-a3b_fp8_w1.example.json) | the same model from `Qwen/Qwen3.6-35B-A3B-FP8` (block FP8 throughout, the routed experts and the draft layer included; about 34 GiB of weights): the same shape; `dense_weights: "fp8"` requantizes the BF16 head alone. NOT yet run on a GPU | the checkpoint's BF16 head: `--dense-weights checkpoint`; T=1: `--no-mtp` |
 
 The Qwen NVFP4 templates use `engine.fp8_head: "mma"` after matched
 [real-checkpoint numerical checks](../benchmarks/results/2026-09-21-qwen-fp8-head-numerics.md)

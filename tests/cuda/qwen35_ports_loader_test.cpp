@@ -11,6 +11,15 @@
 //   the rank slices at worlds 2 and 4 tile the world-1 layers;
 //   the FP8 form of the dense stack is the block-FP8 encode of the BF16
 //   form's matrices and leaves the rest of the layer alone.
+// Qwen3.6-35B-A3B (the Qwen3.5 dialect with the routed MoE), both containers:
+//   the NVFP4 mixed release — the per-tensor FP8 projections' codes as
+//   shipped under a scale grid that holds the tensor's one scale everywhere,
+//   the modelopt NVFP4 experts as shipped with the reciprocal of their
+//   multiplier, the shared expert and the lm head dequantized by the modelopt
+//   formula, the BF16 draft layer with each expert's slice of the two stacked
+//   tensors encoded to block FP8, the vision tensor skipped;
+//   the FP8 release — every matrix's codes as shipped and its BF16 block
+//   scales widened, the experts and the draft layer included.
 // The stream throws on any drift between its byte formulas, its planned
 // source bytes and what a build used, so every load here is that check too.
 #include <cmath>
@@ -448,6 +457,356 @@ DGPP_TEST(qwen3codernext_loader_fp8_form_is_the_encode_of_the_bf16_form) {
         require(r.bytes < want.bytes, "layer " + std::to_string(l) + at + ": the FP8 form is smaller");
       }
     }
+}
+
+// ---- Qwen3.6-35B-A3B -------------------------------------------------------------
+
+namespace {
+
+Fixture qwen36_fixture(const char* quant, const char* dir) {
+  return qwen35portsfx::write_fixture((fs::current_path() / dir).string(),
+                                      qwen35portsfx::qwen36_config_json(quant).c_str());
+}
+
+// The modelopt NVFP4 matrix `base` [N, K] of the fixture as BF16:
+// bf16((code x block scale) x weight_scale_2).
+std::vector<uint16_t> modelopt_matrix(const Fixture& fx, const std::string& base, int64_t N, int64_t K) {
+  const std::vector<uint8_t>& codes = fx.bytes(base + ".weight");
+  const std::vector<uint8_t>& scales = fx.bytes(base + ".weight_scale");
+  const float ws2 = fx.f32(base + ".weight_scale_2");
+  require(static_cast<int64_t>(codes.size()) == N * K / 2, base + ": fixture geometry");
+  std::vector<uint16_t> out(static_cast<size_t>(N * K));
+  for (int64_t n = 0; n < N; ++n)
+    for (int64_t k = 0; k < K; ++k) {
+      const uint8_t byte = codes[static_cast<size_t>(n * (K / 2) + k / 2)];
+      const uint8_t code = (k & 1) ? static_cast<uint8_t>(byte >> 4) : static_cast<uint8_t>(byte & 0xF);
+      const float block = e2m1(code) * e4m3(scales[static_cast<size_t>(n * (K / 16) + k / 16)]);
+      out[static_cast<size_t>(n * K + k)] = dgpp::float_to_bf16_bits(block * ws2);
+    }
+  return out;
+}
+
+// A block-form FP8 resident against its expectation: the codes, and the
+// scale grid as F32.
+void require_fp8(const GlmQuantMatrix& q, int64_t rows, int64_t cols, const std::vector<uint8_t>& codes,
+                 const std::vector<float>& scales, const std::string& what) {
+  require(q.rows == rows && q.cols == cols, what + ": shape");
+  require(down(q.payload, static_cast<size_t>(rows * cols), what) == codes, what + ": codes");
+  const size_t blocks = static_cast<size_t>(q.scale_rows() * q.scale_cols());
+  require(blocks == scales.size(), what + ": scale grid size " + std::to_string(blocks));
+  const std::vector<float> got = down(q.scales, blocks, what);
+  require(std::memcmp(got.data(), scales.data(), blocks * 4) == 0, what + ": scales");
+}
+
+// A per-tensor FP8 projection: the codes as shipped, every block the tensor's scale.
+void require_fp8_tensor(const Fixture& fx, const GlmQuantMatrix& q, const std::string& base, int64_t rows,
+                        int64_t cols, const std::string& what) {
+  const std::vector<float> scales(static_cast<size_t>(((rows + 127) / 128) * ((cols + 127) / 128)),
+                                  fx.f32(base + ".weight_scale"));
+  require(q.scale_block_rows == 128 && q.scale_block_cols == 128, what + ": the 128 x 128 grid");
+  require_fp8(q, rows, cols, fx.bytes(base + ".weight"), scales, what);
+}
+
+// A block-FP8 matrix of the FP8 release: the codes as shipped, the BF16 scales widened.
+void require_fp8_block(const Fixture& fx, const GlmQuantMatrix& q, const std::string& name, int64_t rows,
+                       int64_t cols, const std::string& what) {
+  std::vector<float> scales;
+  for (const uint16_t b : fx.bf16(name + "_scale_inv")) scales.push_back(dgpp::bf16_bits_to_float(b));
+  require_fp8(q, rows, cols, fx.bytes(name), scales, what);
+}
+
+// The block-FP8 encode of a BF16 [rows, cols] matrix (loaders/fp8_quant.hpp).
+void require_fp8_encode(const GlmQuantMatrix& q, const std::vector<uint16_t>& bf16, int64_t rows, int64_t cols,
+                        const std::string& what) {
+  std::vector<uint8_t> codes(static_cast<size_t>(rows * cols));
+  std::vector<float> scales(static_cast<size_t>(((rows + 127) / 128) * ((cols + 127) / 128)));
+  dgpp::fp8_quant::encode_block128(bf16.data(), static_cast<size_t>(cols), rows, cols, codes.data(),
+                                   scales.data(), /*threads=*/1);
+  require_fp8(q, rows, cols, codes, scales, what);
+}
+
+// The GDN and attention norms and BF16 leftovers every container shares.
+void require_gdn_bf16_parts(const Fixture& fx, const Qwen35LayerResident& r, const std::string& g,
+                            const std::string& at) {
+  const Qwen35TextConfig& c = fx.cfg;
+  const size_t H = static_cast<size_t>(c.hidden_size), vh = static_cast<size_t>(c.gdn_value_heads);
+  require(down(r.gdn.in_proj_a, vh * H, "a") == fx.bf16(g + "in_proj_a.weight") &&
+              down(r.gdn.in_proj_b, vh * H, "b") == fx.bf16(g + "in_proj_b.weight"),
+          at + "in_proj_a / in_proj_b");
+  require(down(r.gdn.conv, fx.bytes(g + "conv1d.weight").size() / 2, "conv") == fx.bf16(g + "conv1d.weight"),
+          at + "conv");
+  require(down(r.gdn.norm, static_cast<size_t>(c.gdn_value_head_dim), "norm") == fx.bf16(g + "norm.weight"),
+          at + "gdn norm");
+  const std::vector<uint16_t> a_log = fx.bf16(g + "A_log"), dt = fx.bf16(g + "dt_bias");
+  const std::vector<float> got_a = down(r.gdn.a_log, a_log.size(), "a_log");
+  const std::vector<float> got_d = down(r.gdn.dt_bias, dt.size(), "dt_bias");
+  for (size_t i = 0; i < a_log.size(); ++i)
+    require(got_a[i] == dgpp::bf16_bits_to_float(a_log[i]) && got_d[i] == dgpp::bf16_bits_to_float(dt[i]),
+            at + "A_log and dt_bias widened");
+}
+
+}  // namespace
+
+DGPP_TEST(qwen36_nvfp4_mixed_loader_resident_values_are_the_checkpoints) {
+  const Fixture fx = qwen36_fixture(qwen35portsfx::kQuantModeloptMixed, "qwen36_nvfp4_loader_fixture");
+  const Qwen35TextConfig& c = fx.cfg;
+  require(!c.next() && c.moe() && c.quant_kind == dgpp::Qwen35QuantKind::Nvfp4Mixed && c.mtp_layer() == 4,
+          "the fixture's dialect and recipe");
+  const int64_t H = c.hidden_size, d = c.head_dim, E = c.num_experts, I = c.moe_intermediate_size;
+  const int64_t S = c.shared_expert_intermediate_size, qh = c.num_attention_heads, kvh = c.num_key_value_heads;
+  const int64_t kdim = static_cast<int64_t>(c.gdn_key_heads) * c.gdn_key_head_dim;
+  const int64_t vdim = static_cast<int64_t>(c.gdn_value_heads) * c.gdn_value_head_dim;
+  const DenseForm bf16(false);
+  Qwen35LayerStream s(c, fx.dir, 0, 1, dgpp::LoaderResidency::Streaming, dgpp::LoaderHeadSharding::Full);
+  require(s.max_layer() == 5, "four layers and the draft layer");
+  static const char* kPart[3] = {"gate_proj", "up_proj", "down_proj"};
+  for (int l = 0; l < s.max_layer(); ++l) {
+    const Qwen35LayerResident& r = s.load_layer(l);
+    const bool is_mtp = l == c.mtp_layer();
+    const std::string p = dgpp::qwen35_layer_prefix(c, l);
+    const std::string at = "layer " + std::to_string(l) + ": ";
+    require(p == (is_mtp ? "mtp.layers.0." : "model.language_model.layers." + std::to_string(l) + "."),
+            at + "the nested prefix");
+    require(down(r.input_norm, static_cast<size_t>(H), "norm") == fx.bf16(p + "input_layernorm.weight"),
+            at + "input norm");
+    require(r.kv_cache_scales == nullptr, at + "no K/V-cache scales in this release");
+    if (!is_mtp && r.kind == dgpp::Qwen35LayerKind::Gdn) {
+      const std::string g = p + "linear_attn.";
+      // The split, head-major projections: the codes as shipped (world 1
+      // takes every row), one scale for the whole tensor.
+      require(r.gdn.in_proj_qkv == nullptr && r.gdn.in_proj_z == nullptr && r.gdn.out_proj == nullptr,
+              at + "the FP8 projections have no BF16 view");
+      require_fp8_tensor(fx, r.gdn.in_proj_qkv_fp8, g + "in_proj_qkv", 2 * kdim + vdim, H, at + "in_proj_qkv");
+      require_fp8_tensor(fx, r.gdn.in_proj_z_fp8, g + "in_proj_z", vdim, H, at + "in_proj_z");
+      require_fp8_tensor(fx, r.gdn.out_proj_fp8, g + "out_proj", H, vdim, at + "out_proj");
+      require_gdn_bf16_parts(fx, r, g, at);
+    } else if (!is_mtp) {
+      const std::string a = p + "self_attn.";
+      require(r.full.q_proj == nullptr && r.full.o_proj == nullptr, at + "no BF16 view of the FP8 attention");
+      require_fp8_tensor(fx, r.full.q_proj_fp8, a + "q_proj", 2 * qh * d, H, at + "q_proj");
+      require_fp8_tensor(fx, r.full.k_proj_fp8, a + "k_proj", kvh * d, H, at + "k_proj");
+      require_fp8_tensor(fx, r.full.v_proj_fp8, a + "v_proj", kvh * d, H, at + "v_proj");
+      require_fp8_tensor(fx, r.full.o_proj_fp8, a + "o_proj", H, qh * d, at + "o_proj");
+      require(down(r.full.q_norm, static_cast<size_t>(d), "qn") == fx.bf16(a + "q_norm.weight"), at + "q norm");
+    } else {
+      // The draft layer: BF16 as shipped.
+      const std::string a = p + "self_attn.";
+      require(r.kind == dgpp::Qwen35LayerKind::Full && r.full.q_proj_fp8.payload == nullptr,
+              at + "the draft layer is a BF16 attention layer");
+      require(down(r.full.q_proj, static_cast<size_t>(2 * qh * d * H), "q") == fx.bf16(a + "q_proj.weight") &&
+                  down(r.full.k_proj, static_cast<size_t>(kvh * d * H), "k") == fx.bf16(a + "k_proj.weight") &&
+                  down(r.full.v_proj, static_cast<size_t>(kvh * d * H), "v") == fx.bf16(a + "v_proj.weight") &&
+                  down(r.full.o_proj, static_cast<size_t>(H * qh * d), "o") == fx.bf16(a + "o_proj.weight"),
+              at + "the draft attention is the checkpoint's BF16");
+    }
+    const std::string m = p + "mlp.";
+    require(down(r.moe.router, static_cast<size_t>(E * H), "router") == fx.bf16(m + "gate.weight") &&
+                down(r.moe.shared_gate, static_cast<size_t>(H), "gate") == fx.bf16(m + "shared_expert_gate.weight"),
+            at + "router and shared gate");
+    require(!r.mlp.gate && !r.mlp.gate_fp8.payload, at + "the dense mlp stays empty");
+    if (!is_mtp) {
+      require(down(r.moe.shared[0], static_cast<size_t>(S * H), "sg") ==
+                      modelopt_matrix(fx, m + "shared_expert.gate_proj", S, H) &&
+                  down(r.moe.shared[1], static_cast<size_t>(S * H), "su") ==
+                      modelopt_matrix(fx, m + "shared_expert.up_proj", S, H) &&
+                  down(r.moe.shared[2], static_cast<size_t>(H * S), "sd") ==
+                      modelopt_matrix(fx, m + "shared_expert.down_proj", H, S),
+              at + "the shared expert is the modelopt dequant");
+      require(r.moe.experts_fp4.size() == static_cast<size_t>(E) * 3 && r.moe.experts.empty(),
+              at + "NVFP4 backbone experts");
+      const std::vector<float> globals = down(r.moe.expert_globals, static_cast<size_t>(E) * 3, "globals");
+      float w13 = 0.0f, w2 = 0.0f;
+      for (int64_t e = 0; e < E; ++e)
+        for (int i = 0; i < 3; ++i) {
+          const std::string base = m + "experts." + std::to_string(e) + "." + kPart[i];
+          const GlmFp4Matrix& q = r.moe.experts_fp4[static_cast<size_t>(e * 3 + i)];
+          require(down(q.payload, q.payload_bytes(), base) == fx.bytes(base + ".weight") &&
+                      down(q.scales, q.scale_bytes(), base) == fx.bytes(base + ".weight_scale"),
+                  at + base + " as shipped");
+          require(globals[static_cast<size_t>(e * 3 + i)] == 1.0f / fx.f32(base + ".weight_scale_2"),
+                  at + base + ": the reciprocal of the multiplier");
+          (i == 2 ? w2 : w13) = std::max(i == 2 ? w2 : w13, fx.f32(base + ".input_scale"));
+        }
+      const std::vector<float> act = down(r.moe.act_scales, 2, "act scales");
+      require(act[0] == w13 && act[1] == w2, at + "the layer's static activation scales");
+    } else {
+      require(down(r.moe.shared[0], static_cast<size_t>(S * H), "sg") == fx.bf16(m + "shared_expert.gate_proj.weight") &&
+                  down(r.moe.shared[2], static_cast<size_t>(H * S), "sd") ==
+                      fx.bf16(m + "shared_expert.down_proj.weight"),
+              at + "the draft shared expert is the checkpoint's BF16");
+      // The stacked draft experts: expert e's gate rows, then its up rows, of
+      // gate_up_proj [E, 2I, H]; its [H, I] block of down_proj.
+      require(r.moe.experts.size() == static_cast<size_t>(E) * 3 && r.moe.experts_fp4.empty(),
+              at + "the draft experts are block FP8");
+      const std::vector<uint16_t> gup = fx.bf16(m + "experts.gate_up_proj");
+      const std::vector<uint16_t> dwn = fx.bf16(m + "experts.down_proj");
+      require(static_cast<int64_t>(gup.size()) == E * 2 * I * H && static_cast<int64_t>(dwn.size()) == E * H * I,
+              "stacked fixture geometry");
+      for (int64_t e = 0; e < E; ++e) {
+        const std::string who = at + "draft expert " + std::to_string(e);
+        require_fp8_encode(r.moe.experts[static_cast<size_t>(e * 3)], rows_of(gup, H, e * 2 * I, I), I, H,
+                           who + " gate");
+        require_fp8_encode(r.moe.experts[static_cast<size_t>(e * 3 + 1)], rows_of(gup, H, e * 2 * I + I, I), I,
+                           H, who + " up");
+        require_fp8_encode(r.moe.experts[static_cast<size_t>(e * 3 + 2)], rows_of(dwn, I, e * H, H), H, I,
+                           who + " down");
+      }
+    }
+  }
+  // Globals: the NVFP4 head dequantized into the BF16 head, the draft head, the names nested.
+  const dgpp::Qwen35GlobalsResident& g = s.load_globals();
+  const size_t V = static_cast<size_t>(c.vocab_size);
+  require(down(g.embed, V * H, "embed") == fx.bf16("model.language_model.embed_tokens.weight"), "embed");
+  require(down(g.lm_head, V * H, "head") == modelopt_matrix(fx, "lm_head", c.vocab_size, H),
+          "the lm head is the modelopt dequant of its NVFP4 set");
+  require(down(g.final_norm, static_cast<size_t>(H), "norm") == fx.bf16("model.language_model.norm.weight"),
+          "final norm");
+  require(down(g.mtp_fc, static_cast<size_t>(H * 2 * H), "fc") == fx.bf16("mtp.fc.weight"), "mtp fc");
+
+  // Rank slices at world 2: the per-tensor projections' rows and columns,
+  // and the draft experts' slices of the stacked tensors.
+  for (int rank = 0; rank < 2; ++rank) {
+    Qwen35LayerStream s2(c, fx.dir, rank, 2, dgpp::LoaderResidency::Streaming,
+                         dgpp::LoaderHeadSharding::VocabSharded);
+    const std::string at = "world 2 rank " + std::to_string(rank) + ": ";
+    {
+      const Qwen35LayerResident& r = s2.load_layer(0);
+      const std::string g0 = "model.language_model.layers.0.linear_attn.";
+      const std::vector<uint8_t>& qkv = fx.bytes(g0 + "in_proj_qkv.weight");
+      std::vector<uint8_t> want = rows_of(qkv, H, rank * kdim / 2, kdim / 2);
+      append(want, rows_of(qkv, H, kdim + rank * kdim / 2, kdim / 2));
+      append(want, rows_of(qkv, H, 2 * kdim + rank * vdim / 2, vdim / 2));
+      require(down(r.gdn.in_proj_qkv_fp8.payload, want.size(), "qkv") == want, at + "in_proj_qkv segments");
+      require(down(r.gdn.out_proj_fp8.payload, static_cast<size_t>(H * vdim / 2), "out") ==
+                  cols_of(fx.bytes(g0 + "out_proj.weight"), vdim, rank * vdim / 2, vdim / 2),
+              at + "out_proj columns");
+      const std::vector<float> sc = down(r.gdn.out_proj_fp8.scales, 2, "scales");
+      require(sc[0] == fx.f32(g0 + "out_proj.weight_scale") && sc[1] == sc[0], at + "the slice keeps the scale");
+    }
+    {
+      const Qwen35LayerResident& r = s2.load_layer(4);
+      const std::vector<uint16_t> gup = fx.bf16("mtp.layers.0.mlp.experts.gate_up_proj");
+      const std::vector<uint16_t> dwn = fx.bf16("mtp.layers.0.mlp.experts.down_proj");
+      const int64_t li = I / 2;
+      for (int64_t e = 0; e < E; ++e) {
+        require_fp8_encode(r.moe.experts[static_cast<size_t>(e * 3)],
+                           rows_of(gup, H, e * 2 * I + rank * li, li), li, H, at + "draft gate slice");
+        require_fp8_encode(r.moe.experts[static_cast<size_t>(e * 3 + 1)],
+                           rows_of(gup, H, e * 2 * I + I + rank * li, li), li, H, at + "draft up slice");
+        require_fp8_encode(r.moe.experts[static_cast<size_t>(e * 3 + 2)],
+                           cols_of(rows_of(dwn, I, e * H, H), I, rank * li, li), H, li,
+                           at + "draft down slice");
+      }
+    }
+    const dgpp::Qwen35GlobalsResident& g2 = s2.load_globals();
+    const size_t v0 = V * static_cast<size_t>(rank) / 2, vn = V / 2;
+    require(down(g2.lm_head, vn * H, "head") ==
+                rows_of(modelopt_matrix(fx, "lm_head", c.vocab_size, H), H, static_cast<int64_t>(v0),
+                        static_cast<int64_t>(vn)),
+            at + "the head's vocab shard");
+  }
+
+  // dense_weights fp8: what ships BF16 or NVFP4 among the dense matrices —
+  // the shared expert, the draft layer — is encoded; the FP8 projections and
+  // the experts do not move.
+  {
+    const DenseForm fp8(true);
+    Qwen35LayerStream s8(c, fx.dir, 0, 1, dgpp::LoaderResidency::Streaming, dgpp::LoaderHeadSharding::Full);
+    const std::string m0 = "model.language_model.layers.0.mlp.";
+    const Qwen35LayerResident& r0 = s8.load_layer(0);
+    require(r0.moe.shared[0] == nullptr, "the FP8 form has no BF16 shared expert");
+    require_fp8_encode(r0.moe.shared_fp8[0], modelopt_matrix(fx, m0 + "shared_expert.gate_proj", S, H), S, H,
+                       "fp8 form: shared gate_proj");
+    require_fp8_encode(r0.moe.shared_fp8[2], modelopt_matrix(fx, m0 + "shared_expert.down_proj", H, S), H, S,
+                       "fp8 form: shared down_proj");
+    require_fp8_tensor(fx, r0.gdn.in_proj_z_fp8, "model.language_model.layers.0.linear_attn.in_proj_z", vdim, H,
+                       "fp8 form: the per-tensor projection is unchanged");
+    const Qwen35LayerResident& rd = s8.load_layer(4);
+    require(rd.full.q_proj == nullptr, "the FP8 form has no BF16 draft attention");
+    require_fp8_encode(rd.full.q_proj_fp8, fx.bf16("mtp.layers.0.self_attn.q_proj.weight"), 2 * qh * d, H,
+                       "fp8 form: draft q_proj");
+    require_fp8_encode(rd.full.o_proj_fp8, fx.bf16("mtp.layers.0.self_attn.o_proj.weight"), H, qh * d,
+                       "fp8 form: draft o_proj");
+    require_fp8_encode(rd.moe.shared_fp8[1], fx.bf16("mtp.layers.0.mlp.shared_expert.up_proj.weight"), S, H,
+                       "fp8 form: draft shared up_proj");
+  }
+}
+
+DGPP_TEST(qwen36_fp8_loader_resident_values_are_the_checkpoints) {
+  const Fixture fx = qwen36_fixture(qwen35portsfx::kQuantFp8Block, "qwen36_fp8_loader_fixture");
+  const Qwen35TextConfig& c = fx.cfg;
+  require(!c.next() && c.moe() && c.quant_kind == dgpp::Qwen35QuantKind::Fp8Block, "the fixture's recipe");
+  const int64_t H = c.hidden_size, d = c.head_dim, E = c.num_experts, I = c.moe_intermediate_size;
+  const int64_t S = c.shared_expert_intermediate_size, qh = c.num_attention_heads, kvh = c.num_key_value_heads;
+  const int64_t kdim = static_cast<int64_t>(c.gdn_key_heads) * c.gdn_key_head_dim;
+  const int64_t vdim = static_cast<int64_t>(c.gdn_value_heads) * c.gdn_value_head_dim;
+  static const char* kPart[3] = {"gate_proj", "up_proj", "down_proj"};
+  for (const bool knob : {false, true}) {  // the dense knob does not move a checkpoint that ships FP8
+    const DenseForm form(knob);
+    Qwen35LayerStream s(c, fx.dir, 0, 1, dgpp::LoaderResidency::Streaming, dgpp::LoaderHeadSharding::Full);
+    for (int l = 0; l < s.max_layer(); ++l) {
+      const Qwen35LayerResident& r = s.load_layer(l);
+      const bool is_mtp = l == c.mtp_layer();
+      const std::string p = dgpp::qwen35_layer_prefix(c, l);
+      const std::string at = "layer " + std::to_string(l) + ": ";
+      if (!is_mtp && r.kind == dgpp::Qwen35LayerKind::Gdn) {
+        const std::string g = p + "linear_attn.";
+        require_fp8_block(fx, r.gdn.in_proj_qkv_fp8, g + "in_proj_qkv.weight", 2 * kdim + vdim, H, at + "qkv");
+        require_fp8_block(fx, r.gdn.in_proj_z_fp8, g + "in_proj_z.weight", vdim, H, at + "z");
+        require_fp8_block(fx, r.gdn.out_proj_fp8, g + "out_proj.weight", H, vdim, at + "out");
+        require_gdn_bf16_parts(fx, r, g, at);
+      } else {
+        const std::string a = p + "self_attn.";
+        require_fp8_block(fx, r.full.q_proj_fp8, a + "q_proj.weight", 2 * qh * d, H, at + "q");
+        require_fp8_block(fx, r.full.k_proj_fp8, a + "k_proj.weight", kvh * d, H, at + "k");
+        require_fp8_block(fx, r.full.v_proj_fp8, a + "v_proj.weight", kvh * d, H, at + "v");
+        require_fp8_block(fx, r.full.o_proj_fp8, a + "o_proj.weight", H, qh * d, at + "o");
+      }
+      const std::string m = p + "mlp.";
+      require(down(r.moe.router, static_cast<size_t>(E * H), "router") == fx.bf16(m + "gate.weight"),
+              at + "router");
+      require(r.moe.shared[0] == nullptr && r.moe.experts_fp4.empty() &&
+                  r.moe.experts.size() == static_cast<size_t>(E) * 3 && r.moe.scale_block == 64,
+              at + "FP8 shared expert and experts, the sliced axis re-blocked at gcd(128, 64)");
+      require_fp8_block(fx, r.moe.shared_fp8[0], m + "shared_expert.gate_proj.weight", S, H, at + "shared gate");
+      require_fp8_block(fx, r.moe.shared_fp8[1], m + "shared_expert.up_proj.weight", S, H, at + "shared up");
+      require_fp8_block(fx, r.moe.shared_fp8[2], m + "shared_expert.down_proj.weight", H, S, at + "shared down");
+      for (int64_t e = 0; e < E; ++e)
+        for (int i = 0; i < 3; ++i) {
+          const std::string name = m + "experts." + std::to_string(e) + "." + kPart[i] + ".weight";
+          require_fp8_block(fx, r.moe.experts[static_cast<size_t>(e * 3 + i)], name, i == 2 ? H : I,
+                            i == 2 ? I : H, at + name);
+        }
+    }
+    const dgpp::Qwen35GlobalsResident& g = s.load_globals();
+    require(down(g.lm_head, static_cast<size_t>(c.vocab_size) * H, "head") == fx.bf16("lm_head.weight"),
+            "the BF16 head as shipped");
+  }
+  // World 2: an expert's rows and columns, its scale grid re-blocked at 32.
+  for (int rank = 0; rank < 2; ++rank) {
+    const DenseForm form(false);
+    Qwen35LayerStream s2(c, fx.dir, rank, 2, dgpp::LoaderResidency::Streaming,
+                         dgpp::LoaderHeadSharding::VocabSharded);
+    const Qwen35LayerResident& r = s2.load_layer(3);
+    const std::string ep = "model.language_model.layers.3.mlp.experts.1.";
+    const int64_t li = I / 2;
+    const GlmQuantMatrix& gate = r.moe.experts[3];
+    const GlmQuantMatrix& dn = r.moe.experts[5];
+    require(r.moe.scale_block == 32 && gate.rows == li && gate.scale_block_rows == 32 && dn.cols == li &&
+                dn.scale_block_cols == 32,
+            "world 2 expert slices");
+    require(down(gate.payload, static_cast<size_t>(li * H), "gate") ==
+                rows_of(fx.bytes(ep + "gate_proj.weight"), H, rank * li, li),
+            "world 2: expert gate rows");
+    require(down(dn.payload, static_cast<size_t>(H * li), "down") ==
+                cols_of(fx.bytes(ep + "down_proj.weight"), I, rank * li, li),
+            "world 2: expert down columns");
+    // The parent 128-block's scale stands for every sub-block.
+    const std::vector<uint16_t> gs = fx.bf16(ep + "gate_proj.weight_scale_inv");  // [1, 2]
+    const std::vector<float> got = down(gate.scales, 2, "gate scales");
+    require(got[0] == dgpp::bf16_bits_to_float(gs[0]) && got[1] == dgpp::bf16_bits_to_float(gs[1]),
+            "world 2: expert gate scales");
+  }
 }
 
 int main() {

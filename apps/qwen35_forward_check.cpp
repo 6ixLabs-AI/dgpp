@@ -113,13 +113,14 @@ int main(int argc, char** argv) {
                   static_cast<long long>(cfg.context_limit()));
     }
     constexpr double kGiB = 1024.0 * 1024.0 * 1024.0;
-    // engine.dense_weights: the block-FP8 lm head, and on the Qwen3Next
-    // dialect the dense projections encoded to block FP8 at load.
+    // engine.dense_weights: the block-FP8 lm head, and for a checkpoint that
+    // ships dense projections outside block FP8, those encoded at load.
     if (!dense_weights.empty() && dense_weights != "fp8" && dense_weights != "checkpoint")
       throw std::runtime_error("--dense-weights takes checkpoint or fp8");
     if (dense_weights == "fp8") {
       dgpp::Qwen35Model::set_dense_weights_fp8(true);
-      if (cfg.next()) dgpp::Qwen35LayerStream::set_dense_weights_fp8(true);
+      if (cfg.next() || cfg.quant_kind != dgpp::Qwen35QuantKind::Fp8Block)
+        dgpp::Qwen35LayerStream::set_dense_weights_fp8(true);
     }
 
     if (!plan_text.empty()) {

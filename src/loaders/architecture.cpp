@@ -47,7 +47,9 @@ ModelArchitecture detect_architecture(const minijson::Value& root) {
     return ModelArchitecture::MimoV2;
   // Qwen3.8-27B (2026-09-27): `Qwen3_5ForConditionalGeneration` / `qwen3_5`
   // (its text_config's type is `qwen3_5_text`).
-  if (arch.rfind("Qwen3_5", 0) == 0 || (arch.empty() && type == "qwen3_5"))
+  // Qwen3.6-35B-A3B (2026-10-04) is the same stack with a routed MoE:
+  // `Qwen3_5MoeForConditionalGeneration` / `qwen3_5_moe`.
+  if (arch.rfind("Qwen3_5", 0) == 0 || (arch.empty() && (type == "qwen3_5" || type == "qwen3_5_moe")))
     return ModelArchitecture::Qwen3_5;
   // Qwen3-Next-80B-A3B (2026-10-03): `Qwen3NextForCausalLM` / `qwen3_next`
   // — a flat config (no text_config), served by the qwen3_5 stack with the

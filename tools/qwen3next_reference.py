@@ -3,7 +3,14 @@
 and, the same model class in another container, Qwen3-Coder-Next (RedHatAI/Qwen3-Coder-Next-NVFP4,
 2026-10-04: pass its snapshot as --ckpt; it has no MTP head, so `mtp` does not apply).
 
-Pure Python + numpy, reading the NVFP4 checkpoint directly (safetensors headers parsed by
+The same file reads the qwen3_5 stack's other dialect — Qwen3_5(Moe)ForConditionalGeneration, a
+nested `text_config` and `model.language_model.*` names (Qwen3.6-35B-A3B, 2026-10-04) — which
+differs only in layout: the DeltaNet projections are split and head-major (`in_proj_qkv`
+[all q | all k | all v], `in_proj_z`, `in_proj_b`, `in_proj_a`), the rope fields sit in
+`rope_parameters`, and the vision tower (`model.visual.*`) is ignored. See "WEIGHT FORMS" below
+for what each release stores.
+
+Pure Python + numpy, reading the checkpoint directly (safetensors headers parsed by
 hand, shards mmap'd). It is the ground truth the DGPP engine port is compared against, so it is
 written for clarity and checkability, not speed: one straightforward implementation of every
 block, weights dequantized to float, activations in full precision (the checkpoint's
@@ -61,7 +68,18 @@ THE MODEL (what this file computes; names are checkpoint tensor names)
     That release quantizes the attention q/k/v/o, the shared expert and the routed experts, and
     leaves the DeltaNet (out_proj included), the router and the head in BF16.
 
-  MTP draft head (`mtp.*`, all BF16): see Model.mtp_forward.
+  WEIGHT FORMS, per matrix, told apart by the tensors present (Model._matrix):
+    BF16 / F32 `.weight`                                    as stored
+    NVFP4, modelopt or compressed-tensors                   above
+    block FP8 (the Qwen FP8 releases): `.weight` F8_E4M3 [N, K] + `.weight_scale_inv` BF16 or F32
+        [ceil(N/128), ceil(K/128)], a MULTIPLIER per 128 x 128 block:
+        W[n, k] = e4m3(code[n, k]) * weight_scale_inv[n // 128, k // 128]
+    per-tensor FP8 (modelopt, the Qwen3.6 NVFP4 release's DeltaNet and attention projections):
+        `.weight` F8_E4M3 [N, K] + `.weight_scale` F32 scalar:  W = e4m3(code) * weight_scale
+    stacked draft experts (the Qwen3.6 NVFP4 release's `mtp.layers.0.mlp.experts`):
+        `gate_up_proj` BF16 [E, 2I, H] (expert e: I gate rows, then I up rows), `down_proj` [E, H, I]
+
+  MTP draft head (`mtp.*`): see Model.mtp_forward.
 
 Arithmetic is float32 by default; the DeltaNet gates and state, the RoPE angles and the final
 log-softmax are float64. `--dtype float64` runs everything in float64 (a noise-floor check).
@@ -118,6 +136,8 @@ VARIANT_DEFAULTS = {
     "nibble": "lo",        # lo: low nibble = even column | hi: high nibble = even column
     "ws2": "mul",          # mul: W = e2m1 * e4m3 * weight_scale_2 | div: ... / weight_scale_2
     "gscale": "div",       # div: W = e2m1 * (e4m3 / weight_global_scale) | mul: ... * weight_global_scale
+    "fp8scale": "mul",     # mul: W = e4m3 * scale (block and per-tensor FP8) | div: W = e4m3 / scale
+    "stacked": "gate_up",  # gate_up: gate_up_proj[e] = [gate rows | up rows] | up_gate: [up | gate]
     "qkvz": "interleaved",  # interleaved: per key-head group [q|k|v|z] | flat: [all q|all k|all v|all z]
     "ba": "bbaa",          # bbaa: per group [b,b,a,a] | baba: per group [b,a,b,a] | flat: [all b|all a]
     "gate": "perhead",     # perhead: q_proj = per head [q|gate] | flat: [all q|all gate]
@@ -319,7 +339,10 @@ class State:
 class Model:
     def __init__(self, ckpt_dir, layers=None, dtype="float32", threads=_THREADS, variants=None):
         self.ck = Checkpoint(ckpt_dir)
-        c = self.ck.cfg
+        root = self.ck.cfg
+        self.flat = "text_config" not in root        # Qwen3Next: flat config, fused DeltaNet projections
+        c = root if self.flat else root["text_config"]
+        self.mp = "model." if self.flat else "model.language_model."
         self.dt = np.dtype(dtype).type
         self.var = dict(VARIANT_DEFAULTS)
         self.var.update(variants or {})
@@ -334,8 +357,9 @@ class Model:
         self.n_heads = c["num_attention_heads"]
         self.n_kv = c["num_key_value_heads"]
         self.head_dim = c["head_dim"]
-        self.rot_dim = int(self.head_dim * c.get("partial_rotary_factor", 1.0))
-        self.theta = float(c["rope_theta"])
+        rp = c.get("rope_parameters") or c           # the Qwen3.5 dialect nests the rope fields
+        self.rot_dim = int(self.head_dim * rp.get("partial_rotary_factor", c.get("partial_rotary_factor", 1.0)))
+        self.theta = float(rp["rope_theta"])
         self.max_pos = int(c.get("max_position_embeddings", 262144))
         # gated deltanet
         self.nk = c["linear_num_key_heads"]
@@ -344,8 +368,8 @@ class Model:
         self.dv = c["linear_value_head_dim"]
         self.conv_k = c["linear_conv_kernel_dim"]
         # moe
-        self.n_exp = c["num_experts"]
-        self.top_k = c["num_experts_per_tok"]
+        self.n_exp = int(c.get("num_experts", 0))    # 0: a dense SwiGLU MLP in every layer
+        self.top_k = int(c.get("num_experts_per_tok", 0))
         self.norm_topk = bool(c.get("norm_topk_prob", True))
 
         self._cache = {}
@@ -415,24 +439,60 @@ class Model:
         w = w.reshape(n, 2 * half)
         return w if self.dt == np.float32 else w.astype(self.dt)
 
+    def _fp8(self, prefix):
+        """An FP8 linear dequantized to a dense float [N, K] matrix (not cached): block scales
+        (`.weight_scale_inv`, one per 128 x 128) or one scale for the tensor (`.weight_scale`)."""
+        codes = self.ck.raw(prefix + ".weight")              # E4M3    [N, K]
+        n, k = codes.shape
+        w = _E4M3[codes]
+        if prefix + ".weight_scale_inv" in self.ck:
+            raw = self.ck.raw(prefix + ".weight_scale_inv")
+            sc = bf16_to_f32(raw) if self.ck.index[prefix + ".weight_scale_inv"][1] == "BF16" else np.array(raw, np.float32)
+            sc = np.repeat(np.repeat(sc, 128, axis=0), 128, axis=1)[:n, :k]
+        else:
+            sc = np.float32(self.ck.raw(prefix + ".weight_scale").reshape(()))
+        w = w * sc if self.var["fp8scale"] == "mul" else w / sc
+        return w if self.dt == np.float32 else w.astype(self.dt)
+
+    def _matrix(self, prefix):
+        """A linear's weight as a dense float matrix, whichever way the checkpoint stores it."""
+        if prefix + ".weight_packed" in self.ck:
+            return self._fp4(prefix)
+        st_dtype = self.ck.index[prefix + ".weight"][1]
+        if st_dtype == "U8":
+            return self._fp4(prefix)
+        if st_dtype == "F8_E4M3":
+            return self._fp8(prefix)
+        return self._dense_nocache(prefix + ".weight")
+
     def linear(self, prefix):
         """Weight of a linear layer, whichever way the checkpoint stores it (kept)."""
         w = self._cache.get(prefix)
         if w is None:
-            if prefix + ".weight_scale" in self.ck:
-                w = self._fp4(prefix)
-            else:
-                w = self._dense_nocache(prefix + ".weight")
+            w = self._matrix(prefix)
             self._cache[prefix] = w
         return w
 
-    def _mlp_weights(self, prefix):
-        """(gate_proj, up_proj, down_proj) of one expert, not cached."""
-        out = []
-        for part in ("gate_proj", "up_proj", "down_proj"):
-            p = f"{prefix}.{part}"
-            out.append(self._fp4(p) if p + ".weight_scale" in self.ck else self._dense_nocache(p + ".weight"))
-        return out
+    def layer_prefix(self, L):
+        return f"{self.mp}layers.{L}"
+
+    def head_weight(self):
+        """The lm head [vocab, H]: `lm_head` in whatever form it ships, or the embedding when the
+        checkpoint ties them and stores no head."""
+        if "lm_head.weight" in self.ck:
+            return self.linear("lm_head")
+        return self.dense(self.mp + "embed_tokens.weight")
+
+    def _expert_weights(self, prefix, e):
+        """(gate_proj, up_proj, down_proj) of routed expert e of the MoE at `prefix`, not cached."""
+        if prefix + ".experts.gate_up_proj" in self.ck:      # the two stacked BF16 parameters
+            gup = bf16_to_f32(np.ascontiguousarray(self.ck.raw(prefix + ".experts.gate_up_proj")[e]))
+            dwn = bf16_to_f32(np.ascontiguousarray(self.ck.raw(prefix + ".experts.down_proj")[e]))
+            half = gup.shape[0] // 2
+            gate, up = (gup[:half], gup[half:]) if self.var["stacked"] == "gate_up" else (gup[half:], gup[:half])
+            out = [gate, up, dwn]
+            return out if self.dt == np.float32 else [w.astype(self.dt) for w in out]
+        return [self._matrix(f"{prefix}.experts.{e}.{part}") for part in ("gate_proj", "up_proj", "down_proj")]
 
     # ---------------- blocks ----------------
     def norm1p(self, x, w):
@@ -441,7 +501,7 @@ class Model:
         return x * (1.0 / np.sqrt(ms + self.eps)) * g
 
     def embed(self, ids):
-        raw = self.ck.raw("model.embed_tokens.weight")
+        raw = self.ck.raw(self.mp + "embed_tokens.weight")
         x = bf16_to_f32(np.ascontiguousarray(raw[np.asarray(ids, np.int64)]))
         return x if self.dt == np.float32 else x.astype(self.dt)
 
@@ -538,6 +598,14 @@ class Model:
         r = nv // nk                                                     # value heads per key head
         f64 = np.float64
 
+        if not self.flat:
+            # The Qwen3.5 dialect: split, head-major projections.
+            qkv = h @ self.linear(prefix + ".in_proj_qkv").T             # [n, all q | all k | all v]
+            q, k, v = qkv[:, :nk * dk], qkv[:, nk * dk:2 * nk * dk], qkv[:, 2 * nk * dk:]
+            z = (h @ self.linear(prefix + ".in_proj_z").T).reshape(n, nv, dv)
+            b = h @ self.linear(prefix + ".in_proj_b").T                 # [n, nv]
+            a = h @ self.linear(prefix + ".in_proj_a").T
+            return self._gdn_core(prefix, n, q, k, v, z, b, a, st_layer, tap)
         qkvz = h @ self.linear(prefix + ".in_proj_qkvz").T               # [n, 12288]
         ba = h @ self.linear(prefix + ".in_proj_ba").T                   # [n, 64]
         if self.var["qkvz"] == "interleaved":
@@ -558,6 +626,14 @@ class Model:
             b, a = g_[..., 0], g_[..., 1]
         else:  # debug variant
             b, a = ba[:, :nv], ba[:, nv:]
+        return self._gdn_core(prefix, n, q, k, v, z, b, a, st_layer, tap)
+
+    def _gdn_core(self, prefix, n, q, k, v, z, b, a, st_layer, tap):
+        """The DeltaNet after its input projections: q, k [n, nk * dk], v [n, nv * dv] head-major,
+        z [n, nv, dv], b and a [n, nv]."""
+        nk, nv, dk, dv = self.nk, self.nv, self.dk, self.dv
+        r = nv // nk
+        f64 = np.float64
 
         # depthwise causal conv over time on [q | k | v], then SiLU
         mixed = np.concatenate([q, k, v], axis=-1)                       # [n, 8192]
@@ -651,7 +727,7 @@ class Model:
         batch = max(1, 2 * self.threads)
         for b0 in range(0, len(uniq), batch):
             group = [int(e) for e in uniq[b0:b0 + batch]]
-            weights = list(self.pool.map(lambda e: self._mlp_weights(f"{prefix}.experts.{e}"), group))
+            weights = list(self.pool.map(lambda e: self._expert_weights(prefix, e), group))
             self.stats["experts_dequantized"] += len(group)
             for j, (wg, wu, wd) in enumerate(weights):
                 sel = order[bounds[b0 + j]:bounds[b0 + j + 1]]
@@ -671,6 +747,13 @@ class Model:
             tap("moe_shared", shared)
         return out + shared
 
+    def ffn(self, prefix, h, tap=None):
+        """A layer's MLP on a chunk: the routed MoE, or the dense SwiGLU MLP of a config without experts."""
+        if self.n_exp > 0:
+            return self.moe(prefix, h, tap)
+        return self.mlp(h, self.linear(prefix + ".gate_proj"), self.linear(prefix + ".up_proj"),
+                        self.linear(prefix + ".down_proj"))
+
     # ---------------- the stack ----------------
     def new_state(self):
         return State(self.total_layers)
@@ -684,7 +767,7 @@ class Model:
         if tap is not None:
             tap("h_00", x)
         for L in range(self.n_layers):
-            p = f"model.layers.{L}"
+            p = self.layer_prefix(L)
             if st.layers[L] is None:
                 st.layers[L] = {}
             sub = None
@@ -700,7 +783,7 @@ class Model:
                 sub("mixer_out", y)
             x = x + y
             h = self.norm1p(x, self.dense(p + ".post_attention_layernorm.weight"))
-            m = self.moe(p + ".mlp", h, sub)
+            m = self.ffn(p + ".mlp", h, sub)
             if sub is not None:
                 sub("moe_in", h)
                 sub("moe_out", m)
@@ -714,11 +797,11 @@ class Model:
         return x
 
     def final_norm(self, x):
-        return self.norm1p(x, self.dense("model.norm.weight"))
+        return self.norm1p(x, self.dense(self.mp + "norm.weight"))
 
     def logits(self, x):
         """x [n, H] residual stream (before model.norm) -> logits [n, vocab]."""
-        return self.final_norm(x) @ self.dense("lm_head.weight").T
+        return self.final_norm(x) @ self.head_weight().T
 
     def logprobs(self, x):
         return log_softmax64(self.logits(x))
@@ -749,13 +832,13 @@ class Model:
         h = self.norm1p(x, self.dense(p + ".input_layernorm.weight"))
         x = x + self.attention(p + ".self_attn", h, st["attn"], st["pos"], self_only=not history)
         h = self.norm1p(x, self.dense(p + ".post_attention_layernorm.weight"))
-        x = x + self.moe(p + ".mlp", h)
+        x = x + self.ffn(p + ".mlp", h)
         st["pos"] += n
         self.ck.release_pages()
         x = self.norm1p(x, self.dense("mtp.norm.weight"))
         out = np.empty((n, self.vocab), np.float64)
         for b0 in range(0, n, 32):
-            out[b0:b0 + 32] = log_softmax64(x[b0:b0 + 32] @ self.dense("lm_head.weight").T)
+            out[b0:b0 + 32] = log_softmax64(x[b0:b0 + 32] @ self.head_weight().T)
         return out
 
 
@@ -950,7 +1033,7 @@ def cmd_dump(a):
                        on_layer=lambda d: progress(1, 1, d, model.n_layers, 0, t0))
     hn = model.final_norm(x)
     tap("h_final_norm", hn)
-    lg = (hn[-1:] @ model.dense("lm_head.weight").T)[0]
+    lg = (hn[-1:] @ model.head_weight().T)[0]
     tap("logits_last", lg)
     write_json(os.path.join(a.out, "meta.json"), {
         "ids": ids, "n_tokens": len(ids), "layers": model.n_layers, "dtype": np.dtype(model.dt).name,
@@ -1176,7 +1259,7 @@ def cmd_mtp(a):
         hn = model.final_norm(x)
         main_top = np.empty(T, np.int64)                       # main_top[i]: greedy token for position i + 1
         for b0 in range(0, T, 32):
-            main_top[b0:b0 + 32] = (hn[b0:b0 + 32] @ model.dense("lm_head.weight").T).argmax(axis=-1)
+            main_top[b0:b0 + 32] = (hn[b0:b0 + 32] @ model.head_weight().T).argmax(axis=-1)
         actual = np.array(ids[2:], np.int64)
         r = {"id": name, "tokens": T, "drafts": T - 1,
              "main_eq_text": int(np.count_nonzero(main_top[1:-1] == actual)), "text_n": int(actual.size)}

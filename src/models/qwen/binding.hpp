@@ -64,6 +64,10 @@ enum class QwenTensorRole : uint8_t {
   GptqCodes,
   GptqScales,
   GptqZeros,
+  // modelopt's per-tensor FP8 (the qwen3_5 stack's NVFP4 mixed release): an
+  // e4m3 [N, K] payload (role Fp8Payload) with ONE F32 [] scale for the
+  // whole tensor, `base.weight_scale` — a multiplier.
+  Fp8TensorScale,
 };
 
 struct QwenExpectedTensor {

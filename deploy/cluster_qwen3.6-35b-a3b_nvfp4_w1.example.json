@@ -1,0 +1,26 @@
+{
+  "model": "nvidia/Qwen3.6-35B-A3B-NVFP4",
+  "world_size": 1,
+  "engine": {
+    "max_concurrency": 8,
+    "kv_capacity": 262144,
+    "kv_dtype": "bf16",
+    "dense_weights": "fp8",
+    "default_max_tokens": 32768,
+    "queue_limit": 64,
+    "max_connections": 256,
+    "decode_graph": true,
+    "mtp": true,
+    "mtp_depth": 2,
+    "prefix_cache_gib": 4,
+    "admission": "grow",
+    "admission_window": 256,
+    "model_alias": "Qwen3.6-35B-A3B",
+    "sampling_candidates": 128,
+    "stats_interval_s": 10,
+    "max_tokens_overflow": "clamp"
+  },
+  "paths": {
+    "resident_cache": ""
+  }
+}
