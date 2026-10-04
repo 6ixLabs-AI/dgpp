@@ -62,9 +62,15 @@ ModelArchitecture detect_architecture(const minijson::Value& root) {
   // assembly has not landed, so no app serves it yet.
   if (arch.rfind("NemotronH", 0) == 0 || (arch.empty() && type == "nemotron_h"))
     return ModelArchitecture::NemotronH;
+  // Gemma 4 (2026-10-04): `Gemma4ForConditionalGeneration` / `gemma4` (its
+  // text_config's type is `gemma4_text`). The text-only class
+  // `Gemma4ForCausalLM` writes a flat config with other tensor names and is
+  // not what the releases ship; it is refused with the rest.
+  if (arch.rfind("Gemma4ForConditionalGeneration", 0) == 0 || (arch.empty() && type == "gemma4"))
+    return ModelArchitecture::Gemma4;
   throw std::runtime_error(
       "config.json: unsupported architecture '" + arch + "' (model_type '" +
-      type + "'); the engine implements Glm5*, Qwen4Exp*, Glm4Moe*, GlmMoeDsa*, DeepseekV41*, DeepseekV4*, MiMoV2*, Qwen3_5* and Qwen3Next*");
+      type + "'); the engine implements Glm5*, Qwen4Exp*, Glm4Moe*, GlmMoeDsa*, DeepseekV41*, DeepseekV4*, MiMoV2*, Qwen3_5* and Qwen3Next* (and knows NemotronH* and Gemma4ForConditionalGeneration, which no app serves yet)");
 }
 
 ModelArchitecture detect_architecture_file(const std::string& path) {

@@ -685,6 +685,190 @@ QWEN3_NEXT_CASES = [
 ]
 
 
+# The Gemma 4 template (2026-10-04; nvidia/Gemma-4-31B-IT-NVFP4's
+# chat_template.jinja): turns as <|turn>ROLE\n ... <turn|>\n with the
+# assistant's role spelled "model"; a system turn that carries <|think|>
+# (enable_thinking), the system text and the tool declarations; an EMPTY
+# thought channel after the generation prompt when thinking is off; tool
+# declarations, calls and responses in the model's own notation —
+#   <|tool>declaration:NAME{description:<|"|>..<|"|>,parameters:{..}}<tool|>
+#   <|tool_call>call:NAME{key:value,..}<tool_call|>
+#   <|tool_response>response:NAME{key:value,..}<tool_response|>
+# keys bare and sorted (dictsort: case-insensitive), strings between <|"|>
+# tokens, numbers / booleans / null bare, schema types upper-cased — and the
+# OpenAI shapes folded into it: role "tool" messages after an assistant's
+# tool_calls become that turn's tool responses, a second assistant message
+# continues the turn. `bos_token` is a global transformers passes from the
+# tokenizer; the engine's frontend passes the same.
+def g4(**kw):
+    kw.setdefault("bos_token", "<bos>")
+    kw.setdefault("add_generation_prompt", True)
+    return kw
+
+
+G4_SEARCH_TOOL = wrapped({
+    "name": "search_docs",
+    "description": "Search the documentation.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "What to look for"},
+            "Limit": {"type": "integer"},
+            "filters": {"type": "object", "description": "Narrowing",
+                        "properties": {"lang": {"type": "string", "enum": ["en", "fr", "de"]},
+                                       "after": {"type": "string", "nullable": True}},
+                        "required": ["lang"]},
+            "tags": {"type": "array", "description": "Any of", "items": {"type": "string"}},
+            "ranges": {"type": "array", "items": {"type": "object",
+                                                 "properties": {"lo": {"type": "number"}, "hi": {"type": "number"}},
+                                                 "required": ["lo"]}},
+            "exact": {"type": "boolean", "nullable": True},
+            "_internal": {"type": ["string", "null"]},
+            "blob": {"type": "object"},
+        },
+        "required": ["query"],
+    },
+})
+
+GEMMA4_CASES = [
+    ("simple_user_gen", g4(messages=[{"role": "user", "content": "The capital of France is"}])),
+    ("simple_user_no_gen", g4(messages=[{"role": "user", "content": "Hello"}], add_generation_prompt=False)),
+    ("system_user_gen", g4(messages=[{"role": "system", "content": "  Be brief.\n"},
+                                     {"role": "user", "content": "写一首关于秋天的诗。"}])),
+    ("developer_role_is_system", g4(messages=[{"role": "developer", "content": "Answer in French."},
+                                              {"role": "user", "content": "Hi"}])),
+    ("thinking_on_no_system", g4(messages=[{"role": "user", "content": "Why is the sky blue?"}], enable_thinking=True)),
+    ("thinking_on_with_system", g4(messages=[{"role": "system", "content": "You are terse."},
+                                             {"role": "user", "content": "Why?"}], enable_thinking=True)),
+    ("thinking_off_explicit", g4(messages=[{"role": "user", "content": "Why?"}], enable_thinking=False)),
+    ("content_parts_text", g4(messages=[
+        {"role": "system", "content": [{"type": "text", "text": "Part one. "}, {"type": "text", "text": " Part two."}]},
+        {"role": "user", "content": [{"type": "text", "text": "  First.  "}, {"type": "text", "text": "Second."}]}])),
+    ("content_parts_image", g4(messages=[
+        {"role": "user", "content": [{"type": "image"}, {"type": "text", "text": "What is this?"}]}])),
+    ("multi_turn", g4(messages=[
+        {"role": "user", "content": "Hi"},
+        {"role": "assistant", "content": "Hello! How can I help?"},
+        {"role": "user", "content": "Tell me a joke.\n\n"},
+        {"role": "assistant", "content": "Why did the chicken cross the road?"},
+        {"role": "user", "content": "Why?"}])),
+    ("assistant_thought_is_stripped", g4(messages=[
+        {"role": "user", "content": "2+2?"},
+        {"role": "assistant", "content": "<|channel>thought\nsimple sum<channel|>4"},
+        {"role": "user", "content": "And 3+3?"},
+        {"role": "assistant", "content": "a<|channel>x<channel|>b<|channel>y<channel|> c "},
+        {"role": "user", "content": "ok"}])),
+    ("consecutive_assistant_messages", g4(messages=[
+        {"role": "user", "content": "Go on."},
+        {"role": "assistant", "content": "First part."},
+        {"role": "assistant", "content": "Second part."},
+        {"role": "user", "content": "More."}])),
+    ("unicode_whitespace_trim", g4(messages=[
+        {"role": "system", "content": "\u3000系统提示\u00a0"},
+        {"role": "user", "content": "\u2003text with a trailing thin space\u2009\n\u2028"},
+        {"role": "assistant", "content": "\u0085answer\u001f"},
+        {"role": "user", "content": "\u200bzero width stays\u200b"}])),
+    ("empty_content", g4(messages=[{"role": "user", "content": ""}])),
+    ("tools_no_system", g4(messages=[{"role": "user", "content": "What's the weather in Paris?"}],
+                           tools=[wrapped(weather_tool())])),
+    ("tools_with_system_and_thinking", g4(messages=[{"role": "system", "content": "Use tools."},
+                                                    {"role": "user", "content": "Weather in Rome?"}],
+                                          tools=[wrapped(weather_tool()), wrapped(RUN_TOOL)], enable_thinking=True)),
+    ("tool_schema_shapes", g4(messages=[{"role": "user", "content": "Find it."}], tools=[G4_SEARCH_TOOL])),
+    ("tool_without_parameters", g4(messages=[{"role": "user", "content": "Ping."}], tools=[
+        wrapped({"name": "ping", "description": "Ping."}),
+        wrapped({"name": "now", "description": "The time.", "parameters": {"type": "object", "properties": {}}}),
+        wrapped({"name": "typed", "description": "With a response.",
+                 "parameters": {"type": "object", "properties": {"x": {"type": "integer"}}},
+                 "response": {"description": "What came back", "type": "object"}})])),
+    ("tool_keys_sort_case_insensitively", g4(messages=[{"role": "user", "content": "Sort."}], tools=[wrapped({
+        "name": "sorter", "description": "Keys in many cases.",
+        "parameters": {"type": "object", "properties": {
+            "zeta": {"type": "string"}, "Alpha": {"type": "string"}, "beta": {"type": "string"},
+            "BETA2": {"type": "string"}, "_under": {"type": "string"}, "a1": {"type": "string"},
+            "A0": {"type": "string"}, "\u00c4rger": {"type": "string"}, "\u00e4hre": {"type": "string"},
+            "\u0401\u0436": {"type": "string"}, "\u0451\u043b\u043a\u0430": {"type": "string"},
+            "\u0394": {"type": "string"}, "\u03b1": {"type": "string"}, "\u57ce\u5e02": {"type": "string"},
+            "\u0160koda": {"type": "string"}, "\u0161ok": {"type": "string"}}}})])),
+    ("tool_call_then_response", g4(messages=[
+        {"role": "user", "content": "Weather in Paris?"},
+        {"role": "assistant", "content": "", "tool_calls": [qwen_call("c1", "get_weather", {"city": "Paris", "days": 3})]},
+        {"role": "tool", "tool_call_id": "c1", "content": "sunny, 21C"}],
+        tools=[wrapped(weather_tool())])),
+    ("tool_call_pending_no_response", g4(messages=[
+        {"role": "user", "content": "Weather in Paris?"},
+        {"role": "assistant", "content": "", "tool_calls": [qwen_call("c1", "get_weather", {"city": "Paris"})]}],
+        tools=[wrapped(weather_tool())])),
+    ("two_calls_two_responses_then_answer", g4(messages=[
+        {"role": "system", "content": "You are a concise assistant."},
+        {"role": "user", "content": "Weather in Paris and Rome? 巴黎呢?"},
+        {"role": "assistant", "content": "Let me check both.",
+         "tool_calls": [qwen_call("c1", "get_weather", {"city": "Paris", "days": 3}),
+                        qwen_call("c2", "get_weather", {"city": "Rome"})]},
+        {"role": "tool", "tool_call_id": "c1", "content": "sunny"},
+        {"role": "tool", "tool_call_id": "c2", "content": "rain"},
+        {"role": "assistant", "content": "Paris is sunny; Rome has rain."},
+        {"role": "user", "content": "And Zürich?"}],
+        tools=[wrapped(weather_tool()), wrapped(RUN_TOOL)])),
+    ("argument_value_types", g4(messages=[
+        {"role": "user", "content": "Run it."},
+        {"role": "assistant", "content": "", "tool_calls": [qwen_call("c1", "run", {
+            "code": "print(\"hi\")\nprint(2)\n", "Zed": None, "flag": True, "off": False, "n": 7, "ratio": 0.5,
+            "big": 12345678901234, "neg": -3, "opts": {"b": [1, 2, "three", {"k": None}], "a": {"x": 1.25, "Y": "y"}},
+            "empty_list": [], "empty_map": {}, "text": "quote \" and <|\"|> and 中文"})]},
+        {"role": "tool", "tool_call_id": "c1", "content": "hi\n2"}],
+        tools=[wrapped(RUN_TOOL)])),
+    ("arguments_as_a_string", g4(messages=[
+        {"role": "user", "content": "Weather?"},
+        {"role": "assistant", "content": "", "tool_calls": [qwen_call("c1", "get_weather", "city:<|\"|>Oslo<|\"|>")]},
+        {"role": "tool", "tool_call_id": "c1", "content": "cold"}],
+        tools=[wrapped(weather_tool())])),
+    ("tool_response_names", g4(messages=[
+        {"role": "user", "content": "Do three things."},
+        {"role": "assistant", "content": "", "tool_calls": [qwen_call("c1", "alpha", {}), qwen_call("c2", "beta", {"x": 1}),
+                                                             qwen_call("c3", "gamma", {})]},
+        {"role": "tool", "tool_call_id": "c2", "content": "second first"},
+        {"role": "tool", "name": "named", "content": "no id, a name"},
+        # (an id that matches no call, on a message without a name, is a TypeError in the template
+        # itself — None + str — and a render error here: not a case)
+        {"role": "tool", "tool_call_id": "nope", "name": "fallback", "content": "an id nothing matches"},
+        {"role": "user", "content": "Thanks."}])),
+    ("tool_response_content_parts", g4(messages=[
+        {"role": "user", "content": "Read it."},
+        {"role": "assistant", "content": "", "tool_calls": [qwen_call("c1", "read", {"path": "/tmp/x"})]},
+        {"role": "tool", "tool_call_id": "c1", "content": [{"type": "text", "text": "line 1\n"},
+                                                           {"type": "image"}, {"type": "text", "text": "line 2"}]}])),
+    ("reasoning_with_tool_calls", g4(messages=[
+        {"role": "user", "content": "Weather in Paris?"},
+        {"role": "assistant", "content": "", "reasoning_content": "I should call the tool.",
+         "tool_calls": [qwen_call("c1", "get_weather", {"city": "Paris"})]},
+        {"role": "tool", "tool_call_id": "c1", "content": "sunny"}],
+        tools=[wrapped(weather_tool())], enable_thinking=True)),
+    ("reasoning_before_last_user_is_dropped", g4(messages=[
+        {"role": "user", "content": "Weather in Paris?"},
+        {"role": "assistant", "content": "", "reasoning": "old thought",
+         "tool_calls": [qwen_call("c1", "get_weather", {"city": "Paris"})]},
+        {"role": "tool", "tool_call_id": "c1", "content": "sunny"},
+        {"role": "assistant", "content": "It is sunny.", "reasoning_content": "no call here"},
+        {"role": "user", "content": "And Rome?"}],
+        tools=[wrapped(weather_tool())])),
+    ("legacy_tool_responses_on_the_assistant", g4(messages=[
+        {"role": "user", "content": "Weather?"},
+        {"role": "assistant", "content": "", "tool_calls": [qwen_call("c1", "get_weather", {"city": "Oslo"})],
+         "tool_responses": [{"name": "get_weather", "response": {"temp": -2, "sky": "clear", "Wind": {"kph": 12}}},
+                            {"response": "plain text"}]},
+        {"role": "user", "content": "Thanks"}])),
+    ("call_then_text_in_the_same_turn", g4(messages=[
+        {"role": "user", "content": "Weather?"},
+        {"role": "assistant", "content": "", "tool_calls": [qwen_call("c1", "get_weather", {"city": "Oslo"})]},
+        {"role": "tool", "tool_call_id": "c1", "content": "cold"},
+        {"role": "assistant", "content": "It is cold in Oslo."},
+        {"role": "assistant", "content": "", "tool_calls": [qwen_call("c2", "get_weather", {"city": "Bergen"})]},
+        {"role": "tool", "tool_call_id": "c2", "content": "wet"}],
+        tools=[wrapped(weather_tool())])),
+]
+
+
 def main():
     import argparse
     ap = argparse.ArgumentParser()
@@ -703,9 +887,11 @@ def main():
     is_qwen = "Qwen" in model and not is_qwen3_next
     is_glm4 = "GLM-4" in model
     is_mimo = "MiMo" in model
-    cases = (QWEN3_NEXT_CASES if is_qwen3_next else
+    is_gemma = "gemma" in model.lower()
+    cases = (GEMMA4_CASES if is_gemma else QWEN3_NEXT_CASES if is_qwen3_next else
              MIMO_CASES if is_mimo else QWEN_CASES if is_qwen else GLM4_CASES if is_glm4 else CASES)
     out_path = args.out_opt or args.out or (
+        "tests/data/gemma4_chat_template_goldens.jsonl" if is_gemma else
         "tests/data/qwen3next_chat_template_goldens.jsonl" if is_qwen3_next else
         "tests/data/mimo_chat_template_goldens.jsonl" if is_mimo else
         "tests/data/qwen_chat_template_goldens.jsonl" if is_qwen else
@@ -720,7 +906,7 @@ def main():
     tok_raw = pathlib.Path(tok_path).read_bytes()
     template_hash = f"{fnv1a64(tpl_raw):016x}"
     tok_hash = f"{fnv1a64(tok_raw):016x}"
-    if not is_qwen3_next and not is_qwen and not is_glm4 and not is_mimo and tok_hash != "700b4469fc43f23b":
+    if not is_gemma and not is_qwen3_next and not is_qwen and not is_glm4 and not is_mimo and tok_hash != "700b4469fc43f23b":
         sys.exit(f"unexpected tokenizer revision {tok_hash} — the tokenizer "
                  "goldens are keyed to 700b4469fc43f23b")
 

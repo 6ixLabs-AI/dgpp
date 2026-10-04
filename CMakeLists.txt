@@ -36,6 +36,13 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 option(DGPP_WERROR "Treat compiler warnings as errors" OFF)
 option(DGPP_BUILD_BENCHMARKS "Build platform, kernel and transport microbenchmarks" ON)
+# Gemma 4 (2026-10-04): the family's host side — config, tensor table, host
+# reference, tokenizer shape, template forms, tool-call notation — is in the
+# default build and its tests ran on a Mac. Its CUDA side (the attention
+# kernel, the draft forward and gemma4_forward_check) was written with no
+# GPU at hand and has never been compiled: it builds only with this ON, so
+# that it cannot stop a build of main. sixlabs/ports/gemma-4-31b/gpu-steps.md.
+option(DGPP_BUILD_GEMMA_DRAFT "Gemma-4 draft kernels and forward check, not yet compiled on a Spark" OFF)
 set(DGPP_SANITIZE "" CACHE STRING "Host sanitizer (address or undefined)")
 set_property(CACHE DGPP_SANITIZE PROPERTY STRINGS "" address undefined)
 
@@ -242,6 +249,7 @@ dgpp_set_common(dgpp_models_dsa)
 # with its prefix cache index, and the sampler (header-only, src/sample/).
 add_library(dgpp_text STATIC
   src/text/tokenizer.cpp
+  src/text/tokenizer_spm.cpp
   src/text/unicode_normalize.cpp
   src/text/chat_template.cpp
   src/text/dsv41_prompt.cpp
@@ -320,6 +328,17 @@ add_library(dgpp_models_nemotron STATIC
 target_include_directories(dgpp_models_nemotron PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(dgpp_models_nemotron PUBLIC dgpp_loaders dgpp_common)
 dgpp_set_common(dgpp_models_nemotron)
+
+# Gemma 4 (2026-10-04): the host-side model description — the config
+# parser, the expected-tensor table and the fp32 host reference of the whole
+# text model (the C++ twin of tools/gemma4_reference.py). No CUDA.
+add_library(dgpp_models_gemma4 STATIC
+  src/models/gemma4/config.cpp
+  src/models/gemma4/binding.cpp
+  src/models/gemma4/reference.cpp)
+target_include_directories(dgpp_models_gemma4 PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(dgpp_models_gemma4 PUBLIC dgpp_loaders dgpp_common)
+dgpp_set_common(dgpp_models_gemma4)
 
 # The MiMo resident loader (loaders/resident_stream.hpp + the family's builders).
 add_library(dgpp_models_mimo_loader STATIC
@@ -621,6 +640,14 @@ dgpp_set_common(dsv41_bind_check)
 add_executable(qwen35_bind_check apps/qwen35_bind_check.cpp)
 target_link_libraries(qwen35_bind_check PRIVATE dgpp_models_qwen dgpp_loaders)
 dgpp_set_common(qwen35_bind_check)
+# Gemma 4, host-only: the table against a checkpoint's headers, and the host
+# reference's teacher-forced log-probabilities on a checkpoint (no GPU).
+add_executable(gemma4_bind_check apps/gemma4_bind_check.cpp)
+target_link_libraries(gemma4_bind_check PRIVATE dgpp_models_gemma4 dgpp_loaders)
+dgpp_set_common(gemma4_bind_check)
+add_executable(gemma4_host_check apps/gemma4_host_check.cpp)
+target_link_libraries(gemma4_host_check PRIVATE dgpp_models_gemma4 dgpp_loaders)
+dgpp_set_common(gemma4_host_check)
 add_executable(dsv4_forward_check apps/dsv4_forward_check.cpp)
 target_include_directories(dsv4_forward_check PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/tests/cuda)
 target_link_libraries(dsv4_forward_check PRIVATE dgpp_models_dsv4_layers dgpp_bus dgpp_loaders dgpp_sched dgpp_text CUDA::cudart Threads::Threads)
@@ -865,6 +892,21 @@ target_compile_definitions(unit_tests PRIVATE DGPP_SOURCE_DIR="${CMAKE_CURRENT_S
 dgpp_set_common(unit_tests)
 add_test(NAME unit_tests COMMAND unit_tests)
 target_sources(unit_tests PRIVATE tests/unit/site_options_test.cpp)
+# Gemma 4 (2026-10-04): the config parser; the tensor table against the 31B
+# and 26B-A4B releases' header counts; the host reference against the numpy reference on
+# the synthetic checkpoints — one in the 31B's shape, one in the 26B-A4B's with
+# the MoE block (tests/unit/gemma4_reference_vectors.hpp, written by
+# tools/gemma4_synth.py); the SentencePiece-style BPE on a miniature
+# tokenizer (tests/data/gemma4_mini_tokenizer.json, goldens from HF
+# tokenizers); the Jinja forms the template added; the call notation.
+target_sources(unit_tests PRIVATE
+  tests/unit/gemma4_config_test.cpp
+  tests/unit/gemma4_binding_test.cpp
+  tests/unit/gemma4_reference_test.cpp
+  tests/unit/gemma4_tokenizer_test.cpp
+  tests/unit/gemma4_tool_parser_test.cpp
+  tests/unit/chat_template_gemma4_forms_test.cpp)
+target_link_libraries(unit_tests PRIVATE dgpp_models_gemma4)
 
 # Nemotron-3 (2026-10-04): the config parser, the binding table against both
 # releases' header counts, and the Mamba2 host reference against the numpy
@@ -938,6 +980,11 @@ set_tests_properties(glm_dsa_tokenizer_test PROPERTIES SKIP_RETURN_CODE 2)
 add_test(NAME mimo_tokenizer_test
   COMMAND tokenizer_test ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/mimo_tokenizer_goldens.jsonl)
 set_tests_properties(mimo_tokenizer_test PROPERTIES SKIP_RETURN_CODE 2)
+# Gemma 4's SentencePiece-style BPE against HF tokenizers on the release's
+# own tokenizer.json (skips with rc 2 when the model cache is absent).
+add_test(NAME gemma4_tokenizer_test
+  COMMAND tokenizer_test ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/gemma4_tokenizer_goldens.jsonl)
+set_tests_properties(gemma4_tokenizer_test PROPERTIES SKIP_RETURN_CODE 2)
 
 # M6 Stage 3b: the chat-template differential gate (host). Skips with rc 2
 # when the model cache is absent, same as above.
@@ -979,6 +1026,48 @@ target_link_libraries(qwen3codernext_tool_calls_test PRIVATE dgpp_models_glm Thr
 dgpp_set_common(qwen3codernext_tool_calls_test)
 add_test(NAME qwen3codernext_tool_calls_test COMMAND qwen3codernext_tool_calls_test)
 set_tests_properties(qwen3codernext_tool_calls_test PROPERTIES SKIP_RETURN_CODE 2 LABELS "host;checkpoint")
+
+# Gemma 4 over its real tokenizer and template (host): the renders and their
+# ids against the jinja2 / HF tokenizers corpus, the markers, the frontend,
+# and the template's own calls parsed back. Skips with rc 2 when the model
+# cache is absent.
+add_executable(gemma4_chat_test tests/host/gemma4_chat_test.cpp)
+target_include_directories(gemma4_chat_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(gemma4_chat_test PRIVATE dgpp_models_glm Threads::Threads)
+dgpp_set_common(gemma4_chat_test)
+add_test(NAME gemma4_chat_test
+  COMMAND gemma4_chat_test ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/gemma4_chat_template_goldens.jsonl)
+set_tests_properties(gemma4_chat_test PROPERTIES SKIP_RETURN_CODE 2 LABELS "host;checkpoint")
+# The 26B-A4B release ships another (earlier) template over the same
+# tokenizer: its own corpus, the same test.
+add_test(NAME gemma4_26b_chat_test
+  COMMAND gemma4_chat_test ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/gemma4_26b_chat_template_goldens.jsonl)
+set_tests_properties(gemma4_26b_chat_test PROPERTIES SKIP_RETURN_CODE 2 LABELS "host;checkpoint")
+
+# Gemma 4's UNVERIFIED DRAFT GPU side (2026-10-04): a plain one-sequence
+# forward and its check. OFF by default — nothing here has been compiled by
+# nvcc. With it ON: gemma4_forward_draft_test first (the synthetic
+# checkpoint against the numpy reference's vectors; no checkpoint needed),
+# then gemma4_forward_check on the release. sixlabs/ports/gemma-4-31b/gpu-steps.md.
+if(DGPP_BUILD_GEMMA_DRAFT)
+  add_library(dgpp_models_gemma4_draft STATIC
+    src/models/gemma4/forward_draft.cu)
+  target_include_directories(dgpp_models_gemma4_draft PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(dgpp_models_gemma4_draft PUBLIC dgpp_models_gemma4 dgpp_loaders CUDA::cudart)
+  dgpp_set_common(dgpp_models_gemma4_draft)
+  add_executable(gemma4_forward_check apps/gemma4_forward_check.cpp)
+  target_link_libraries(gemma4_forward_check PRIVATE dgpp_models_gemma4_draft dgpp_models_gemma4 dgpp_loaders
+                                                     CUDA::cudart Threads::Threads)
+  dgpp_set_common(gemma4_forward_check)
+  add_executable(gemma4_forward_draft_test tests/cuda/gemma4_forward_draft_test.cpp)
+  target_include_directories(gemma4_forward_draft_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
+                                                               ${CMAKE_CURRENT_SOURCE_DIR}/tests/unit)
+  target_link_libraries(gemma4_forward_draft_test PRIVATE dgpp_models_gemma4_draft dgpp_models_gemma4 dgpp_loaders
+                                                          CUDA::cudart Threads::Threads)
+  dgpp_set_common(gemma4_forward_draft_test)
+  add_test(NAME gemma4_forward_draft_test COMMAND gemma4_forward_draft_test)
+  set_tests_properties(gemma4_forward_draft_test PROPERTIES LABELS "gpu")
+endif()
 
 # M6 Stage 4: the serving capstone — HTTP/SSE over epoll + the OpenAI
 # generation service (host-only; the engine adapters live in the apps,

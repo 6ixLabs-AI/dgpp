@@ -81,8 +81,16 @@ struct ChatMarker {
 // Qwen3-Next writes one JSON object between the same two <tool_call>
 // tokens Qwen3.8 fills with XML — "\n{\"name\": \"NAME\", \"arguments\":
 // {...}}\n", the Hermes form its template asks for — parsed from the
-// block's decoded text when it closes, like the XML one.
-enum class ToolFormat { kNone, kGlmMarkers, kQwenXml, kDsml, kQwenJson };
+// block's decoded text when it closes, like the XML one;
+// Gemma 4 writes its own notation between <|tool_call> and <tool_call|> —
+// "call:NAME{key:value,...}" with bare keys, a string between two <|"|>
+// tokens, numbers / true / false / null bare, nested {..} and [..] in the
+// same notation (what its template renders for an assistant call, and what
+// transformers' "gemma4-tool-call" response parser reads back). The three
+// markers are SPECIAL tokens — the service's decode skips them — so the
+// block's text is rebuilt from its ids with the string token restored, and
+// parsed when the block closes.
+enum class ToolFormat { kNone, kGlmMarkers, kQwenXml, kDsml, kQwenJson, kGemma };
 
 // The DSML dialect (kDsml): the two DeepSeek encoders share the ｜DSML｜ tag
 // token and the block's grammar but not its spelling, so the tokenizer
@@ -106,6 +114,17 @@ struct ChatMarkers {
   ChatMarker arg_value_open;    // "<arg_value>"    (GLM)
   ChatMarker arg_value_close;   // "</arg_value>"   (GLM)
   ChatMarker dsml;              // "｜DSML｜"        (DeepSeek-V4.1 / V4: the tool-call tag token)
+  // Gemma 4: the token on either side of a string inside a tool call. Its
+  // presence beside <|tool_call> / <tool_call|> (held in tool_call_open /
+  // tool_call_close) is the Gemma format.
+  ChatMarker string_quote;      // "<|\"|>"
+  // Gemma 4's reasoning is a CHANNEL: think_open / think_close hold
+  // <|channel> / <channel|>, and the model writes the channel's name —
+  // "thought\n" — right after the opener. That header is the format's, not
+  // the reasoning's: the parser drops it from the reasoning text. The
+  // template's generation prompt leaves the opener to the model (thinking
+  // on) or closes an empty channel itself (thinking off).
+  bool channel_thinking = false;
   // The DSML spelling (kDsml only). from_tokenizer leaves the default — the
   // two tokenizers carry the same tag token — so a DeepSeek-V4 frontend (and
   // the grammar vocabulary built beside it) sets kV4 explicitly.
@@ -158,9 +177,15 @@ struct ChatMarkers {
   // constrained decoding keeps its opening state bit for bit whatever a
   // prompt's tail (the loopback gates feed synthetic prompts).
   bool prompt_leaves_thinking_to_model(const std::vector<int64_t>& prompt) const {
-    if (!xml_compact) return false;
+    if (!xml_compact && !channel_thinking) return false;
     if (!think_open.available() || !think_close.available() || prompt.empty()) return false;
     if (prompt_opens_thinking(prompt)) return false;
+    // Gemma 4: the template never opens the channel for the model — thinking
+    // on ends the prompt at "<|turn>model\n", thinking off at an empty,
+    // closed channel — so a <|channel> the model writes first is its
+    // reasoning either way (were it content, its text would leak out with
+    // the marker skipped).
+    if (channel_thinking) return true;
     size_t n = prompt.size();
     for (int k = 0; k < 3 && n > 0; ++k) {
       const int64_t id = prompt[n - 1];
@@ -179,6 +204,8 @@ struct ChatMarkers {
         arg_key_open.available() && arg_key_close.available() &&
         arg_value_open.available() && arg_value_close.available())
       return ToolFormat::kGlmMarkers;
+    if (tool_call_open.available() && tool_call_close.available() && string_quote.available())
+      return ToolFormat::kGemma;
     if (tool_call_open.available() && tool_call_close.available())
       return json_calls ? ToolFormat::kQwenJson : ToolFormat::kQwenXml;
     if (dsml.available()) return ToolFormat::kDsml;
@@ -317,6 +344,15 @@ class ToolCallParser {
   // a string "name" and an object "arguments", in either order — into
   // name_/args_ (false when it is anything else).
   bool parse_qwen_json_block(const std::string& text);
+  // The Gemma format (kGemma): the ids between the two markers as text with
+  // the string token restored (its decode skips it); the closed block's
+  // text — call:NAME{key:value,...} — into name_/args_ (false when it is
+  // anything else); `ids` as literal text, every marker restored (what an
+  // aborted block flushes as content); the reasoning run with the channel's
+  // "thought\n" header held back and dropped.
+  std::string gemma_text(const std::vector<int64_t>& ids, bool all_markers) const;
+  bool parse_gemma_block(const std::string& text);
+  void gemma_reasoning_append(int64_t id, std::vector<Event>* out);
   // The DSML format (DeepSeek-V4.1 and V4, the tag names per
   // markers_.dsml_dialect): the content run with the block's
   // possible prefix ("\n\n<" or "<") held back until the next id decides;
@@ -358,6 +394,11 @@ class ToolCallParser {
   // tags, or the JSON format's "arguments" member: args_ holds the
   // members' JSON texts, emitted verbatim.
   bool args_json_ = false;
+  // Gemma's channel header: 0 while the reasoning run may still be (a prefix
+  // of) "thought\n", then the bytes of the run it took (8, or 0 when the
+  // run turned out not to start with it — recorded as settled).
+  bool channel_header_settled_ = false;
+  size_t channel_header_bytes_ = 0;
 
   // DSML: the content run's emitted length (the held prefix follows it),
   // the held prefix carried into an open block, the block's parsed calls.

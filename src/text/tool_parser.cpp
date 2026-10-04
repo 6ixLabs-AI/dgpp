@@ -38,11 +38,33 @@ ChatMarkers ChatMarkers::from_tokenizer(const Tokenizer& tok) {
   m.arg_value_open = lookup("<arg_value>");
   m.arg_value_close = lookup("</arg_value>");
   m.dsml = lookup("｜DSML｜");
+  // Gemma 4 (2026-10-04): the reasoning channel's two tokens and the
+  // tool-call pair under their own spellings, and the string token that
+  // marks the call notation. A tokenizer with <think> / <tool_call> is
+  // another family's and keeps those.
+  if (!m.think_open.available() && !m.think_close.available()) {
+    const ChatMarker open = lookup("<|channel>"), close = lookup("<channel|>");
+    if (open.available() && close.available()) {
+      m.think_open = open;
+      m.think_close = close;
+      m.channel_thinking = true;
+    }
+  }
+  if (!m.tool_call_open.available() && !m.tool_call_close.available()) {
+    const ChatMarker open = lookup("<|tool_call>"), close = lookup("<tool_call|>");
+    const ChatMarker quote = lookup("<|\"|>");
+    if (open.available() && close.available() && quote.available()) {
+      m.tool_call_open = open;
+      m.tool_call_close = close;
+      m.string_quote = quote;
+    }
+  }
   // The MiMo tokenizers (the Qwen2 vocabulary with the audio / video
   // markers) go with the compact XML call format.
   m.xml_compact = lookup("<|mimo_audio_start|>").available();
   for (const char* role : {"<|system|>", "<|user|>", "<|assistant|>", "<|observation|>",
-                           "<|im_start|>", "<|im_end|>", "<｜System｜>", "<｜User｜>", "<｜Assistant｜>"}) {
+                           "<|im_start|>", "<|im_end|>", "<｜System｜>", "<｜User｜>", "<｜Assistant｜>",
+                           "<|turn>", "<turn|>"}) {
     const ChatMarker r = lookup(role);
     if (r.available()) m.role_markers.push_back(r);
   }
@@ -170,7 +192,9 @@ void ToolCallParser::abort_block(std::vector<Event>* out) {
   // model wrote.
   std::string text;
   if (!raw_has_prefix_) text = options_.forced_prefix_text;
-  text += decode_(raw_);
+  // (Gemma's markers ARE special tokens: the decode skips them, so the
+  // literal text is rebuilt with them restored.)
+  text += markers_.tool_format() == ToolFormat::kGemma ? gemma_text(raw_, /*all_markers=*/true) : decode_(raw_);
   if (!text.empty()) {
     Event ev;
     ev.kind = Event::Kind::kContent;
@@ -201,10 +225,17 @@ void ToolCallParser::annotate_block(Event* ev, bool dsml) const {
   if (dsml) ev->tokens = dsml_held_tokens_;
   std::vector<int64_t> segment;
   size_t decoded = 0;
+  const bool gemma = markers_.tool_format() == ToolFormat::kGemma;
   for (size_t i = 0; i < raw_.size(); ++i) {
     size_t bytes = 0;
-    if (dsml && is_marker(raw_[i], markers_.dsml)) {
-      bytes = markers_.dsml.text.size();
+    // A marker the decode skips and the flushed text restores.
+    const ChatMarker* restored = nullptr;
+    if (dsml && is_marker(raw_[i], markers_.dsml)) restored = &markers_.dsml;
+    if (gemma)
+      for (const ChatMarker* m : {&markers_.string_quote, &markers_.tool_call_open, &markers_.tool_call_close})
+        if (is_marker(raw_[i], *m)) restored = m;
+    if (restored != nullptr) {
+      bytes = restored->text.size();
       segment.clear();
       decoded = 0;
     } else {
@@ -526,6 +557,257 @@ bool ToolCallParser::parse_qwen_json_block(const std::string& text) {
     }
   }
   return true;
+}
+
+// ---- the Gemma 4 format ---------------------------------------------------------
+
+namespace {
+
+// The notation of a Gemma 4 call's arguments, read into JSON text:
+//   object := '{' [ key ':' value { ',' key ':' value } ] '}'
+//   key    := bare text up to ':'  |  QUOTE text QUOTE
+//   value  := QUOTE text QUOTE | object | '[' [ value { ',' value } ] ']' | scalar
+//   scalar := a JSON number, true, false, null — None is null (what the
+//             template prints for a null in the history) — and, leniently,
+//             any other bare text up to the next ',' '}' ']' as a string
+//             (vLLM's parsers make the same call for an untyped value)
+// QUOTE is the <|"|> token's text; whitespace between the parts is allowed.
+// The JSON comes out in json.dumps form (", " and ": "), keys in the
+// order written.
+class GemmaReader {
+ public:
+  GemmaReader(std::string_view text, std::string_view quote) : s_(text), quote_(quote) {}
+
+  size_t pos() const { return i_; }
+  void skip_ws() {
+    while (i_ < s_.size() && (s_[i_] == ' ' || s_[i_] == '\n' || s_[i_] == '\r' || s_[i_] == '\t')) ++i_;
+  }
+  bool at_end() {
+    skip_ws();
+    return i_ == s_.size();
+  }
+
+  // '{' ... '}' into `members` (key, JSON text); false when malformed.
+  bool object(std::vector<std::pair<std::string, std::string>>* members, int depth) {
+    if (depth > 64) return false;
+    skip_ws();
+    if (i_ >= s_.size() || s_[i_] != '{') return false;
+    ++i_;
+    skip_ws();
+    if (i_ < s_.size() && s_[i_] == '}') {
+      ++i_;
+      return true;
+    }
+    for (;;) {
+      std::string key;
+      if (!this->key(&key)) return false;
+      skip_ws();
+      if (i_ >= s_.size() || s_[i_] != ':') return false;
+      ++i_;
+      std::string json;
+      if (!value(&json, depth)) return false;
+      members->emplace_back(std::move(key), std::move(json));
+      skip_ws();
+      if (i_ >= s_.size()) return false;
+      if (s_[i_] == ',') {
+        ++i_;
+        continue;
+      }
+      if (s_[i_] == '}') {
+        ++i_;
+        return true;
+      }
+      return false;
+    }
+  }
+
+ private:
+  bool quoted(std::string* out) {
+    if (s_.compare(i_, quote_.size(), quote_) != 0) return false;
+    const size_t begin = i_ + quote_.size();
+    const size_t end = s_.find(quote_, begin);
+    if (end == std::string_view::npos) return false;  // an unclosed string
+    out->assign(s_.substr(begin, end - begin));
+    i_ = end + quote_.size();
+    return true;
+  }
+
+  bool key(std::string* out) {
+    skip_ws();
+    if (s_.compare(i_, quote_.size(), quote_) == 0) return quoted(out) && !out->empty();
+    const size_t begin = i_;
+    while (i_ < s_.size() && s_[i_] != ':' && s_[i_] != ',' && s_[i_] != '{' && s_[i_] != '}' && s_[i_] != '[' &&
+           s_[i_] != ']')
+      ++i_;
+    size_t end = i_;
+    while (end > begin && (s_[end - 1] == ' ' || s_[end - 1] == '\n' || s_[end - 1] == '\r' || s_[end - 1] == '\t')) --end;
+    if (end == begin || s_.substr(begin, end - begin).find(quote_) != std::string_view::npos) return false;
+    out->assign(s_.substr(begin, end - begin));
+    return true;
+  }
+
+  bool value(std::string* json, int depth) {
+    skip_ws();
+    if (i_ >= s_.size()) return false;
+    if (s_.compare(i_, quote_.size(), quote_) == 0) {
+      std::string text;
+      if (!quoted(&text)) return false;
+      *json = Value::string_value(std::move(text)).to_json(/*ensure_ascii=*/false);
+      return true;
+    }
+    if (s_[i_] == '{') {
+      std::vector<std::pair<std::string, std::string>> members;
+      if (!object(&members, depth + 1)) return false;
+      *json = "{";
+      for (size_t k = 0; k < members.size(); ++k) {
+        if (k) *json += ", ";
+        *json += Value::string_value(members[k].first).to_json(false) + ": " + members[k].second;
+      }
+      *json += "}";
+      return true;
+    }
+    if (s_[i_] == '[') {
+      if (depth > 64) return false;
+      ++i_;
+      *json = "[";
+      skip_ws();
+      if (i_ < s_.size() && s_[i_] == ']') {
+        ++i_;
+        *json += "]";
+        return true;
+      }
+      for (bool first = true;; first = false) {
+        std::string item;
+        if (!value(&item, depth + 1)) return false;
+        if (!first) *json += ", ";
+        *json += item;
+        skip_ws();
+        if (i_ >= s_.size()) return false;
+        if (s_[i_] == ',') {
+          ++i_;
+          continue;
+        }
+        if (s_[i_] == ']') {
+          ++i_;
+          *json += "]";
+          return true;
+        }
+        return false;
+      }
+    }
+    // A bare scalar: up to the next separator of the enclosing structure.
+    const size_t begin = i_;
+    while (i_ < s_.size() && s_[i_] != ',' && s_[i_] != '}' && s_[i_] != ']') {
+      if (s_.compare(i_, quote_.size(), quote_) == 0) return false;  // a string must start the value
+      ++i_;
+    }
+    size_t end = i_;
+    while (end > begin && (s_[end - 1] == ' ' || s_[end - 1] == '\n' || s_[end - 1] == '\r' || s_[end - 1] == '\t')) --end;
+    if (end == begin) return false;
+    const std::string text(s_.substr(begin, end - begin));
+    if (text == "true" || text == "false" || text == "null") {
+      *json = text;
+    } else if (text == "None") {
+      *json = "null";
+    } else {
+      const char c = text[0];
+      bool number = false;
+      if (c == '-' || (c >= '0' && c <= '9')) {
+        try {
+          *json = normalized_json(text);
+          number = true;
+        } catch (const std::exception&) {
+          // not a JSON number — a string it is
+        }
+      }
+      if (!number) *json = Value::string_value(text).to_json(false);
+    }
+    return true;
+  }
+
+  std::string_view s_;
+  std::string_view quote_;
+  size_t i_ = 0;
+};
+
+}  // namespace
+
+std::string ToolCallParser::gemma_text(const std::vector<int64_t>& ids, bool all_markers) const {
+  std::string text;
+  std::vector<int64_t> run;
+  const auto flush = [&] {
+    if (!run.empty()) text += decode_(run);
+    run.clear();
+  };
+  for (const int64_t id : ids) {
+    const ChatMarker* marker = nullptr;
+    if (is_marker(id, markers_.string_quote)) marker = &markers_.string_quote;
+    else if (all_markers && is_marker(id, markers_.tool_call_open)) marker = &markers_.tool_call_open;
+    else if (all_markers && is_marker(id, markers_.tool_call_close)) marker = &markers_.tool_call_close;
+    if (marker == nullptr) {
+      run.push_back(id);
+      continue;
+    }
+    flush();
+    text += marker->text;
+  }
+  flush();
+  return text;
+}
+
+// "call:NAME{key:value,...}" — the name is what stands between "call:" and
+// the first '{' (transformers' reader takes \w+; a name with a '-' or a '.'
+// is read here too), the arguments one object in the notation above with
+// distinct keys, and nothing but whitespace after its closing brace.
+bool ToolCallParser::parse_gemma_block(const std::string& text) {
+  size_t b = text.find_first_not_of(" \n\r\t");
+  if (b == std::string::npos || text.compare(b, 5, "call:") != 0) return false;
+  b += 5;
+  const size_t brace = text.find('{', b);
+  if (brace == std::string::npos) return false;
+  size_t name_begin = b, name_end = brace;
+  while (name_begin < name_end && (text[name_begin] == ' ' || text[name_begin] == '\n')) ++name_begin;
+  while (name_end > name_begin && (text[name_end - 1] == ' ' || text[name_end - 1] == '\n')) --name_end;
+  if (name_end == name_begin) return false;
+  const std::string name = text.substr(name_begin, name_end - name_begin);
+  if (name.find(markers_.string_quote.text) != std::string::npos || name.find_first_of(":,[]}") != std::string::npos)
+    return false;
+  GemmaReader reader(std::string_view(text).substr(brace), markers_.string_quote.text);
+  std::vector<std::pair<std::string, std::string>> members;
+  if (!reader.object(&members, 0) || !reader.at_end()) return false;
+  for (size_t i = 0; i < members.size(); ++i)
+    for (size_t j = 0; j < i; ++j)
+      if (members[i].first == members[j].first) return false;  // a repeated key
+  name_ = seeded_name_ + name;
+  args_ = std::move(members);
+  args_json_ = true;
+  return true;
+}
+
+void ToolCallParser::gemma_reasoning_append(int64_t id, std::vector<Event>* out) {
+  static const std::string kHeader = "thought\n";
+  run_.ids.push_back(id);
+  const std::string full = decode_(run_.ids);
+  if (!channel_header_settled_) {
+    if (full.size() >= kHeader.size()) {
+      channel_header_settled_ = true;
+      channel_header_bytes_ = full.compare(0, kHeader.size(), kHeader) == 0 ? kHeader.size() : 0;
+    } else if (kHeader.compare(0, full.size(), full) == 0) {
+      return;  // still (a prefix of) the header: nothing to show yet
+    } else {
+      channel_header_settled_ = true;  // another opening: all of it is the reasoning
+      channel_header_bytes_ = 0;
+    }
+  }
+  const size_t shown = run_.text.size();
+  if (full.size() > channel_header_bytes_ + shown) {
+    Event ev;
+    ev.kind = Event::Kind::kReasoning;
+    ev.text.assign(full, channel_header_bytes_ + shown, std::string::npos);
+    if (options_.track_tokens) ev.tokens.push_back({current_token_, 0, ev.text.size()});
+    out->push_back(std::move(ev));
+  }
+  run_.text = full.substr(channel_header_bytes_);
 }
 
 // ---- the DSML format ------------------------------------------------------------
@@ -858,6 +1140,10 @@ void ToolCallParser::feed(int64_t id, std::vector<Event>* out) {
       }
       // The prompt already opened the block; a repeated opener is noise.
       if (is_marker(id, markers_.think_open)) return;
+      if (markers_.channel_thinking) {
+        gemma_reasoning_append(id, out);
+        return;
+      }
       run_append(&run_, id, Event::Kind::kReasoning, out);
       return;
 
@@ -868,6 +1154,8 @@ void ToolCallParser::feed(int64_t id, std::vector<Event>* out) {
           markers_.reasoning_available()) {
         state_ = State::kReasoning;
         run_ = Run{};
+        channel_header_settled_ = false;
+        channel_header_bytes_ = 0;
         return;
       }
       if (markers_.tool_format() == ToolFormat::kDsml) {
@@ -908,6 +1196,27 @@ void ToolCallParser::feed(int64_t id, std::vector<Event>* out) {
   const bool open = is_marker(id, markers_.tool_call_open);
   const bool close = is_marker(id, markers_.tool_call_close);
   const ToolFormat format = markers_.tool_format();
+  if (format == ToolFormat::kGemma) {
+    // The Gemma format: the block's ids buffer until <tool_call|>; its
+    // text, the string token restored, is parsed then (a nested opener
+    // restarts).
+    if (open) {
+      raw_.pop_back();
+      raw_indices_.pop_back();
+      abort_block(out);
+      enter_tool_call(id);
+      return;
+    }
+    if (!close) return;
+    const std::vector<int64_t> inner(raw_.begin() + (raw_has_prefix_ ? 1 : 0), raw_.end() - 1);
+    std::string text = raw_has_prefix_ ? "" : options_.forced_prefix_text;
+    text += gemma_text(inner, /*all_markers=*/false);
+    if (parse_gemma_block(text))
+      complete_block(out);
+    else
+      abort_block(out);
+    return;
+  }
   if (format == ToolFormat::kQwenXml || format == ToolFormat::kQwenJson) {
     // The Qwen formats: the block's ids buffer until it closes; the text
     // between the markers is parsed then (a nested opener restarts).

@@ -227,7 +227,12 @@ class GrammarVocab {
   // object's machine cannot judge alone (empty under every other format).
   const std::vector<int32_t>& json_call_end_ids() const { return json_call_end_ids_; }
   bool is_eos(int64_t id) const;
-  bool usable() const { return markers_.tool_calls_available() && !eos_.empty(); }
+  // (No grammar is written for the Gemma 4 call notation yet: a vocabulary
+  // over that tokenizer reports unusable, so the engine offers no
+  // constrained decoding and the service refuses what would need it.)
+  bool usable() const {
+    return markers_.tool_calls_available() && markers_.tool_format() != ToolFormat::kGemma && !eos_.empty();
+  }
   // The JSON grammar's per-vocabulary tables (M6 6h), built once on first
   // use — or eagerly here, so a serving rank pays the second or so at
   // boot rather than on the first json request. Copies share them.

@@ -1,0 +1,23 @@
+{
+  "model": "nvidia/Gemma-4-31B-IT-NVFP4",
+  "world_size": 1,
+  "engine": {
+    "max_concurrency": 4,
+    "kv_capacity": 262144,
+    "kv_dtype": "bf16",
+    "default_max_tokens": 16384,
+    "queue_limit": 64,
+    "max_connections": 256,
+    "decode_graph": true,
+    "mtp": false,
+    "prefix_cache_gib": 4,
+    "admission": "grow",
+    "admission_window": 256,
+    "model_alias": "Gemma-4-31B",
+    "stats_interval_s": 10,
+    "max_tokens_overflow": "clamp"
+  },
+  "paths": {
+    "resident_cache": ""
+  }
+}

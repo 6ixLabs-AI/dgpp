@@ -13,6 +13,8 @@ DGPP's own tree is untouched outside the files the port changes; our tooling liv
 | `bench/compare_states.py`, `compare_logprobs.py`, `compare_transcripts.py` | The engine against the numpy host reference (`tools/qwen3next_reference.py`) and against another capture. |
 | `bench/compare_forward_check.py` | One `qwen35_forward_check` run against the reference's `score` of the same ids (no capture needed): the first numerical gate of a new checkpoint. |
 | `bench/build_dgpp.py` | Configure + build a checkout as a logged job. |
+| `ports/gemma-4-31b/gpu-steps.md`, `inputs/` | Gemma 4 (`nvidia/Gemma-4-31B-IT-NVFP4`): a new family whose host side is in the build and whose GPU side is a draft behind `-DDGPP_BUILD_GEMMA_DRAFT=ON`; the steps that would verify it, and the two token-id inputs they use. Not servable yet. |
+| `ports/gemma-4-26b-a4b/gpu-steps.md` | The same family's MoE model (`bg-digitalservices/Gemma-4-26B-A4B-it-NVFP4A16`, a community NVFP4 release with its own, earlier chat template): what differs from the 31B's steps. Not servable yet. |
 | `upstream-issue-77-draft.md` | The feature request as first drafted (its checkpoint section was corrected in the issue thread). |
 
 ## Where things run (2026-10-03)

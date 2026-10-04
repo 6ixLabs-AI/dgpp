@@ -256,6 +256,79 @@ MIMO_CASES = QWEN_CASES + [
 ]
 
 
+# The Gemma 4 corpus (2026-10-04): a SentencePiece-style BPE — the space
+# becomes U+2581, a segment between two added tokens is ONE word (newline
+# and space runs merge into their own tokens, across what other tokenizers
+# call word boundaries), characters outside the vocabulary fall back to
+# their UTF-8 bytes' "<0xNN>" tokens — and its own added tokens: the turn,
+# channel, tool and string-escape markers, which sit inside the base
+# vocabulary's id range. The decoder turns every U+2581 into a space, so a
+# text that holds a literal U+2581 round-trips to the space form.
+G_BOS = "<" + "bos>"
+G_TURN = "<|" + "turn>"
+G_TURN_END = "<" + "turn|>"
+G_CHANNEL = "<|" + "channel>"
+G_CHANNEL_END = "<" + "channel|>"
+G_THINK = "<|" + "think|>"
+G_TOOL = "<|" + "tool>"
+G_TOOL_END = "<" + "tool|>"
+G_CALL = "<|" + "tool_call>"
+G_CALL_END = "<" + "tool_call|>"
+G_RESP = "<|" + "tool_response>"
+G_RESP_END = "<" + "tool_response|>"
+G_QUOTE = '<|"|>'
+GEMMA_CASES = [c for c in CASES if USER not in c and ASSIST not in c and EOS not in c
+               and THINK_OPEN not in c and THINK_CLOSE not in c] + [
+    # The added tokens standalone, inline, and where one is a prefix of another.
+    G_BOS, "<" + "eos>", "<" + "pad>", "<" + "unk>", "<" + "mask>", G_TURN, G_TURN_END, G_CHANNEL, G_CHANNEL_END,
+    G_THINK, G_TOOL, G_TOOL_END, G_CALL, G_CALL_END, G_RESP, G_RESP_END, G_QUOTE,
+    "<|image>", "<image|>", "<|image|>", "<|audio>", "<audio|>", "<|audio|>", "<|video|>",
+    G_TOOL + G_CALL + G_RESP, G_TOOL_END + G_CALL_END + G_RESP_END,
+    "a" + G_TURN + "b", "a " + G_TURN_END + " b", "before " + G_TURN + " after", G_QUOTE + "x" + G_QUOTE,
+    # Almost an added token: ordinary pieces.
+    "<|turn", "turn|>", "<|tool_cal>", "<| turn>", "<|\"|", "<bos", "< bos>", "<|think|", "<start_of_turn>",
+    "<end_of_turn>", "<unused5>", "a<unused0>b", "[multimodal]", "<0x41>", "<0xE4><0xBD><0xA0>", "</div>", "<table>",
+    # Template-shaped runs (chat_template.jinja's own strings).
+    G_BOS + G_TURN + "user\nHello" + G_TURN_END + "\n" + G_TURN + "model\n",
+    G_BOS + G_TURN + "system\n" + G_THINK + "\nYou are helpful." + G_TURN_END + "\n" + G_TURN + "user\nHi"
+    + G_TURN_END + "\n" + G_TURN + "model\n",
+    G_TURN + "model\n" + G_CHANNEL + "thought\n" + G_CHANNEL_END,
+    G_CHANNEL + "thought\nThe user wants the weather.\n" + G_CHANNEL_END + "It is sunny." + G_TURN_END + "\n",
+    G_TOOL + "declaration:get_weather{description:" + G_QUOTE + "Get the weather" + G_QUOTE
+    + ",parameters:{properties:{city:{description:" + G_QUOTE + "The city" + G_QUOTE + ",type:" + G_QUOTE + "STRING"
+    + G_QUOTE + "}},required:[" + G_QUOTE + "city" + G_QUOTE + "],type:" + G_QUOTE + "OBJECT" + G_QUOTE + "}}"
+    + G_TOOL_END,
+    G_CALL + "call:get_weather{city:" + G_QUOTE + "Paris" + G_QUOTE + ",days:3,metric:true}" + G_CALL_END + G_RESP,
+    G_RESP + "response:get_weather{temp:21,sky:" + G_QUOTE + "clear" + G_QUOTE + "}" + G_RESP_END,
+    # Whitespace: the space mark, runs that are one token and runs longer than any token, mixed with newlines.
+    " x", "x ", " ", "  ", "   ", " " * 30, " " * 31, " " * 64, " " * 257, "a" + " " * 40 + "b",
+    "\n", "\n\n", "\n" * 3, "\n" * 30, "\n" * 31, "\n" * 100, "\t", "\t\t", "\t" * 30, "\t" * 45,
+    " \n", "\n ", " \n \n ", "\n\n  x", "\n    indented\n        twice\n", "a\n\nb\n\n\nc", "\r\n", "a\r\nb",
+    "trailing space \n", "x\u00a0y", "x\u2003y", "x\u3000y",
+    # A literal U+2581 is the same symbol as a space.
+    "\u2581", "a\u2581b", "\u2581\u2581x", " \u2581 ",
+    # Byte fallback: control characters, private use, unassigned, rare scripts.
+    "\u0000", "\u0001\u0002", "a\u0000b", "\u007f", "\ue000", "\U000f0000", "\U0010ffff", "\ufffe", "\ufffd",
+    "\U00030000", "\U0001fae0", "\U00013000", "\u0f00\u0f01", "\U00011000",
+    # Scripts and marks (no normalization: decomposed stays decomposed).
+    "e\u0301", "\u00e9", "Cafe\u0301 au lait", "\ufb01ne", "\u1100\u1161\u11a8", "\ud55c\uad6d\uc5b4",
+    "\u0928\u092e\u0938\u094d\u0924\u0947", "Ti\u1ebfng Vi\u1ec7t", "日本語のテキスト", "中文 English 混合 text",
+    "\U0001f44d\U0001f3fd", "\U0001f468\u200d\U0001f469\u200d\U0001f467", "a\u200db", "\ufeffbom",
+    # Numbers, punctuation, code.
+    "12345", "3.14159", "2024-10-04", "v2.1.0", "1,000,000.50", "0x1F", "1e-6", "$abc(def)", "a+b=c", "x<y>z", "~/.bashrc",
+    "C++ & C#", "{\"a\": [1, 2, {\"b\": null}]}", "https://example.com/a/b?c=d&e=f#g", "snake_case camelCase kebab-case",
+    "#include <stdio.h>\n\nint main(void) {\n\tprintf(\"hi\\n\");\n\treturn 0;\n}\n",
+    "| a | b |\n|---|---|\n| 1 | 2 |\n", "- item\n  - nested\n    - deeper\n",
+    # Repetition: the merge walk's positions against a long uniform run.
+    "a" * 100, "ab" * 60, "the " * 50, "." * 70, "=" * 80, "-" * 3 + ">" + "-" * 40, "ha" * 33 + "h",
+    "aaa", "aaaa", "aaaaa", "aaaaaa", "aaaaaaa", "abababa", "aabaabaab", "xxxxxxxxxxxxxxxxxyxxxxxxxxxxxxxxxx",
+    # A long mixed sample.
+    ("The Eiffel Tower (French: La tour Eiffel) is a wrought-iron lattice tower on the Champ de Mars in Paris.  "
+     "It is named after the engineer Gustave Eiffel, whose company designed and built the tower from 1887 to 1889.\n\n"
+     "  * Height: 330 m (1,083 ft)\n  * Floors: 3\n\n\"Quoted\" — and an em-dash; naïve café, 東京, emoji 🎉.\n") * 3,
+]
+
+
 def main():
     import argparse
     ap = argparse.ArgumentParser()
@@ -265,13 +338,15 @@ def main():
     ap.add_argument("--out", dest="out_opt", default=None)
     args = ap.parse_args()
     model = args.model
+    is_gemma = "gemma" in model.lower()  # the SentencePiece-style BPE shape
     is_mimo = "MiMo" in model
     is_qwen = "Qwen" in model or is_mimo  # NFC tokenizers
     is_dsv4 = "DeepSeek-V4-" in model  # DeepSeek-V4-Flash-0731 (model_type deepseek_v4), not V4.1
     is_dsv41 = "DeepSeek-V4" in model and not is_dsv4
-    cases = (DSV4_CASES if is_dsv4 else DSV41_CASES if is_dsv41 else MIMO_CASES if is_mimo
+    cases = (GEMMA_CASES if is_gemma else DSV4_CASES if is_dsv4 else DSV41_CASES if is_dsv41 else MIMO_CASES if is_mimo
              else QWEN_CASES if is_qwen else CASES)
     out_path = args.out_opt or args.out or (
+        "tests/data/gemma4_tokenizer_goldens.jsonl" if is_gemma else
         "tests/data/dsv4_tokenizer_goldens.jsonl" if is_dsv4 else
         "tests/data/dsv41_tokenizer_goldens.jsonl" if is_dsv41 else
         "tests/data/mimo_tokenizer_goldens.jsonl" if is_mimo else
@@ -302,6 +377,8 @@ def main():
             # An NFC tokenizer round-trips to the NFC form of the input.
             import unicodedata
             expect = unicodedata.normalize("NFC", text) if is_qwen else text
+            if is_gemma:  # the decoder's Replace: a literal U+2581 comes back as a space
+                expect = text.replace("\u2581", " ")
             if decoded != expect:
                 sys.exit(f"HF verbatim round-trip failed for {text!r} -> {decoded!r}")
             f.write(json.dumps({"text": text, "ids": ids}) + "\n")

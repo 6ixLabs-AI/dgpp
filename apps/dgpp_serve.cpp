@@ -1042,6 +1042,16 @@ std::unique_ptr<ServeFamily> make_family(const std::string& ckpt, int world,
         "model assembly have not landed (docs/nemotron3_plan.md)");
   if (arch == dgpp::ModelArchitecture::Glm4Moe) return std::make_unique<Glm4Family>(ckpt);
   if (arch == dgpp::ModelArchitecture::GlmMoeDsa) return std::make_unique<GlmDsaFamily>(ckpt, world, kv_format);
+  // Gemma 4 (2026-10-04): the family's host side is in the tree — config,
+  // tensor table, host reference, tokenizer, template forms, call notation —
+  // and a draft GPU forward check behind DGPP_BUILD_GEMMA_DRAFT. There is NO
+  // serving engine for it yet (no paged K/V, no scheduler engine): refused
+  // by name here rather than handed to the default family's loader.
+  if (arch == dgpp::ModelArchitecture::Gemma4)
+    throw std::runtime_error(
+        "gemma4: this engine cannot serve the Gemma 4 family yet — its host side and a draft forward check exist "
+        "(gemma4_bind_check, gemma4_host_check; gemma4_forward_check with -DDGPP_BUILD_GEMMA_DRAFT=ON), a serving "
+        "engine does not. See sixlabs/ports/gemma-4-31b/gpu-steps.md");
   return std::make_unique<GlmFamily>(ckpt, world, kv_format);
 }
 

@@ -21,6 +21,7 @@ enum class ModelArchitecture : int {
   DeepseekV4,  // DeepseekV4ForCausalLM / deepseek_v4 (DeepSeek-V4-Flash-0731, 2026-10-01)
   Qwen3Next,   // Qwen3NextForCausalLM / qwen3_next (Qwen3-Next-80B-A3B: the qwen3_5 stack with a routed MoE)
   NemotronH,   // NemotronHForCausalLM / nemotron_h (Nemotron-3 Nano / Super, 2026-10-04: config + binding only)
+  Gemma4,      // Gemma4ForConditionalGeneration / gemma4 (Gemma-4-31B, 2026-10-04: host side; kernels a draft)
 };
 
 constexpr const char* model_architecture_name(ModelArchitecture a) {
@@ -35,6 +36,7 @@ constexpr const char* model_architecture_name(ModelArchitecture a) {
     case ModelArchitecture::DeepseekV4: return "deepseek_v4";
     case ModelArchitecture::Qwen3Next: return "qwen3_next";
     case ModelArchitecture::NemotronH: return "nemotron_h";
+    case ModelArchitecture::Gemma4: return "gemma4";
   }
   return "glm5";
 }

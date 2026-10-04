@@ -32,6 +32,30 @@
 // hash (FNV-1a-64 of tokenizer.json): a gate run against a different
 // tokenizer.json refuses rather than compares.
 //
+// A FIFTH shape is NOT ByteLevel (Gemma 4, 2026-10-04; text/tokenizer_spm.cpp):
+// the SentencePiece-style BPE transformers' GemmaTokenizer builds —
+//   * normalizer: Replace " " -> "\u2581" (the only normalization);
+//   * pre-tokenizer: Split on the literal " ", MergedWithPrevious — which
+//     never fires, the normalizer having left no space: each added-token-free
+//     segment is ONE word, newlines and all;
+//   * model: BPE over CHARACTERS (not bytes), byte_fallback=true (a
+//     character outside the vocabulary becomes its UTF-8 bytes' "<0xNN>"
+//     tokens — all 256 must exist, so unk is unreachable), fuse_unk,
+//     ignore_merges=false, merges as [first, second] pairs;
+//   * decoder: Sequence[Replace "\u2581" -> " ", ByteFallback, Fuse];
+//     post-processor: a TemplateProcessing that adds nothing;
+//   * added tokens: plain matching, not normalized, and INSIDE the base
+//     vocabulary's id range (<bos> is id 2 of the vocab and an added token).
+// The merge procedure is HF's priority-queue walk (lowest rank, then
+// leftmost position, one occurrence at a time) over token-id pairs,
+// reproduced step for step, its stale-entry rule included, rather than
+// argued equivalent to the ByteLevel shapes' loop: a segment is the whole
+// text between two added tokens (that loop is quadratic in it), and this
+// vocabulary's merge list makes one token several ways (514,906 merges
+// for 236,339 products). Validated like the others, by differential
+// goldens against HF tokenizers (tests/data/gemma4_tokenizer_goldens.jsonl)
+// and by a miniature tokenizer of the same shape in the unit tests.
+//
 // Threading: load once, then encode/decode are const and thread-safe.
 #include <cstdint>
 #include <string>
@@ -82,8 +106,12 @@ class Tokenizer {
   }
   int32_t cp_to_byte_at(uint32_t cp) const { return cp_to_byte_[cp]; }
 
-  // Highest id encode can produce (the last added token's id).
+  // Highest id encode can produce (the last added token's id; for the
+  // SentencePiece-style shape, whose added tokens sit inside the base
+  // range, the vocabulary's last id).
   int64_t max_id() const { return max_id_; }
+  // Whether the file matched the SentencePiece-style BPE shape (Gemma 4).
+  bool sentencepiece_bpe() const { return spm_; }
 
  private:
   struct MergeKey {
@@ -118,6 +146,19 @@ class Tokenizer {
   // One pretoken's mapped symbol string -> ids (BPE, ignore_merges).
   void encode_word(std::string_view mapped, std::vector<int64_t>* out) const;
 
+  // --- the SentencePiece-style BPE shape (text/tokenizer_spm.cpp) -------
+  // Whether the parsed file declares that shape (its normalizer is Replace).
+  static bool is_spm_shape(const minijson::Value& root);
+  // Validates the shape and fills the vocabulary, the id-pair merge table,
+  // the byte tokens and the added-token trie from t.doc_.
+  static void load_spm(Tokenizer& t);
+  // One added-token-free segment: normalize, split into characters (byte
+  // fallback), run HF's merge walk, append the ids.
+  void encode_segment_spm(std::string_view segment, std::vector<int64_t>* out) const;
+  // One id's text: a "<0xNN>" token is the byte NN, anything else its
+  // string with every U+2581 turned into a space.
+  std::string decode_verbatim_spm(int64_t id) const;
+
   // The raw file and its parse tree both stay members: minijson object
   // keys (Member.key) are tree-owned std::strings, so the vocab/merge keys
   // (string_views) remain valid only while the tree lives — the first
@@ -141,6 +182,24 @@ class Tokenizer {
   int pattern_ = 0;            // 0: the GLM regex, 1: the Qwen3.8 regex, 2: the DeepSeek-V4.1 three-stage sequence, 3: the Qwen2 regex (MiMo)
   bool nfc_ = false;           // normalizer NFC (Qwen)
   bool ignore_merges_ = true;  // model.ignore_merges
+  // --- the SentencePiece-style BPE shape ---------------------------------
+  struct PairHash {
+    size_t operator()(uint64_t k) const {
+      k ^= k >> 33;
+      k *= 0xff51afd7ed558ccdull;
+      k ^= k >> 33;
+      return static_cast<size_t>(k);
+    }
+  };
+  struct SpmMerge {
+    uint32_t rank = 0;    // position in model.merges
+    uint32_t new_id = 0;  // the id of first + second
+  };
+  bool spm_ = false;
+  // (first id << 32 | second id) -> the merge.
+  std::unordered_map<uint64_t, SpmMerge, PairHash> spm_merges_;
+  int64_t spm_byte_id_[256] = {0};       // byte -> the id of "<0xNN>"
+  std::vector<int16_t> spm_id_byte_;     // id -> byte, -1 for an ordinary token
 };
 
 }  // namespace dgpp::text

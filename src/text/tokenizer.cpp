@@ -512,6 +512,13 @@ Tokenizer Tokenizer::load(const std::string& path) {
   t.doc_ = minijson::parse(t.json_buf_);
   const minijson::Value& root = t.doc_.root;
 
+  // The SentencePiece-style BPE shape (Gemma 4) shares nothing below but
+  // the added-token trie: text/tokenizer_spm.cpp validates and loads it.
+  if (is_spm_shape(root)) {
+    load_spm(t);
+    return t;
+  }
+
   // --- normalizer: none, or NFC ----------------------------------------
   if (const minijson::Value* n = root.find("normalizer")) {
     if (!n->is_null()) {
@@ -757,6 +764,10 @@ std::vector<int64_t> Tokenizer::encode(std::string_view text) const {
 
 void Tokenizer::encode_segment(std::string_view segment,
                                   std::vector<int64_t>* out) const {
+  if (spm_) {
+    encode_segment_spm(segment, out);
+    return;
+  }
   // The normalizer runs on each added-token-free segment (HF applies it
   // to the splits the added vocabulary leaves, the tokens themselves
   // being non-normalized).
@@ -912,6 +923,7 @@ std::string Tokenizer::decode(int64_t id, bool skip_special_tokens) const {
     for (const AddedToken& a : added_tokens_)
       if (a.id == id && a.special) return {};
   }
+  if (spm_) return decode_verbatim_spm(id);
   return decode_verbatim(*this, id);
 }
 

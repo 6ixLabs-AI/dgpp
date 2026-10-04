@@ -68,6 +68,8 @@ DGPP_TEST(glm_tokenizer_differential_goldens) {
   const bool mimo = model_id.find("MiMo") != std::string::npos;
   const bool qwen = model_id.find("Qwen") != std::string::npos || mimo;  // the NFC tokenizers
   const bool dsv41 = model_id.find("DeepSeek-V4") != std::string::npos;
+  // Gemma 4 (2026-10-04): the SentencePiece-style BPE shape, not ByteLevel.
+  const bool gemma = model_id.find("Gemma") != std::string::npos || model_id.find("gemma") != std::string::npos;
   std::string err;
   const std::string snap = dgpp::hf::model_dir(model_id, &err);
   if (snap.empty()) {
@@ -81,7 +83,25 @@ DGPP_TEST(glm_tokenizer_differential_goldens) {
   const dgpp::text::Tokenizer tok = dgpp::text::Tokenizer::load(tok_path);
 
   // Hand-carried anchors: the fabric-run prompt and first generations.
-  if (dsv41) {
+  if (gemma) {
+    // The Gemma 4 corpus's anchors (HF tokenizers 0.22.2 on the release's
+    // tokenizer.json, 2026-10-04): a leading space is the U+2581 of the
+    // piece, the turn markers are single ids inside the base range.
+    require(tok.sentencepiece_bpe(), "the Gemma tokenizer.json did not load as the SentencePiece-style shape");
+    require(tok.encode("The capital of France is") == std::vector<int64_t>{818, 5279, 529, 7001, 563},
+            "gemma anchor prompt does not encode to the recorded ids");
+    require(tok.encode(" Paris") == std::vector<int64_t>{9079}, "gemma anchor ' Paris' != id 9079");
+    require(tok.decode(std::vector<int64_t>{9079, 236761}, false) == " Paris.", "gemma anchor does not decode to ' Paris.'");
+    require(tok.encode("<bos><|turn>user\nHi<turn|>\n<|turn>model\n") ==
+                std::vector<int64_t>{2, 105, 2364, 107, 10979, 106, 107, 105, 4368, 107},
+            "gemma anchor turn does not encode to the recorded ids");
+    // skip_special_tokens drops the markers; the text between stays.
+    require(tok.decode(std::vector<int64_t>{2, 105, 2364, 107, 10979, 106, 107}, true) == "user\nHi\n",
+            "gemma anchor does not decode with the special tokens skipped");
+    // A character outside the vocabulary is its UTF-8 bytes' tokens (ids 238 + byte).
+    require(tok.encode(std::string_view("\0", 1)) == std::vector<int64_t>{238}, "gemma anchor NUL != <0x00>");
+    require(tok.max_id() == 262143, "gemma max id");
+  } else if (dsv41) {
     // The DeepSeek-V4.1 corpus's first cases (HF tokenizers 0.23.2 on the
     // snapshot, 2026-09-13): the three-stage pre-tokenizer's plain words.
     require(tok.encode("The capital of France is") == std::vector<int64_t>{671, 6102, 294, 8760, 344},
@@ -221,8 +241,20 @@ DGPP_TEST(glm_tokenizer_differential_goldens) {
                      text + "): got " + std::to_string(got.size()) +
                      " ids, want " + std::to_string(want.size()));
     const std::string rt = tok.decode(got, /*skip_special_tokens=*/false);
-    // An NFC tokenizer round-trips to the NFC form of the input.
-    require(rt == text || (qwen && rt == dgpp::text::unicode::nfc(text)),
+    // An NFC tokenizer round-trips to the NFC form of the input; the
+    // SentencePiece-style decoder turns a literal U+2581 into a space.
+    std::string spaced;
+    if (gemma) {
+      for (size_t k = 0; k < text.size();) {
+        if (text.compare(k, 3, "\xE2\x96\x81") == 0) {
+          spaced.push_back(' ');
+          k += 3;
+        } else {
+          spaced.push_back(text[k++]);
+        }
+      }
+    }
+    require(rt == text || (qwen && rt == dgpp::text::unicode::nfc(text)) || (gemma && rt == spaced),
                  "verbatim round-trip mismatch on case " +
                      std::to_string(i) + ": got " + rt);
     ++checked;
