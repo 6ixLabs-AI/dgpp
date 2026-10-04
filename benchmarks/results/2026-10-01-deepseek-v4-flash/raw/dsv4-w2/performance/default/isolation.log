@@ -1,0 +1,11 @@
+model deepseek-ai/DeepSeek-V4-Flash-0731
+warm 0: status 200 tokens 64
+== isolation: prompt 0 alone (256 tokens) vs beside 3 others (256 tokens): IDENTICAL
+== chat concurrency 1: 20:40:42.532 .. 20:40:48.762  wall 6.2 s
+   req 0: status 200 finish=length tokens 256 chunks 256 ttft 227 ms  client update pace 23.54 ms/update
+   aggregate wall: 256 tokens in 6.23 s = 41.09 tok/s (prefill included)
+   legacy output-span aggregate: 42.65004505457727 tok/s (initial TTFT excluded; later admissions included)
+== per-class wall aggregate tokens/s (prefill included), greedy, max_tokens 256
+| class | c=1 |
+|---|---|
+| chat | 41.1 |

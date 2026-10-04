@@ -1,0 +1,651 @@
+{
+  "generated_at": "2026-10-04T16:32:07.291680+00:00",
+  "scope": "Completed launches only; sampled extrema include startup and shutdown, and do not establish transient peaks between observations.",
+  "launches": [
+    {
+      "directory": "raw/qwen27b-fp8-w4/modes/depth2",
+      "nodes": [
+        {
+          "path": "raw/qwen27b-fp8-w4/modes/depth2/node0-telemetry.jsonl",
+          "first_at": "2026-10-04T16:29:11.016187+00:00",
+          "last_at": "2026-10-04T16:30:40.895554+00:00",
+          "memory_samples": 90,
+          "gpu_samples": 18,
+          "minimum_available_GiB": 93.41003036499023,
+          "maximum_swap_used_MiB": 640.8828125,
+          "maximum_temperature_C": 77.0,
+          "active_thermal_samples": 0,
+          "gpu_query_errors": 0,
+          "maximum_memory_psi_avg10_percent": {
+            "some": 0.0,
+            "full": 0.0
+          },
+          "vmstat_deltas": {
+            "pswpin": 9,
+            "pswpout": 0,
+            "allocstall_dma": 0,
+            "allocstall_dma32": 0,
+            "allocstall_normal": 0,
+            "allocstall_movable": 0,
+            "allocstall_device": 0,
+            "pgsteal_kswapd": 0,
+            "pgsteal_direct": 0,
+            "pgsteal_khugepaged": 0,
+            "pgsteal_proactive": 0,
+            "pgscan_kswapd": 0,
+            "pgscan_direct": 0,
+            "pgscan_khugepaged": 0,
+            "pgscan_proactive": 0,
+            "pgscan_direct_throttle": 0,
+            "pgscan_anon": 0,
+            "pgscan_file": 0,
+            "pgsteal_anon": 0,
+            "pgsteal_file": 0,
+            "oom_kill": 0
+          }
+        },
+        {
+          "path": "raw/qwen27b-fp8-w4/modes/depth2/node1-telemetry.jsonl",
+          "first_at": "2026-10-04T16:30:21.582874+00:00",
+          "last_at": "2026-10-04T16:31:51.457858+00:00",
+          "memory_samples": 90,
+          "gpu_samples": 18,
+          "minimum_available_GiB": 93.11151885986328,
+          "maximum_swap_used_MiB": 205.765625,
+          "maximum_temperature_C": 73.0,
+          "active_thermal_samples": 0,
+          "gpu_query_errors": 0,
+          "maximum_memory_psi_avg10_percent": {
+            "some": 0.0,
+            "full": 0.0
+          },
+          "vmstat_deltas": {
+            "pswpin": 5,
+            "pswpout": 0,
+            "allocstall_dma": 0,
+            "allocstall_dma32": 0,
+            "allocstall_normal": 0,
+            "allocstall_movable": 0,
+            "allocstall_device": 0,
+            "pgsteal_kswapd": 0,
+            "pgsteal_direct": 0,
+            "pgsteal_khugepaged": 0,
+            "pgsteal_proactive": 0,
+            "pgscan_kswapd": 0,
+            "pgscan_direct": 0,
+            "pgscan_khugepaged": 0,
+            "pgscan_proactive": 0,
+            "pgscan_direct_throttle": 0,
+            "pgscan_anon": 0,
+            "pgscan_file": 0,
+            "pgsteal_anon": 0,
+            "pgsteal_file": 0,
+            "oom_kill": 0
+          }
+        },
+        {
+          "path": "raw/qwen27b-fp8-w4/modes/depth2/node2-telemetry.jsonl",
+          "unavailable": true,
+          "detail": [
+            "ssh: connect to host <address> port 22: No route to host"
+          ]
+        },
+        {
+          "path": "raw/qwen27b-fp8-w4/modes/depth2/node3-telemetry.jsonl",
+          "first_at": "2026-10-04T16:29:06.298306+00:00",
+          "last_at": "2026-10-04T16:30:36.212478+00:00",
+          "memory_samples": 90,
+          "gpu_samples": 18,
+          "minimum_available_GiB": 93.91785049438477,
+          "maximum_swap_used_MiB": 50.52734375,
+          "maximum_temperature_C": 73.0,
+          "active_thermal_samples": 0,
+          "gpu_query_errors": 0,
+          "maximum_memory_psi_avg10_percent": {
+            "some": 0.0,
+            "full": 0.0
+          },
+          "vmstat_deltas": {
+            "pswpin": 0,
+            "pswpout": 0,
+            "allocstall_dma": 0,
+            "allocstall_dma32": 0,
+            "allocstall_normal": 0,
+            "allocstall_movable": 0,
+            "allocstall_device": 0,
+            "pgsteal_kswapd": 0,
+            "pgsteal_direct": 0,
+            "pgsteal_khugepaged": 0,
+            "pgsteal_proactive": 0,
+            "pgscan_kswapd": 0,
+            "pgscan_direct": 0,
+            "pgscan_khugepaged": 0,
+            "pgscan_proactive": 0,
+            "pgscan_direct_throttle": 0,
+            "pgscan_anon": 0,
+            "pgscan_file": 0,
+            "pgsteal_anon": 0,
+            "pgsteal_file": 0,
+            "oom_kill": 0
+          }
+        }
+      ]
+    },
+    {
+      "directory": "raw/qwen27b-fp8-w4/modes/dflash2",
+      "nodes": [
+        {
+          "path": "raw/qwen27b-fp8-w4/modes/dflash2/node0-telemetry.jsonl",
+          "first_at": "2026-10-04T16:30:41.599596+00:00",
+          "last_at": "2026-10-04T16:32:06.299155+00:00",
+          "memory_samples": 85,
+          "gpu_samples": 17,
+          "minimum_available_GiB": 89.97118759155273,
+          "maximum_swap_used_MiB": 640.84765625,
+          "maximum_temperature_C": 73.0,
+          "active_thermal_samples": 0,
+          "gpu_query_errors": 0,
+          "maximum_memory_psi_avg10_percent": {
+            "some": 0.0,
+            "full": 0.0
+          },
+          "vmstat_deltas": {
+            "pswpin": 20,
+            "pswpout": 0,
+            "allocstall_dma": 0,
+            "allocstall_dma32": 0,
+            "allocstall_normal": 0,
+            "allocstall_movable": 0,
+            "allocstall_device": 0,
+            "pgsteal_kswapd": 0,
+            "pgsteal_direct": 0,
+            "pgsteal_khugepaged": 0,
+            "pgsteal_proactive": 0,
+            "pgscan_kswapd": 0,
+            "pgscan_direct": 0,
+            "pgscan_khugepaged": 0,
+            "pgscan_proactive": 0,
+            "pgscan_direct_throttle": 0,
+            "pgscan_anon": 0,
+            "pgscan_file": 0,
+            "pgsteal_anon": 0,
+            "pgsteal_file": 0,
+            "oom_kill": 0
+          }
+        },
+        {
+          "path": "raw/qwen27b-fp8-w4/modes/dflash2/node1-telemetry.jsonl",
+          "first_at": "2026-10-04T16:31:52.176119+00:00",
+          "last_at": "2026-10-04T16:33:16.954024+00:00",
+          "memory_samples": 85,
+          "gpu_samples": 17,
+          "minimum_available_GiB": 89.76874542236328,
+          "maximum_swap_used_MiB": 205.765625,
+          "maximum_temperature_C": 68.0,
+          "active_thermal_samples": 0,
+          "gpu_query_errors": 0,
+          "maximum_memory_psi_avg10_percent": {
+            "some": 0.0,
+            "full": 0.0
+          },
+          "vmstat_deltas": {
+            "pswpin": 0,
+            "pswpout": 0,
+            "allocstall_dma": 0,
+            "allocstall_dma32": 0,
+            "allocstall_normal": 0,
+            "allocstall_movable": 0,
+            "allocstall_device": 0,
+            "pgsteal_kswapd": 0,
+            "pgsteal_direct": 0,
+            "pgsteal_khugepaged": 0,
+            "pgsteal_proactive": 0,
+            "pgscan_kswapd": 0,
+            "pgscan_direct": 0,
+            "pgscan_khugepaged": 0,
+            "pgscan_proactive": 0,
+            "pgscan_direct_throttle": 0,
+            "pgscan_anon": 0,
+            "pgscan_file": 0,
+            "pgsteal_anon": 0,
+            "pgsteal_file": 0,
+            "oom_kill": 0
+          }
+        },
+        {
+          "path": "raw/qwen27b-fp8-w4/modes/dflash2/node2-telemetry.jsonl",
+          "unavailable": true,
+          "detail": [
+            "ssh: connect to host <address> port 22: No route to host"
+          ]
+        },
+        {
+          "path": "raw/qwen27b-fp8-w4/modes/dflash2/node3-telemetry.jsonl",
+          "first_at": "2026-10-04T16:30:36.851204+00:00",
+          "last_at": "2026-10-04T16:32:01.611034+00:00",
+          "memory_samples": 85,
+          "gpu_samples": 17,
+          "minimum_available_GiB": 90.79798889160156,
+          "maximum_swap_used_MiB": 50.52734375,
+          "maximum_temperature_C": 69.0,
+          "active_thermal_samples": 0,
+          "gpu_query_errors": 0,
+          "maximum_memory_psi_avg10_percent": {
+            "some": 0.0,
+            "full": 0.0
+          },
+          "vmstat_deltas": {
+            "pswpin": 0,
+            "pswpout": 0,
+            "allocstall_dma": 0,
+            "allocstall_dma32": 0,
+            "allocstall_normal": 0,
+            "allocstall_movable": 0,
+            "allocstall_device": 0,
+            "pgsteal_kswapd": 0,
+            "pgsteal_direct": 0,
+            "pgsteal_khugepaged": 0,
+            "pgsteal_proactive": 0,
+            "pgscan_kswapd": 0,
+            "pgscan_direct": 0,
+            "pgscan_khugepaged": 0,
+            "pgscan_proactive": 0,
+            "pgscan_direct_throttle": 0,
+            "pgscan_anon": 0,
+            "pgscan_file": 0,
+            "pgsteal_anon": 0,
+            "pgsteal_file": 0,
+            "oom_kill": 0
+          }
+        }
+      ]
+    },
+    {
+      "directory": "raw/qwen27b-fp8-w4/modes/plain",
+      "nodes": [
+        {
+          "path": "raw/qwen27b-fp8-w4/modes/plain/node0-telemetry.jsonl",
+          "first_at": "2026-10-04T16:26:37.813579+00:00",
+          "last_at": "2026-10-04T16:29:10.252510+00:00",
+          "memory_samples": 152,
+          "gpu_samples": 31,
+          "minimum_available_GiB": 94.7450180053711,
+          "maximum_swap_used_MiB": 641.14453125,
+          "maximum_temperature_C": 76.0,
+          "active_thermal_samples": 0,
+          "gpu_query_errors": 0,
+          "maximum_memory_psi_avg10_percent": {
+            "some": 0.0,
+            "full": 0.0
+          },
+          "vmstat_deltas": {
+            "pswpin": 58,
+            "pswpout": 0,
+            "allocstall_dma": 0,
+            "allocstall_dma32": 0,
+            "allocstall_normal": 0,
+            "allocstall_movable": 0,
+            "allocstall_device": 0,
+            "pgsteal_kswapd": 0,
+            "pgsteal_direct": 0,
+            "pgsteal_khugepaged": 0,
+            "pgsteal_proactive": 0,
+            "pgscan_kswapd": 0,
+            "pgscan_direct": 0,
+            "pgscan_khugepaged": 0,
+            "pgscan_proactive": 0,
+            "pgscan_direct_throttle": 0,
+            "pgscan_anon": 0,
+            "pgscan_file": 0,
+            "pgsteal_anon": 0,
+            "pgsteal_file": 0,
+            "oom_kill": 0
+          }
+        },
+        {
+          "path": "raw/qwen27b-fp8-w4/modes/plain/node1-telemetry.jsonl",
+          "first_at": "2026-10-04T16:27:48.366357+00:00",
+          "last_at": "2026-10-04T16:30:20.951250+00:00",
+          "memory_samples": 152,
+          "gpu_samples": 31,
+          "minimum_available_GiB": 94.88111114501953,
+          "maximum_swap_used_MiB": 205.765625,
+          "maximum_temperature_C": 72.0,
+          "active_thermal_samples": 0,
+          "gpu_query_errors": 0,
+          "maximum_memory_psi_avg10_percent": {
+            "some": 0.0,
+            "full": 0.0
+          },
+          "vmstat_deltas": {
+            "pswpin": 0,
+            "pswpout": 0,
+            "allocstall_dma": 0,
+            "allocstall_dma32": 0,
+            "allocstall_normal": 0,
+            "allocstall_movable": 0,
+            "allocstall_device": 0,
+            "pgsteal_kswapd": 0,
+            "pgsteal_direct": 0,
+            "pgsteal_khugepaged": 0,
+            "pgsteal_proactive": 0,
+            "pgscan_kswapd": 0,
+            "pgscan_direct": 0,
+            "pgscan_khugepaged": 0,
+            "pgscan_proactive": 0,
+            "pgscan_direct_throttle": 0,
+            "pgscan_anon": 0,
+            "pgscan_file": 0,
+            "pgsteal_anon": 0,
+            "pgsteal_file": 0,
+            "oom_kill": 0
+          }
+        },
+        {
+          "path": "raw/qwen27b-fp8-w4/modes/plain/node2-telemetry.jsonl",
+          "unavailable": true,
+          "detail": [
+            "ssh: connect to host <address> port 22: No route to host"
+          ]
+        },
+        {
+          "path": "raw/qwen27b-fp8-w4/modes/plain/node3-telemetry.jsonl",
+          "first_at": "2026-10-04T16:26:33.094469+00:00",
+          "last_at": "2026-10-04T16:29:05.643290+00:00",
+          "memory_samples": 152,
+          "gpu_samples": 31,
+          "minimum_available_GiB": 95.1937255859375,
+          "maximum_swap_used_MiB": 50.52734375,
+          "maximum_temperature_C": 70.0,
+          "active_thermal_samples": 0,
+          "gpu_query_errors": 0,
+          "maximum_memory_psi_avg10_percent": {
+            "some": 0.0,
+            "full": 0.0
+          },
+          "vmstat_deltas": {
+            "pswpin": 0,
+            "pswpout": 0,
+            "allocstall_dma": 0,
+            "allocstall_dma32": 0,
+            "allocstall_normal": 0,
+            "allocstall_movable": 0,
+            "allocstall_device": 0,
+            "pgsteal_kswapd": 0,
+            "pgsteal_direct": 0,
+            "pgsteal_khugepaged": 0,
+            "pgsteal_proactive": 0,
+            "pgscan_kswapd": 0,
+            "pgscan_direct": 0,
+            "pgscan_khugepaged": 0,
+            "pgscan_proactive": 0,
+            "pgscan_direct_throttle": 0,
+            "pgscan_anon": 0,
+            "pgscan_file": 0,
+            "pgsteal_anon": 0,
+            "pgsteal_file": 0,
+            "oom_kill": 0
+          }
+        }
+      ]
+    },
+    {
+      "directory": "raw/qwen27b-fp8-w4/performance/default",
+      "nodes": [
+        {
+          "path": "raw/qwen27b-fp8-w4/performance/default/node0-telemetry.jsonl",
+          "first_at": "2026-10-04T16:07:30.075307+00:00",
+          "last_at": "2026-10-04T16:18:10.628293+00:00",
+          "memory_samples": 636,
+          "gpu_samples": 128,
+          "minimum_available_GiB": 92.93873977661133,
+          "maximum_swap_used_MiB": 651.8125,
+          "maximum_temperature_C": 76.0,
+          "active_thermal_samples": 0,
+          "gpu_query_errors": 0,
+          "maximum_memory_psi_avg10_percent": {
+            "some": 0.0,
+            "full": 0.0
+          },
+          "vmstat_deltas": {
+            "pswpin": 1326,
+            "pswpout": 0,
+            "allocstall_dma": 0,
+            "allocstall_dma32": 0,
+            "allocstall_normal": 0,
+            "allocstall_movable": 0,
+            "allocstall_device": 0,
+            "pgsteal_kswapd": 0,
+            "pgsteal_direct": 0,
+            "pgsteal_khugepaged": 0,
+            "pgsteal_proactive": 0,
+            "pgscan_kswapd": 0,
+            "pgscan_direct": 0,
+            "pgscan_khugepaged": 0,
+            "pgscan_proactive": 0,
+            "pgscan_direct_throttle": 0,
+            "pgscan_anon": 0,
+            "pgscan_file": 0,
+            "pgsteal_anon": 0,
+            "pgsteal_file": 0,
+            "oom_kill": 0
+          }
+        },
+        {
+          "path": "raw/qwen27b-fp8-w4/performance/default/node1-telemetry.jsonl",
+          "first_at": "2026-10-04T16:08:40.591440+00:00",
+          "last_at": "2026-10-04T16:19:21.476970+00:00",
+          "memory_samples": 636,
+          "gpu_samples": 128,
+          "minimum_available_GiB": 93.28384017944336,
+          "maximum_swap_used_MiB": 205.78125,
+          "maximum_temperature_C": 75.0,
+          "active_thermal_samples": 0,
+          "gpu_query_errors": 0,
+          "maximum_memory_psi_avg10_percent": {
+            "some": 0.0,
+            "full": 0.0
+          },
+          "vmstat_deltas": {
+            "pswpin": 1,
+            "pswpout": 0,
+            "allocstall_dma": 0,
+            "allocstall_dma32": 0,
+            "allocstall_normal": 0,
+            "allocstall_movable": 0,
+            "allocstall_device": 0,
+            "pgsteal_kswapd": 0,
+            "pgsteal_direct": 0,
+            "pgsteal_khugepaged": 0,
+            "pgsteal_proactive": 0,
+            "pgscan_kswapd": 0,
+            "pgscan_direct": 0,
+            "pgscan_khugepaged": 0,
+            "pgscan_proactive": 0,
+            "pgscan_direct_throttle": 0,
+            "pgscan_anon": 0,
+            "pgscan_file": 0,
+            "pgsteal_anon": 0,
+            "pgsteal_file": 0,
+            "oom_kill": 0
+          }
+        },
+        {
+          "path": "raw/qwen27b-fp8-w4/performance/default/node2-telemetry.jsonl",
+          "unavailable": true,
+          "detail": [
+            "ssh: connect to host <address> port 22: No route to host"
+          ]
+        },
+        {
+          "path": "raw/qwen27b-fp8-w4/performance/default/node3-telemetry.jsonl",
+          "first_at": "2026-10-04T16:07:25.350791+00:00",
+          "last_at": "2026-10-04T16:18:06.405773+00:00",
+          "memory_samples": 636,
+          "gpu_samples": 127,
+          "minimum_available_GiB": 93.6107406616211,
+          "maximum_swap_used_MiB": 50.52734375,
+          "maximum_temperature_C": 78.0,
+          "active_thermal_samples": 0,
+          "gpu_query_errors": 0,
+          "maximum_memory_psi_avg10_percent": {
+            "some": 0.0,
+            "full": 0.0
+          },
+          "vmstat_deltas": {
+            "pswpin": 0,
+            "pswpout": 0,
+            "allocstall_dma": 0,
+            "allocstall_dma32": 0,
+            "allocstall_normal": 0,
+            "allocstall_movable": 0,
+            "allocstall_device": 0,
+            "pgsteal_kswapd": 0,
+            "pgsteal_direct": 0,
+            "pgsteal_khugepaged": 0,
+            "pgsteal_proactive": 0,
+            "pgscan_kswapd": 0,
+            "pgscan_direct": 0,
+            "pgscan_khugepaged": 0,
+            "pgscan_proactive": 0,
+            "pgscan_direct_throttle": 0,
+            "pgscan_anon": 0,
+            "pgscan_file": 0,
+            "pgsteal_anon": 0,
+            "pgsteal_file": 0,
+            "oom_kill": 0
+          }
+        }
+      ]
+    },
+    {
+      "directory": "raw/qwen27b-fp8-w4/quality/default",
+      "nodes": [
+        {
+          "path": "raw/qwen27b-fp8-w4/quality/default/node0-telemetry.jsonl",
+          "first_at": "2026-10-04T12:39:16.237425+00:00",
+          "last_at": "2026-10-04T12:50:08.410622+00:00",
+          "memory_samples": 648,
+          "gpu_samples": 130,
+          "minimum_available_GiB": 92.82764053344727,
+          "maximum_swap_used_MiB": 566.33984375,
+          "maximum_temperature_C": 75.0,
+          "active_thermal_samples": 0,
+          "gpu_query_errors": 0,
+          "maximum_memory_psi_avg10_percent": {
+            "some": 0.0,
+            "full": 0.0
+          },
+          "vmstat_deltas": {
+            "pswpin": 135,
+            "pswpout": 0,
+            "allocstall_dma": 0,
+            "allocstall_dma32": 0,
+            "allocstall_normal": 0,
+            "allocstall_movable": 0,
+            "allocstall_device": 0,
+            "pgsteal_kswapd": 0,
+            "pgsteal_direct": 0,
+            "pgsteal_khugepaged": 0,
+            "pgsteal_proactive": 0,
+            "pgscan_kswapd": 0,
+            "pgscan_direct": 0,
+            "pgscan_khugepaged": 0,
+            "pgscan_proactive": 0,
+            "pgscan_direct_throttle": 0,
+            "pgscan_anon": 0,
+            "pgscan_file": 0,
+            "pgsteal_anon": 0,
+            "pgsteal_file": 0,
+            "oom_kill": 0
+          }
+        },
+        {
+          "path": "raw/qwen27b-fp8-w4/quality/default/node1-telemetry.jsonl",
+          "first_at": "2026-10-04T12:40:26.038440+00:00",
+          "last_at": "2026-10-04T12:51:18.365350+00:00",
+          "memory_samples": 648,
+          "gpu_samples": 130,
+          "minimum_available_GiB": 93.79126358032227,
+          "maximum_swap_used_MiB": 202.1875,
+          "maximum_temperature_C": 71.0,
+          "active_thermal_samples": 0,
+          "gpu_query_errors": 0,
+          "maximum_memory_psi_avg10_percent": {
+            "some": 0.0,
+            "full": 0.0
+          },
+          "vmstat_deltas": {
+            "pswpin": 0,
+            "pswpout": 0,
+            "allocstall_dma": 0,
+            "allocstall_dma32": 0,
+            "allocstall_normal": 0,
+            "allocstall_movable": 0,
+            "allocstall_device": 0,
+            "pgsteal_kswapd": 0,
+            "pgsteal_direct": 0,
+            "pgsteal_khugepaged": 0,
+            "pgsteal_proactive": 0,
+            "pgscan_kswapd": 0,
+            "pgscan_direct": 0,
+            "pgscan_khugepaged": 0,
+            "pgscan_proactive": 0,
+            "pgscan_direct_throttle": 0,
+            "pgscan_anon": 0,
+            "pgscan_file": 0,
+            "pgsteal_anon": 0,
+            "pgsteal_file": 0,
+            "oom_kill": 0
+          }
+        },
+        {
+          "path": "raw/qwen27b-fp8-w4/quality/default/node2-telemetry.jsonl",
+          "unavailable": true,
+          "detail": [
+            "ssh: connect to host <address> port 22: No route to host"
+          ]
+        },
+        {
+          "path": "raw/qwen27b-fp8-w4/quality/default/node3-telemetry.jsonl",
+          "first_at": "2026-10-04T12:39:11.571325+00:00",
+          "last_at": "2026-10-04T12:50:03.018260+00:00",
+          "memory_samples": 647,
+          "gpu_samples": 130,
+          "minimum_available_GiB": 93.78714752197266,
+          "maximum_swap_used_MiB": 48.98828125,
+          "maximum_temperature_C": 72.0,
+          "active_thermal_samples": 0,
+          "gpu_query_errors": 0,
+          "maximum_memory_psi_avg10_percent": {
+            "some": 0.0,
+            "full": 0.0
+          },
+          "vmstat_deltas": {
+            "pswpin": 0,
+            "pswpout": 0,
+            "allocstall_dma": 0,
+            "allocstall_dma32": 0,
+            "allocstall_normal": 0,
+            "allocstall_movable": 0,
+            "allocstall_device": 0,
+            "pgsteal_kswapd": 0,
+            "pgsteal_direct": 0,
+            "pgsteal_khugepaged": 0,
+            "pgsteal_proactive": 0,
+            "pgscan_kswapd": 0,
+            "pgscan_direct": 0,
+            "pgscan_khugepaged": 0,
+            "pgscan_proactive": 0,
+            "pgscan_direct_throttle": 0,
+            "pgscan_anon": 0,
+            "pgscan_file": 0,
+            "pgsteal_anon": 0,
+            "pgsteal_file": 0,
+            "oom_kill": 0
+          }
+        }
+      ]
+    }
+  ]
+}

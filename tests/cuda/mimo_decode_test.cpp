@@ -375,7 +375,10 @@ int run_fixture(const std::string& dir) {
   //     rollback to one accepted row restarts the scalar chain bitwise.
   {
     const int gemv_rows = std::min(dgpp::dense_gemv_rows(), 4);
-    for (int T = 1; T <= dgpp::kSpecRows; ++T) {
+    // The family verifies at most 1 + mtp_depth 5 rows; kSpecRows carries the
+    // DFlash2 block's 8 (2026-10-03), beyond MiMo's served shapes.
+    constexpr int kMimoVerifyRows = 6;
+    for (int T = 1; T <= std::min(dgpp::kSpecRows, kMimoVerifyRows); ++T) {
       MimoModel::Outputs p = m.session_prefill(0, A);
       require(bitwise(p.logits, tA.rows[0]), "verify rows: the prefill differs");
       const std::vector<int64_t> ids(tA.tokens.begin(), tA.tokens.begin() + T);

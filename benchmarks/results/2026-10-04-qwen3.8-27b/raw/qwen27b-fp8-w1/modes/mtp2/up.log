@@ -1,0 +1,19 @@
+OK   rank 0 (<node-0>) platform: Linux aarch64; supported target is Linux/aarch64 GB10
+OK   rank 0 (<node-0>) Python: 3.12.3; Python 3.10+ is required
+OK   rank 0 (<node-0>) commands: python3, timeout, ldd, ssh, scp, curl, jq
+OK   rank 0 (<node-0>) node address: rank 0 address <node-0> belongs to this host
+OK   rank 0 (<node-0>) GPU: NVIDIA GB10, 12.1, [N/A]
+OK   rank 0 (<node-0>) logs/staging: /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/qwen27b-fp8-w1/modes/mtp2/server: parent /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/qwen27b-fp8-w1/modes/mtp2/server, 720.6 GiB free
+OK   rank 0 (<node-0>) resident cache: ~/.cache/dgpp/resident: parent /home/stephen/.cache/dgpp/resident, 720.6 GiB free
+OK   rank 0 (<node-0>) model cache: /home/stephen/.cache/huggingface/hub: parent /home/stephen/.cache/huggingface/hub, 720.6 GiB free
+OK   rank 0 (<node-0>) checkpoint: /home/stephen/.cache/huggingface/hub/models--Qwen--Qwen3.8-27B-FP8/snapshots/017b9c7af6b5689d5dd426a76e0bc077eb5ca20a: 28.7 GiB; all indexed shards have consistent lengths (not a content hash check)
+OK   rank 0 (<node-0>) available memory: 116.9 GiB; startup enforces the exact model memory plan
+OK   rank 0 (<node-0>) HTTP port: 0.0.0.0:18080 is available
+OK   rank 0 (<node-0>) runtime libraries: all binary dependencies resolve
+OK   rank 0 (<node-0>) server version: dgpp-serve 0.1.0+gecf0e33adc0e.dirty (git ecf0e33adc0e, cuda 13.0)
+Preflight: 0 failed check(s). No files were installed and no services were started or stopped.
+2026-10-04 11:33:02.324 === staging dgpp-serve and the config to the peers
+2026-10-04 11:33:02.324 === rank 0 on <node-0> (HTTP :18080, fabric :29970, journal :29971)
+2026-10-04 11:33:02.325 head pid 3333086
+2026-10-04 11:33:20.330 rank 0 serving: ok (18s)
+2026-10-04 11:33:20.330 READY — curl http://<node-0>:18080/v1/models  (stop: python3 /home/stephen/workspace/dgpp/scripts/dgpp-cluster down --config /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/qwen27b-fp8-w1/modes/mtp2/config.json --log-dir /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/qwen27b-fp8-w1/modes/mtp2/server)

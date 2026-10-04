@@ -48,6 +48,7 @@
 #include "serve/serve_stats.hpp"
 #include "text/chat_template.hpp"
 #include "text/dsv41_prompt.hpp"
+#include "text/dsv4_prompt.hpp"
 
 namespace {
 
@@ -456,8 +457,9 @@ class FakeFrontend : public ModelFrontend {
     return input;
   }
 
-  explicit FakeFrontend(bool with_markers = false, bool with_dsml = false)
-      : with_markers_(with_markers), with_dsml_(with_dsml) {}
+  explicit FakeFrontend(bool with_markers = false, bool with_dsml = false,
+                        dgpp::text::DsmlDialect dsml_dialect = dgpp::text::DsmlDialect::kV41)
+      : with_markers_(with_markers), with_dsml_(with_dsml), dsml_dialect_(dsml_dialect) {}
   // The template knob gate: a template that reads enable_thinking (Qwen3.8-
   // Flash-Next, GLM-4.7) accepts it in chat_template_kwargs; the default
   // fake, like GLM-5.3-Flash's template, does not.
@@ -531,6 +533,7 @@ class FakeFrontend : public ModelFrontend {
     m.think_close = {kThinkClose, "</think>"};
     if (with_dsml_) {
       m.dsml = {kDsml, "｜DSML｜"};
+      m.dsml_dialect = dsml_dialect_;
       return m;
     }
     m.tool_call_open = {kToolOpen, "<tool_call>"};
@@ -554,6 +557,7 @@ class FakeFrontend : public ModelFrontend {
  private:
   bool with_markers_;
   bool with_dsml_;
+  dgpp::text::DsmlDialect dsml_dialect_;
   mutable std::mutex mu_;
   mutable std::string last_globals_;
 };
@@ -677,9 +681,10 @@ struct ServiceRig {
                       int64_t position_ceiling = 0, int64_t kv_pool_tokens = 0,
                       bool resumable_prefill = false, bool with_dsml = false,
                       std::string default_chat_template_kwargs = "{}",
-                      int sse_ping_interval = dgpp::serve::kDefaultSsePingInterval)
+                      int sse_ping_interval = dgpp::serve::kDefaultSsePingInterval,
+                      dgpp::text::DsmlDialect dsml_dialect = dgpp::text::DsmlDialect::kV41)
       : engine(kSlots, /*total_blocks=*/100, /*block_tokens=*/4, can_sample),
-        frontend(with_markers, with_dsml),
+        frontend(with_markers, with_dsml, dsml_dialect),
         cfg([&] {
           ServiceConfig c;
           c.model_id = "glm-5.3-flash-fp8";
@@ -1497,6 +1502,149 @@ void expect_invalid_request(const std::string& resp, const std::string& param) {
   require(error.at("param").as_string() == param, "error names " + param + ": " + resp);
 }
 
+std::string assistant_history_body(const std::string& messages) {
+  return "{\"model\":\"" + kModel + "\",\"max_tokens\":1,\"messages\":["
+         "{\"role\":\"user\",\"content\":\"hi\"}," + messages + "]}";
+}
+
+std::string assistant_history_globals(ServiceRig& rig, const std::string& messages) {
+  const auto response = post_chat(rig, assistant_history_body(messages), "usage");
+  require(response.find("200 OK") != std::string::npos,
+          "assistant history is accepted: " + response);
+  return rig.frontend.last_globals();
+}
+
+DGPP_TEST(serve_thinkingParts_preserveOwnedTextAndVisibleParts) {
+  ServiceRig rig;
+  // Force heap storage and retain the text past the per-message normalization
+  // loop. ASan catches using make_string on the local concatenation buffer.
+  const std::string thinking = std::string(2048, 'x') + " réfléchi 思考";
+  const std::string messages =
+      R"({"role":"assistant","content":[{"type":"thinking","thinking":)" +
+      json_of(dgpp::minijson::Value::make_string(thinking)) +
+      R"(,"signature":"signature_to_drop"},{"type":"text","text":"hello"},)"
+      R"({"type":"redacted_thinking","data":"opaque_to_drop"},)"
+      R"({"type":"thinking","thinking":""},{"type":"thinking","thinking":"second"},)"
+      R"({"type":"text","text":" world"}]},)"
+      R"({"role":"user","content":"again"},)"
+      R"({"role":"assistant","content":[{"type":"thinking","thinking":"independent"},)"
+      R"({"type":"text","text":"next"}]})";
+  const auto globals = assistant_history_globals(rig, messages);
+  const auto parsed = dgpp::minijson::parse(globals);
+  const auto& history = parsed.root.at("messages").items();
+  const auto& message = history[1];
+  require(message.at("reasoning_content").as_string() == thinking + "\n\nsecond",
+          "nonempty thinking parts join in order with their UTF-8 text intact");
+  const auto& content = message.at("content").items();
+  require(content.size() == 2 && content[0].at("type").as_string() == "text" &&
+              content[0].at("text").as_string() == "hello" &&
+              content[1].at("type").as_string() == "text" &&
+              content[1].at("text").as_string() == " world",
+          "visible text parts keep their order and contents");
+  require(history[3].at("reasoning_content").as_string() == "independent",
+          "each assistant message retains its own reasoning");
+  require(globals.find("opaque_to_drop") == std::string::npos &&
+              globals.find("signature_to_drop") == std::string::npos,
+          "redacted payloads and signatures do not reach the template");
+}
+
+DGPP_TEST(serve_thinkingParts_explicitReasoningWinsIncludingEmptyString) {
+  ServiceRig rig;
+  for (const auto& [field, expected] :
+       std::vector<std::pair<std::string, std::string>>{
+           {"", "folded"}, {R"(,"reasoning_content":null)", "folded"},
+           {R"(,"reasoning_content":"explicit")", "explicit"},
+           {R"(,"reasoning_content":"")", ""}}) {
+    const auto globals = assistant_history_globals(
+        rig, R"({"role":"assistant","content":[{"type":"thinking","thinking":"folded"},)"
+             R"({"type":"text","text":"answer"}])" + field + "}");
+    const auto parsed = dgpp::minijson::parse(globals);
+    const auto& message = parsed.root.at("messages").items()[1];
+    require(message.at("reasoning_content").as_string() == expected,
+            "explicit reasoning wins; absent or null reasoning uses thinking parts");
+    size_t count = 0;
+    for (const auto& member : message.members())
+      if (member.key == "reasoning_content") ++count;
+    require(count == 1, "normalization emits exactly one reasoning_content member");
+  }
+}
+
+DGPP_TEST(serve_thinkingParts_onlyThinkingHasEmptyVisibleContent) {
+  ServiceRig rig;
+  for (const std::string parts : {
+           R"([{"type":"thinking","thinking":"hmm"}])",
+           R"([{"type":"thinking","thinking":""}])",
+           R"([{"type":"redacted_thinking","data":"opaque"}])",
+           R"([{"type":"thinking","thinking":"hmm"},{"type":"redacted_thinking","data":"opaque"}])"}) {
+    const auto globals = assistant_history_globals(
+        rig, R"({"role":"assistant","content":)" + parts + "}");
+    const auto parsed = dgpp::minijson::parse(globals);
+    const auto& message = parsed.root.at("messages").items()[1];
+    require(message.at("content").is_string() && message.at("content").as_string().empty(),
+            "thinking-only history has an empty visible string");
+    const auto* reasoning = message.find("reasoning_content");
+    if (parts.find("hmm") != std::string::npos)
+      require(reasoning && reasoning->as_string() == "hmm", "thinking text is retained");
+    else
+      require(!reasoning, "empty or redacted thinking does not invent reasoning text");
+  }
+}
+
+DGPP_TEST(serve_thinkingParts_toolCallHistoryKeepsReasoningAndArguments) {
+  ServiceRig rig;
+  const auto globals = assistant_history_globals(
+      rig, R"({"role":"assistant","content":[{"type":"thinking","thinking":"use tool"}],)"
+           R"("tool_calls":[{"id":"call_1","type":"function","function":{"name":"get_weather",)"
+           R"("arguments":"{\"city\":\"Paris\"}"}}]},)"
+           R"({"role":"tool","tool_call_id":"call_1","content":"18C"})");
+  const auto parsed = dgpp::minijson::parse(globals);
+  const auto& history = parsed.root.at("messages").items();
+  const auto& message = history[1];
+  require(message.at("content").is_string() && message.at("content").as_string().empty(),
+          "a tool call with only thinking has empty visible content");
+  require(message.at("reasoning_content").as_string() == "use tool",
+          "tool-call reasoning reaches the template");
+  const auto& call = message.at("tool_calls").items()[0];
+  require(call.at("id").as_string() == "call_1" &&
+              call.at("function").at("name").as_string() == "get_weather" &&
+              call.at("function").at("arguments").at("city").as_string() == "Paris",
+          "tool-call IDs and names survive and string arguments become an object");
+  require(history[2].at("tool_call_id").as_string() == "call_1" &&
+              history[2].at("content").as_string() == "18C",
+          "the matching tool result is preserved");
+}
+
+DGPP_TEST(serve_thinkingParts_invalidFieldsAndOtherRolesStillRejected) {
+  ServiceRig rig;
+  const auto refused = [&](const std::string& messages, const std::string& param) {
+    expect_invalid_request(
+        post_chat(rig, assistant_history_body(messages), "\"error\""), param);
+  };
+  for (const std::string value : {"null", "false", "7", "[]", "{}"}) {
+    for (const std::string reasoning : {"", R"(,"reasoning_content":"explicit")"}) {
+      refused(R"({"role":"assistant","content":[{"type":"thinking","thinking":)" +
+                  value + "}]" + reasoning + "}",
+              "messages[1].content[0].thinking");
+    }
+  }
+  for (const std::string role : {"user", "system", "developer", "tool"}) {
+    for (const std::string kind : {"thinking", "redacted_thinking"}) {
+      refused("{\"role\":\"" + role + "\",\"tool_call_id\":\"call_1\",\"content\":["
+              "{\"type\":\"" + kind + "\",\"thinking\":\"hmm\"}]}",
+              role == "tool" ? "messages[1].content" : "messages[1].content[0].type");
+    }
+  }
+  for (const std::string kind : {"thinking", "redacted_thinking"}) {
+    refused(R"({"role":"assistant","content":[{"type":")" + kind +
+                R"(","thinking":"hmm","prompt_cache_breakpoint":true}]})",
+            "messages[1].content[0].prompt_cache_breakpoint");
+  }
+  refused(R"({"role":"assistant","content":[{"type":"thinking","thinking":"hmm"},)"
+          R"({"type":"audio"}]})", "messages[1].content[1].type");
+  refused(R"({"role":"assistant","content":[{"type":"thinking","thinking":"hmm"}],)"
+          R"("reasoning_content":123})", "messages[1].reasoning_content");
+}
+
 DGPP_TEST(serve_api_nullableFieldsAndTextCapabilities) {
   ServiceRig rig;
   const auto response = post_chat(rig, chat_body("abcd", 2,
@@ -2122,6 +2270,48 @@ DGPP_TEST(serve_tools_dsmlNamespacesMatchRenderedAndConstrainedNames) {
               "the namespace description reaches the model: " + prompt);
       require(globals.find("response_schema_marker") == std::string::npos,
               "DeepSeek still drops unrelated tool fields: " + globals);
+    }
+  }
+}
+
+// The DeepSeek-V4 dialect of DSML has no tool namespaces: a `namespace`
+// field is unrelated metadata there (dropped like any other), the grammar
+// names the function as given, and the rendered schema agrees with it.
+DGPP_TEST(serve_tools_dsmlV4DialectHasNoNamespaces) {
+  ServiceRig rig(8, dgpp::sample::greedy_params(), true, std::nullopt, true, false, {}, 0, {},
+                 std::nullopt, 0, 0, /*resumable_prefill=*/false, /*with_dsml=*/true, "{}",
+                 dgpp::serve::kDefaultSsePingInterval, dgpp::text::DsmlDialect::kV4);
+  const std::string ns = R"("namespace":{"name":"search","description":"Search tools"})";
+  const std::string fields =
+      R"("name":"lookup","description":"Lookup","parameters":{"type":"object","properties":{}},"response":{"response_schema_marker":true})";
+  size_t expected_grammars = 0;
+  for (const std::string& tool :
+       {"{\"type\":\"function\"," + ns + ",\"function\":{" + fields + "}}",
+        "{\"type\":\"function\",\"function\":{" + ns + "," + fields + "}}",
+        "{" + ns + "," + fields + "}",
+        "{\"type\":\"function\",\"function\":{" + fields + "}}"}) {
+    for (const std::string& choice :
+         {std::string{R"(,"tool_choice":"required")"},
+          std::string{R"(,"tool_choice":{"type":"function","function":{"name":"lookup"}})"}}) {
+      const auto response =
+          post_until_usage(rig, chat_body("abcd", 2, ",\"tools\":[" + tool + "]" + choice));
+      require(response.find("200 OK") != std::string::npos, "tools accepted: " + response);
+      const std::string globals = rig.frontend.last_globals();
+      require(globals.find("namespace") == std::string::npos && globals.find("response_schema_marker") == std::string::npos,
+              "the V4 dialect drops namespaces with the other unrelated tool fields: " + globals);
+      const auto parsed = dgpp::minijson::parse(globals);
+      const std::string prompt = dgpp::text::Dsv4Prompt::render(parsed.root);
+      const auto grammars = rig.engine.grammars();
+      require(grammars.size() == ++expected_grammars, "each request installs a constraint");
+      const auto& grammar = grammars.back();
+      require(grammar.tools.size() == 1 && grammar.tools[0].name == "lookup", "the grammar names the function as given");
+      if (grammar.mode == dgpp::text::GrammarSpec::Mode::kNamed)
+        require(grammar.named == "lookup", "a named choice names the same function");
+      require(prompt.find("{\"name\": \"lookup\", \"description\": \"Lookup\", \"parameters\": {\"type\": \"object\", \"properties\": {}}}") !=
+                  std::string::npos,
+              "the rendered schema is the function as given, agreeing with the constraint: " + prompt);
+      require(prompt.find("<｜DSML｜tool_calls>") != std::string::npos && prompt.find("<｜DSML｜ calls>") == std::string::npos,
+              "the tools block teaches the V4 spelling");
     }
   }
 }

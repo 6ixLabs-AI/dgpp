@@ -79,6 +79,18 @@ struct ChatMarker {
 // after a "<" and closes at the text "</｜DSML｜ calls>", parsed then.
 enum class ToolFormat { kNone, kGlmMarkers, kQwenXml, kDsml };
 
+// The DSML dialect (kDsml): the two DeepSeek encoders share the ｜DSML｜ tag
+// token and the block's grammar but not its spelling, so the tokenizer
+// cannot tell them apart — the family's frontend states it.
+//   kV41 (DeepSeek-V4.1, encoding.py): the tag names carry a LEADING SPACE
+//     and the block is "calls" — "<｜DSML｜ calls>", "<｜DSML｜ invoke
+//     name=...>", "<｜DSML｜ parameter ...>"; an invoke may name its tool
+//     "namespace::name" (the parser reports the bare name).
+//   kV4 (DeepSeek-V4, encoding_dsv4.py): no space and the block is
+//     "tool_calls" — "<｜DSML｜tool_calls>", "<｜DSML｜invoke name=...>",
+//     "<｜DSML｜parameter ...>"; no namespaces (a name is reported as written).
+enum class DsmlDialect { kV41, kV4 };
+
 struct ChatMarkers {
   ChatMarker think_open;        // "<think>"
   ChatMarker think_close;       // "</think>"
@@ -88,7 +100,11 @@ struct ChatMarkers {
   ChatMarker arg_key_close;     // "</arg_key>"     (GLM)
   ChatMarker arg_value_open;    // "<arg_value>"    (GLM)
   ChatMarker arg_value_close;   // "</arg_value>"   (GLM)
-  ChatMarker dsml;              // "｜DSML｜"        (DeepSeek-V4.1: the tool-call tag token)
+  ChatMarker dsml;              // "｜DSML｜"        (DeepSeek-V4.1 / V4: the tool-call tag token)
+  // The DSML spelling (kDsml only). from_tokenizer leaves the default — the
+  // two tokenizers carry the same tag token — so a DeepSeek-V4 frontend (and
+  // the grammar vocabulary built beside it) sets kV4 explicitly.
+  DsmlDialect dsml_dialect = DsmlDialect::kV41;
   // The XML format's dialect (kQwenXml): true when the template writes the
   // call without the newlines Qwen3.8's puts between its tags —
   // "<function=NAME><parameter=K>V</parameter></function>", the MiMo-V2.6
@@ -156,6 +172,12 @@ struct ChatMarkers {
     return ToolFormat::kNone;
   }
   bool tool_calls_available() const { return tool_format() != ToolFormat::kNone; }
+  // Whether a DSML invoke may name its tool "namespace::name" (the V4.1
+  // dialect: the schema block lists the qualified name, the grammar spells
+  // it and the parser reports the bare one). V4 has no namespaces.
+  bool dsml_namespaces() const {
+    return tool_format() == ToolFormat::kDsml && dsml_dialect == DsmlDialect::kV41;
+  }
 
   // Looks every marker up by its text among the tokenizer's added tokens
   // (a revision without one leaves it unavailable — never guessed).
@@ -267,7 +289,8 @@ class ToolCallParser {
   // The Qwen format: the closed block's text into name_/args_ (false when
   // malformed — the caller aborts the block as content).
   bool parse_qwen_block(const std::string& text);
-  // The DSML format (DeepSeek-V4.1): the content run with the block's
+  // The DSML format (DeepSeek-V4.1 and V4, the tag names per
+  // markers_.dsml_dialect): the content run with the block's
   // possible prefix ("\n\n<" or "<") held back until the next id decides;
   // the block's text (the tag token restored between the decoded runs);
   // the closed block into dsml_calls_ (false when malformed).

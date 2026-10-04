@@ -1,0 +1,246 @@
+
+=== 15:27:46 w4-mtp3-off up (DGPP_L2_PREFETCH=off)
+2026-10-04 15:28:07.125 READY — curl http://<node-0>:8000/v1/models  (stop: python3 /home/stephen/workspace/dgpp/scripts/dgpp-cluster down --config /home/stephen/workspace/dgpp/deploy/cluster_qwen3.8-27b_fp8_w4.json --log-dir /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/prefetch/w4-mtp3-off/server)
+
+=== 15:28:07 w4-mtp3-off transcripts vs w4-mtp3
+chat   256 tokens    5.84 s    22.8 ms/token (wall, prefill included) length | We need answer user: "Explain, in a few paragraphs, why a CU
+code   256 tokens    4.74 s    18.5 ms/token (wall, prefill included) length | We need answer user: "Write a Python function that parses an
+math   256 tokens    3.78 s    14.8 ms/token (wall, prefill included) length | We need answer user: "A train leaves city A at 60 km/h and a
+json   256 tokens    3.68 s    14.4 ms/token (wall, prefill included) length | We need to respond to user: "Return a JSON array of 8 object
+identical transcripts: 4 of 4
+
+=== 15:28:25 w4-mtp3-off timed_load greedy C1
+== per-class wall aggregate tokens/s (prefill included), greedy, max_tokens 256
+| class | c=1 |
+|---|---|
+| prose | 54.7 |
+| code | 65.2 |
+| json | 74.7 |
+| math | 69.0 |
+| chat | 47.6 |
+ms/pass median 48 of 15
+
+=== 15:29:08 w4-mtp3-off down
+2026-10-04 15:29:15.979 === logs in /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/prefetch/w4-mtp3-off/server
+
+=== 15:29:15 w4-mtp3-pf8 up (DGPP_L2_PREFETCH_MB=8)
+2026-10-04 15:29:34.218 READY — curl http://<node-0>:8000/v1/models  (stop: python3 /home/stephen/workspace/dgpp/scripts/dgpp-cluster down --config /home/stephen/workspace/dgpp/deploy/cluster_qwen3.8-27b_fp8_w4.json --log-dir /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/prefetch/w4-mtp3-pf8/server)
+
+=== 15:29:34 w4-mtp3-pf8 transcripts vs w4-mtp3
+chat   256 tokens    5.73 s    22.4 ms/token (wall, prefill included) length | We need answer user: "Explain, in a few paragraphs, why a CU
+code   256 tokens    4.64 s    18.1 ms/token (wall, prefill included) length | We need answer user: "Write a Python function that parses an
+math   256 tokens    3.70 s    14.5 ms/token (wall, prefill included) length | We need answer user: "A train leaves city A at 60 km/h and a
+json   256 tokens    3.62 s    14.1 ms/token (wall, prefill included) length | We need to respond to user: "Return a JSON array of 8 object
+identical transcripts: 4 of 4
+
+=== 15:29:51 w4-mtp3-pf8 timed_load greedy C1
+== per-class wall aggregate tokens/s (prefill included), greedy, max_tokens 256
+| class | c=1 |
+|---|---|
+| prose | 55.7 |
+| code | 66.3 |
+| json | 75.8 |
+| math | 70.1 |
+| chat | 48.7 |
+ms/pass median 47 of 15
+
+=== 15:30:34 w4-mtp3-pf8 down
+2026-10-04 15:30:42.034 === logs in /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/prefetch/w4-mtp3-pf8/server
+
+=== 15:30:42 w4-mtp3-pf12 up (DGPP_L2_PREFETCH_MB=12)
+2026-10-04 15:31:00.064 READY — curl http://<node-0>:8000/v1/models  (stop: python3 /home/stephen/workspace/dgpp/scripts/dgpp-cluster down --config /home/stephen/workspace/dgpp/deploy/cluster_qwen3.8-27b_fp8_w4.json --log-dir /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/prefetch/w4-mtp3-pf12/server)
+
+=== 15:31:00 w4-mtp3-pf12 transcripts vs w4-mtp3
+chat   256 tokens    5.68 s    22.2 ms/token (wall, prefill included) length | We need answer user: "Explain, in a few paragraphs, why a CU
+code   256 tokens    4.60 s    17.9 ms/token (wall, prefill included) length | We need answer user: "Write a Python function that parses an
+math   256 tokens    3.68 s    14.4 ms/token (wall, prefill included) length | We need answer user: "A train leaves city A at 60 km/h and a
+json   256 tokens    3.58 s    14.0 ms/token (wall, prefill included) length | We need to respond to user: "Return a JSON array of 8 object
+identical transcripts: 4 of 4
+
+=== 15:31:17 w4-mtp3-pf12 timed_load greedy C1
+== per-class wall aggregate tokens/s (prefill included), greedy, max_tokens 256
+| class | c=1 |
+|---|---|
+| prose | 56.0 |
+| code | 67.2 |
+| json | 76.7 |
+| math | 70.5 |
+| chat | 49.0 |
+ms/pass median 47 of 15
+
+=== 15:32:00 w4-mtp3-pf12 down
+2026-10-04 15:32:07.171 === logs in /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/prefetch/w4-mtp3-pf12/server
+
+=== 15:32:07 w4-mtp3-pf20 up (DGPP_L2_PREFETCH_MB=20)
+2026-10-04 15:32:25.031 READY — curl http://<node-0>:8000/v1/models  (stop: python3 /home/stephen/workspace/dgpp/scripts/dgpp-cluster down --config /home/stephen/workspace/dgpp/deploy/cluster_qwen3.8-27b_fp8_w4.json --log-dir /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/prefetch/w4-mtp3-pf20/server)
+
+=== 15:32:25 w4-mtp3-pf20 transcripts vs w4-mtp3
+chat   256 tokens    5.67 s    22.2 ms/token (wall, prefill included) length | We need answer user: "Explain, in a few paragraphs, why a CU
+code   256 tokens    4.59 s    17.9 ms/token (wall, prefill included) length | We need answer user: "Write a Python function that parses an
+math   256 tokens    3.70 s    14.5 ms/token (wall, prefill included) length | We need answer user: "A train leaves city A at 60 km/h and a
+json   256 tokens    3.57 s    14.0 ms/token (wall, prefill included) length | We need to respond to user: "Return a JSON array of 8 object
+identical transcripts: 4 of 4
+
+=== 15:32:42 w4-mtp3-pf20 timed_load greedy C1
+== per-class wall aggregate tokens/s (prefill included), greedy, max_tokens 256
+| class | c=1 |
+|---|---|
+| prose | 56.3 |
+| code | 67.1 |
+| json | 76.6 |
+| math | 70.5 |
+| chat | 49.1 |
+ms/pass median 46 of 15
+
+=== 15:33:25 w4-mtp3-pf20 down
+2026-10-04 15:33:32.432 === logs in /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/prefetch/w4-mtp3-pf20/server
+
+=== 15:33:32 w4-mtp3-pf32 up (DGPP_L2_PREFETCH_MB=32)
+2026-10-04 15:33:50.253 READY — curl http://<node-0>:8000/v1/models  (stop: python3 /home/stephen/workspace/dgpp/scripts/dgpp-cluster down --config /home/stephen/workspace/dgpp/deploy/cluster_qwen3.8-27b_fp8_w4.json --log-dir /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/prefetch/w4-mtp3-pf32/server)
+
+=== 15:33:50 w4-mtp3-pf32 transcripts vs w4-mtp3
+chat   256 tokens    5.85 s    22.8 ms/token (wall, prefill included) length | We need answer user: "Explain, in a few paragraphs, why a CU
+code   256 tokens    4.75 s    18.6 ms/token (wall, prefill included) length | We need answer user: "Write a Python function that parses an
+math   256 tokens    3.84 s    15.0 ms/token (wall, prefill included) length | We need answer user: "A train leaves city A at 60 km/h and a
+json   256 tokens    3.72 s    14.5 ms/token (wall, prefill included) length | We need to respond to user: "Return a JSON array of 8 object
+identical transcripts: 4 of 4
+
+=== 15:34:08 w4-mtp3-pf32 timed_load greedy C1
+== per-class wall aggregate tokens/s (prefill included), greedy, max_tokens 256
+| class | c=1 |
+|---|---|
+| prose | 54.0 |
+| code | 64.2 |
+| json | 73.6 |
+| math | 67.8 |
+| chat | 47.7 |
+ms/pass median 48 of 15
+
+=== 15:34:52 w4-mtp3-pf32 down
+2026-10-04 15:34:59.708 === logs in /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/prefetch/w4-mtp3-pf32/server
+
+=== 15:34:59 w4-mtp3-pf20-full up (DGPP_L2_PREFETCH_MB=20 DGPP_L2_PREFETCH_BOUNDARY=full)
+2026-10-04 15:35:17.636 READY — curl http://<node-0>:8000/v1/models  (stop: python3 /home/stephen/workspace/dgpp/scripts/dgpp-cluster down --config /home/stephen/workspace/dgpp/deploy/cluster_qwen3.8-27b_fp8_w4.json --log-dir /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/prefetch/w4-mtp3-pf20-full/server)
+
+=== 15:35:17 w4-mtp3-pf20-full transcripts vs w4-mtp3
+chat   256 tokens    6.07 s    23.7 ms/token (wall, prefill included) length | We need answer user: "Explain, in a few paragraphs, why a CU
+code   256 tokens    4.91 s    19.2 ms/token (wall, prefill included) length | We need answer user: "Write a Python function that parses an
+math   256 tokens    3.93 s    15.4 ms/token (wall, prefill included) length | We need answer user: "A train leaves city A at 60 km/h and a
+json   256 tokens    3.83 s    15.0 ms/token (wall, prefill included) length | We need to respond to user: "Return a JSON array of 8 object
+identical transcripts: 4 of 4
+
+=== 15:35:36 w4-mtp3-pf20-full timed_load greedy C1
+== per-class wall aggregate tokens/s (prefill included), greedy, max_tokens 256
+| class | c=1 |
+|---|---|
+| prose | 52.6 |
+| code | 62.6 |
+| json | 71.5 |
+| math | 66.4 |
+| chat | 45.8 |
+ms/pass median 50 of 15
+
+=== 15:36:21 w4-mtp3-pf20-full down
+2026-10-04 15:36:28.848 === logs in /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/prefetch/w4-mtp3-pf20-full/server
+
+=== 15:36:28 w2-mtp3-off up (DGPP_L2_PREFETCH=off)
+2026-10-04 15:36:47.014 READY — curl http://<node-0>:8000/v1/models  (stop: python3 /home/stephen/workspace/dgpp/scripts/dgpp-cluster down --config /home/stephen/workspace/dgpp/deploy/cluster_qwen3.8-27b_fp8_w2.json --log-dir /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/prefetch/w2-mtp3-off/server)
+
+=== 15:36:47 w2-mtp3-off transcripts vs w2-mtp3
+             ^^^^^^
+  File "/home/stephen/workspace/dgpp/scripts/serve_greedy_transcript.py", line 87, in main
+    ref = json.load(open(args.compare))["results"]
+                    ^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: 'benchmarks/results/2026-10-04-qwen3.8-27b/raw/drafter-tp/w2-mtp3/transcripts.json'
+
+=== 15:37:17 w2-mtp3-off timed_load greedy C1
+== per-class wall aggregate tokens/s (prefill included), greedy, max_tokens 256
+| class | c=1 |
+|---|---|
+| prose | 32.7 |
+| code | 38.8 |
+| json | 44.3 |
+| math | 40.7 |
+| chat | 29.8 |
+ms/pass median 82 of 15
+
+=== 15:38:30 w2-mtp3-off down
+2026-10-04 15:38:34.421 === logs in /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/prefetch/w2-mtp3-off/server
+
+=== 15:38:34 w2-mtp3-pf20 up (DGPP_L2_PREFETCH_MB=20)
+2026-10-04 15:38:50.263 READY — curl http://<node-0>:8000/v1/models  (stop: python3 /home/stephen/workspace/dgpp/scripts/dgpp-cluster down --config /home/stephen/workspace/dgpp/deploy/cluster_qwen3.8-27b_fp8_w2.json --log-dir /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/prefetch/w2-mtp3-pf20/server)
+
+=== 15:38:50 w2-mtp3-pf20 transcripts vs w2-mtp3
+             ^^^^^^
+  File "/home/stephen/workspace/dgpp/scripts/serve_greedy_transcript.py", line 87, in main
+    ref = json.load(open(args.compare))["results"]
+                    ^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: 'benchmarks/results/2026-10-04-qwen3.8-27b/raw/drafter-tp/w2-mtp3/transcripts.json'
+
+=== 15:39:20 w2-mtp3-pf20 timed_load greedy C1
+== per-class wall aggregate tokens/s (prefill included), greedy, max_tokens 256
+| class | c=1 |
+|---|---|
+| prose | 33.3 |
+| code | 39.4 |
+| json | 45.1 |
+| math | 41.4 |
+| chat | 30.4 |
+ms/pass median 80 of 15
+
+=== 15:40:32 w2-mtp3-pf20 down
+2026-10-04 15:40:35.781 === logs in /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/prefetch/w2-mtp3-pf20/server
+
+=== 15:40:35 w4-dflash2-off up (DGPP_L2_PREFETCH=off)
+2026-10-04 15:41:00.992 READY — curl http://<node-0>:8000/v1/models  (stop: python3 /home/stephen/workspace/dgpp/scripts/dgpp-cluster down --config /home/stephen/workspace/dgpp/deploy/cluster_qwen3.8-27b_fp8_w4_dflash2.json --log-dir /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/prefetch/w4-dflash2-off/server)
+
+=== 15:41:01 w4-dflash2-off transcripts vs w4-dflash2-v2
+chat   256 tokens    6.62 s    25.9 ms/token (wall, prefill included) length | We need answer user: "Explain, in a few paragraphs, why a CU
+code   256 tokens    3.67 s    14.3 ms/token (wall, prefill included) length | We need answer user: "Write a Python function that parses an
+math   256 tokens    2.91 s    11.4 ms/token (wall, prefill included) length | We need answer user: "A train leaves city A at 60 km/h and a
+json   256 tokens    3.30 s    12.9 ms/token (wall, prefill included) length | We need to respond to user: "Return a JSON array of 8 object
+identical transcripts: 4 of 4
+
+=== 15:41:17 w4-dflash2-off timed_load greedy C1
+== per-class wall aggregate tokens/s (prefill included), greedy, max_tokens 256
+| class | c=1 |
+|---|---|
+| prose | 52.6 |
+| code | 82.6 |
+| json | 115.3 |
+| math | 96.7 |
+| chat | 50.2 |
+ms/pass median 54 of 15
+
+=== 15:41:55 w4-dflash2-off down
+2026-10-04 15:42:02.106 === logs in /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/prefetch/w4-dflash2-off/server
+
+=== 15:42:02 w4-dflash2-pf20 up (DGPP_L2_PREFETCH_MB=20)
+2026-10-04 15:42:25.983 READY — curl http://<node-0>:8000/v1/models  (stop: python3 /home/stephen/workspace/dgpp/scripts/dgpp-cluster down --config /home/stephen/workspace/dgpp/deploy/cluster_qwen3.8-27b_fp8_w4_dflash2.json --log-dir /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/prefetch/w4-dflash2-pf20/server)
+
+=== 15:42:25 w4-dflash2-pf20 transcripts vs w4-dflash2-v2
+chat   256 tokens    6.43 s    25.1 ms/token (wall, prefill included) length | We need answer user: "Explain, in a few paragraphs, why a CU
+code   256 tokens    3.56 s    13.9 ms/token (wall, prefill included) length | We need answer user: "Write a Python function that parses an
+math   256 tokens    2.82 s    11.0 ms/token (wall, prefill included) length | We need answer user: "A train leaves city A at 60 km/h and a
+json   256 tokens    3.20 s    12.5 ms/token (wall, prefill included) length | We need to respond to user: "Return a JSON array of 8 object
+identical transcripts: 4 of 4
+
+=== 15:42:42 w4-dflash2-pf20 timed_load greedy C1
+== per-class wall aggregate tokens/s (prefill included), greedy, max_tokens 256
+| class | c=1 |
+|---|---|
+| prose | 54.0 |
+| code | 85.3 |
+| json | 119.3 |
+| math | 99.7 |
+| chat | 51.6 |
+ms/pass median 53 of 15
+
+=== 15:43:18 w4-dflash2-pf20 down
+2026-10-04 15:43:25.390 === logs in /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/prefetch/w4-dflash2-pf20/server
+
+=== 15:43:25 glm up
+2026-10-04 15:44:03.754 READY — curl http://<node-0>:18080/v1/models  (stop: python3 /home/stephen/workspace/dgpp/scripts/dgpp-cluster down --config /home/stephen/workspace/dgpp/deploy/cluster_glm-5.3-flash_nvfp4-fp8_w4.json --log-dir /home/stephen/dgpp/log/deployments/a911a2d7c4b3be6a)
+
+SWEEP_DONE 15:44:03
+SCRIPT_EXIT=0

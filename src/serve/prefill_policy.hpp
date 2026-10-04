@@ -19,6 +19,12 @@ inline sched::AdmissionPolicy resolve_prefill_policy(
     if (policy.prefill_idle_budget_tokens > 0)
       budget = std::min<int64_t>(budget, policy.prefill_idle_budget_tokens);
     policy.prefill_budget_tokens = budget / align * align;
+    // An engine that reads its in-flight prompts in as one walk shares a
+    // tick's budget among them at no cost in walks: with nothing decoding,
+    // the tick takes the whole forward (prompts that arrive together are
+    // read in together, at the one-shot's rate).
+    if (policy.prefill_idle_budget_tokens == 0 && engine.prefill_group_advance())
+      policy.prefill_idle_budget_tokens = static_cast<int>(limit / align * align);
   }
   return policy;
 }

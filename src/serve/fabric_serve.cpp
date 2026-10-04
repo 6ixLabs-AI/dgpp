@@ -393,8 +393,13 @@ std::string encode_journal_settings(const WorldSettings& s) {
   append_json_string(&out, s.bf16_weights);
   out += ",\"dv\":";
   append_json_string(&out, s.draft_vocab);
-  out += std::format(",\"pfb16\":{},\"pffold\":{},\"pffp8\":{}", s.prefill_bf16_partials ? 1 : 0,
-                     s.prefill_fold_scales ? 1 : 0, s.prefill_fp8_gemm ? 1 : 0);
+  out += std::format(",\"pfb16\":{},\"pffold\":{},\"pffp8\":{},\"pfpt\":{}", s.prefill_bf16_partials ? 1 : 0,
+                     s.prefill_fold_scales ? 1 : 0, s.prefill_fp8_gemm ? 1 : 0,
+                     s.prefill_fp8_per_tensor ? 1 : 0);
+  out += ",\"dfm\":";
+  append_json_string(&out, s.dflash_model);
+  out += std::format(",\"dfvg\":{},\"dfdb\":{},\"dfdp\":{}", s.dflash_verify_graph ? 1 : 0,
+                     s.dflash_draft_batch ? 1 : 0, s.dflash_depth);
   out += ",\"xgemm\":";
   append_json_string(&out, s.expert_gemm);
   out += std::format(",\"xpf\":{},\"xtl\":{},\"xpair\":{},\"npre\":{}", s.expert_gemm_prefetch,
@@ -413,9 +418,13 @@ std::string encode_journal_settings(const WorldSettings& s) {
   }
   out += ",\"emsh\":";
   append_json_string(&out, s.embed_sharding);
-  out += std::format(",\"mss\":{},\"msrow\":{:.17g},\"msbase\":{:.17g},\"mslam\":{:.17g},\"msmin\":{},\"msad\":{}",
+  out += std::format(",\"mss\":{},\"msrow\":{:.17g},\"msbase\":{:.17g},\"mslam\":{:.17g},\"msmin\":{},\"msad\":{},"
+                     "\"msss\":{:.17g}",
                      s.mtp_schedule ? 1 : 0, s.mtp_schedule_row_ms, s.mtp_schedule_base_ms,
-                     s.mtp_schedule_lambda, s.mtp_schedule_min_depth, s.mtp_schedule_adapt ? 1 : 0);
+                     s.mtp_schedule_lambda, s.mtp_schedule_min_depth, s.mtp_schedule_adapt ? 1 : 0,
+                     s.mtp_schedule_sampled_scale);
+  out += ",\"mdr\":";
+  append_json_string(&out, s.mtp_draft);
   out.push_back('}');
   return out;
 }
@@ -582,6 +591,12 @@ JournalRecord decode_journal_line(std::string_view line) {
     if (v.find("pfb16")) s.prefill_bf16_partials = flag("pfb16");
     if (v.find("pffold")) s.prefill_fold_scales = flag("pffold");
     if (v.find("pffp8")) s.prefill_fp8_gemm = flag("pffp8");
+    if (v.find("pfpt")) s.prefill_fp8_per_tensor = flag("pfpt");  // 2026-10-03: the 27B recipe
+    // The DFlash2 drafter (2026-10-03): records before it carry none.
+    if (const dgpp::minijson::Value* dfm = v.find("dfm")) s.dflash_model = std::string(dfm->as_string());
+    if (v.find("dfvg")) s.dflash_verify_graph = flag("dfvg");
+    if (v.find("dfdb")) s.dflash_draft_batch = flag("dfdb");
+    if (const dgpp::minijson::Value* dfdp = v.find("dfdp")) s.dflash_depth = static_cast<int>(dfdp->as_int());
     // The expert GEMM's form and companions (2026-09-30): records before them carry the defaults.
     if (const dgpp::minijson::Value* xg = v.find("xgemm")) s.expert_gemm = std::string(xg->as_string());
     if (const dgpp::minijson::Value* xpf = v.find("xpf")) s.expert_gemm_prefetch = static_cast<int>(xpf->as_int());
@@ -625,7 +640,17 @@ JournalRecord decode_journal_line(std::string_view line) {
       // Records before the adaptive lambda (2026-09-14, later) carry no msad: fixed.
       if (const dgpp::minijson::Value* msad = v.find("msad")) s.mtp_schedule_adapt = msad->as_int() != 0;
       else s.mtp_schedule_adapt = false;
+      // Records before 2026-10-02 carry no sampled scale: sampled requests
+      // verify the whole block.
+      if (const dgpp::minijson::Value* msss = v.find("msss")) s.mtp_schedule_sampled_scale = msss->as_double();
+      else s.mtp_schedule_sampled_scale = 0.0;
+      if (!(s.mtp_schedule_sampled_scale >= 0.0 && s.mtp_schedule_sampled_scale <= 1.0))
+        throw std::runtime_error("worker settings: msss must be in [0, 1]");
     }
+    // Records before 2026-10-01 carry no draft rule: the family's default.
+    if (const dgpp::minijson::Value* mdr = v.find("mdr")) s.mtp_draft = std::string(mdr->as_string());
+    if (s.mtp_draft != "auto" && s.mtp_draft != "sampled" && s.mtp_draft != "greedy")
+      throw std::runtime_error("worker settings: mdr must be auto, sampled or greedy");
     if (s.world < 2 || s.max_concurrency < 1 || s.kv_capacity < 1 ||
         (s.admission != "full" && s.admission != "grow") ||
         !latent_format_from_string(s.kv_dtype) ||

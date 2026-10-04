@@ -1,0 +1,15 @@
+fixture       =  34.96 sec*proc (11 tests)
+gpu           = 710.32 sec*proc (156 tests)
+host          = 222.22 sec*proc (40 tests)
+python        =  22.31 sec*proc (14 tests)
+rdma          = 191.30 sec*proc (25 tests)
+
+Total Test time (real) = 515.38 sec
+
+The following tests did not run:
+	 36 - dsv4_tokenizer_test (Skipped)
+	 38 - dsv4_prompt_test (Skipped)
+	 39 - glm4_tokenizer_test (Skipped)
+	 41 - mimo_tokenizer_test (Skipped)
+	 44 - glm4_chat_template_test (Skipped)
+	 46 - mimo_chat_template_test (Skipped)

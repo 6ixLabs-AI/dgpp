@@ -1,0 +1,75 @@
+
+=== 07:41:30 glm down
+2026-10-04 07:41:39.381 === logs in /home/stephen/dgpp/log/deployments/a911a2d7c4b3be6a
+
+=== 07:41:39 w1-eager up
+2026-10-04 07:42:05.689 rank 0 serving: ok (26s)
+2026-10-04 07:42:05.690 READY — curl http://<node-0>:8000/v1/models  (stop: python3 /home/stephen/workspace/dgpp/scripts/dgpp-cluster down --config /home/stephen/workspace/dgpp/deploy/cluster_qwen3.8-27b_fp8_w1_dflash2.json --log-dir /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/drafter-tp/w1-eager/server)
+{"object":"list","data":[{"id":"Qwen3.8-27B","object":"model","created":1791099725,"owned_by":"dgpp","sampling":{"availa
+
+=== 07:42:05 w1-eager transcripts
+chat   256 tokens   24.38 s    95.2 ms/token (wall, prefill included) length | We need answer user: "Explain, in a few paragraphs, why a CU
+code   256 tokens   10.81 s    42.2 ms/token (wall, prefill included) length | We need answer user: "Write a Python function that parses an
+math   256 tokens    8.03 s    31.4 ms/token (wall, prefill included) length | We need answer user: "A train leaves city A at 60 km/h and a
+json   256 tokens    9.85 s    38.5 ms/token (wall, prefill included) length | We need to respond to user: "Return a JSON array of 8 object
+
+=== 07:42:58 w1-eager timed_load greedy C1
+== per-class wall aggregate tokens/s (prefill included), greedy, max_tokens 256
+| class | c=1 |
+|---|---|
+| prose | 17.6 |
+| code | 28.1 |
+| json | 39.6 |
+| math | 32.0 |
+| chat | 16.8 |
+
+=== 07:44:49 w1-eager timed_load sampled C1
+== per-class wall aggregate tokens/s (prefill included), sampled T=1.0, max_tokens 256
+| class | c=1 |
+|---|---|
+| prose | 13.7 |
+| code | 23.7 |
+| json | 34.8 |
+| math | 27.9 |
+| chat | 14.6 |
+
+=== 07:47:01 w1-eager down
+2026-10-04 07:47:04.717 === logs in /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/drafter-tp/w1-eager/server
+
+=== 07:47:04 w1-graph up
+  2026-10-04 07:47:05.111 ERROR --decode-graph needs --max-concurrency * (1 + mtp depth) <= 32 on the qwen3_5 family (got 8 * 8)
+cluster configuration: rank 0 did not become ready
+
+
+=== 07:57:05 w1-graph transcripts
+                ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/socket.py", line 852, in create_connection
+    raise exceptions[0]
+  File "/usr/lib/python3.12/socket.py", line 837, in create_connection
+    sock.connect(sa)
+ConnectionRefusedError: [Errno 111] Connection refused
+
+=== 07:57:05 w1-graph timed_load greedy C1
+  File "/usr/lib/python3.12/http/client.py", line 1030, in connect
+    self.sock = self._create_connection(
+                ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/socket.py", line 852, in create_connection
+    raise exceptions[0]
+  File "/usr/lib/python3.12/socket.py", line 837, in create_connection
+    sock.connect(sa)
+ConnectionRefusedError: [Errno 111] Connection refused
+
+=== 07:57:05 w1-graph timed_load sampled C1
+  File "/usr/lib/python3.12/http/client.py", line 1030, in connect
+    self.sock = self._create_connection(
+                ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/socket.py", line 852, in create_connection
+    raise exceptions[0]
+  File "/usr/lib/python3.12/socket.py", line 837, in create_connection
+    sock.connect(sa)
+ConnectionRefusedError: [Errno 111] Connection refused
+
+=== 07:57:05 w1-graph down
+2026-10-04 07:57:05.458 === logs in /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/drafter-tp/w1-graph/server
+
+=== 07:57:05 w2-dflash2 up

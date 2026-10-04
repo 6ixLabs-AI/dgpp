@@ -45,10 +45,12 @@
 #include <cuda_runtime.h>
 
 #include "common/cuda_check.hpp"
+#include "common/log.hpp"
 #include "common/prefill_progress.hpp"
 #include "engine/boundary_reducer.hpp"
 #include "engine/decode_outputs.hpp"
 #include "engine/logits_storage.hpp"
+#include "engine/pool_exhausted.hpp"
 #include "kernels/gemm.hpp"
 #include "kernels/glm_spec.hpp"
 #include "kernels/pick.hpp"
@@ -199,9 +201,33 @@ class SessionModel : public PrefillReporting {
   // -1 between calls so padded decode graphs cannot advance its state.
   // A positive override changes this chunk's budget; zero uses the begin budget.
   bool session_prefill_advance(PrefillCursor& cursor, int64_t chunk_tokens = 0);
+  // Several unfinished cursors' next chunks as the spans of ONE walk (a
+  // family advertising kPrefillGroupAdvance: its walk takes a span at any
+  // position, and its chunks are split-invariant). Each cursor advances
+  // as session_prefill_advance would — its cuts, its snapshots, its draft
+  // rows — by up to its own budget from where it stands (no budget grid:
+  // the scheduler re-splits a tick's budget among the prompts every
+  // tick), and the weights stream once for all of them. Returns each
+  // cursor's "done".
+  static constexpr bool kPrefillGroupAdvance = false;
+  std::vector<bool> session_prefill_advance_group(const std::vector<PrefillCursor*>& cursors,
+                                                  const std::vector<int64_t>& chunk_tokens);
   Outputs session_step(int req, int64_t token_id) { return session_verify(req, std::vector<int64_t>{token_id}); }
   Outputs session_verify(int req, const std::vector<int64_t>& token_ids);
+  // Batched verify: slot-major rows (each slot's fed rows contiguous),
+  // one live pass. Returns per-slot outputs in slot order; offsets[i] is
+  // slot i's first row (for rollback bases). Total rows must fit
+  // max_decode_rows_.
+  std::vector<Outputs> session_verify_batch(const std::vector<int>& reqs,
+                                            const std::vector<std::vector<int64_t>>& feds,
+                                            std::vector<int>* offsets = nullptr);
   void session_rollback(int req, int accepted);
+  // Rollback after a verify of exactly `rows` rows (the block drafter's
+  // verifies are 1..kSpecRows wide and vary with the proposal).
+  void session_rollback(int req, int accepted, int rows);
+  // ...with the slot's snapshot rows starting at `snapshot_base`
+  // (a batched verify's slot-major offset; 0 for scalar verifies).
+  void session_rollback(int req, int accepted, int rows, int snapshot_base);
   void head_dump_flush() {}  // a family may shadow this (QwenModel's head dump)
   void session_close(int req);
   int64_t session_position(int req) const {
@@ -909,8 +935,13 @@ void SessionModel<D>::prefill_chunk(PrefillCursor& cursor, int64_t budget) {
   }
   for (auto* at = snap; at != nullptr; at = at->next) {
     if (!at->taken && at->position == c1) {
-      *at->meta = session_snapshot(req, at->dst);
-      at->taken = true;
+      try {
+        *at->meta = session_snapshot(req, at->dst);
+        at->taken = true;
+      } catch (const CachePoolExhausted& e) {
+        // Untaken: the scheduler gives the arena slot back (no cache entry).
+        DGPP_LOG_WARN("prefix cache: snapshot at {} skipped for slot {}: {}", c1, req, e.what());
+      }
     }
   }
   cursor.next = c1;
@@ -987,6 +1018,110 @@ bool SessionModel<D>::session_prefill_advance(PrefillCursor& cursor, int64_t chu
     DGPP_CUDA_OK(cudaMemsetAsync(d_session_pos_ + cursor.req, 0xff, sizeof(int64_t), stream_));
     if (mtp_) DGPP_CUDA_OK(cudaMemsetAsync(d_mtp_pos_ + cursor.req, 0xff, sizeof(int64_t), stream_));
     cursor.suspended = true;
+  }
+  DGPP_CUDA_OK(cudaStreamSynchronize(stream_));
+  return done;
+}
+
+template <class D>
+std::vector<bool> SessionModel<D>::session_prefill_advance_group(const std::vector<PrefillCursor*>& cursors,
+                                                                 const std::vector<int64_t>& chunk_tokens) {
+  if constexpr (!D::kPrefillGroupAdvance)
+    throw std::logic_error("session_prefill_advance_group: family advances one prefill per walk");
+  const int n = static_cast<int>(cursors.size());
+  if (chunk_tokens.size() != cursors.size())
+    throw std::invalid_argument("session_prefill_advance_group: one budget per cursor");
+  if (n == 0) return {};
+  std::vector<int64_t> ids, span_pos0, ends;
+  std::vector<int32_t> span_reqs, span_lens;
+  for (int s = 0; s < n; ++s) {
+    PrefillCursor& c = *cursors[static_cast<size_t>(s)];
+    check_req(c.req, "session_prefill_advance_group");
+    for (int t = 0; t < s; ++t)
+      if (cursors[static_cast<size_t>(t)]->req == c.req)
+        throw std::invalid_argument("session_prefill_advance_group: a request twice in the group");
+    if (c.next >= c.end || session_pos_[static_cast<size_t>(c.req)] != c.next)
+      throw std::logic_error("session_prefill_advance_group: completed or stale cursor");
+    const int64_t budget = chunk_tokens[static_cast<size_t>(s)] == 0 ? c.budget_tokens : chunk_tokens[static_cast<size_t>(s)];
+    if (budget < snapshot_align_ || budget > max_tokens_ || budget % snapshot_align_ != 0)
+      throw std::invalid_argument("session_prefill_advance_group: chunk budget must fit max_tokens and snapshot alignment");
+    // Up to the next cut, within the budget from where the cursor stands.
+    const int64_t c0 = c.next;
+    int64_t c1 = c.cut_index < c.cuts.size() ? c.cuts[c.cut_index] : c.end;
+    c1 = std::min(c1, c0 + budget);
+    ids.insert(ids.end(), c.ids + (c0 - c.start), c.ids + (c1 - c.start));
+    span_reqs.push_back(c.req);
+    span_pos0.push_back(c0);
+    span_lens.push_back(static_cast<int32_t>(c1 - c0));
+    ends.push_back(c1);
+  }
+  if (static_cast<int64_t>(ids.size()) > max_tokens_)
+    throw std::invalid_argument("session_prefill_advance_group: the group's chunks exceed max_tokens");
+  for (PrefillCursor* c : cursors) {
+    if (!c->suspended) continue;
+    push_position(c->req);
+    if (mtp_) push_mtp_position(c->req);
+    c->suspended = false;
+  }
+  RowRun run;
+  run.req = cursors[0]->req;
+  run.ids = ids.data();
+  run.T = static_cast<int>(ids.size());
+  run.pos0 = 0;
+  run.decode = false;
+  run.all_rows = false;
+  run.first_chunk = true;
+  run.last_chunk = true;
+  run.span_reqs = span_reqs.data();
+  run.span_pos0 = span_pos0.data();
+  run.span_lens = span_lens.data();
+  run.num_spans = n;
+  Outputs all = derived().run_rows(run);
+  const size_t H = static_cast<size_t>(hidden_);
+  std::vector<bool> done(static_cast<size_t>(n));
+  for (int s = 0; s < n; ++s) {
+    PrefillCursor& c = *cursors[static_cast<size_t>(s)];
+    const int req = c.req;
+    const int64_t c0 = c.next, c1 = ends[static_cast<size_t>(s)];
+    if (c.cut_index < c.cuts.size() && c1 == c.cuts[c.cut_index]) ++c.cut_index;
+    Outputs& o = c.output;
+    o.lm_vocab_begin = all.lm_vocab_begin;
+    o.lm_vocab_count = all.lm_vocab_count;
+    o.logits.assign(all.logits.begin() + static_cast<std::ptrdiff_t>(s) * lm_vocab_count_,
+                    all.logits.begin() + static_cast<std::ptrdiff_t>(s + 1) * lm_vocab_count_);
+    o.final_hidden_bits.assign(all.final_hidden_bits.begin() + static_cast<std::ptrdiff_t>(s) * static_cast<std::ptrdiff_t>(H),
+                               all.final_hidden_bits.begin() + static_cast<std::ptrdiff_t>(s + 1) * static_cast<std::ptrdiff_t>(H));
+    session_pos_[static_cast<size_t>(req)] = c1;
+    push_position(req);
+    if (mtp_) {
+      // The draft block over this chunk's rows (row q embeds tok_{q+1}).
+      const int64_t r1 = std::min<int64_t>(c1, c.end - 1);
+      if (r1 > c0) mtp_prefill_rows(req, c0, r1, c.ids + (c0 + 1 - c.start));
+      mtp_pos_[static_cast<size_t>(req)] = std::max<int64_t>(mtp_pos_[static_cast<size_t>(req)], r1);
+      push_mtp_position(req);
+    }
+    bool closed = c1 == c.end;
+    for (auto* at = c.snap; at != nullptr; at = at->next) {
+      if (!at->taken && at->position == c1) {
+        try {
+          *at->meta = session_snapshot(req, at->dst);
+          at->taken = true;
+        } catch (const CachePoolExhausted& e) {
+          DGPP_LOG_WARN("prefix cache: snapshot at {} skipped for slot {}: {}", c1, req, e.what());
+        }
+        closed = true;
+      }
+    }
+    c.span_start = closed;
+    c.next = c1;
+    report_prefill_progress(req, c1);
+    done[static_cast<size_t>(s)] = c1 == c.end;
+    if (c1 != c.end) {
+      // As session_prefill_advance: an unfinished slot is inert to a replay.
+      DGPP_CUDA_OK(cudaMemsetAsync(d_session_pos_ + req, 0xff, sizeof(int64_t), stream_));
+      if (mtp_) DGPP_CUDA_OK(cudaMemsetAsync(d_mtp_pos_ + req, 0xff, sizeof(int64_t), stream_));
+      c.suspended = true;
+    }
   }
   DGPP_CUDA_OK(cudaStreamSynchronize(stream_));
   return done;
@@ -1186,14 +1321,105 @@ typename SessionModel<D>::Outputs SessionModel<D>::session_verify(int req, const
 }
 
 template <class D>
+std::vector<typename SessionModel<D>::Outputs> SessionModel<D>::session_verify_batch(
+    const std::vector<int>& reqs, const std::vector<std::vector<int64_t>>& feds,
+    std::vector<int>* offsets) {
+  if (reqs.empty()) throw std::invalid_argument("session_verify_batch: no requests");
+  if (reqs.size() != feds.size())
+    throw std::invalid_argument("session_verify_batch: reqs/feds shape");
+  int total = 0;
+  for (size_t s = 0; s < reqs.size(); ++s) {
+    const int req = reqs[s];
+    check_req(req, "session_verify_batch");
+    const auto& ids = feds[s];
+    const int T = static_cast<int>(ids.size());
+    if (T < 1 || T > kSpecRows)
+      throw std::invalid_argument("session_verify_batch: row count must be in [1, " +
+                                  std::to_string(kSpecRows) + "]");
+    const int64_t pos = session_pos_[static_cast<size_t>(req)];
+    if (pos <= 0) throw std::invalid_argument("session_verify_batch: no open session");
+    for (int64_t id : ids)
+      if (id < 0 || id >= vocab_size_) throw std::invalid_argument("session_verify_batch: token id out of range");
+    if (pos + T > max_context_) throw std::invalid_argument("session_verify_batch: position exceeds the context bound");
+    if (derived().has_pool() &&
+        !derived().pool().ensure_request_blocks(req, pos + T, stream_))
+      throw std::runtime_error("session_verify_batch: cache pool exhausted (admission budget)");
+    total += T;
+  }
+  if (total > max_decode_rows_)
+    throw std::invalid_argument("session_verify_batch: rows exceed the decode batch ceiling");
+  // Slot-major staging: each slot's fed rows contiguous, spans per slot.
+  int row = 0;
+  std::vector<int> offs(reqs.size());
+  for (size_t s = 0; s < reqs.size(); ++s) {
+    const int req = reqs[s];
+    const auto& ids = feds[s];
+    const int T = static_cast<int>(ids.size());
+    const int64_t pos = session_pos_[static_cast<size_t>(req)];
+    offs[s] = row;
+    for (int r = 0; r < T; ++r) {
+      h_req_ids_[row] = req;
+      h_step_pos_[row] = pos + r;
+      h_token_[row] = ids[static_cast<size_t>(r)];
+      ++row;
+    }
+    h_req_spans_[2 * s] = offs[s];
+    h_req_spans_[2 * s + 1] = T;
+  }
+  // The tokens ride h_token_ through begin_run's decode branch; the ids,
+  // positions and spans are staged here (decode_host_prep's contract,
+  // generalized to the slot-major batch).
+  decode_rows_ = total;
+  glm_upload_i32(h_req_ids_, d_req_ids_, total, stream_);
+  glm_upload_i64(h_step_pos_, d_step_pos_, total, stream_);
+  glm_upload_i32(h_req_spans_, d_req_spans_, 2 * static_cast<int>(reqs.size()), stream_);
+  RowRun run;
+  run.req = reqs[0];
+  run.T = total;
+  run.pos0 = session_pos_[static_cast<size_t>(reqs[0])];
+  run.decode = true;
+  run.all_rows = true;
+  run.snapshots = total > 1;
+  run.batch_requests = static_cast<int>(reqs.size());
+  Outputs out = derived().run_rows(run);
+  if (offsets) *offsets = offs;
+  // Slice the materialized rows per slot (finish_run returns all T rows host-side on decode).
+  std::vector<Outputs> outs(reqs.size());
+  for (size_t s = 0; s < reqs.size(); ++s) {
+    const int T = static_cast<int>(feds[s].size());
+    Outputs& o = outs[s];
+    o.logits.assign(out.logits.begin() + static_cast<size_t>(offs[s]) * lm_vocab_count_,
+                    out.logits.begin() + static_cast<size_t>(offs[s] + T) * lm_vocab_count_);
+    o.lm_vocab_begin = out.lm_vocab_begin;
+    o.lm_vocab_count = out.lm_vocab_count;
+    o.final_hidden_bits.assign(
+        out.final_hidden_bits.begin() + static_cast<size_t>(offs[s]) * hidden_,
+        out.final_hidden_bits.begin() + static_cast<size_t>(offs[s] + T) * hidden_);
+    session_pos_[static_cast<size_t>(reqs[s])] += T;
+    push_position(reqs[s]);
+  }
+  return outs;
+}
+
+template <class D>
 void SessionModel<D>::session_rollback(int req, int accepted) {
+  session_rollback(req, accepted, decode_rows_);
+}
+
+template <class D>
+void SessionModel<D>::session_rollback(int req, int accepted, int rows) {
+  session_rollback(req, accepted, rows, 0);
+}
+
+template <class D>
+void SessionModel<D>::session_rollback(int req, int accepted, int rows, int snapshot_base) {
   check_req(req, "session_rollback");
-  const int T = decode_rows_;
+  const int T = rows;
   if (accepted < 1 || accepted > T)
     throw std::invalid_argument("session_rollback: accepted rows must be in [1, " + std::to_string(T) + "]");
   const int64_t pos = session_pos_[static_cast<size_t>(req)];
   if (pos < T) throw std::invalid_argument("session_rollback: no verify to retract");
-  const GlmSpecSegments segs = derived().spec_segments(req, 0);
+  const GlmSpecSegments segs = derived().spec_segments(req, snapshot_base);
   if (segs.replay_dst != nullptr) {
     // A checkpoint-and-replay family (kernels/glm_spec.hpp): this pass's
     // saved rows become the next pass's replay source and the accepted
@@ -1273,7 +1499,7 @@ typename SessionModel<D>::SessionSnapshotMeta SessionModel<D>::pin_blocks_at(int
     const int32_t b = pool.acquire_pinned_block();
     if (b < 0) {
       pool.unpin_blocks(meta.full_blocks.data(), n_full);
-      throw std::runtime_error(std::string(what) + ": cache pool exhausted (the partial block)");
+      throw CachePoolExhausted(std::string(what) + ": cache pool exhausted (the partial block)");
     }
     pool.copy_block_contents(row[n_full], b, stream_);
     meta.partial_block = b;
@@ -1511,8 +1737,11 @@ void SessionModel<D>::session_graph_capture_batch(int rows_per_request, int requ
       requests * rows_per_request > max_decode_rows_)
     throw std::invalid_argument("session_graph_capture_batch: requests * rows_per_request must fit the decode-row ceiling (" +
                                 std::to_string(max_decode_rows_) + ")");
+  // (The feeds sit behind the decode rows at kSpecRows per request slot:
+  // a depth-capped family — every slot at fewer rows than the full block —
+  // has more feed rows than decode rows.)
   if (feed_rows < 0 || feed_rows > kSpecRows || (feed_rows > 0 && feed_rows < rows_per_request) ||
-      (feed_rows > 0 && requests * feed_rows > max_decode_rows_))
+      (feed_rows > 0 && requests * feed_rows > max_requests_ * kSpecRows))
     throw std::invalid_argument("session_graph_capture_batch: the feeds must hold at least the verified rows");
   if (std::none_of(session_pos_.begin(), session_pos_.end(), [](int64_t p) { return p > 0; }))
     throw std::logic_error("session_graph_capture_batch: capture needs one open request");

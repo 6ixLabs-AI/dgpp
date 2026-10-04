@@ -43,6 +43,22 @@ values return HTTP 400 naming `ignore_eos`. When `true`, sampled EOS tokens
 still count toward usage but do not end generation. The token limit, stop
 strings, cancellation and resource limits still apply.
 
+## Assistant thinking history (DGPP extension)
+
+Assistant content arrays accept Anthropic-style `thinking` and
+`redacted_thinking` parts forwarded by proxies such as LiteLLM. Nonempty
+`thinking` strings are joined in order with a blank line between them and
+become `reasoning_content` when that field is absent or null. An explicit
+string, including `""`, takes precedence. The checkpoint's template and its
+history controls determine whether that reasoning appears in the prompt.
+
+Thinking parts are removed from visible content; redacted payloads and
+signatures are discarded. A message containing only these parts has
+`content: ""`, including when it carries tool calls. Non-string `thinking`
+values return HTTP 400 naming the offending field. Thinking parts on user,
+system, developer or tool messages remain unsupported, and existing
+validation of other content parts and cache breakpoints still applies.
+
 ## Streaming keep-alives (DGPP extension)
 
 Both `POST /v1/chat/completions` and `POST /v1/completions` send SSE comments

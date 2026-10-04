@@ -227,6 +227,8 @@ ClusterConfig parse_cluster_config(const std::string& json, const std::string& w
           e.prefill_fold_scales = boolean(x, ek, what);
         } else if (p.key == "prefill_fp8_gemm") {
           e.prefill_fp8_gemm = boolean(x, ek, what);
+        } else if (p.key == "prefill_fp8_per_tensor") {
+          e.prefill_fp8_per_tensor = boolean(x, ek, what);
         } else if (p.key == "expert_gemm") {
           e.expert_gemm = text(x, ek, what);
           if (e.expert_gemm != "wide" && e.expert_gemm != "wide3" && e.expert_gemm != "wide4" &&
@@ -301,12 +303,17 @@ ClusterConfig parse_cluster_config(const std::string& json, const std::string& w
           }
         }
         else if (p.key == "queue_limit") e.queue_limit = static_cast<int>(integer(x, ek, what, 1, 1 << 30));
+        else if (p.key == "admission_gather_ms") e.admission_gather_ms = static_cast<int>(integer(x, ek, what, 0, 1000));
         else if (p.key == "max_connections") e.max_connections = static_cast<int>(integer(x, ek, what, 1, 1 << 20));
         else if (p.key == "no_eos") e.no_eos = boolean(x, ek, what);
         else if (p.key == "decode_graph") e.decode_graph = boolean(x, ek, what);
         else if (p.key == "mtp") e.mtp = boolean(x, ek, what);
+        else if (p.key == "dflash_model") e.dflash_model = text(x, ek, what);
+        else if (p.key == "dflash_verify_graph") e.dflash_verify_graph = boolean(x, ek, what);
+        else if (p.key == "dflash_draft_batch") e.dflash_draft_batch = boolean(x, ek, what);
+        else if (p.key == "dflash_depth") e.dflash_depth = static_cast<int>(integer(x, ek, what, 0, 7));
         else if (p.key == "mtp_depth") {
-          e.mtp_depth = static_cast<int>(integer(x, ek, what, 1, 5));  // kSpecRows - 1
+          e.mtp_depth = static_cast<int>(integer(x, ek, what, 1, 5));  // the MTP families' chains; the DFlash2 block is its checkpoint's
           e.mtp_depth_set = true;
         } else if (p.key == "compact_batches")
           e.compact_batches = boolean(x, ek, what);
@@ -323,6 +330,16 @@ ClusterConfig parse_cluster_config(const std::string& json, const std::string& w
           if (!(e.mtp_schedule_lambda >= 0.0)) fail(what, "'" + ek + "' must be >= 0 (0: the reservation rate)");
         } else if (p.key == "mtp_schedule_min_depth") e.mtp_schedule_min_depth = static_cast<int>(integer(x, ek, what, 1, 5));
         else if (p.key == "mtp_schedule_adapt") e.mtp_schedule_adapt = boolean(x, ek, what);
+        else if (p.key == "mtp_schedule_sampled_scale") {
+          e.mtp_schedule_sampled_scale = number(x, ek, what);
+          if (!(e.mtp_schedule_sampled_scale >= 0.0 && e.mtp_schedule_sampled_scale <= 1.0))
+            fail(what, "'" + ek + "' must be in [0, 1] (0: sampled requests verify the whole block)");
+        }
+        else if (p.key == "mtp_draft") {
+          e.mtp_draft = text(x, ek, what);
+          if (e.mtp_draft != "auto" && e.mtp_draft != "sampled" && e.mtp_draft != "greedy")
+            fail(what, "'" + ek + "' must be auto, sampled or greedy");
+        }
         else if (p.key == "sampling_candidates") e.sampling_candidates = static_cast<int>(integer(x, ek, what, 1, 256));
         else if (p.key == "prefix_cache_gib") {
           e.prefix_cache_gib = number(x, ek, what);

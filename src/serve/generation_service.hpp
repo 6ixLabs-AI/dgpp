@@ -167,6 +167,7 @@ struct ServiceConfig {
   std::string model_id;
   int default_max_tokens = 256;  // when the request omits max_tokens
   int queue_limit = 64;          // admission bound; beyond → 503
+  int admission_gather_ms = 3;   // an idle engine's wait for the rest of an arriving burst (0: none)
   int sse_ping_interval = kDefaultSsePingInterval;  // seconds; -1 disables
   dgpp::sched::AdmissionPolicy admission;  // full-reserve unless told otherwise
   // The sampling defaults every omitted request field takes: the

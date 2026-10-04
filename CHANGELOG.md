@@ -19,6 +19,328 @@ The history by milestone. The dated engineering record in
   rank 0 on `/metrics/prometheus`, each peer on an optional listener
   (`DGPP_METRICS_PORT` / `ports.metrics` / `--metrics-port`, off by default)
   on its node address.
+- **Qwen3.8-27B: the review's follow-ups** (2026-10-03, #84 / #85 / #87):
+  the full-attention layers' kernels rewritten (`kernels/full_attn`: a
+  query-tiled prefill form — sixteen queries by one head a warp over
+  32-token K/V tiles — and a split-KV decode walk with a combine pass; 30K
+  decode 187 → 146 ms a step, the 2K prefill's attention 87.5 → 29.9 ms,
+  the 30K prefill 40.9 → 29.2 s, transcripts unchanged); the family's
+  forward fixture gate (`qwen35_forward_test` over a tiny synthetic block-FP8
+  checkpoint from the binding table, `tools/qwen35_reference_dump.py`'s
+  numpy reference of the GDN / full-attention / MLP stack and the draft
+  block, the smoke → end-to-end → teacher-forced strict chain, the MiMo
+  gate's budgets); and the exact prefill measured against its floor — the
+  dequant bridge stays (its dequant runs at line rate and cuBLASLt at the
+  bf16 pipe's rate; a side-stream dequant never overlaps nvjet's persistent
+  grid, and a fused fp8-weight GEMM lands at parity because the decode's
+  instructions share the mma pipe's issue slots), with `kernels/fp8w_gemm`
+  (63–66 TF, both scale forms, `fp8w_gemm_test`) kept for the scale GEMM's
+  26 TF tile route (#89) and `fp8_gemm_bench --27b` reporting every lever.
+  One recipe per world size (2026-10-04): the single-node template is the
+  DFlash2 drafter's (`cluster_qwen3.8-27b_fp8_w1`), its MTP depth-2 and plain
+  worlds the knobs `--no-dflash --mtp --mtp-depth 2` and `--no-dflash`
+  (`--no-dflash` lands on the decode graph: the eager engine's plain world
+  without a drafter streams its layers); the two- and four-node templates
+  are MTP depth 3 (depth 3 leads depth 2 by 6–18 % across the classes at
+  world 2), the drafter their mode (below).
+  The family's rows on the [benchmarks page](docs/benchmarks.md) come from
+  the 2026-10-04 campaign (`benchmarks/results/2026-10-04-qwen3.8-27b`: the
+  runner's performance, modes and quality stages over both templates, the
+  MTP depth-2 world as the drafter template's mode); the model card is
+  `docs/model_cards/Qwen3.8-27B-FP8.md`.
+  The drafter serves sampled requests (2026-10-04): a sampled slot's block
+  is verified row by row with the sampled MTP rule — each draft stands with
+  its exact probability under the request's temperature, top-k / top-p and
+  penalties, the residual sample ends the step — where it ran plain before
+  (8.4 tok/s at C1 against the greedy block's 17–41); logprobs, a logit bias
+  and a grammar still run plain.
+  `engine.bf16_weights: bf12` now packs this family's bf16 decode matrices
+  too (#88: the drafter's five layers and fc taps, the MTP fc, a bf16 lm
+  head), the bf16 bytes staying resident for the stacked redrafts' mma form.
+  The family serves on two and four Sparks (#86): the loader's TP geometry
+  (GDN and attention heads, the MLP and the lm head sliced across the ranks,
+  the kv heads paired at world 4) through `Qwen35Model`, two boundary folds
+  a layer (the attention / GDN output and the MLP output, bf16 on the wire)
+  in the main and draft walks; the loopback TP
+  gate (`qwen35_tp_test`, worlds 2 and 4 against the world-1 forward over the
+  fixture) and the `cluster_qwen3.8-27b_fp8_w2` template. The scale GEMM's
+  large-row FP8 products (every family's dense MLPs, shared experts and FP8
+  heads past the GEMV rows) run on `kernels/fp8w_gemm`'s per-weight form
+  (#89): bitwise the tile kernel they replace (`fp8w_gemm_test` pins the
+  pair) at 63–66 TF against its 26–30.
+
+- **Qwen3.8-27B TP: the decode GEMV's rate at shard widths** (2026-10-04,
+  #93): the four-node profile's 187 GB/s was measured against the spec's
+  273; the GB10's achievable device read bandwidth is 233.6 GB/s
+  (`micro_mem_bw`), and the fp8 decode GEMVs reach 89–97 % of it in
+  isolation at the per-rank shapes (`micro_mma_gemv_shapes`, the new
+  microbench over the two- and four-node matrices at 1 / 4 / 8 rows: the
+  streaming form, the forced block widths, the row-chunk cores, the fused
+  swiglu down). In-server they ran 7–20 % under that, the worst the MLP gate
+  / up at eight rows: 68 unsplit blocks, because the MLP launches passed no
+  workspace — they do now (split 2: 184 → 208 GB/s on four Sparks; the
+  chunked cores at m <= 4 are unaffected). The lever at TP is the fold
+  time: 138 bus collectives x ~49 us a step on four Sparks with DRAM idle,
+  so the decode walk opens the Qwen3.8-Flash-Next prefetcher's boundary
+  windows (`WeightPrefetcher`, a side-stream graph branch before each fold:
+  the MLP's gate / up / down before the attention fold, the next layer's
+  input projections or the head before the MLP fold; 20 MB at the Light
+  rate from the sweep — 8 / 12 / 20 / 32 MB and the Full rate measured,
+  32 MB and Full slower). Bit-identical on or off (greedy transcripts 4/4
+  at every budget). Four nodes MTP depth 3: 48 → 46 ms a pass (greedy C1
+  54.7 / 65.2 / 74.7 / 69.0 / 47.6 → 56.3 / 67.1 / 76.6 / 70.5 / 49.1
+  tok/s); two nodes 82 → 80; the four-node drafter 54 → 53 with the
+  windows and 52 with the split gate / up (54.9 / 86.3 / 120.8 / 101.2 /
+  52.6; transcripts 4/4 against a same-dispatch MTP depth-5 world).
+
+- **The DFlash2 drafter on the graph worlds** (2026-10-04, #92): the graph
+  engine hosts the block proposal at every world. The verify is the 8-row
+  recorded step (the sampled device pick's row limit `kSampleVerdictRows`
+  6 → 8, the drafts point masses — the P(draft) rule); after the commit one
+  recorded block forward off the device verdict replaces the draft picks
+  (`Qwen35Model::session_graph_capture_block_draft`, a batched form per
+  family): the anchor and the block's positions staged from the verdict
+  and the committed device position, the drafter's heads / kv heads / MLP
+  rows sharded across the ranks with two boundary folds a layer (the
+  replicated 3.7 GB forward cost 17 ms a step on four Sparks; 3.8 sharded
+  and bf12), the mask rows' top-16 on the vocab-sharded head merged across
+  the ranks through one fold of 6-bit digits (`dflash2_topk_stage/merge`,
+  the pick's wire form) so every rank walks the same proposal, the drafts
+  fed to the next replay and a pinned per-slot mirror (`kernels/dflash2`).
+  The block attention takes a split-key form (32 ranges + combine; the
+  serial walk was ~2 ms a layer at 2K). `engine.dflash_model` serves on the
+  fabric (with `decode_graph`) and on one Spark with the decode graph (the
+  eager engine's transcripts 4/4, chat 71 against 95 ms a token); past four
+  slots the engine batches the slots that fit the 32-row ceiling and
+  replays scalar graphs beyond. Gates: `dflash2_kernels_test` (the merge at
+  worlds 2 and 4, the staging, the split attention), greedy transcripts
+  identical 4/4 to the same world's MTP depth-5 world at worlds 1, 2 and 4.
+  Measured greedy C1 (`timed_load`, prose / code / json / math / chat): two
+  nodes MTP depth 3 at 84 ms a pass, the drafter 32.1 / 50.3 / 71.0 / 57.6 /
+  30.3 at 94; four nodes MTP 54.7 / 65.1 / 74.6 / 68.6 / 47.8 at 49 ms, the
+  drafter 52.4 / 82.5 / 115.9 / 97.1 / 50.2 at 56 — the drafter leads code /
+  JSON / math by 27–55 % and ties prose and chat, the MTP template's 4-row
+  verify keeps the shorter pass, so MTP stays the two- and four-node
+  template and the drafter is its mode (`--no-mtp --dflash-model
+  z-lab/Qwen3.8-27B-DFlash2 --bf16-weights bf12`); the drafter recipes pack
+  the drafter bf12 (+4.5 %, lossless). The nsys node trace of rank 0 at four
+  nodes puts the target's fp8 GEMV at 35–38 ms a step for both recipes
+  (6.9 GB a rank at 187 GB/s at four-node shard widths): the shared lever
+  (#93).
+
+- **The DFlash2 block drafter on Qwen3.8-27B** (2026-10-02, #80):
+  `engine.dflash_model` serves `z-lab/Qwen3.8-27B-DFlash2` in place of the
+  MTP draft on the eager world-1 engine — five bidirectional draft layers
+  fed by target taps `[5, 19, 33, 47, 61]` through the split `fc`, 2-tap
+  dynamic grouped convolutions, the rank-256 top-16 selector walk, the
+  shared embedding and lm head, the drafter's K/V in five extra planes of
+  the main pool (kernels/dflash2, models/qwen/dflash2, the `dflash2_*`
+  methods of `Qwen35Model`, `DFlash2Speculator`). Every speculating slot's
+  verify rows ride one physical pass; the multi-slot verify replays as a
+  captured graph (`engine.dflash_verify_graph`), the redrafts stack across
+  slots (`engine.dflash_draft_batch`), and `engine.dflash_depth` caps the
+  verified width (exact at any value). `kSpecRows` 6 → 8 for the 8-row
+  block (the MTP families' `mtp_depth` stays 1–5). The step returns the
+  tokens it decided (the accepted drafts and the verify's next token) like
+  the plain step, so transcripts equal a plain world's of the same verify
+  width (4/4 identical to MTP depth 4); the selector's
+  unary term is the candidate's logit (vLLM `_score_edges`), which makes
+  the walk the proposal rule (+2–11 % tokens per step over a per-slot
+  top-1). The 27B family's own GEMM instance takes the streaming mma form
+  for 17..128-row decode batches (the drafter's weights read once per
+  step); other families' dispatch is unchanged. Template
+  `deploy/cluster_qwen3.8-27b_fp8_w1.example.json` (the world-1 recipe since 2026-10-04: the drafter is the faster
+  single-node world on every class, so the MTP world is this template's mode, not a second file); references in
+  `dflash2_kernels_test`, the host contract in `dflash2_speculator_test`,
+  the config gates in `unit_tests`. Measured on one GB10 (greedy, exact
+  numerics): 164 ms/step at C1 for 2.5–6.4 tokens per step by class —
+  the author's bench 22–36 tok/s against MTP depth 2's 13.6–16.4; C4
+  41–84 tok/s wall. Thanks to AhmmedSamier for the lane.
+
+- **Serve Qwen3.8-27B-FP8 on the native engine, with MTP** (2026-10-01,
+  #79): a new family, `qwen3_5` — the 27B dense model, 64 layers of
+  Gated-Delta-Net (48, swish output gate) and full attention (16, GQA with
+  the partial rotary and the per-head output gate) — served from its native
+  blockwise-FP8 checkpoint `Qwen/Qwen3.8-27B-FP8` on one Spark. The
+  streaming loader (`loader35`) reads the GDN in_proj (qkv/z) + out and
+  the full-attention q/k/v/o projections and the dense gate/up/down MLPs
+  as blockwise FP8 (E4M3 + 128×128 scales, widened to F32 at load), keeps
+  the norms BF16, and loads the MTP draft layer onto the last full-attention
+  slot; `Qwen35Model` runs the shared session core (paged K/V over the
+  full-attention layers, model-owned GDN state per slot, the speculative
+  verify/rollback, the decode graphs). MTP (`engine.mtp`, depth 2 in the
+  template) drafts on the MTP head and verifies on the greedy path, so
+  transcripts equal the plain world's. Numerics are the checkpoint's by
+  default (block-scaled FP8 GEMV / streaming MMA at decode rows, the
+  dequantized bf16 GEMM at prefill, the BF16 lm head); two opt-in keys
+  trade exactness for speed and change greedy output —
+  `engine.dense_weights: "fp8"` (the lm head requantized to block FP8; the
+  templates ship it: −19 ms per MTP pass at the same acceptance and eval) and
+  `engine.prefill_fp8_per_tensor` (prefill GEMMs on cuBLASLt's per-tensor
+  e4m3 kernels, ~2x the prefill rate, +23 GiB). One template,
+  `deploy/cluster_qwen3.8-27b_fp8_w1.example.json`; kernel references in
+  `qwen_full_attn_test` / `full_attn_test` / `qwen_norm_test`, the config
+  and binding gates in `unit_tests`. Measured on one GB10 (greedy, the
+  exact defaults): T=1 119 ms/step (the byte floor is 105), MTP depth 2
+  151 ms/pass at 2.1–2.9 tokens per pass, T=1 and MTP transcripts
+  identical; with both FP8 levers 132 ms/pass. The dense MLP's k=17408
+  down projection runs the streaming mma form at every row count (the
+  GEMV's 48 KiB staging holds one row of it, so a 3-row pass read it three
+  times: 74 ms of a 180 ms step). Thanks to AhmmedSamier for the port.
+
+- **Assistant thinking history through LiteLLM** (2026-10-03): accept
+  Anthropic-style assistant thinking parts by folding their text into
+  `reasoning_content`, preserving explicit reasoning strings and dropping
+  redacted payloads. Thinking-only content becomes an empty string, including
+  in tool-call history. Regression tests cover UTF-8 ownership, precedence,
+  empty/redacted parts and invalid fields/roles. Fixes #74 via #76.
+- **Serve DeepSeek-V4-Flash** (2026-10-01): the seventh family,
+  `deepseek_v4` (`deepseek-ai/DeepSeek-V4-Flash-0731` as shipped: MXFP4
+  routed experts, FP8 block-128 attention projections and shared expert,
+  BF16 compressors, router and head). New: the sliding-window attention
+  over one shared 512-wide latent with positional rings, the ratio-4
+  (overlapping groups, a 64-head indexer selecting 512 entries) and
+  ratio-128 compressed caches, token-table routing on layers 0–2
+  (`GlmMoeLayer::set_hash_routing`), the two-pass hyper-connection sites,
+  the DSpark block draft over three window-only stages, the family's
+  loader / model / fixture ladder (config and binding units, loader, model,
+  TP worlds 2 and 4, graph engine), the port of the release's
+  `encoding_dsv4.py` prompt encoder with its DSML tool dialect, deployment
+  templates for two and four nodes at the model's full 1M-token context,
+  and `tools/dsv4_torch_reference.py`, which runs the release's own
+  `inference/model.py` layer code against the engine's per-layer dump.
+  `engine.mtp_draft` (`auto` | `sampled` | `greedy`) chooses how a sampled
+  request's drafts are picked; this family defaults to the draft's most
+  likely token, accepted with the target's probability of it. With such
+  drafts a sampled request follows the confidence-scheduled verify depth
+  too, at `engine.mtp_schedule_sampled_scale` (0.93) of the head's
+  acceptance — the templates schedule the five-draft block for greedy and
+  sampled requests alike. Measurements
+  in [docs/benchmarks.md](docs/benchmarks.md) and the
+  [campaign record](benchmarks/results/2026-10-01-deepseek-v4-flash/README.md);
+  the [model card](docs/model_cards/DeepSeek-V4-Flash.md).
+- **DeepSeek-V4-Flash decode and prefill kernels** (2026-10-01): L2 weight
+  prefetch windows at the collectives and inside the attention layer;
+  split-K on the decode walks' dense projections; the mHC dots, finish and
+  sublayer norm in one launch with the comb on a side stream; the window
+  attention on the tensor-core listed kernel; a tensor-core scoring pass
+  for the 64-head decode select (`dsa.cu`); the collective's shared-memory
+  staging budget raised to 96 KiB and sized by the world's peers, so a
+  four-row 4096-wide fold is staged; the shared expert's slots run beside
+  the first routed ones (`GlmMoeConfig::shared_slots_early`, this family
+  only — the order alone moves); the attention finish computing its split
+  weights once per block with batched loads (`csa2.cu`, shared with
+  DeepSeek-V4.1); the K/V row's norm, rotation, quantization, ring append
+  and window list in one launch (`dsv4_kv_tail`); the Markov bias's row
+  loads batched. Prefill: the index-select tile sized by the chunk's own
+  entry count instead of the 1M-context bound, the dense FP8 projections
+  through the grouped tensor-core GEMM and the BF16 compressor projections
+  through a new dense tensor-core kernel (`kernels/dense_mma_bf16w`), both
+  row-count-invariant so a chunked prefill stays bitwise the one-shot.
+  Every decode change is bitwise the chain it replaces (transcripts
+  identical on the fabric). Fixes found on the way: a block-draft family's
+  decode batch must cover slots × block (depths under 4 at six slots failed
+  to boot; DeepSeek-V4.1 shared the bug), the scheduler's retire line
+  subtracted the prefill twice from the decode time, and the 64-head decode
+  select lacked its dynamic shared-memory opt-in.
+- **DeepSeek-V4-Flash decode, second round** (2026-10-02), 39.0 → 37.0 ms
+  per depth-3 pass on four nodes and the scheduled depth's whole range:
+  the ratio-128 compressors pool lazily — the open group's layer inputs
+  wait in a positional ring and the group is projected once, when it
+  completes, on the prefill's tile chain (`launch_dense_mma_bf16w_groups_f32`;
+  a pass that completes no group reads no compressor weights, and a
+  decode-published entry is bitwise a prefill's of the same inputs); a
+  compressing layer's window attention runs on a side stream beside its
+  compressor and selection; the draft block's base logits come off a
+  block-FP8 copy of the LM head (half the bytes; 132 MB per rank on four
+  nodes) and every logit within reach of a pick's maximum is recomputed
+  from the BF16 rows after the Markov bias (`dsv41_dspark_rescore`), so the
+  drafts are the BF16 head's — pass counts identical on the fabric. The
+  bus's graph-variant budget is 128 (was 64), so six slots schedule all
+  five verify depths instead of 1 / 3 / 5: replayed over 3,140 traced
+  passes the two missing depths were 1.5 % of a sampled stream.
+  `engine.mtp_schedule_sampled_scale` defaults to 0.93 (the head is near
+  calibrated for a sampled request behind its first draft; 0.8 stopped the
+  deeper drafts short). Tried and reverted with their numbers in the
+  source: the shared expert on tensor-core GEMVs on a side stream (a
+  kernel launched behind the slot kernels' block queue is dispatched after
+  it), and the split-K fold inside the GEMV launch (level).
+- **Batching past the decode-row ceiling** (2026-10-02): a block-draft
+  recipe whose slots times the full block exceed the decode batch (six
+  DeepSeek-V4-Flash slots at depth 5: 36 rows of 32) replayed one scalar
+  graph per live slot whenever every slot was live — six concurrent
+  requests ran at one stream's aggregate rate (64–110 tokens/s). Under the
+  scheduled verify depth the engine now builds a depth-capped family for
+  all slots (five rows each: up to four drafts; a step the policy asks
+  five of verifies four, which is exact), and at a fixed depth the widest
+  family takes the slots it covers with the rest stepped alone: 127–167
+  tokens/s at six requests on four nodes. Transcripts are plain decode's
+  in both forms (`dsv4_engine_test`). `kBusMaxGraphVariants` is 128.
+- **DeepSeek-V4-Flash prefill: the boundary folds under the other half's
+  work** (2026-10-02): a prefill walk of 512 rows or more runs each layer
+  in two row blocks, so a block's all-reduce — the GPU idle through it, a
+  fifth of a 2K prefill on four nodes — runs under the other block's
+  compute: the second block's attention under the first's fold, the next
+  layer's site and attention of the first under the second's MoE fold,
+  the first block's router and the second's expert accumulation under the
+  folds between (`GlmMoeLayer::route_prefill_rows`,
+  `enqueue_prefill_phased`, `accumulate_prefill_rows`; the expert chain
+  stays one pass over every row — its cost is the weights it decodes).
+  `BusStreamReducer` gains the asynchronous bulk fold
+  (`begin_async` / `end_async`). Every row's arithmetic is the one-block
+  walk's: logits and state bitwise, for one prompt and for a group's spans
+  (`dsv4_tp_test`; in a group the block boundary sits on the nearest
+  span's own block grid), and on the fabric prompts of 222 to 2,494
+  tokens sent together return the transcripts they return alone. Cold
+  prefill on four nodes 1,466 → 1,327 ms at 2K tokens and 6,056 → 5,394 ms
+  at 8K; on two nodes 2,150 → 2,021 ms and 8,651 → 7,926 ms. The decode
+  walks: the shared expert's gate and up projections on two side streams
+  ahead of the router with its SwiGLU fused into the down GEMV's staging
+  (`GlmMoeConfig::shared_mma_aside`, `launch_mma_gemv_fp8_swiglu_f32`):
+  a depth-3 pass 37.0 → 36.5 ms on four nodes and 61.9 → 59.8 ms on two;
+  the templates' schedule constants re-measured (3.7 / 22.0 ms and
+  7.2 / 31.2 ms).
+- **Prompts that arrive together are read in together**
+  (2026-10-02, DeepSeek-V4-Flash): concurrent long prompts were admitted
+  one whole prompt at a time — each a full read-in behind the last (a
+  prefix-cache snapshot plan kept a prompt out of the cold group prefill,
+  and two 2K prompts exceed one forward anyway), with every running
+  stream stalled through each. The family's prefill is now resumable
+  (`kResumablePrefill`: decode steps and cancellation between chunks),
+  and the in-flight prompts' next chunks ride ONE forward as its spans
+  (`session_prefill_advance_group`, `SchedulerEngine::advance_prefill_group`;
+  bitwise the one-shot prefill — `dsv4_model_test`). The scheduler, on
+  such an engine: reads every prompt past one aligned chunk in through
+  its cursor, begins every queued one in the same tick, splits the tick's
+  budget max-min fair (a short prompt finishes and is not held behind a
+  long one), levels the remainders within two ticks of the end so the
+  prompts finish — and start decoding — together, and takes the busy
+  budget as a quantum per reading prompt. Rank 0 holds the first arrival
+  at an idle engine `engine.admission_gather_ms` (3) for the rest of its
+  burst. The automatic budget is 256 tokens per reading prompt beside
+  decoding requests and the whole 4096-row forward with none. On four
+  nodes, llama-benchy pp2048/tg128: 88.9 tokens/s at two concurrent
+  requests (was 58.8) and 120.6 at five (was 56.5). Also: a group's
+  second and later requests had their draft windows filled from the
+  first request's rows (lower acceptance for the first ~128 tokens, never
+  a wrong token — the verify decides); the draft's projection now covers
+  only the rows its window keeps; and a slot count whose draft blocks
+  exceed the decode batch is refused at startup instead of seven minutes
+  into the warm-up.
+- Fix the sampling fallback of a reduced-depth batched replay
+  (2026-10-02): a batched replay snapshots its verify rows at the
+  replay's rows per request, and the host fallback read them at the full
+  block's stride, so a sampled slot past the first gathered another
+  slot's row — which the engine refuses (`the gathered fallback row is
+  not the row the device decided over`), ending the serve process.
+  Reachable since sampled requests follow the schedule
+  (`engine.mtp_schedule_sampled_scale`, DeepSeek-V4-Flash): any step with
+  two or more sampled requests at a reduced depth whose pick fell back.
+  `dsv4_engine_test` batches two sampled slots through every depth.
+- Fix `--no-mtp` on a template that sets `engine.mtp_depth` or
+  `engine.mtp_schedule` (2026-10-02): the plain world now drops the
+  template's draft depth and schedule unless the command line asked for
+  them; before, the launch failed with "--mtp-depth N needs --mtp".
 
 - **W4A4 NVFP4 expert prefill is opt-in** (2026-10-01): default to
   W4A16 with BF16 activations; `DGPP_MOE_W4A4=1` explicitly enables

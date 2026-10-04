@@ -37,13 +37,21 @@ ModelArchitecture detect_architecture(const minijson::Value& root) {
   // `deepseek_v41_text`).
   if (arch.rfind("DeepseekV41", 0) == 0 || (arch.empty() && type == "deepseek_v41"))
     return ModelArchitecture::DeepseekV41;
+  // DeepSeek-V4-Flash (the 0731 release, 2026-10-01): `DeepseekV4ForCausalLM`
+  // / `deepseek_v4` — a flat config, not V4.1's nested text_config.
+  if (arch.rfind("DeepseekV4For", 0) == 0 || (arch.empty() && type == "deepseek_v4"))
+    return ModelArchitecture::DeepseekV4;
   // MiMo-V2.6-Flash (2026-09-22, docs/mimo_v26_flash_plan.md):
   // `MiMoV2ForCausalLM` / `mimo_v2`.
   if (arch.rfind("MiMoV2", 0) == 0 || (arch.empty() && type == "mimo_v2"))
     return ModelArchitecture::MimoV2;
+  // Qwen3.8-27B (2026-09-27): `Qwen3_5ForConditionalGeneration` / `qwen3_5`
+  // (its text_config's type is `qwen3_5_text`).
+  if (arch.rfind("Qwen3_5", 0) == 0 || (arch.empty() && type == "qwen3_5"))
+    return ModelArchitecture::Qwen3_5;
   throw std::runtime_error(
       "config.json: unsupported architecture '" + arch + "' (model_type '" +
-      type + "'); the engine implements Glm5*, Qwen4Exp*, Glm4Moe*, GlmMoeDsa*, DeepseekV41* and MiMoV2*");
+      type + "'); the engine implements Glm5*, Qwen4Exp*, Glm4Moe*, GlmMoeDsa*, DeepseekV41*, DeepseekV4*, MiMoV2* and Qwen3_5*");
 }
 
 ModelArchitecture detect_architecture_file(const std::string& path) {

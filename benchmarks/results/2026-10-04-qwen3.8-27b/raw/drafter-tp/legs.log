@@ -1,0 +1,82 @@
+
+=== 08:23:37 glm down
+2026-10-04 08:23:43.076 === logs in /home/stephen/dgpp/log/deployments/a911a2d7c4b3be6a
+
+=== 08:23:43 w4-dflash2 up
+2026-10-04 08:24:35.091 rank 0 serving: ok (40s)
+2026-10-04 08:24:35.091 READY — curl http://<node-0>:8000/v1/models  (stop: python3 /home/stephen/workspace/dgpp/scripts/dgpp-cluster down --config /home/stephen/workspace/dgpp/deploy/cluster_qwen3.8-27b_fp8_w4_dflash2.json --log-dir /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/drafter-tp/w4-dflash2/server)
+{"object":"list","data":[{"id":"Qwen3.8-27B","object":"model","created":1791102275,"owned_by":"dgpp","sampling":{"availa
+
+=== 08:24:35 w4-dflash2 transcripts
+math   256 tokens    3.70 s    14.5 ms/token (wall, prefill included) length | We need answer user: "A train leaves city A at 60 km/h and a
+json   256 tokens    4.18 s    16.3 ms/token (wall, prefill included) length | We need to respond to user: "Return a JSON array of 8 object
+chat  DIFFERS at character 214 of 1388/1414 (tokens 256 vs 256): 'eed explain CUDA graph replay faster than eager kernel launc' | 'eed explain CUDA graph replay vs eager kernel launches. Key '
+code  DIFFERS at character 996 of 1090/1102 (tokens 256 vs 256): ' an ISO-8601 timestamp" could be simple. Need three doctests' | ' an ISO-8601 timestamp" could return datetime object. Need t'
+math  DIFFERS at character 193 of 712/710 (tokens 256 vs 256): 'd where they meet." Need solve. Need be careful: Train A lea' | 'd where they meet." Need solve step by step. Need be careful'
+identical transcripts: 1 of 4
+
+=== 08:24:56 w4-dflash2 timed_load greedy C1
+== per-class wall aggregate tokens/s (prefill included), greedy, max_tokens 256
+| class | c=1 |
+|---|---|
+| prose | 41.9 |
+| code | 65.4 |
+| json | 91.9 |
+| math | 76.5 |
+| chat | 39.4 |
+
+=== 08:25:43 w4-dflash2 timed_load sampled C1
+== per-class wall aggregate tokens/s (prefill included), sampled T=1.0, max_tokens 256
+| class | c=1 |
+|---|---|
+| prose | 31.6 |
+| code | 64.6 |
+| json | 85.4 |
+| math | 71.6 |
+| chat | 33.5 |
+
+=== 08:26:38 w4-dflash2 llama-benchy
+
+=== 08:34:59 w4-dflash2 down
+2026-10-04 08:35:06.810 === logs in /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/drafter-tp/w4-dflash2/server
+
+=== 08:35:06 w2-dflash2 up (benchy)
+2026-10-04 08:35:34.622 rank 0 serving: ok (22s)
+2026-10-04 08:35:34.623 READY — curl http://<node-0>:8000/v1/models  (stop: python3 /home/stephen/workspace/dgpp/scripts/dgpp-cluster down --config /home/stephen/workspace/dgpp/deploy/cluster_qwen3.8-27b_fp8_w2_dflash2.json --log-dir /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/drafter-tp/w2-dflash2/server)
+
+=== 08:35:34 w2-dflash2 llama-benchy
+
+=== 08:46:36 w2-dflash2 down
+2026-10-04 08:46:40.110 === logs in /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/drafter-tp/w2-dflash2/server
+
+=== 08:46:40 w1-graph up (benchy)
+2026-10-04 08:47:08.394 rank 0 serving: ok (28s)
+2026-10-04 08:47:08.395 READY — curl http://<node-0>:8000/v1/models  (stop: python3 /home/stephen/workspace/dgpp/scripts/dgpp-cluster down --config /home/stephen/workspace/dgpp/deploy/cluster_qwen3.8-27b_fp8_w1_graph_dflash2.json --log-dir /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/drafter-tp/w1-graph/server)
+
+=== 08:47:08 w1-graph llama-benchy
+
+=== 09:03:24 w1-graph down
+2026-10-04 09:03:27.985 === logs in /home/stephen/workspace/dgpp/benchmarks/results/2026-10-04-qwen3.8-27b/raw/drafter-tp/w1-graph/server
+
+=== 09:03:27 full ctest
+fixture       =  34.96 sec*proc (11 tests)
+gpu           = 710.32 sec*proc (156 tests)
+host          = 222.22 sec*proc (40 tests)
+python        =  22.31 sec*proc (14 tests)
+rdma          = 191.30 sec*proc (25 tests)
+
+Total Test time (real) = 515.38 sec
+
+The following tests did not run:
+	 36 - dsv4_tokenizer_test (Skipped)
+	 38 - dsv4_prompt_test (Skipped)
+	 39 - glm4_tokenizer_test (Skipped)
+	 41 - mimo_tokenizer_test (Skipped)
+	 44 - glm4_chat_template_test (Skipped)
+	 46 - mimo_chat_template_test (Skipped)
+
+=== 09:12:03 glm up
+2026-10-04 09:12:45.553 READY — curl http://<node-0>:18080/v1/models  (stop: python3 /home/stephen/workspace/dgpp/scripts/dgpp-cluster down --config /home/stephen/workspace/dgpp/deploy/cluster_glm-5.3-flash_nvfp4-fp8_w4.json --log-dir /home/stephen/dgpp/log/deployments/a911a2d7c4b3be6a)
+
+LEGS_DONE 09:12:45
+SCRIPT_EXIT=0

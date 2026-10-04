@@ -69,6 +69,12 @@ bool is_replicated(const QwenExpectedTensor& e) {
     case QwenWeightClass::SharedExpert:
     case QwenWeightClass::RoutedExpert:
       return false;
+    case QwenWeightClass::Norm:
+    case QwenWeightClass::FullAttn:
+    case QwenWeightClass::DenseMlp:
+      // qwen3_5 classes: this family's table never carries them (loader35
+      // owns their replication rule).
+      return false;
   }
   return false;
 }

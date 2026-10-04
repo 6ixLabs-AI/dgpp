@@ -37,11 +37,35 @@ void dsv41_dspark_block_rows(const int64_t* step_pos, const int64_t* tokens, con
 // reference's `logits[:, i].add_(markov_head(output_ids[:, i]))` with the
 // bf16 embedding row and the bf16 head rows, fp32 accumulation (the head's
 // linear over one row: one fp32 dot per vocab entry, in rank order).
-// tok_g = tok[g * tok_stride].
+// tok_g = tok[g * tok_stride]. block_max (optional, fp32
+// [groups][ceil(count / 256)]): the maximum of each 256 consecutive
+// biased entries, for dsv41_dspark_rescore.
 void dsv41_dspark_markov_bias(const float* base, int64_t base_group_stride, int block_row, const uint16_t* markov_embed,
                               const uint16_t* markov_head, int rank, int vocab_begin, int count, const int64_t* tok,
                               int tok_stride, int groups, float* out, int64_t out_group_stride, int rows_out,
-                              cudaStream_t stream);
+                              cudaStream_t stream, float* block_max = nullptr);
+
+// The screened draft head's exact pass (2026-10-02, DeepSeek-V4-Flash). The
+// draft rows' base logits come from a block-FP8 copy of the lm head (half
+// the bytes of the bf16 head the verify rows already read once a pass);
+// after the Markov bias of a pick's row, this pass recomputes, from the
+// bf16 head rows themselves, the base logit of every entry within `delta`
+// of the biased row's maximum — the only ones the pick can land on — so
+// the draft is the bf16 head's, not the copy's. For each group g and v with
+//   biased[g, 0, v] >= max_v biased[g, 0, :] - delta:
+//   biased[g, j, v] += sum_d h[g, block_row, d] * head[v, d] - base[g, block_row, v]     (j < rows_out)
+// At most kDsparkRescoreCap entries per 256 consecutive ones are
+// recomputed (the highest of them when a flat row offers more; the rest
+// keep the copy's values), so a row's maximum is always the bf16 head's. block_max: the biased row's maxima per 256 entries, which
+// dsv41_dspark_markov_bias writes when handed the buffer
+// ([groups][ceil(count / 256)]). h: bf16, row (g, block_row) at
+// g * h_group_stride + block_row * hidden; head: bf16 [count, hidden];
+// hidden % 8 == 0, both 16-byte aligned (h_group_stride % 8 == 0).
+constexpr int kDsparkRescoreCap = 8;
+void dsv41_dspark_rescore(float* biased, int64_t out_group_stride, int rows_out, const float* base,
+                          int64_t base_group_stride, int block_row, int count, const uint16_t* h,
+                          int64_t h_group_stride, int hidden, const uint16_t* head, const float* block_max,
+                          float delta, int groups, cudaStream_t stream);
 
 // The confidence logit of block row `block_row` per group (the reference's
 // `confidence_head(x, markov_embed)`: the fp32 projection of
