@@ -1,0 +1,20 @@
+calibration: 3.000 tokens per unit, 9.0 tokens of template and first words
+=== thinking on
+prompt  c   ttft_s  prefill_tok/s  decode_tok/s  aggregate_tok/s  out_tokens  reasoning_tokens  truncated
+   256  1     0.43            699          52.5             51.2         922               417          0
+[2/8] 1/8 err=0 elapsed=18s
+   256  2     0.66            456          42.1             69.2         906               458          0
+[3/8] 2/8 err=0 elapsed=44s
+   256  4     1.12            267          23.5             74.2        1736              1288          1
+[4/8] 3/8 err=0 elapsed=126s
+   256  6     2.95            102          14.2             71.0        2003              1811          3
+[5/8] 4/8 err=0 elapsed=272s
+  2048  1     1.97           1063          57.0             54.0        2048              2048          1
+[6/8] 5/8 err=0 elapsed=310s
+  2048  2     3.64            574          39.5             71.7        2027              1771          1
+[7/8] 6/8 err=0 elapsed=366s
+  2048  4     6.80            349          21.6             60.2        1521              1270          2
+[8/8] 7/8 err=0 elapsed=464s
+  2048  6     9.07            242          15.3             61.5         838               378          2
+[8/8] 8/8 err=0 elapsed=579s
+DONE

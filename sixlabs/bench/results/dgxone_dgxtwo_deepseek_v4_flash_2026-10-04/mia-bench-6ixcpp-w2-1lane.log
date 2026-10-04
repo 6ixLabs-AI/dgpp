@@ -1,0 +1,29 @@
+calibration: 3.000 tokens per unit, 9.0 tokens of template and first words
+=== thinking off
+prompt  c   ttft_s  prefill_tok/s  decode_tok/s  aggregate_tok/s  out_tokens  reasoning_tokens  truncated
+   256  1     0.42            713          67.1             63.6         517                 0          0   runs [66.8, 67.4, 67.1]
+[2/24] 1/24 err=0 elapsed=24s
+   256  2     0.66            456          47.5             89.2         514                 0          0   runs [47.5, 46.7, 47.5]
+[3/24] 2/24 err=0 elapsed=58s
+   256  4     1.14            264          28.0            104.5         514                 0          0   runs [28.0, 28.2, 27.8]
+[4/24] 3/24 err=0 elapsed=117s
+   256  6     1.66            181          18.7            105.2         514                 0          0   runs [19.4, 18.3, 18.7]
+[5/24] 4/24 err=0 elapsed=205s
+  2048  1     2.00           1048          66.5             52.9         514                 0          0   runs [65.7, 66.9, 66.5]
+[6/24] 5/24 err=0 elapsed=234s
+  2048  2     3.76            556          45.8             67.9         516                 0          0   runs [45.9, 45.8, 45.3]
+[7/24] 6/24 err=0 elapsed=279s
+  2048  4     7.28            287          28.0             79.8         513                 0          0   runs [28.3, 28.0, 27.2]
+[8/24] 7/24 err=0 elapsed=357s
+  2048  6    11.05            189          18.5             78.9         514                 0          0   runs [18.6, 17.8, 18.5]
+[9/24] 8/24 err=0 elapsed=477s
+  8192  1     7.66           1075          64.8             32.9         513                 0          0   runs [64.8, 70.0, 64.5]
+[10/24] 9/24 err=0 elapsed=523s
+  8192  2    15.20            542          45.8             38.8         513                 0          0   runs [45.1, 45.8, 46.0]
+[11/24] 10/24 err=0 elapsed=603s
+  8192  4    33.21            248          27.3             39.4         513                 0          0   runs [28.4, 27.3, 15.5]
+[12/24] 11/24 err=0 elapsed=764s
+  8192  6    30.99            274          10.4             35.5         512                 0          0   runs [10.4, 10.1, 10.5]
+[13/24] 12/24 err=0 elapsed=1026s
+=== thinking on
+prompt  c   ttft_s  prefill_tok/s  decode_tok/s  aggregate_tok/s  out_tokens  reasoning_tokens  truncated

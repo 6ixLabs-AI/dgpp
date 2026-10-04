@@ -355,12 +355,17 @@
         {"repo": "deepseek-ai/DeepSeek-V4-Flash-0731", "format": "mxfp4-fp8", "status": "upstream", "default": true,
          "worlds": {
            "2": {"template": "deploy/cluster_deepseek-v4-flash_mxfp4-fp8_w2.example.json",
-                 "measured": {"source": "docs/benchmarks.md", "tok_s": {"single_prose": [40.4, 72.8], "c4": [67.5, 101.1]}}},
+                 "measured": {"date": "2026-10-04", "box": "DGXone + DGXtwo",
+                              "source": "sixlabs/bench/results/dgxone_dgxtwo_deepseek_v4_flash_2026-10-04.md",
+                              "load_cold_s": 196, "load_warm_s": 24, "plan_gib": 84.2, "gpu_gib": 88.29,
+                              "tok_s": {"single_prose": 65.8, "c2": 87.8, "c4": 104.4},
+                              "notes": "Served and measured on this fleet; the forward-check gate was not run here, so the status stays upstream. Run with 6 seats and a 262,144-token pool (the template ships 4 seats and a 1M pool) on two RoCE lanes; memory is per box. tok/s is MiaAI-Lab's method with thinking off and a 256-token prompt: per-stream decode at one stream, totals at 2 and 4; 103.3 total at 6 (18.5 a stream). Thinking on: 52.5 at one stream, 71.0 total at 6. ShareGPT (thinking on): 43.2 / 53.7 / 63.2 / 66.2 output tok/s at 1 / 2 / 4 / 8. A second RoCE lane gave no measurable decode gain. Upstream's published figures for the template as shipped (docs/benchmarks.md): 40.4–72.8 single, 67.5–101.1 at four requests."}},
            "4": {"template": "deploy/cluster_deepseek-v4-flash_mxfp4-fp8_w4.example.json"}
          }}
       ],
       "baselines": [
-        {"engine": "vllm", "date": "2026-09-01", "box": "DGXone + DGXtwo", "source": "6ixlabs cluster/recipes/deepseek-v4-flash/results", "tok_s": {"single_prose": 67.6}, "notes": "Fleet record: tensor parallel over both boxes at 1M context."}
+        {"engine": "vllm", "date": "2026-09-01", "box": "DGXone + DGXtwo", "source": "6ixlabs cluster/recipes/deepseek-v4-flash/results", "tok_s": {"single_prose": 67.6}, "notes": "Fleet record: tensor parallel over both boxes at 1M context."},
+        {"engine": "vllm (MiaAI-Lab, published)", "checkpoint": "deepseek-ai/DeepSeek-V4-Flash-0731", "box": "MiaAI-Lab's two Sparks", "source": "https://github.com/MiaAI-Lab/DeepSeek-v4-Flash-DSpark-2x-DGX-Spark", "tok_s": {"single_prose": 75.4, "c2": 104.9, "c4": 164.5}, "notes": "Published, not measured here: their script, 256-token prompt, six seats, 1M context, thinking on at their server default. Per-stream decode at one stream, totals at 2 and 4; 191.2 total at 6 (36.9 a stream). Compare with 6ix.cpp thinking on: 52.5 single, 69.2 / 74.2 / 71.0 total at 2 / 4 / 6."}
       ]
     },
 
