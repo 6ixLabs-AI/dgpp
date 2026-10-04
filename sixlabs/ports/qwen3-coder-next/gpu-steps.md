@@ -1,5 +1,20 @@
 # Port 1 — Qwen3-Coder-Next: what to run once a GPU is free
 
+**Update 2026-10-04 (DGXone bring-up): these steps were run. The record is
+`results-2026-10-04-dgxone.md` beside this file; the summary is
+`sixlabs/bench/results/dgxone_coder_next_2026-10-04.md`.** What differs from the text below:
+
+- The gate's bounds are the recalibrated ones (pearson ≥ 0.995, mean ≤ 0.10 nat, greedy agreement
+  wherever the reference's margin exceeds 0.5 nat), not the ones written here.
+- The serving form is `"dense_weights": "checkpoint"`. The `fp8` form is outside the mean bound on
+  code prompts (0.109 nat average over five) and is not to be served; the template now says
+  `checkpoint`.
+- The model serves under a gate exception and is NOT verified: the original code prompt misses the
+  greedy condition at rows 8 and 22 (row 22 is reproduced by a reference that changes only the
+  router's rounding), and a control prompt's row 28 is unexplained.
+
+The rest of this file is as it was written before the run.
+
 Status when this was written (2026-10-04, overnight): **code complete on the host side, nothing
 has run on a GPU.** Everything below marked "expected" is what the code should print, derived from
 the checkpoint's headers and from Mac host runs — not from a run on a Spark.

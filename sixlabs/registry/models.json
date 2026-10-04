@@ -159,8 +159,18 @@
           "default": true,
           "tensors": 296151,
           "gpu_steps": "sixlabs/ports/qwen3-coder-next/gpu-steps.md",
-          "notes": "No draft layer in this checkpoint: no speculative decoding. Bind check against the real checkpoint passed on DGXone 2026-10-04 (296,151 of 296,151); bring-up in progress.",
-          "worlds": {"1": {"template": "deploy/cluster_qwen3-coder-next_nvfp4_w1.example.json"}}
+          "notes": "Booted, served and measured on DGXone 2026-10-04 in the checkpoint dense form, but NOT verified: the forward-check gate fails on the original code prompt (greedy condition, rows 8 and 22) and it was served under a gate exception; a control prompt's row 28 is unexplained. The fp8 dense form is outside the gate's mean bound on code prompts and must not be served. No draft layer in this checkpoint: no speculative decoding. Open: after a tool call the model loops instead of giving the structured answer (tool-eval TC-65/66/67/69).",
+          "worlds": {
+            "1": {
+              "template": "deploy/cluster_qwen3-coder-next_nvfp4_w1.example.json",
+              "measured": {
+                "date": "2026-10-04", "box": "DGXone", "source": "sixlabs/ports/qwen3-coder-next/results-2026-10-04-dgxone.md",
+                "load_cold_s": 86, "load_warm_s": 12, "plan_gib": 64.51, "gpu_gib": 66.3,
+                "tok_s": {"single_prose": 40.4, "c2": 65.6, "c4": 97.6, "c8": 124.1},
+                "notes": "tok/s is ShareGPT output throughput (64 prompts a level), not bench_decode. tool-eval-bench: short 87, hard 78."
+              }
+            }
+          }
         },
         {
           "repo": "Intel/Qwen3-Coder-Next-int4-AutoRound",
@@ -170,8 +180,9 @@
         }
       ],
       "baselines": [
-        {"engine": "vllm", "checkpoint": "Intel/Qwen3-Coder-Next-int4-AutoRound", "date": "2026-09", "box": "DGXone", "source": "6ixlabs cluster/serving/loadouts.json and CONTINUATION-2026-09-28-agent-loadout.md",
-         "load_cold_s": 332, "gpu_gib": 59.3, "tok_s": {"single_prose": [80, 93]}, "notes": "Fleet record, not re-measured. MTP depth 2."},
+        {"engine": "vllm", "checkpoint": "Intel/Qwen3-Coder-Next-int4-AutoRound", "date": "2026-10-04", "box": "DGXone", "source": "sixlabs/ports/qwen3-coder-next/results-2026-10-04-dgxone.md",
+         "load_cold_s": 363, "gpu_gib": 53.1, "tok_s": {"single_prose": 67.1, "c2": 107.3, "c4": 148.7, "c8": 192.9},
+         "notes": "The fleet's slot qwen3-coder@dgxone, same box and tools, one run; a different quantization from the 6ix.cpp row. tok/s is ShareGPT output throughput; bench_decode on the same slot gave 70.6 / 70.7 single and 96.8 / 151.7 / 259.2. tool-eval-bench: short 93, hard 77. The older fleet note (80-93 tok/s, MTP depth 2) was not reproduced, and this checkpoint has no draft tensors."},
         {"engine": "atlas", "checkpoint": "Qwen/Qwen3-Coder-Next-FP8", "source": "Atlas recipes README (published, not measured here)", "tok_s": {"single_prose": 58}}
       ]
     },

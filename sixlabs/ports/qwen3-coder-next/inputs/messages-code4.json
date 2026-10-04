@@ -1,0 +1,17 @@
+{
+ "messages": [
+  {
+   "role": "system",
+   "content": "Answer with working C code and one sentence of explanation."
+  },
+  {
+   "role": "user",
+   "content": "Write a C function that counts the set bits of an unsigned 32-bit integer, and say in one sentence how many loop iterations it needs."
+  },
+  {
+   "role": "assistant",
+   "content": "unsigned popcount(unsigned x) {\n    unsigned n = 0;\n    while (x) {\n        x &= x - 1;\n        n++;\n    }\n    return n;\n}\n\nIt needs one iteration per set bit because each pass clears the lowest set bit."
+  }
+ ],
+ "add_generation_prompt": false
+}

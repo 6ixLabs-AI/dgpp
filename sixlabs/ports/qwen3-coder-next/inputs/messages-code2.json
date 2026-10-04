@@ -1,0 +1,17 @@
+{
+ "messages": [
+  {
+   "role": "system",
+   "content": "You write short, correct Python."
+  },
+  {
+   "role": "user",
+   "content": "Write a Python function that checks whether a string is a palindrome, ignoring case and spaces, and say in one sentence why it is O(n)."
+  },
+  {
+   "role": "assistant",
+   "content": "def is_palindrome(s):\n    t = [c.lower() for c in s if c != ' ']\n    return t == t[::-1]\n\nIt is O(n) because building the list and comparing it with its reverse each touch every character once."
+  }
+ ],
+ "add_generation_prompt": false
+}

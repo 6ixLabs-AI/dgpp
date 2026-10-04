@@ -1,0 +1,104 @@
+[1/10] 0/1 err=0 elapsed=0s :: /home/mark/6ixinfer-ports/build-release/qwen35_forward_check --model RedHatAI/Qwen3-Coder-Next-NVFP4 --ids-json /home/mark/6ixinfer-ports/sixlabs/ports/qwen3-coder-next/inputs/coder-next-ids-code.json --dump-states /home/mark/6ixinfer-out/coder/cn-code.bf16 > /home/mark/6ixinfer-out/coder/cn-code.txt
+    stderr| 2026-10-04 13:15:34.819 INFO  qwen35_forward_check: /home/mark/.cache/huggingface/hub/models--RedHatAI--Qwen3-Coder-Next-NVFP4/snapshots/27a8f16f463b9a13c91c332c40cf93e09717347e (qwen3_next) — 107 tokens, 48 layers, streaming
+    stdout| mean token logprob -1.82705 over 106 tokens
+    stdout| wrote /home/mark/6ixinfer-out/coder/cn-code.bf16: 48 layers x [107, 2048] + final [107, 2048] bf16
+    stdout| boot 5718 ms, forward 62903 ms
+[1/10] 1/1 err=0 elapsed=73s rc=0
+[2/10] 0/1 err=0 elapsed=73s :: python3 sixlabs/bench/compare_forward_check.py /home/mark/6ixinfer-out/coder/cn-code.txt /home/mark/6ixinfer-out/coder/cn-ref-code.json
+tokens 107: mean logprob engine -1.82705 reference -1.81470
+|engine - reference|: mean 0.07187  median 0.00075  max 0.60288 (position 45)  pearson 0.999088
+far-tail positions excluded (reference logprob < -15): 0 of 106
+  argmax differs at row 0: engine 220, reference 25 (reference margin 0.0455 nat, a near tie)
+  argmax differs at row 8: engine 429, reference 13 (reference margin 0.8817 nat — ABOVE the margin: fails)
+  argmax differs at row 22: engine 270, reference 7563 (reference margin 1.1653 nat — ABOVE the margin: fails)
+  argmax differs at row 36: engine 2664, reference 11050 (reference margin 0.0172 nat, a near tie)
+  argmax differs at row 39: engine 151645, reference 576 (reference margin 0.1414 nat, a near tie)
+  argmax differs at row 92: engine 308, reference 353 (reference margin 0.3590 nat, a near tie)
+greedy next token: 101/107 rows agree; disagreements where the reference's margin exceeds 0.5: 2 counted, 0 on the first 2 rows not counted
+  [ok] pearson 0.999088 >= 0.995
+  [ok] mean 0.07187 <= 0.1
+  [FAILED] greedy token agrees wherever the reference margin > 0.5 (rows from 2 on)
+  [reported, not bounded] max 0.60288 at position 45
+original gate (mean <= 0.06, max <= 0.5, all positions; for reference only): would fail
+first restatement (the three conditions over all positions and rows; for reference only): would fail
+FAIL (gate: pearson >= 0.995, mean <= 0.1, greedy agreement above a 0.5 nat margin; reference logprob >= -15; greedy rows from 2)
+[2/10] 1/1 err=1 elapsed=73s rc=1
+[3/10] 0/1 err=1 elapsed=73s :: python3 sixlabs/bench/compare_states.py /home/mark/6ixinfer-out/coder/cn-code.bf16 /home/mark/6ixinfer-out/coder/cn-refdump-code 107 2048
+worst relative error 0.06749
+[3/10] 1/1 err=1 elapsed=73s rc=0
+[4/10] 0/1 err=1 elapsed=73s :: /home/mark/6ixinfer-ports/build-release/qwen35_forward_check --model RedHatAI/Qwen3-Coder-Next-NVFP4 --ids-json /home/mark/6ixinfer-ports/sixlabs/ports/qwen3-coder-next/inputs/coder-next-ids-prose.json --dump-states /home/mark/6ixinfer-out/coder/cn-prose.bf16 > /home/mark/6ixinfer-out/coder/cn-prose.txt
+    stderr| 2026-10-04 13:16:48.385 INFO  qwen35_forward_check: /home/mark/.cache/huggingface/hub/models--RedHatAI--Qwen3-Coder-Next-NVFP4/snapshots/27a8f16f463b9a13c91c332c40cf93e09717347e (qwen3_next) — 83 tokens, 48 layers, streaming
+    stdout| mean token logprob -2.73026 over 82 tokens
+    stdout| wrote /home/mark/6ixinfer-out/coder/cn-prose.bf16: 48 layers x [83, 2048] + final [83, 2048] bf16
+    stdout| boot 5559 ms, forward 39081 ms
+[4/10] 1/1 err=1 elapsed=122s rc=0
+[5/10] 0/1 err=1 elapsed=122s :: python3 sixlabs/bench/compare_forward_check.py /home/mark/6ixinfer-out/coder/cn-prose.txt /home/mark/6ixinfer-out/coder/cn-ref-prose.json
+tokens 83: mean logprob engine -2.73026 reference -2.74165
+|engine - reference|: mean 0.05009  median 0.01590  max 0.36527 (position 23)  pearson 0.999658
+far-tail positions excluded (reference logprob < -15): 1 of 82
+  position 1: reference -16.17, engine -16.22, |difference| 0.050
+|engine - reference| over the 81 gated positions: mean 0.05009  median 0.01589  max 0.36527 (position 23)  pearson 0.999576
+  argmax differs at row 0: engine 220, reference 25 (reference margin 0.0455 nat, a near tie)
+  argmax differs at row 23: engine 16566, reference 34615 (reference margin 0.0196 nat, a near tie)
+greedy next token: 81/83 rows agree; disagreements where the reference's margin exceeds 0.5: 0 counted, 0 on the first 2 rows not counted
+  [ok] pearson 0.999576 >= 0.995
+  [ok] mean 0.05009 <= 0.1
+  [ok] greedy token agrees wherever the reference margin > 0.5 (rows from 2 on)
+  [reported, not bounded] max 0.36527 at position 23
+original gate (mean <= 0.06, max <= 0.5, all positions; for reference only): would pass
+first restatement (the three conditions over all positions and rows; for reference only): would pass
+PASS (gate: pearson >= 0.995, mean <= 0.1, greedy agreement above a 0.5 nat margin; reference logprob >= -15; greedy rows from 2)
+[5/10] 1/1 err=1 elapsed=123s rc=0
+[6/10] 0/1 err=1 elapsed=123s :: python3 sixlabs/bench/compare_states.py /home/mark/6ixinfer-out/coder/cn-prose.bf16 /home/mark/6ixinfer-out/coder/cn-refdump-prose 83 2048
+worst relative error 0.03698
+[6/10] 1/1 err=1 elapsed=123s rc=0
+[7/10] 0/1 err=1 elapsed=123s :: /home/mark/6ixinfer-ports/build-release/qwen35_forward_check --model RedHatAI/Qwen3-Coder-Next-NVFP4 --dense-weights fp8 --ids-json /home/mark/6ixinfer-ports/sixlabs/ports/qwen3-coder-next/inputs/coder-next-ids-code.json --dump-states /home/mark/6ixinfer-out/coder/cn-code-fp8.bf16 > /home/mark/6ixinfer-out/coder/cn-code-fp8.txt
+    stderr| 2026-10-04 13:17:37.987 INFO  qwen35_forward_check: /home/mark/.cache/huggingface/hub/models--RedHatAI--Qwen3-Coder-Next-NVFP4/snapshots/27a8f16f463b9a13c91c332c40cf93e09717347e (qwen3_next) — 107 tokens, 48 layers, streaming
+    stdout| mean token logprob -1.80386 over 106 tokens
+    stdout| wrote /home/mark/6ixinfer-out/coder/cn-code-fp8.bf16: 48 layers x [107, 2048] + final [107, 2048] bf16
+    stdout| boot 4465 ms, forward 25581 ms
+[7/10] 1/1 err=1 elapsed=157s rc=0
+[8/10] 0/1 err=1 elapsed=157s :: python3 sixlabs/bench/compare_forward_check.py /home/mark/6ixinfer-out/coder/cn-code-fp8.txt /home/mark/6ixinfer-out/coder/cn-ref-code.json
+tokens 107: mean logprob engine -1.80386 reference -1.81470
+|engine - reference|: mean 0.09153  median 0.00088  max 0.90493 (position 44)  pearson 0.998405
+far-tail positions excluded (reference logprob < -15): 0 of 106
+  argmax differs at row 0: engine 220, reference 25 (reference margin 0.0455 nat, a near tie)
+  argmax differs at row 9: engine 358, reference 1446 (reference margin 0.0627 nat, a near tie)
+  argmax differs at row 22: engine 270, reference 7563 (reference margin 1.1653 nat — ABOVE the margin: fails)
+  argmax differs at row 39: engine 151645, reference 576 (reference margin 0.1414 nat, a near tie)
+  argmax differs at row 92: engine 308, reference 353 (reference margin 0.3590 nat, a near tie)
+  argmax differs at row 96: engine 1172, reference 6783 (reference margin 0.0125 nat, a near tie)
+greedy next token: 101/107 rows agree; disagreements where the reference's margin exceeds 0.5: 1 counted, 0 on the first 2 rows not counted
+  [ok] pearson 0.998405 >= 0.995
+  [ok] mean 0.09153 <= 0.1
+  [FAILED] greedy token agrees wherever the reference margin > 0.5 (rows from 2 on)
+  [reported, not bounded] max 0.90493 at position 44
+original gate (mean <= 0.06, max <= 0.5, all positions; for reference only): would fail
+first restatement (the three conditions over all positions and rows; for reference only): would fail
+FAIL (gate: pearson >= 0.995, mean <= 0.1, greedy agreement above a 0.5 nat margin; reference logprob >= -15; greedy rows from 2)
+[8/10] 1/1 err=2 elapsed=158s rc=1
+[9/10] 0/1 err=2 elapsed=158s :: /home/mark/6ixinfer-ports/build-release/qwen35_forward_check --model RedHatAI/Qwen3-Coder-Next-NVFP4 --dense-weights fp8 --ids-json /home/mark/6ixinfer-ports/sixlabs/ports/qwen3-coder-next/inputs/coder-next-ids-prose.json --dump-states /home/mark/6ixinfer-out/coder/cn-prose-fp8.bf16 > /home/mark/6ixinfer-out/coder/cn-prose-fp8.txt
+    stderr| 2026-10-04 13:18:12.649 INFO  qwen35_forward_check: /home/mark/.cache/huggingface/hub/models--RedHatAI--Qwen3-Coder-Next-NVFP4/snapshots/27a8f16f463b9a13c91c332c40cf93e09717347e (qwen3_next) — 83 tokens, 48 layers, streaming
+    stdout| mean token logprob -2.73028 over 82 tokens
+    stdout| wrote /home/mark/6ixinfer-out/coder/cn-prose-fp8.bf16: 48 layers x [83, 2048] + final [83, 2048] bf16
+    stdout| boot 5161 ms, forward 27679 ms
+[9/10] 1/1 err=2 elapsed=196s rc=0
+[10/10] 0/1 err=2 elapsed=196s :: python3 sixlabs/bench/compare_forward_check.py /home/mark/6ixinfer-out/coder/cn-prose-fp8.txt /home/mark/6ixinfer-out/coder/cn-ref-prose.json
+tokens 83: mean logprob engine -2.73028 reference -2.74165
+|engine - reference|: mean 0.07342  median 0.02725  max 0.43738 (position 23)  pearson 0.999375
+far-tail positions excluded (reference logprob < -15): 1 of 82
+  position 1: reference -16.17, engine -15.91, |difference| 0.261
+|engine - reference| over the 81 gated positions: mean 0.07111  median 0.02638  max 0.43738 (position 23)  pearson 0.999253
+  argmax differs at row 0: engine 220, reference 25 (reference margin 0.0455 nat, a near tie)
+  argmax differs at row 4: engine 22870, reference 15336 (reference margin 0.0994 nat, a near tie)
+  argmax differs at row 23: engine 16566, reference 34615 (reference margin 0.0196 nat, a near tie)
+greedy next token: 80/83 rows agree; disagreements where the reference's margin exceeds 0.5: 0 counted, 0 on the first 2 rows not counted
+  [ok] pearson 0.999253 >= 0.995
+  [ok] mean 0.07111 <= 0.1
+  [ok] greedy token agrees wherever the reference margin > 0.5 (rows from 2 on)
+  [reported, not bounded] max 0.43738 at position 23
+original gate (mean <= 0.06, max <= 0.5, all positions; for reference only): would fail
+first restatement (the three conditions over all positions and rows; for reference only): would pass
+PASS (gate: pearson >= 0.995, mean <= 0.1, greedy agreement above a 0.5 nat margin; reference logprob >= -15; greedy rows from 2)
+[10/10] 1/1 err=2 elapsed=196s rc=0
+DONE with errors

@@ -1,0 +1,17 @@
+{
+ "messages": [
+  {
+   "role": "system",
+   "content": "You are an expert JavaScript developer."
+  },
+  {
+   "role": "user",
+   "content": "Write a JavaScript function that returns the greatest common divisor of two positive integers with Euclid's algorithm, and say in one sentence why it terminates."
+  },
+  {
+   "role": "assistant",
+   "content": "function gcd(a, b) {\n  while (b !== 0) {\n    [a, b] = [b, a % b];\n  }\n  return a;\n}\n\nIt terminates because the second argument gets strictly smaller on every pass and can never go below zero."
+  }
+ ],
+ "add_generation_prompt": false
+}

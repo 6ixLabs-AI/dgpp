@@ -1,0 +1,17 @@
+{
+ "messages": [
+  {
+   "role": "system",
+   "content": "You are a careful programming assistant."
+  },
+  {
+   "role": "user",
+   "content": "Write a Python function that returns the largest element of a non-empty list without calling max, and say in one sentence what its running time is."
+  },
+  {
+   "role": "assistant",
+   "content": "def largest(xs):\n    best = xs[0]\n    for x in xs[1:]:\n        if x > best:\n            best = x\n    return best\n\nIt runs in linear time because it looks at every element exactly once."
+  }
+ ],
+ "add_generation_prompt": false
+}
