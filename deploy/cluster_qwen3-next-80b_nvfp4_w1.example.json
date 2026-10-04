@@ -22,7 +22,9 @@
     "max_tokens_overflow": "clamp",
     "prefill_idle_budget_tokens": 4096,
     "decode_passes_per_prefill": 8,
-    "prefill_order": "shortest"
+    "prefill_order": "shortest",
+    "prefill_group": "on",
+    "prefill_budget_per_reader": false
   },
   "paths": {
     "resident_cache": ""
