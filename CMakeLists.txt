@@ -1939,6 +1939,10 @@ if(DGPP_BUILD_BENCHMARKS)
     SOURCES benchmarks/micro/gemv_bw.cu
     LIBRARIES dgpp_kernels CUDA::cudart)
 
+  dgpp_add_benchmark(micro_mma_gemv_shapes
+    SOURCES benchmarks/micro/mma_gemv_shapes.cu
+    LIBRARIES dgpp_kernels CUDA::cudart)
+
   dgpp_add_benchmark(micro_gemm_peak
     SOURCES benchmarks/micro/gemm_peak.cu src/common/log.cpp
     LIBRARIES CUDA::cudart CUDA::cublasLt)

@@ -56,6 +56,30 @@ The history by milestone. The dated engineering record in
   (#89): bitwise the tile kernel they replace (`fp8w_gemm_test` pins the
   pair) at 63–66 TF against its 26–30.
 
+- **Qwen3.8-27B TP: the decode GEMV's rate at shard widths** (2026-10-04,
+  #93): the four-node profile's 187 GB/s was measured against the spec's
+  273; the GB10's achievable device read bandwidth is 233.6 GB/s
+  (`micro_mem_bw`), and the fp8 decode GEMVs reach 89–97 % of it in
+  isolation at the per-rank shapes (`micro_mma_gemv_shapes`, the new
+  microbench over the two- and four-node matrices at 1 / 4 / 8 rows: the
+  streaming form, the forced block widths, the row-chunk cores, the fused
+  swiglu down). In-server they ran 7–20 % under that, the worst the MLP gate
+  / up at eight rows: 68 unsplit blocks, because the MLP launches passed no
+  workspace — they do now (split 2: 184 → 208 GB/s on four Sparks; the
+  chunked cores at m <= 4 are unaffected). The lever at TP is the fold
+  time: 138 bus collectives x ~49 us a step on four Sparks with DRAM idle,
+  so the decode walk opens the Qwen3.8-Flash-Next prefetcher's boundary
+  windows (`WeightPrefetcher`, a side-stream graph branch before each fold:
+  the MLP's gate / up / down before the attention fold, the next layer's
+  input projections or the head before the MLP fold; 20 MB at the Light
+  rate from the sweep — 8 / 12 / 20 / 32 MB and the Full rate measured,
+  32 MB and Full slower). Bit-identical on or off (greedy transcripts 4/4
+  at every budget). Four nodes MTP depth 3: 48 → 46 ms a pass (greedy C1
+  54.7 / 65.2 / 74.7 / 69.0 / 47.6 → 56.3 / 67.1 / 76.6 / 70.5 / 49.1
+  tok/s); two nodes 82 → 80; the four-node drafter 54 → 53 with the
+  windows and 52 with the split gate / up (54.9 / 86.3 / 120.8 / 101.2 /
+  52.6; transcripts 4/4 against a same-dispatch MTP depth-5 world).
+
 - **The DFlash2 drafter on the graph worlds** (2026-10-04, #92): the graph
   engine hosts the block proposal at every world. The verify is the 8-row
   recorded step (the sampled device pick's row limit `kSampleVerdictRows`

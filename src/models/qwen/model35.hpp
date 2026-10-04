@@ -30,6 +30,7 @@
 #include "models/quant_matrix.hpp"
 #include "models/qwen/config.hpp"
 #include "models/qwen/config35.hpp"
+#include "kernels/l2_prefetch.hpp"
 #include "models/qwen/dflash2.hpp"
 #include "models/qwen/layers.hpp"
 #include "models/qwen/loader.hpp"
@@ -316,6 +317,23 @@ class Qwen35Model : public SessionModel<Qwen35Model> {
   void configure_gemm_rows(int rows, bool decode);
   void dense_mlp(const uint16_t* x, uint16_t* out, int tokens, const Qwen35DenseMlpResident& m,
                  cudaStream_t stream, int layer, bool resume = false);
+  // The L2 weight prefetcher's boundary windows (2026-10-04, #93; the
+  // Qwen3.8-Flash-Next idiom): a decode walk's two folds a layer are bus
+  // collectives the chain waits on with the memory system idle (138 x
+  // ~49 us a step on four Sparks), so a window opened on the prefetcher's
+  // side stream just before each fold streams the other side's first
+  // weights into L2 in consumption order — the MLP's gate / up / down before
+  // the attention fold, the next layer's input projections (or the head)
+  // before the MLP fold. Bit-identical on or off: nothing is written.
+  void prefetch_add(const void* p, size_t bytes);
+  void prefetch_bf16(const uint16_t* w, size_t bytes);
+  void prefetch_fp8(const GlmQuantMatrix& q);
+  void prefetch_ffn_side(const Qwen35LayerResident& r);
+  void prefetch_attention_side(int layer);
+  void prefetch_head();
+  WeightPrefetcher prefetch_;
+  size_t prefetch_window_bytes_ = 0;  // 0 = the prefetcher's default (DGPP_L2_PREFETCH_MB)
+  int walk_rows_ = 1;                 // the rows of the walk in flight (the companions' view)
   // The lm head over `rows` activation rows into F32 logits: the blockwise
   // FP8 head under engine.dense_weights = fp8 (Resident), else the BF16 matmul.
   void head_gemv(const uint16_t* act, float* out, int rows, cudaStream_t stream);

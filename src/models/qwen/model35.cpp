@@ -413,6 +413,10 @@ Qwen35Model::Qwen35Model(const Qwen35TextConfig& cfg, const std::string& checkpo
     DGPP_CUDA_OK(cudaMalloc(&mtp_r_, M * H * 2));
     DGPP_CUDA_OK(cudaMalloc(&mtp_h_, M * H * 2));
   }
+  // The boundary prefetch windows' budget (run_rows): the measured default
+  // (the 2026-10-04 sweep on the fabric); DGPP_L2_PREFETCH_MB overrides
+  // through the prefetcher's own default for an A/B.
+  prefetch_window_bytes_ = std::getenv("DGPP_L2_PREFETCH_MB") ? 0 : (size_t{20} << 20);
   if (dflash2_) {
     // Weights (bf16, replicated; the shared embed/lm head ride globals_)
     // and the fp32 1/theta^(2i/128) rope table.
@@ -834,10 +838,17 @@ void Qwen35Model::dense_mlp(const uint16_t* x, uint16_t* out, int tokens,
       return;
     }
   }
+  // The matmul workspace lets the streaming form split K when a shard's
+  // rows leave the grid under-filled (#93, 2026-10-04: the four-node gate /
+  // up [4352 x 5120] ran 68 unsplit blocks at 184 GB/s; split 2 reads at
+  // 208, the chunked cores at m <= 4 are unaffected). The split count is a
+  // function of the shape only, so a row's chain is the same whatever m.
   launch_scale_gemm_bf16(x, static_cast<size_t>(H), m.gate_fp8.payload, m.gate_fp8.scales, gate_tmp_,
-                         tokens, static_cast<int>(I), static_cast<int>(H), stream, 0, gw_.mma_from_rows);
+                         tokens, static_cast<int>(I), static_cast<int>(H), stream, 0, gw_.mma_from_rows,
+                         gw_.ws, gw_.ws_bytes);
   launch_scale_gemm_bf16(x, static_cast<size_t>(H), m.up_fp8.payload, m.up_fp8.scales, up_tmp_, tokens,
-                         static_cast<int>(I), static_cast<int>(H), stream, 0, gw_.mma_from_rows);
+                         static_cast<int>(I), static_cast<int>(H), stream, 0, gw_.mma_from_rows,
+                         gw_.ws, gw_.ws_bytes);
   qwen35_swiglu_bf16(gate_tmp_, up_tmp_, gate_tmp_, static_cast<int64_t>(tokens) * I, stream);
   // The down projection's k = I = 17408 fits one activation row in the GEMV's
   // 48 KiB staging budget, so a 3-row MTP pass read this 89 MB matrix three
@@ -1255,6 +1266,7 @@ Qwen35Model::Outputs Qwen35Model::run_rows(const RowRun& run) {
   const int H = cfg_.hidden_size;
   const float eps = cfg_.rms_norm_eps;
   configure_gemm_rows(T, run.decode);
+  walk_rows_ = T;
   const RowInputs in = begin_run(run);
   const bool batched = in.batched;
   const int num_requests = in.num_requests;
@@ -1355,6 +1367,7 @@ Qwen35Model::Outputs Qwen35Model::run_rows(const RowRun& run) {
       }
       ++full_ord;
     }
+    if (run.decode) prefetch_ffn_side(r);  // the MLP's weights into L2 while the fold waits
     fold(ao, H);
     // Fused residual-add + post norm (bitwise the pair): one launch.
     qwen_add_rmsnorm_bf16(resid_, ao, r.post_norm, x_, T, H, eps, stream_);
@@ -1372,6 +1385,7 @@ Qwen35Model::Outputs Qwen35Model::run_rows(const RowRun& run) {
     }
     uint16_t* mo = stage(mlp_out_, H);
     dense_mlp(x_, mo, T, r.mlp, stream_, layer, mlp_resume);
+    if (run.decode) prefetch_attention_side(layer + 1);  // the next layer's input side (or the head)
     fold(mo, H);
     add_inplace_bf16(resid_, mo, static_cast<size_t>(T) * H, stream_);
     if (run.capture_layers) {
@@ -1416,8 +1430,108 @@ Qwen35Model::Outputs Qwen35Model::run_rows(const RowRun& run) {
   // acceptance decay was exactly this — the capture kept the verify
   // exact but starved the drafter).
   if (dflash2_) dflash2_store_features(T, d_req, d_pos);
+  if (run.decode) prefetch_.join(stream_);  // every forked prefetch back on the main stream
   out = finish_run(run, std::move(out));
   return out;
+}
+
+// ---- the boundary prefetch windows ------------------------------------------------
+
+void Qwen35Model::prefetch_add(const void* p, size_t bytes) {
+  if (p != nullptr && bytes != 0) prefetch_.add(p, bytes);
+}
+
+// A bf16 decode weight through its resident view (the packed companion
+// when engine.bf16_weights packs it — its own allocation, one launch).
+void Qwen35Model::prefetch_bf16(const uint16_t* w, size_t bytes) {
+  if (w == nullptr || bytes == 0) return;
+  const void* view = nullptr;
+  size_t view_bytes = 0;
+  gemm_.resident_view(w, bytes, walk_rows_, &view, &view_bytes);
+  prefetch_.add_view(w, view, view_bytes);
+}
+
+// The FP8 form's payload and scale grid (adjacent grants of one image).
+void Qwen35Model::prefetch_fp8(const GlmQuantMatrix& q) {
+  if (q.payload == nullptr) return;
+  prefetch_add(q.payload, static_cast<size_t>(q.rows) * static_cast<size_t>(q.cols));
+  prefetch_add(q.scales, static_cast<size_t>(q.scale_rows()) * static_cast<size_t>(q.scale_cols()) * 4);
+}
+
+// Before the attention fold: this layer's MLP in consumption order (gate,
+// up, down); the window's budget takes the leading bytes.
+void Qwen35Model::prefetch_ffn_side(const Qwen35LayerResident& r) {
+  if (!prefetch_.enabled() || world_ < 2) return;
+  const size_t H = static_cast<size_t>(cfg_.hidden_size);
+  prefetch_.open_window(stream_, prefetch_window_bytes_, prefetch_.boundary_rate());
+  const Qwen35DenseMlpResident& m = r.mlp;
+  if (m.gate_fp8.payload) {
+    prefetch_fp8(m.gate_fp8);
+    prefetch_fp8(m.up_fp8);
+    prefetch_fp8(m.down_fp8);
+  } else {
+    const size_t I = static_cast<size_t>(loader_.geometry().local_inter);
+    prefetch_bf16(m.gate, I * H * 2);
+    prefetch_bf16(m.up, I * H * 2);
+    prefetch_bf16(m.down, H * I * 2);
+  }
+}
+
+// Before the MLP fold: the next layer's input projections (the GDN's
+// qkv | z | a | b and conv, or the attention's q | k | v), then its output
+// projection; past the last layer, the head.
+void Qwen35Model::prefetch_attention_side(int layer) {
+  if (!prefetch_.enabled() || world_ < 2) return;
+  if (layer >= cfg_.num_hidden_layers) {
+    prefetch_head();
+    return;
+  }
+  // Resident stacks only (a decode walk's): load_layer is a lookup there.
+  const Qwen35LayerResident& r = loader_.load_layer(layer);
+  const Qwen35LocalGeometry& geo = loader_.geometry();
+  const size_t H = static_cast<size_t>(cfg_.hidden_size);
+  prefetch_.open_window(stream_, prefetch_window_bytes_, prefetch_.boundary_rate());
+  prefetch_add(r.input_norm, H * 2);
+  if (r.kind == Qwen35LayerKind::Gdn) {
+    const QwenGdnResident& g = r.gdn;
+    const size_t lk = static_cast<size_t>(geo.local_key_heads), lv = static_cast<size_t>(geo.local_value_heads);
+    const size_t dk = static_cast<size_t>(cfg_.gdn_key_head_dim), dv = static_cast<size_t>(cfg_.gdn_value_head_dim);
+    const size_t qkv_rows = 2 * lk * dk + lv * dv;
+    if (g.in_proj_qkv_fp8.payload) prefetch_fp8(g.in_proj_qkv_fp8);
+    else prefetch_bf16(g.in_proj_qkv, qkv_rows * H * 2);
+    if (g.in_proj_z_fp8.payload) prefetch_fp8(g.in_proj_z_fp8);
+    else prefetch_bf16(g.in_proj_z, lv * dv * H * 2);
+    prefetch_bf16(g.in_proj_a, lv * H * 2);
+    prefetch_bf16(g.in_proj_b, lv * H * 2);
+    prefetch_add(g.conv, qkv_rows * static_cast<size_t>(cfg_.gdn_conv_width) * 2);
+    if (g.out_proj_fp8.payload) prefetch_fp8(g.out_proj_fp8);
+    else prefetch_bf16(g.out_proj, H * lv * dv * 2);
+  } else {
+    const QwenFullAttnResident& f = r.full;
+    const size_t lh = static_cast<size_t>(geo.local_heads), lkv = static_cast<size_t>(geo.local_kv_heads);
+    const size_t d = static_cast<size_t>(cfg_.head_dim);
+    if (f.q_proj_fp8.payload) prefetch_fp8(f.q_proj_fp8);
+    else prefetch_bf16(f.q_proj, lh * 2 * d * H * 2);
+    if (f.k_proj_fp8.payload) prefetch_fp8(f.k_proj_fp8);
+    else prefetch_bf16(f.k_proj, lkv * d * H * 2);
+    if (f.v_proj_fp8.payload) prefetch_fp8(f.v_proj_fp8);
+    else prefetch_bf16(f.v_proj, lkv * d * H * 2);
+    if (f.o_proj_fp8.payload) prefetch_fp8(f.o_proj_fp8);
+    else prefetch_bf16(f.o_proj, H * lh * d * 2);
+  }
+}
+
+void Qwen35Model::prefetch_head() {
+  const size_t H = static_cast<size_t>(cfg_.hidden_size);
+  const size_t V = static_cast<size_t>(lm_vocab_count_);
+  prefetch_.open_window(stream_, prefetch_window_bytes_, prefetch_.boundary_rate());
+  prefetch_add(globals_.final_norm, H * 2);
+  if (head_fp8_enabled_ && head_fp8_ != nullptr) {
+    prefetch_add(head_fp8_, V * H);
+    prefetch_add(head_scales_, ((V + 127) / 128) * (H / 128) * 4);
+  } else {
+    prefetch_bf16(globals_.lm_head, V * H * 2);
+  }
 }
 
 // ---- the DFlash2 drafter -------------------------------------------------------
