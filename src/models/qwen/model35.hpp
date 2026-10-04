@@ -154,6 +154,12 @@ class Qwen35Model : public SessionModel<Qwen35Model> {
   ~Qwen35Model();
 
   static constexpr int decode_rows_cap() { return 32; }
+  // A long prompt's chunks may interleave with other requests' decode passes
+  // (engine.prefill_budget_tokens): everything a chunk leaves behind is the
+  // slot's own — its GDN recurrent and conv states, its paged K/V, its draft
+  // window — and the draft rows read the chunk's final hidden inside the same
+  // chunk call. Served that way on the Qwen3Next dialect (2026-10-03).
+  static constexpr bool kResumablePrefill = true;
   // The two opt-in FP8 levers beyond the checkpoint, set from the cluster
   // config before plan_memory and the constructor read them:
   // engine.prefill_fp8_per_tensor (the per-tensor prefill recipe) and

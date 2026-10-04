@@ -2328,7 +2328,8 @@ int main(int argc, char** argv) {
                     "embedding replicated", family->name());
     DGPP_LOG_INFO("serve: model family {} ({})", family->name(), ckpt);
     if (prefill_budget_tokens > 0 && (!decode_graph ||
-        (std::string(family->name()) != "qwen4_exp" && std::string(family->name()) != "glm5"))) {
+        (std::string(family->name()) != "qwen4_exp" && std::string(family->name()) != "glm5" &&
+         std::string(family->name()) != "qwen3_next"))) {
       DGPP_LOG_ERROR("--prefill-budget-tokens requires a Qwen or GLM-5.3-Flash graph engine");
       return 1;
     }

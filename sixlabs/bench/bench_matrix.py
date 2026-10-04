@@ -68,6 +68,9 @@ def main():
     ap.add_argument("--cells", default="1000x1,1000x2,1000x4,1000x8,8000x1,8000x2,8000x4,8000x8,"
                                        "32000x1,32000x2,32000x4,64000x1,128000x1")
     ap.add_argument("--max-tokens", type=int, default=256)
+    ap.add_argument("--warm", action="store_true",
+                    help="send each prompt once first (4 output tokens), so the measured round hits the prefix "
+                         "cache and times DECODE under concurrency without the prompts' prefills in the way")
     a = ap.parse_args()
     cells = [(int(c.split("x")[0]), int(c.split("x")[1])) for c in a.cells.split(",")]
     t0, err, seed = time.time(), 0, 1000
@@ -76,6 +79,9 @@ def main():
         for i, (ctx, n) in enumerate(cells, 1):
             prompts = [prompt(ctx, seed + j) for j in range(n)]
             seed += n
+            if a.warm:
+                for p in prompts:
+                    call(a, p, 4)
             t = time.time()
             with cf.ThreadPoolExecutor(n) as ex:
                 rs = list(ex.map(lambda p: call(a, p, a.max_tokens), prompts))
@@ -83,11 +89,12 @@ def main():
             time.sleep(1.0)                                    # let the server write its lines
             st = server_stats(a.log, {r["id"] for r in rs if "id" in r})
             ok = [r for r in rs if "id" in r and r["id"] in st]
-            row = {"context": ctx, "streams": n, "wall_s": round(wall, 2), "errors": [r["error"] for r in rs if "error" in r]}
+            row = {"context": ctx, "streams": n, "warm": a.warm, "wall_s": round(wall, 2),
+                   "errors": [r["error"] for r in rs if "error" in r]}
             if ok:
                 s = [st[r["id"]] for r in ok]
                 dec_window = max(x["decode_s"] for x in s)
-                row.update(prompt_tokens=ok[0]["prompt_tokens"],
+                row.update(prompt_tokens=ok[0]["prompt_tokens"], cached_tokens=[x["cached"] for x in s],
                            prefill_ms=[x["prefill_ms"] for x in s],
                            prefill_tok_s=round(sum(x["prefill_tok"] for x in s) / (sum(x["prefill_ms"] for x in s) / 1000.0), 0),
                            per_stream_tok_s=[x["tok_s"] for x in s],
