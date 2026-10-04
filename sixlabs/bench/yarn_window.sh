@@ -2,14 +2,16 @@
 # yarn_window.sh — the whole GPU check of YaRN x2 (512k per request) for Qwen3-Next-80B, in one
 # engine window. Run on DGXone:
 #   setsid bash sixlabs/bench/yarn_window.sh > ~/dgpp-refset/yarn_window.log 2>&1 </dev/null &
-# It takes the TEST deployment down, so it refuses to start while requests are in flight
-# (FORCE=1 overrides). The standard config is put back and restarted at the end, also on failure.
+# It takes the DGXone TEST deployment down, so it refuses to start while requests are in flight
+# (FORCE=1 overrides). At the end the engine is stopped and the config put back as it was;
+# LEAVE_DOWN=0 also restarts the standard engine here and reruns the short prompts on it (the
+# serving engine lives on DGXtwo since 2026-10-04, so the default leaves DGXone with none).
 #   1  engine down
 #   2  forward check with and without the ramp, against the numpy reference (yarn_compare.py)
 #   3  engine up with rope_scaling factor 2, pool for one 512k request
 #   4  planted-fact retrieval at 300k / 400k / 500k prompt tokens (long_context_check.py)
 #   5  short prompts with the ramp on
-#   6  standard config back up, the same short prompts
+#   6  engine down, standard config back (LEAVE_DOWN=0: restarted, the same short prompts)
 set -u
 R=/home/mark/dgpp-refset
 O=$R/yarn
@@ -18,6 +20,7 @@ CFG=deploy/cluster_qwen3-next-80b_nvfp4_w1.json
 BASE=http://172.17.0.1:18090
 MODEL=nvidia/Qwen3-Next-80B-A3B-Instruct-NVFP4
 TEXTS="c_fib echo_chat_raw echo_prose_en echo_code_py"
+LEAVE_DOWN=${LEAVE_DOWN:-1}
 T0=$(date +%s)
 ERR=0
 say() { echo "[$1/6] $2 err=$ERR elapsed=$(( $(date +%s) - T0 ))s :: $3"; }
@@ -68,9 +71,17 @@ else
   ERR=$((ERR + 1)); say 3 1/1 "YaRN engine did not come up: $(tail -3 $O/up_yarn.log | tr '\n' ' ' | cut -c1-300)"
 fi
 
-say 6 0/2 "standard config back"
-restore
-say 6 1/2 "standard engine: $(tr '\n' ' ' < $O/restore.log | cut -c1-160)"
-python3 sixlabs/bench/short_prompts.py --base $BASE --model Qwen3-Next-80B --out $O/short_plain.jsonl || ERR=$((ERR + 1))
-say 6 2/2 "short prompts without the ramp"
+if [ "$LEAVE_DOWN" = "1" ]; then
+  say 6 0/1 "engine down, standard config back"
+  python3 scripts/dgpp-cluster down --config $CFG > /dev/null 2>&1
+  cp $O/standard_config.json $D/$CFG
+  sleep 3
+  say 6 1/1 "no engine left on this box ($(pgrep -x 6ix-Serve > /dev/null && echo STILL RUNNING || echo stopped)), $(free -g | awk 'NR==2 {print $7}') GiB available"
+else
+  say 6 0/2 "standard config back"
+  restore
+  say 6 1/2 "standard engine: $(tr '\n' ' ' < $O/restore.log | cut -c1-160)"
+  python3 sixlabs/bench/short_prompts.py --base $BASE --model Qwen3-Next-80B --out $O/short_plain.jsonl || ERR=$((ERR + 1))
+  say 6 2/2 "short prompts without the ramp"
+fi
 echo "ALLDONE err=$ERR"
