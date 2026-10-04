@@ -1154,7 +1154,7 @@ DGPP_TEST(serve_flattenTextContent_onlyTextOnlyArrays) {
       "{\"role\":\"user\",\"name\":\"n\",\"content\":[{\"type\":\"text\",\"text\":\"x\"},{\"type\":\"text\",\"text\":\"y\"}]}],"
       "\"add_generation_prompt\":true}";
   const auto ga = parse(a);
-  const auto fa = flatten_text_content(ga);
+  const auto fa = flatten_text_content(ga.root);
   require(fa.has_value(), "an all-text array is flattened");
   require(json_of(*fa) ==
               "{\"messages\":[{\"role\":\"system\",\"content\":\"s\"},"
@@ -1164,7 +1164,7 @@ DGPP_TEST(serve_flattenTextContent_onlyTextOnlyArrays) {
   // An empty array is the empty string.
   const std::string e = "{\"messages\":[{\"role\":\"user\",\"content\":[]}]}";
   const auto ge = parse(e);
-  const auto fe = flatten_text_content(ge);
+  const auto fe = flatten_text_content(ge.root);
   require(fe.has_value() && json_of(*fe) == "{\"messages\":[{\"role\":\"user\",\"content\":\"\"}]}",
           "an empty array is the empty string");
 
@@ -1173,12 +1173,12 @@ DGPP_TEST(serve_flattenTextContent_onlyTextOnlyArrays) {
       "{\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"x\"},"
       "{\"type\":\"image_url\",\"image_url\":{\"url\":\"u\"}}]}]}";
   const auto gm = parse(m);
-  require(!flatten_text_content(gm).has_value(), "a mixed array is not flattened");
+  require(!flatten_text_content(gm.root).has_value(), "a mixed array is not flattened");
 
   // String content: nothing to do.
   const std::string s2 = "{\"messages\":[{\"role\":\"user\",\"content\":\"x\"}]}";
   const auto gs = parse(s2);
-  require(!flatten_text_content(gs).has_value(), "string content is not touched");
+  require(!flatten_text_content(gs.root).has_value(), "string content is not touched");
 }
 
 DGPP_TEST(serve_chatOneTokenLimit_returnsExactlyOneToken) {
