@@ -341,6 +341,11 @@ ClusterConfig parse_cluster_config(const std::string& json, const std::string& w
             fail(what, "'" + ek + "' must be auto, sampled or greedy");
         }
         else if (p.key == "sampling_candidates") e.sampling_candidates = static_cast<int>(integer(x, ek, what, 1, 256));
+        else if (p.key == "logprobs_mode") {
+          e.logprobs_mode = text(x, ek, what);
+          if (e.logprobs_mode != "auto" && e.logprobs_mode != "raw" && e.logprobs_mode != "processed")
+            fail(what, "'" + ek + "' must be auto, raw or processed");
+        }
         else if (p.key == "prefix_cache_gib") {
           e.prefix_cache_gib = number(x, ek, what);
           if (e.prefix_cache_gib < 0.0) fail(what, "'" + ek + "' must be >= 0 (0 turns the cache off)");

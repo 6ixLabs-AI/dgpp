@@ -1264,7 +1264,8 @@ __global__ void __launch_bounds__(kVerdictThreads) sample_verdict_kernel(
     const uint32_t* __restrict__ masks, int mask_stride, PickVerdict* __restrict__ verdicts,
     PickVerdict* __restrict__ device_verdicts, SampleOutcome* __restrict__ outcomes,
     const DraftProposal* __restrict__ proposals_in, DraftProposal* __restrict__ proposals_out,
-    DraftProposal* __restrict__ proposals_out_host, int draft_index, const int32_t* request_map) {
+    DraftProposal* __restrict__ proposals_out_host, int draft_index, const int32_t* request_map,
+    const double* __restrict__ raw_lse) {
   // One row's split composite keys at a time (hi = ~primary, lo = id; the
   // empty slot is the maximal key) — the merge is per row, and T rows of
   // keys would not fit the static shared bound — with every row's merged
@@ -1625,6 +1626,27 @@ __global__ void __launch_bounds__(kVerdictThreads) sample_verdict_kernel(
     }
     o.counter = counter;
     if (!draft_mode) specs[req].counter = counter;
+    // The RAW report (spec.raw_logprobs): every row the device decided is
+    // reported under the model's own distribution — the committed token's
+    // logit minus the row's raw log-sum-exp, and the first min(N, held)
+    // candidates of the canonical prefix (descending logit) as the top-N —
+    // in place of the final set's scaled logprobs. The decision above is
+    // untouched; a row the host must decide (the fallback row) is left to it.
+    if (raw_lse != nullptr && !draft_mode && spec.raw_logprobs != 0 &&
+        spec.logprobs >= 0) {
+      for (int t = 0; t < v.accepted && t < rows_per_request; ++t) {
+        if (held[t] == 0 || (o.fallback != 0 && t == o.fallback_row)) continue;
+        const float Zr = static_cast<float>(raw_lse[row0 + t]);
+        const int32_t token = v.winners[t];
+        for (int i = 0; i < held[t]; ++i)
+          if (m_id[t][i] == token) {
+            o.logprob[t] = __fsub_rn(m_logit[t][i], Zr);
+            break;
+          }
+        report_top(m_logit[t], m_id[t], held[t], 1.0f, Zr, spec.logprobs,
+                   o.top_ids[t], o.top_logprobs[t], &o.top_count[t]);
+      }
+    }
   }
 
   // 5. The commit of the step's fed tokens into the request's context:
@@ -1689,6 +1711,52 @@ __global__ void sample_digest_kernel(const uint16_t* __restrict__ digests,
   }
   *carry_digest = digest;
   (void)rows_per_request;
+}
+
+// The RAW normalizer (device_sample_raw_lse): one block per row. A fixed
+// thread partition and fixed reduction trees, so the value is the same on
+// every run; the max in fp32 (exact), the sum of exp(l - max) in fp64.
+constexpr int kRawLseThreads = 256;
+
+__global__ void __launch_bounds__(kRawLseThreads) sample_raw_lse_kernel(
+    const float* __restrict__ logits, int vocab_count, const SampleSpec* __restrict__ specs,
+    int rows_per_request, const int64_t* __restrict__ positions, int position_stride,
+    const int32_t* __restrict__ request_map, double* __restrict__ out) {
+  __shared__ float smax[kRawLseThreads];
+  __shared__ double ssum[kRawLseThreads];
+  const int row = blockIdx.x;
+  const int tid = threadIdx.x;
+  const int q = row / rows_per_request;
+  const int req = request_map ? request_map[q] : q;
+  bool want = req >= 0 && (positions == nullptr || positions[q * position_stride] >= 0);
+  if (want) {
+    const SampleSpec spec = specs[req];
+    want = spec.raw_logprobs != 0 && spec.logprobs >= 0 && spec.temperature > 0.0f;
+  }
+  if (!want) {
+    if (tid == 0) out[row] = 0.0;
+    return;
+  }
+  const float* x = logits + static_cast<size_t>(row) * vocab_count;
+  float m = -INFINITY;
+  for (int i = tid; i < vocab_count; i += kRawLseThreads) m = fmaxf(m, x[i]);
+  smax[tid] = m;
+  __syncthreads();
+  for (int s = kRawLseThreads / 2; s > 0; s >>= 1) {
+    if (tid < s) smax[tid] = fmaxf(smax[tid], smax[tid + s]);
+    __syncthreads();
+  }
+  const float top = smax[0];
+  double acc = 0.0;
+  for (int i = tid; i < vocab_count; i += kRawLseThreads)
+    acc += detmath::exp_d(static_cast<double>(x[i]) - static_cast<double>(top));
+  ssum[tid] = acc;
+  __syncthreads();
+  for (int s = kRawLseThreads / 2; s > 0; s >>= 1) {
+    if (tid < s) ssum[tid] += ssum[tid + s];
+    __syncthreads();
+  }
+  if (tid == 0) out[row] = static_cast<double>(top) + detmath::log_d(ssum[0]);
 }
 
 __global__ void count_tokens_kernel(int32_t* __restrict__ counts,
@@ -1791,6 +1859,21 @@ void device_sample_verdict_prepare() {
   });
 }
 
+void device_sample_raw_lse(const float* logits, int rows, int vocab_count, const SampleSpec* specs,
+                           int rows_per_request, const int64_t* positions, int position_stride,
+                           const int32_t* request_map, double* out, cudaStream_t stream) {
+  if (logits == nullptr || specs == nullptr || out == nullptr)
+    throw std::invalid_argument("device_sample_raw_lse: null argument");
+  if (rows < 1 || rows > kPickMaxRows || vocab_count < 1 || rows_per_request < 1 ||
+      rows % rows_per_request != 0)
+    throw std::invalid_argument("device_sample_raw_lse: row shape");
+  if (positions != nullptr && position_stride < 1)
+    throw std::invalid_argument("device_sample_raw_lse: position stride");
+  sample_raw_lse_kernel<<<rows, kRawLseThreads, 0, stream>>>(
+      logits, vocab_count, specs, rows_per_request, positions, position_stride, request_map, out);
+  DGPP_CUDA_OK(cudaGetLastError());
+}
+
 void device_sample_verdict(const uint16_t* table, int rows, int world, int rank, int candidates,
                            int vocab_size, SampleSpec* specs, int requests, int rows_per_request,
                            const int64_t* fed, const int64_t* positions, int position_stride,
@@ -1799,9 +1882,13 @@ void device_sample_verdict(const uint16_t* table, int rows, int world, int rank,
                            SampleOutcome* outcomes, uint64_t* carry_digest, cudaStream_t stream,
                            const DraftProposal* proposals_in, DraftProposal* proposals_out,
                            DraftProposal* proposals_out_host, int draft_index,
-                           const int32_t* request_map) {
+                           const int32_t* request_map, const double* raw_lse) {
   check_common(rows, world, rank, candidates, rows_per_request,
                "glm_sample_verdict");
+  if (raw_lse != nullptr && world != 1)
+    throw std::invalid_argument(
+        "glm_sample_verdict: the raw log-sum-exp covers a whole vocabulary "
+        "(world 1); a sharded head would need its slices folded");
   if (proposals_out != nullptr &&
       (rows_per_request != 1 || draft_index < 0 ||
        draft_index >= kSampleProposalSlots))
@@ -1821,7 +1908,7 @@ void device_sample_verdict(const uint16_t* table, int rows, int world, int rank,
   sample_verdict_kernel<<<requests, kVerdictThreads, kVerdictDynamicSmemBytes, stream>>>(
       table, rows, world, candidates, vocab_size, specs, rows_per_request, fed, positions,
       position_stride, counts, masks, mask_stride, verdicts, device_verdicts, outcomes,
-      proposals_in, proposals_out, proposals_out_host, draft_index, request_map);
+      proposals_in, proposals_out, proposals_out_host, draft_index, request_map, raw_lse);
   DGPP_CUDA_OK(cudaGetLastError());
   const uint16_t* digests =
       table + static_cast<size_t>(rows) * world *

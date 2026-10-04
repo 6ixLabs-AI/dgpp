@@ -64,6 +64,7 @@ Rules that keep the numbers comparable:
 | `engine.fp8_head` (Qwen FP8 head) | `mma` streams the vocabulary head through the tensor cores above the GEMV rows | validated numerically per template; `gemv` restores the previous path |
 | `engine.graph_batch_min_live` | when decode switches from scalar to batched graphs | earlier batching helps throughput under load and can cost a single stream |
 | `engine.sampling_candidates` | the candidates gathered per rank on the sampled path | fewer means less routine work and more full-gather fallbacks |
+| `engine.logprobs_mode` | `auto` / `raw` / `processed`: the distribution a sampled request's logprobs are reported under ([API compatibility](openai-compatibility.md)) | `raw` adds one small kernel per sampled step and only for requests that ask for logprobs; no effect on the tokens produced |
 
 ### Prefill and time to first token
 

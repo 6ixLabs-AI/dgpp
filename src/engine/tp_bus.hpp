@@ -1169,6 +1169,7 @@ class DevicePicker {
     if (locals_) cudaFreeHost(locals_);
     if (outcomes_) cudaFreeHost(outcomes_);
     if (sample_scratch_) cudaFree(sample_scratch_);
+    if (raw_lse_) cudaFree(raw_lse_);
   }
   DevicePicker(const DevicePicker&) = delete;
   DevicePicker& operator=(const DevicePicker&) = delete;
@@ -1226,6 +1227,23 @@ class DevicePicker {
   };
   bool sampling() const { return candidates_ > 0; }
   int sampling_candidates() const { return candidates_; }
+  // Arms the RAW logprob report (6ixServe, engine.logprobs_mode raw): from
+  // now on every sampling pick also computes the raw normalizer of the rows
+  // whose spec asks (SampleSpec::raw_logprobs) and the verdict reports under
+  // it. Call BEFORE any graph is captured — the extra node is part of the
+  // captured pick. World 1 only (a sharded head has no whole row here).
+  void set_raw_logprobs(bool on) {
+    if (!on || raw_lse_ != nullptr) return;
+    if (!sampling())
+      throw std::logic_error("device pick: raw logprobs need the sampling pick");
+    if (world_ != 1)
+      throw std::invalid_argument(
+          "device pick: raw logprobs are reported at world 1 only (the sharded "
+          "head's slices would have to be folded)");
+    DGPP_CUDA_OK(cudaMalloc(reinterpret_cast<void**>(&raw_lse_), sizeof(double) * max_rows_));
+    DGPP_CUDA_OK(cudaMemset(raw_lse_, 0, sizeof(double) * max_rows_));
+  }
+  bool raw_logprobs() const { return raw_lse_ != nullptr; }
 
   // CAPTURE: enqueues the three nodes on `stream` (the caller is between
   // cudaStreamBeginCapture/EndCapture on it, inside the bus's record
@@ -1432,6 +1450,13 @@ class DevicePicker {
                         in.mask_stride, carry_, table_, locals_ + in.slot * kPickMaxRows,
                         sample_scratch_, stream, in.row_select,
                         in.row_select != nullptr ? source_stride(in) : 0, in.request_map);
+    // The raw normalizer of the rows that report under the raw distribution
+    // (set_raw_logprobs): after the local pick, whose penalties and bias are
+    // in place, and before the verdict. A draft pick's row_select reads
+    // another layout and reports nothing, so it is left out.
+    if (raw_rows(in))
+      device_sample_raw_lse(in.logits, in.rows, in.vocab_count, in.specs, rows_per_request(in),
+                            in.positions, position_stride(in), in.request_map, raw_lse_, stream);
   }
   void sample_verdict(cudaStream_t stream, const Inputs& in) {
     device_sample_verdict(table_, in.rows, world_, rank_, candidates_, in.vocab_size, in.specs,
@@ -1439,7 +1464,15 @@ class DevicePicker {
                           position_stride(in), in.counts, in.masks, in.mask_stride,
                           verdict_slot(in.slot), device_verdict_slot(in.slot),
                           outcomes_ + in.slot * kPickMaxRequests, carry_, stream, in.proposals_in,
-                          in.proposals_out, in.proposals_out_host, in.draft_index, in.request_map);
+                          in.proposals_out, in.proposals_out_host, in.draft_index, in.request_map,
+                          raw_rows(in) ? raw_lse_ : nullptr);
+  }
+  // Whether this pick's rows get the raw normalizer: the engine asked
+  // (set_raw_logprobs), the head is whole here (world 1) and the rows are the
+  // verify's own (no row_select).
+  bool raw_rows(const Inputs& in) const {
+    return raw_lse_ != nullptr && world_ == 1 && in.row_select == nullptr &&
+           in.vocab_count == in.vocab_size;
   }
 
   net::CollectiveBus& bus_;
@@ -1450,6 +1483,7 @@ class DevicePicker {
   int max_rows_ = kPickMaxRows;  // the widest pick (the tables' allocation)
   SampleOutcome* outcomes_ = nullptr;
   double* sample_scratch_ = nullptr;   // device: the local pick's partials
+  double* raw_lse_ = nullptr;          // device [max_rows]: the raw normalizers (set_raw_logprobs)
   uint16_t* table_ = nullptr;          // device: the wire table
   uint64_t* carry_ = nullptr;          // device: last verdict's digest
   PickVerdict* verdict_ = nullptr;  // pinned [kSlots][kPickMaxRequests]

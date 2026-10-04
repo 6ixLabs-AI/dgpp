@@ -22,6 +22,18 @@ walk with the routed MoE in the dense MLP's place — on one Spark today:
 - `apps/qwen35_bind_check`, `apps/qwen35_forward_check`, and `tools/qwen3next_reference.py`, a
   pure-numpy reference of the model reading the same checkpoint.
 
+**In the shared engine** (every model family gets these):
+
+- the server process is `6ix-Serve` (`dgpp-serve` stays beside it as a link);
+- the Prometheus exposition at `/metrics/prometheus` (upstream PR #81's branch, merged here);
+- interleaved prefill for the `qwen3_5` family (`engine.prefill_budget_tokens`);
+- two scheduler fixes for a K/V pool full of cached prefixes: a live request evicts idle cache
+  entries before anything is shed, and the block arithmetic counts the draft rows a reserve takes
+  (`sixlabs/bench/pool_pressure.py` reproduces the condition);
+- `engine.logprobs_mode` — sampled requests report logprobs under the model's raw distribution
+  (OpenAI's and vLLM's meaning) instead of the truncated one the draw was made from; `raw` is the
+  default on one node. Detectors that read top-N logprobs (CIFF, HIFF) need it.
+
 ## Measured (one DGX Spark, 2026-10-03)
 
 8-bit dense and head, MTP depth 2, eight request slots, a 262,144-token pool, 57.9 GiB planned.

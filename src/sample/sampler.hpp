@@ -1055,6 +1055,41 @@ inline Result greedy_from_prefix(const std::vector<Candidate>& sorted_prefix,
   return out;
 }
 
+// The RAW report over a COMPLETE logits row (6ixServe, engine.logprobs_mode
+// raw): `token`'s log-probability and the top `logprobs` ids under the
+// model's own distribution — temperature 1, before top-k / min-p / top-p —
+// whatever the request sampled with. What a greedy request already reports
+// and what vLLM's raw_logprobs reports. The host's counterpart of the device
+// verdict's raw branch, for the tokens the host decides (a request's first,
+// and a fallback row). Ties break by id, as the canonical order does.
+inline Result raw_report_complete(const float* logits, int vocab_size,
+                                  int32_t token, int logprobs) {
+  if (logits == nullptr || vocab_size <= 0 || token < 0 || token >= vocab_size)
+    throw std::invalid_argument("glm_sample: raw report over an invalid row");
+  float mx = logits[0];
+  for (int i = 1; i < vocab_size; ++i) mx = std::max(mx, logits[i]);
+  double acc = 0.0;
+  for (int i = 0; i < vocab_size; ++i)
+    acc += detmath::exp_d(static_cast<double>(logits[i]) - static_cast<double>(mx));
+  const float lse = static_cast<float>(static_cast<double>(mx) + detmath::log_d(acc));
+  Result out;
+  out.token = token;
+  out.logprob = logits[token] - lse;
+  const int n = std::min(std::max(logprobs, 0), vocab_size);
+  if (n > 0) {
+    std::vector<int32_t> ids(static_cast<size_t>(vocab_size));
+    for (int i = 0; i < vocab_size; ++i) ids[static_cast<size_t>(i)] = i;
+    const auto before = [&](int32_t a, int32_t b) {
+      return logits[a] > logits[b] || (logits[a] == logits[b] && a < b);
+    };
+    std::partial_sort(ids.begin(), ids.begin() + n, ids.end(), before);
+    for (int i = 0; i < n; ++i)
+      out.top_logprobs.emplace_back(ids[static_cast<size_t>(i)],
+                                    logits[ids[static_cast<size_t>(i)]] - lse);
+  }
+  return out;
+}
+
 // One contiguous vocabulary slice of the sharded lm head: rank r owns
 // [begin, begin + count). The fold normalizer is defined over the slices in
 // rank order, so the layout is part of the sharded sampler's semantics, not

@@ -849,6 +849,7 @@ struct SampleWorldRun {
   std::vector<std::vector<dgpp::SampleSpec>> specs_after;
   std::vector<uint64_t> carry_out;
   std::vector<std::vector<int32_t>> counts_after;  // per rank, post-verdict
+  std::vector<double> raw_lse;                     // raw runs: the rows' raw normalizers
 };
 
 // Runs the two kernels on every rank of a simulated world: rank k holds
@@ -863,7 +864,9 @@ SampleWorldRun run_sample_world(const std::vector<float>& full, int requests, in
                                 uint64_t carry, int rows_per_request = 1,
                                 const std::vector<uint32_t>& masks = {},
                                 const std::vector<dgpp::DraftProposal>& proposals = {},
-                                const std::vector<int32_t>& request_map = {}) {
+                                const std::vector<int32_t>& request_map = {},
+                                bool raw = false) {
+  require(!raw || world == 1, "the raw normalizer is a world-1 kernel");
   const int vocab = world * count;
   const int rows = requests * rows_per_request;
   const int mask_stride = dgpp::device_sample_mask_words(vocab);
@@ -880,6 +883,7 @@ SampleWorldRun run_sample_world(const std::vector<float>& full, int requests, in
       row_positions[static_cast<size_t>(q * rows_per_request + t)] =
           positions[static_cast<size_t>(q)] < 0 ? -1 : positions[static_cast<size_t>(q)] + t;
   SampleWorldRun out;
+  std::vector<double> raw_lse;
   out.folded.assign(table_elems, 0);
   for (int k = 0; k < world; ++k) {
     std::vector<float> slice(static_cast<size_t>(rows) * count);
@@ -929,6 +933,17 @@ SampleWorldRun run_sample_world(const std::vector<float>& full, int requests, in
                               d_masks, d_masks ? mask_stride : 0, d_carry, d_table, d_locals,
                               d_scratch, nullptr, nullptr, 0, d_map);
     DGPP_CUDA_OK(cudaDeviceSynchronize());
+    if (raw) {
+      // The raw normalizers of this pick's rows, as the engine's picker
+      // computes them between the two kernels; read back for the verdict.
+      double* d_raw = device_alloc<double>(rows);
+      dgpp::device_sample_raw_lse(d_logits, rows, count, d_specs, rows_per_request, d_pos,
+                                  /*position_stride=*/rows_per_request, d_map, d_raw, nullptr);
+      DGPP_CUDA_OK(cudaDeviceSynchronize());
+      raw_lse.resize(static_cast<size_t>(rows));
+      DGPP_CUDA_OK(cudaMemcpy(raw_lse.data(), d_raw, sizeof(double) * rows, cudaMemcpyDeviceToHost));
+      cudaFree(d_raw);
+    }
     if (d_masks) cudaFree(d_masks);
     if (d_map) cudaFree(d_map);
     std::vector<uint16_t> table(table_elems);
@@ -998,6 +1013,12 @@ SampleWorldRun run_sample_world(const std::vector<float>& full, int requests, in
       DGPP_CUDA_OK(cudaMemcpy(d_masks, masks.data(), masks.size() * 4,
                               cudaMemcpyHostToDevice));
     }
+    double* d_raw_in = nullptr;
+    if (raw) {
+      d_raw_in = device_alloc<double>(rows);
+      DGPP_CUDA_OK(cudaMemcpy(d_raw_in, raw_lse.data(), sizeof(double) * rows, cudaMemcpyHostToDevice));
+      out.raw_lse = raw_lse;
+    }
     dgpp::DraftProposal* d_props = nullptr;
     if (!proposals.empty()) {
       require(proposals.size() ==
@@ -1013,8 +1034,9 @@ SampleWorldRun run_sample_world(const std::vector<float>& full, int requests, in
                                 /*position_stride=*/rows_per_request, d_counts, d_masks,
                                 d_masks ? mask_stride : 0, d_verdicts,
                                 /*device_verdicts=*/nullptr, d_out, d_carry, nullptr, d_props,
-                                nullptr, nullptr, 0, d_map);
+                                nullptr, nullptr, 0, d_map, d_raw_in);
     DGPP_CUDA_OK(cudaDeviceSynchronize());
+    if (d_raw_in) cudaFree(d_raw_in);
     if (d_masks) cudaFree(d_masks);
     if (d_map) cudaFree(d_map);
     if (d_props) cudaFree(d_props);
@@ -2502,6 +2524,106 @@ DGPP_TEST(sample_pick_reports_logprobs_bitwise) {
       }
     }
   }
+}
+
+// engine.logprobs_mode raw (6ixServe): a sampled row's report is the model's
+// own distribution — temperature 1, before top-k / min-p / top-p — while the
+// DECISION is the request's, bit for bit. The case this exists for is the
+// first spec: temperature 0.7, top-k 20, top-p 0.8, whose nucleus is often a
+// single token, so the final-distribution report is "logprob 0, one
+// alternative" and a detector reading top-5 logprobs gets nothing.
+DGPP_TEST(sample_pick_raw_logprobs_report_the_untruncated_distribution) {
+  Rng rng(0x6a17);
+  constexpr int vocab = 384;
+  constexpr int candidates = 32;
+  constexpr int requests = 4;
+  bool saw_truncated = false;
+  for (int trial = 0; trial < 6; ++trial) {
+    std::vector<float> full(static_cast<size_t>(requests) * vocab);
+    for (int q = 0; q < requests; ++q) {
+      float* row = full.data() + static_cast<size_t>(q) * vocab;
+      for (int v = 0; v < vocab; ++v)
+        row[v] = static_cast<float>((rng.next() >> 8) % 41) * 0.25f - 5.0f;
+      row[static_cast<size_t>(rng.next() % vocab)] = 11.0f;
+      row[static_cast<size_t>(rng.next() % vocab)] = 8.5f;
+    }
+    std::vector<dgpp::SampleSpec> specs(requests);
+    // 0: the fleet's default sampling; 1: a nucleus without top-k; 2: pure
+    // temperature; 3: the default sampling again, NOT asking for raw.
+    specs[0].temperature = 0.7f;
+    specs[0].top_k = 20;
+    specs[0].top_p = 0.8f;
+    specs[0].logprobs = 5;
+    specs[1].temperature = 1.2f;
+    specs[1].top_p = 0.9f;
+    specs[1].logprobs = 5;
+    specs[2].temperature = 0.8f;
+    specs[2].logprobs = 3;
+    specs[3] = specs[0];
+    for (int q = 0; q < requests; ++q) {
+      specs[q].seed = 0x5100 + q + 13 * trial;
+      specs[q].counter = 1;
+    }
+    std::vector<dgpp::SampleSpec> raw_specs = specs;
+    for (int q = 0; q < 3; ++q) raw_specs[q].raw_logprobs = 1;
+    const std::vector<int32_t> counts(static_cast<size_t>(requests) * vocab, 0);
+    std::vector<int64_t> fed(requests), positions(requests, 5);
+    for (int q = 0; q < requests; ++q) fed[q] = static_cast<int64_t>(rng.next() % vocab);
+    const SampleWorldRun plain = run_sample_world(full, requests, 1, vocab, specs, counts, fed,
+                                                  positions, candidates, 0x2222ull);
+    const SampleWorldRun raw = run_sample_world(full, requests, 1, vocab, raw_specs, counts, fed,
+                                                positions, candidates, 0x2222ull, 1, {}, {}, {},
+                                                /*raw=*/true);
+    for (int q = 0; q < requests; ++q) {
+      const std::string at = " (request " + std::to_string(q) + ", trial " + std::to_string(trial) + ")";
+      const PickVerdict& v = raw.verdicts[0][q];
+      const dgpp::SampleOutcome& o = raw.outcomes[0][q];
+      const dgpp::SampleOutcome& po = plain.outcomes[0][q];
+      require(v.next == plain.verdicts[0][q].next && o.counter == po.counter &&
+                  o.fallback == po.fallback,
+              "the raw report must not move the decision" + at);
+      if (o.fallback) continue;
+      if (q == 3) {
+        // No raw flag: the final-distribution report, untouched.
+        require(bits_equal(o.logprob[0], po.logprob[0]) && o.top_count[0] == po.top_count[0],
+                "a request that did not ask for raw keeps the processed report" + at);
+        continue;
+      }
+      if (q == 0 && po.top_count[0] < specs[0].logprobs) saw_truncated = true;
+      const float* row = full.data() + static_cast<size_t>(q) * vocab;
+      float mx = row[0];
+      for (int i = 1; i < vocab; ++i) mx = std::max(mx, row[i]);
+      double acc = 0.0;
+      for (int i = 0; i < vocab; ++i) acc += std::exp(static_cast<double>(row[i]) - mx);
+      const double lse = static_cast<double>(mx) + std::log(acc);
+      require(std::abs(raw.raw_lse[static_cast<size_t>(q)] - lse) < 1e-9,
+              "the device's raw log-sum-exp differs from the row's" + at);
+      require(std::abs(static_cast<double>(o.logprob[0]) - (row[v.next] - lse)) < 1e-4,
+              "the token's raw logprob differs" + at);
+      const std::vector<Candidate> top = dgpp::sample::local_topk(row, vocab, 0, candidates);
+      require(o.top_count[0] == specs[q].logprobs,
+              "the raw report lists N alternatives whatever the nucleus kept" + at + ": " +
+                  std::to_string(o.top_count[0]));
+      for (int i = 0; i < o.top_count[0]; ++i) {
+        require(o.top_ids[0][i] == top[static_cast<size_t>(i)].id,
+                "raw top-N id differs" + at);
+        require(std::abs(static_cast<double>(o.top_logprobs[0][i]) -
+                         (top[static_cast<size_t>(i)].logit - lse)) < 1e-4,
+                "raw top-N logprob differs" + at);
+      }
+      // And the host's report over the complete row says the same.
+      const dgpp::sample::Result host =
+          dgpp::sample::raw_report_complete(row, vocab, v.next, specs[q].logprobs);
+      require(std::abs(host.logprob - o.logprob[0]) < 1e-4 &&
+                  host.top_logprobs.size() == static_cast<size_t>(o.top_count[0]),
+              "the host's raw report differs from the device's" + at);
+      for (int i = 0; i < o.top_count[0]; ++i)
+        require(host.top_logprobs[static_cast<size_t>(i)].first == o.top_ids[0][i],
+                "the host's raw top-N id differs from the device's" + at);
+    }
+  }
+  require(saw_truncated,
+          "the default sampling never truncated its report below N: the test lost its subject");
 }
 
 // The sampled draft's proposal: when the verify is handed the

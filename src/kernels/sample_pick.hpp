@@ -62,6 +62,16 @@ struct SampleSpec {
   int32_t biased = 0;     // 1: the request's logit_bias row is live (the
                           // pick adds it after the penalties, in place;
                           // a biased greedy row takes the full path)
+  int32_t raw_logprobs = 0;  // 1 (6ixServe, engine.logprobs_mode raw): a
+                          // SAMPLED row reports the chosen token and its
+                          // top-N under the model's own distribution —
+                          // temperature 1, before top-k / min-p / top-p —
+                          // as a greedy row already does and as vLLM's
+                          // raw_logprobs does. 0: under the final (scaled,
+                          // truncated) distribution the draw was made from.
+                          // Needs the row's raw log-sum-exp
+                          // (device_sample_raw_lse); it fills what was the
+                          // struct's padding, so the layout is unchanged.
   uint64_t seed = 0;
   uint64_t counter = 0;
   // The DRAFT's temperature: the proposal is the draft head's
@@ -228,6 +238,18 @@ void device_sample_local(float* logits, int rows, int vocab_count, int vocab_beg
                          const PickVerdict* row_select = nullptr, int source_row_stride = 0,
                          const int32_t* request_map = nullptr);
 
+// The RAW normalizer (6ixServe, 2026-10-04): out[row] = the log-sum-exp of
+// the row's logits at temperature 1 over the WHOLE slice, for rows whose
+// request reports logprobs under the raw distribution (spec.raw_logprobs,
+// spec.logprobs >= 0, temperature > 0); 0 for every other row. One block per
+// row, run after device_sample_local (so penalties and bias, which that
+// kernel applies in place, are in) and before the verdict. World 1 only: a
+// sharded head would need the slices folded, and the caller does not ask.
+// `out` holds `rows` doubles on the device.
+void device_sample_raw_lse(const float* logits, int rows, int vocab_count, const SampleSpec* specs,
+                           int rows_per_request, const int64_t* positions, int position_stride,
+                           const int32_t* request_map, double* out, cudaStream_t stream);
+
 // Kernel 2 (after the fold), one block per request plus the digest pass:
 // decodes every rank's group, merges the k-way prefix in canonical order
 // (sample::merge_topk), folds the lse (sample::merge_logsumexp) and
@@ -247,6 +269,11 @@ void device_sample_local(float* logits, int rows, int vocab_count, int vocab_beg
 // from, at [q][draft_index], on the device and, when given, in a pinned
 // mirror for the host's fallback. `counts` may be null (the draft pick
 // commits no context).
+// `raw_lse` (optional): device_sample_raw_lse's output for these rows. With
+// it, a sampled request whose spec says raw_logprobs reports every row the
+// device decided under the raw distribution: the committed token's logit
+// minus the row's raw log-sum-exp, and the first min(N, held) candidates of
+// the canonical prefix as its top-N. The decision itself is untouched.
 // Sets the verdict kernel's dynamic shared-memory attribute (idempotent).
 // device_sample_verdict calls it; a picker that captures graphs calls it
 // from its constructor so the first launch inside a capture finds it set.
@@ -261,7 +288,8 @@ void device_sample_verdict(const uint16_t* table, int rows, int world, int rank,
                            const DraftProposal* proposals_in = nullptr,
                            DraftProposal* proposals_out = nullptr,
                            DraftProposal* proposals_out_host = nullptr, int draft_index = 0,
-                           const int32_t* request_map = nullptr);
+                           const int32_t* request_map = nullptr,
+                           const double* raw_lse = nullptr);
 
 // counts[token] += delta (the host's correction of a request's context after
 // a fallback it decided: a provisionally rejected draft joins the table

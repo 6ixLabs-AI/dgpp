@@ -246,6 +246,8 @@ struct ServeGraphEngine {
   virtual void set_proposal_drafts(bool on) = 0;
   // engine.mtp_schedule_sampled_scale, before the warm capture.
   virtual void set_sampled_schedule_scale(float scale) = 0;
+  // engine.logprobs_mode raw, before the warm capture (GraphEngineAdapter::set_raw_logprobs).
+  virtual void set_raw_logprobs(bool on) = 0;
 };
 
 template <class Model>
@@ -261,6 +263,7 @@ struct ServeGraphEngineOf final : ServeGraphEngine {
   }
   void set_proposal_drafts(bool on) override { eng.set_proposal_drafts(on); }
   void set_sampled_schedule_scale(float scale) override { eng.set_sampled_schedule_scale(scale); }
+  void set_raw_logprobs(bool on) override { eng.set_raw_logprobs(on); }
 };
 
 struct ServeFamily {
@@ -927,6 +930,11 @@ struct Qwen35Family final : ServeFamily {
   int prefill_chunk_tokens() const override { return dgpp::Qwen35Model::prefill_chunk_tokens(); }
   std::string pool_check(int64_t) const override { return ""; }
   const char* kv_format_name() const override { return "bf16"; }
+  // Qwen3-Next's rope was trained to max_position_embeddings (262,144) and
+  // this stack has no YaRN ramp yet: a pool larger than that seats more
+  // requests, and no single request passes the ceiling. (The 27B keeps the
+  // family's "no ceiling of its own".)
+  int64_t position_limit() const override { return cfg.next() ? cfg.max_position_embeddings : 0; }
   int decode_rows_cap() const override { return dgpp::Qwen35Model::decode_rows_cap(); }
   size_t lat_slot_bytes(int decode_rows) const override {
     return static_cast<size_t>(decode_rows) * static_cast<size_t>(cfg.hidden_size) * 2;
@@ -1498,6 +1506,7 @@ int main(int argc, char** argv) {
   // planned 128; narrower forces the exact gather fallback more often —
   // the width sweep's knob, scripts/serve_width_sweep.sh).
   int sampling_candidates = dgpp::kSamplingCandidates;
+  std::string logprobs_mode = "auto";  // engine.logprobs_mode: auto | raw | processed
   std::string admission_mode = "full";
   int admission_window = 256;
   int prefill_budget_tokens = -1;
@@ -1619,6 +1628,7 @@ int main(int argc, char** argv) {
     compact_batches = e.compact_batches;
     graph_batch_min_live = e.graph_batch_min_live;
     sampling_candidates = e.sampling_candidates;
+    logprobs_mode = e.logprobs_mode;
     prefix_cache_gib = e.prefix_cache_gib;
     admission_mode = e.admission;
     admission_window = e.admission_window;
@@ -2197,6 +2207,15 @@ int main(int argc, char** argv) {
   }
   // Validate sampling and admission options before constructing the model.
   // The graph batch threshold is resolved below from the configured slots.
+  if (logprobs_mode != "auto" && logprobs_mode != "raw" && logprobs_mode != "processed") {
+    DGPP_LOG_ERROR("engine.logprobs_mode must be auto, raw or processed, got '{}'", logprobs_mode);
+    return 1;
+  }
+  if (logprobs_mode == "raw" && world != 1) {
+    DGPP_LOG_ERROR("engine.logprobs_mode raw is available at world 1 only (the raw normalizer of a "
+                   "sharded lm head is not folded yet); use auto or processed");
+    return 1;
+  }
   if (sampling_candidates < 1 || sampling_candidates > dgpp::kSampleMaxCandidates) {
     DGPP_LOG_ERROR("--sampling-candidates must be in [1, {}], got {}",
                    dgpp::kSampleMaxCandidates, sampling_candidates);
@@ -2776,6 +2795,16 @@ int main(int argc, char** argv) {
                         knobs.admission.prefill_idle_budget_tokens > 0 ? knobs.admission.prefill_idle_budget_tokens
                                                                        : knobs.admission.prefill_budget_tokens,
                         graph_engine->engine()->prefill_group_advance() ? "; in-flight prompts share one walk" : "");
+          // engine.logprobs_mode: how a sampled request's logprobs are reported.
+          // raw needs the whole head on this rank, so "auto" is raw at world 1.
+          if (graph_engine->engine()->supports_logprobs()) {
+            const bool raw = logprobs_mode == "raw" || (logprobs_mode == "auto" && world == 1);
+            graph_engine->set_raw_logprobs(raw);
+            DGPP_LOG_INFO("rank {}: sampled requests report logprobs under {} (engine.logprobs_mode {})", rank,
+                          raw ? "the raw distribution (temperature 1, before top-k / min-p / top-p)"
+                              : "the final distribution the draw was made from",
+                          logprobs_mode);
+          }
           if (mtp) {
             const bool greedy_draft = mtp_draft == "greedy" || (mtp_draft == "auto" && family->greedy_draft_default());
             graph_engine->set_proposal_drafts(!greedy_draft);

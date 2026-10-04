@@ -665,6 +665,29 @@ class GraphEngineAdapter final : public sched::SchedulerEngine {
   // committed / (base + rows.row) over the MTP steps, floored at
   // lambda_tok_per_ms; verify_schedule.hpp) instead of standing at the
   // configured constant — the fixed point differs per concurrency.
+  // engine.logprobs_mode raw (6ixServe): a SAMPLED request's logprobs are
+  // reported under the model's own distribution — temperature 1, before
+  // top-k / min-p / top-p — as a greedy request's already are and as vLLM's
+  // raw_logprobs are; otherwise under the final distribution the draw was
+  // made from, where a nucleus of one token reads logprob 0 with no
+  // alternatives. Detectors that take features from top-N logprobs (CIFF,
+  // HIFF) need the raw form. The decision is the same either way. World 1
+  // only; before the first capture (the pick gains a node).
+  void set_raw_logprobs(bool on) {
+    drain();
+    for (const std::array<cudaGraphExec_t, 2>& e : scalar_execs_)
+      if (e[0] != nullptr)
+        throw std::logic_error("graph engine: set_raw_logprobs after a capture");
+    if (on && !sampling_)
+      throw std::logic_error("graph engine: no device sampler — no logprobs to report");
+    if (on && world_ != 1)
+      throw std::invalid_argument(
+          "graph engine: raw logprobs are reported at world 1 only (a sharded "
+          "lm head's slices would have to be folded)");
+    if (on) picker_->set_raw_logprobs(true);
+    raw_logprobs_ = on;
+  }
+  bool raw_logprobs() const { return raw_logprobs_; }
   // The sampled requests' draft rule (engine.mtp_draft): draws from the
   // draft's distribution under the ratio verify, or the draft's argmax under
   // the P(draft) accept. Both preserve the target distribution; which commits
@@ -884,6 +907,7 @@ class GraphEngineAdapter final : public sched::SchedulerEngine {
     if (!sampling_) return;
     SampleSpec spec = h_specs_[req];
     spec.logprobs = logprobs;
+    spec.raw_logprobs = raw_logprobs_ && logprobs >= 0 ? 1 : 0;
     push_spec(req, spec);
   }
   std::vector<sample::Result> take_logprobs(int req) override {
@@ -1460,7 +1484,7 @@ class GraphEngineAdapter final : public sched::SchedulerEngine {
                               bias_row(req));
           first = r.token;
           if (report_[static_cast<size_t>(req)])
-            pending_logprobs_[static_cast<size_t>(req)].push_back(r);
+            pending_logprobs_[static_cast<size_t>(req)].push_back(raw_host_result(req, out, r));
         } else {
           first = prefill_pick_(out);
         }
@@ -3127,6 +3151,21 @@ class GraphEngineAdapter final : public sched::SchedulerEngine {
   bool sampled_slot(int req) const {
     return sampling_ && params_[static_cast<size_t>(req)].temperature > 0.0f;
   }
+  // A host-decided token's report (a request's first token): under
+  // engine.logprobs_mode raw a sampled request's is re-stated over the whole
+  // row the model produced, as the device's rows are (sample::
+  // raw_report_complete). A greedy request's is raw already, and a rank that
+  // holds only a slice of the head (world > 1) never gets here in raw mode.
+  template <class Out>
+  sample::Result raw_host_result(int req, const Out& out, const sample::Result& r) const {
+    if (!raw_logprobs_ || params_[static_cast<size_t>(req)].temperature <= 0.0f) return r;
+    const DecodeOutputs& d = out;
+    if (d.lm_vocab_begin != 0 || static_cast<int64_t>(d.lm_vocab_count) != vocab_ ||
+        static_cast<int64_t>(d.logits.size()) < vocab_ || r.token < 0 || r.token >= vocab_)
+      return r;
+    return sample::raw_report_complete(d.logits.data(), static_cast<int>(vocab_), r.token,
+                                       h_specs_[req].logprobs);
+  }
   // The device outcome's report for one decided row, as the host's Result.
   static sample::Result device_result(const SampleOutcome& o, int row,
                                           int32_t token) {
@@ -3170,6 +3209,7 @@ class GraphEngineAdapter final : public sched::SchedulerEngine {
       // scheduled verify depth reads the draft head's probabilities (the
       // full path decides the same argmax under the raw normalizer).
       SampleSpec draft = spec;
+      draft.raw_logprobs = 0;  // a draft pick reports nothing to the client
       if (draft_full_path_) draft.logprobs = std::max(0, spec.logprobs);
       DGPP_CUDA_OK(cudaMemcpyAsync(d_draft_specs_ + req, &draft,
                                    sizeof(SampleSpec), cudaMemcpyHostToDevice,
@@ -3204,12 +3244,17 @@ class GraphEngineAdapter final : public sched::SchedulerEngine {
     sample::Rng& rng = rng_[static_cast<size_t>(req)];
     check_gathered_row(o.covered_mass[0], o.normalizer[0],
                        params_[static_cast<size_t>(req)], "row");
-    const sample::Result r = sample::sample_complete_logits(
+    sample::Result r = sample::sample_complete_logits(
         fallback_full_.data(), static_cast<int>(vocab_), o.normalizer[0],
         params_[static_cast<size_t>(req)], rng);
     bus_check_decision_digest(*bus_, rank_, /*resolved=*/true, r,
                               o.normalizer[0], sample_prefix_scratch_,
                               pick_timeout_ms_, "graph sample fallback");
+    // The raw report of a host-decided row: the gathered row is the complete,
+    // penalized list the device's rows were reported over.
+    if (raw_logprobs_ && report_[static_cast<size_t>(req)] && r.token >= 0 && r.token < vocab_)
+      r = sample::raw_report_complete(fallback_full_.data(), static_cast<int>(vocab_), r.token,
+                                      h_specs_[req].logprobs);
     if (r.token < 0 || r.token >= vocab_)
       throw std::runtime_error("graph engine fallback token out of range: " +
                                std::to_string(r.token));
@@ -3400,6 +3445,7 @@ class GraphEngineAdapter final : public sched::SchedulerEngine {
   // sampler's full path so their outcomes carry the draft's log-probability
   // — the picks read a spec table whose rows report logprobs.
   bool draft_full_path_ = false;
+  bool raw_logprobs_ = false;  // engine.logprobs_mode raw (set_raw_logprobs)
   SampleSpec* d_draft_specs_ = nullptr;  // device [slots]: the draft picks' specs
   uint8_t* d_head_greedy_ = nullptr;     // device [2][slots]: the verify's and the draft's argmax-only flags
   float* d_draft_conf_ = nullptr;        // device [slots][conf_rows_]: the gathered logits
