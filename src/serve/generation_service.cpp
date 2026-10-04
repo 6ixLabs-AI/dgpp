@@ -544,7 +544,7 @@ GenerationService::GenerationService(const ServiceConfig& cfg,
     if (is_history_kwarg(m.key) || m.key == "enable_thinking" || m.key == "thinking") {
       if (!m.value.is_bool()) throw std::invalid_argument(where + " must be a boolean");
       if ((m.key == "enable_thinking" || m.key == "thinking") &&
-          !frontend_->template_reads("enable_thinking"))
+          !frontend_->template_reads("enable_thinking") && !frontend_->instruct_only())
         throw std::invalid_argument(where + ": this template has no thinking switch");
     } else if (m.key == "reasoning_effort") {
       if (!m.value.is_string() || !valid_reasoning_effort(m.value.as_string()))
@@ -1292,6 +1292,10 @@ bool GenerationService::parse_chat(const dgpp::minijson::Value& body,
                       "reasoning_effort disagree; send one",
                       where);
       effort = std::string(m.value.as_string());
+    } else if ((m.key == "enable_thinking" || m.key == "thinking") && frontend_->instruct_only()) {
+      // An Instruct checkpoint never thinks: the switch has nothing to turn.
+      // Accepted — clients send it to every model — and dropped.
+      if (!m.value.is_bool()) return refuse(where + " must be a boolean", where);
     } else if (m.key == "enable_thinking") {
       // A knob of the templates that read it (Qwen3.8-Flash-Next,
       // GLM-4.7: false closes the think block in the generation prompt);

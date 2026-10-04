@@ -137,6 +137,11 @@ class ModelFrontend {
   // gate for chat_template_kwargs: enable_thinking is a knob of the
   // Qwen3.8-Flash-Next and GLM-4.7 templates, not of GLM-5.3-Flash's).
   virtual bool template_reads(std::string_view) const { return false; }
+  // An Instruct checkpoint that never reasons (6ixServe: Qwen3-Next-80B). Its
+  // thinking switches have nothing to turn: reasoning_effort, enable_thinking
+  // and thinking are accepted and dropped, where a reasoning model whose
+  // template lacks the knob still refuses them.
+  virtual bool instruct_only() const { return false; }
   // Resolve API effort into controls the model actually consumes. Models
   // with only a thinking switch map every positive effort to that switch.
   virtual ReasoningSettings reasoning_settings(std::string_view effort) const {

@@ -59,6 +59,7 @@ class TextFrontend : public ModelFrontend {
   }
 
   bool template_reads(std::string_view name) const override { return tpl_->reads(name); }
+  bool instruct_only() const override { return instruct_only_; }
 
   ReasoningSettings reasoning_settings(std::string_view effort) const override {
     if (instruct_only_) return {};
