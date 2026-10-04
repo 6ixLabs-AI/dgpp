@@ -15,6 +15,10 @@
 //         gate replicated, the shared expert BF16 (dequantized in the
 //         backbone), the routed experts NVFP4 as shipped in the backbone
 //         and block FP8 encoded from BF16 in the draft layer.
+// The compressed-tensors container of the same dialect (Qwen3-Coder-Next)
+// fills the same residents: q/k/v dequantized like o_proj, the GDN's BF16
+// out_proj sliced as it ships, the experts' global scales as shipped (the
+// kernels' divisor), no K/V-cache scales, no static activation scales.
 // Its slices follow the family's rules at every world: key and value heads,
 // query heads and their kv head(s), I/W rows of gate/up and columns of down.
 // Under Qwen35LayerStream::set_dense_weights_fp8 the same dialect binds its
@@ -128,6 +132,18 @@ Qwen3NextGdnGather qwen3next_gdn_gather(const Qwen35TextConfig& cfg, int rank, i
 void qwen3next_fp4_dequant_bf16(const uint8_t* payload, size_t payload_stride,
                                 const uint8_t* scales, size_t scale_stride, float weight_scale_2,
                                 int64_t rows, int64_t cols, uint16_t* out);
+
+// The same block in the compressed-tensors container (`nvfp4-pack-quantized`,
+// Qwen3-Coder-Next): codes and block scales laid out alike, the per-tensor
+// scale `weight_global_scale` a DIVISOR. Element (n, k) is
+// bf16(e2m1(code) * (e4m3(scale[n][k / 16]) / weight_global_scale)): the
+// block scale over the global in fp32 first (one rounding — the order
+// compressed-tensors' dequantize takes, `scale / global_scale` and then the
+// product), times the code in fp32, rounded to bf16, to nearest even.
+void qwen35_fp4_packed_dequant_bf16(const uint8_t* payload, size_t payload_stride,
+                                    const uint8_t* scales, size_t scale_stride,
+                                    float weight_global_scale, int64_t rows, int64_t cols,
+                                    uint16_t* out);
 
 // The family behind the shared stream (loaders/resident_stream.hpp).
 struct Qwen35LoaderFamily {

@@ -31,6 +31,13 @@ enum class Qwen35QuantKind : int {
   // expert, the attention o_proj and the GDN out_proj as e2m1 codes x e4m3
   // scales per 16 x an F32 per-tensor scale; every other matrix BF16.
   Nvfp4Modelopt,
+  // RedHatAI/Qwen3-Coder-Next-NVFP4 (compressed-tensors `nvfp4-pack-quantized`,
+  // 2026-10-04): the routed experts, the shared expert and the attention
+  // q/k/v/o as `weight_packed` e2m1 codes x `weight_scale` e4m3 per 16 over
+  // an F32 `weight_global_scale` (a divisor, where modelopt's weight_scale_2
+  // multiplies); the GDN projections, the router and the head BF16. No
+  // K/V-cache scales and no draft layer in that release.
+  Nvfp4Packed,
 };
 
 // Which checkpoint layout the config describes. Both run the same walk
@@ -104,9 +111,12 @@ struct Qwen35TextConfig {
   static Qwen35TextConfig parse(const minijson::Value& text_config,
                                 const minijson::Value* quantization_config);
   // The Qwen3Next dialect: `root` is the whole (flat) config.json object,
-  // its quantization_config included. The config names no draft layer; the
-  // released checkpoints carry one (`mtp.*`), so mtp_num_layers defaults to
-  // 1 and the binding refuses a checkpoint without it by name.
+  // its quantization_config included. The config names no draft layer, so
+  // mtp_num_layers follows the release the recipe identifies: 1 under the
+  // modelopt recipe (Qwen3-Next-80B-A3B carries `mtp.*`; the binding refuses
+  // a checkpoint without it by name), 0 under the compressed-tensors recipe
+  // (Qwen3-Coder-Next carries none; a `mtp.*` tensor is then unexpected). A
+  // config that does name mtp_num_hidden_layers is taken at its word.
   static Qwen35TextConfig parse_qwen3_next(const minijson::Value& root);
   // Reads config.json from disk (the root object) and dispatches to parse()
   // (a text_config object) or parse_qwen3_next() (model_type qwen3_next).

@@ -206,7 +206,12 @@ class PortabilityTest(unittest.TestCase):
             "deepseek-ai/DeepSeek-V4-Flash-0731": "deepseek-v4-flash_mxfp4-fp8",
             "Saren/Qwen3.8-Flash-Next-W4A16-AutoRound-hybrid-MTP_int4RTN": "qwen-3.8-flash-next_autoround-int4",
             "Qwen/Qwen3.8-27B-FP8": "qwen3.8-27b_fp8",
+            "nvidia/Qwen3-Next-80B-A3B-Instruct-NVFP4": "qwen3-next-80b_nvfp4",
+            "RedHatAI/Qwen3-Coder-Next-NVFP4": "qwen3-coder-next_nvfp4",
         }
+        # Checkpoints that carry no draft layer (no `mtp.*` tensors): there is
+        # no MTP to enable, so their templates run the plain decode graph.
+        no_draft = {"RedHatAI/Qwen3-Coder-Next-NVFP4"}
         values = {**site_env.DEFAULTS, "DGPP_NODES": "head peer1 peer2 peer3", "DGPP_SSH_USER": "ops"}
         templates = list((ROOT / "deploy").glob("*.example.json"))
         self.assertTrue(templates)
@@ -226,6 +231,9 @@ class PortabilityTest(unittest.TestCase):
                 if drafter:
                     self.assertFalse(engine["mtp"], "a drafter template replaces MTP, not both")
                     self.assertFalse(engine["decode_graph"], "the drafter is the eager path")
+                elif cfg["model"] in no_draft:
+                    self.assertFalse(engine["mtp"], "this checkpoint has no draft layer to enable")
+                    self.assertTrue(engine["decode_graph"])
                 else:
                     self.assertTrue(engine["mtp"], "every template enables MTP (the plain world is --no-mtp)")
                     self.assertTrue(engine["decode_graph"])

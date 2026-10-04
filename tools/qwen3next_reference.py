@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
-"""qwen3next_reference.py — host reference forward pass for Qwen3-Next-80B-A3B-Instruct (2026-10-03).
+"""qwen3next_reference.py — host reference forward pass for Qwen3-Next-80B-A3B-Instruct (2026-10-03)
+and, the same model class in another container, Qwen3-Coder-Next (RedHatAI/Qwen3-Coder-Next-NVFP4,
+2026-10-04: pass its snapshot as --ckpt; it has no MTP head, so `mtp` does not apply).
 
-Pure Python + numpy, reading the NVIDIA NVFP4 checkpoint directly (safetensors headers parsed by
+Pure Python + numpy, reading the NVFP4 checkpoint directly (safetensors headers parsed by
 hand, shards mmap'd). It is the ground truth the DGPP engine port is compared against, so it is
 written for clarity and checkability, not speed: one straightforward implementation of every
 block, weights dequantized to float, activations in full precision (the checkpoint's
@@ -52,6 +54,12 @@ THE MODEL (what this file computes; names are checkpoint tensor names)
     `.weight_scale` F8_E4M3 [N, K/16]; `.weight_scale_2` F32 scalar:
         W[n, k] = e2m1(code[n, k]) * e4m3(weight_scale[n, k // 16]) * weight_scale_2
     E2M1 magnitudes 0, .5, 1, 1.5, 2, 3, 4, 6 (bit 3 = sign).
+  NVFP4 (compressed-tensors `nvfp4-pack-quantized`, Qwen3-Coder-Next): the same codes and block
+    scales under other names — `.weight_packed` U8 [N, K/2], `.weight_scale` F8_E4M3 [N, K/16] —
+    and `.weight_global_scale` F32 [1], a DIVISOR:
+        W[n, k] = e2m1(code[n, k]) * (e4m3(weight_scale[n, k // 16]) / weight_global_scale)
+    That release quantizes the attention q/k/v/o, the shared expert and the routed experts, and
+    leaves the DeltaNet (out_proj included), the router and the head in BF16.
 
   MTP draft head (`mtp.*`, all BF16): see Model.mtp_forward.
 
@@ -109,6 +117,7 @@ assert sys.byteorder == "little", "the BF16 / NVFP4 decoders assume a little-end
 VARIANT_DEFAULTS = {
     "nibble": "lo",        # lo: low nibble = even column | hi: high nibble = even column
     "ws2": "mul",          # mul: W = e2m1 * e4m3 * weight_scale_2 | div: ... / weight_scale_2
+    "gscale": "div",       # div: W = e2m1 * (e4m3 / weight_global_scale) | mul: ... * weight_global_scale
     "qkvz": "interleaved",  # interleaved: per key-head group [q|k|v|z] | flat: [all q|all k|all v|all z]
     "ba": "bbaa",          # bbaa: per group [b,b,a,a] | baba: per group [b,a,b,a] | flat: [all b|all a]
     "gate": "perhead",     # perhead: q_proj = per head [q|gate] | flat: [all q|all gate]
@@ -386,14 +395,21 @@ class Model:
         return None
 
     def _fp4(self, prefix):
-        """An NVFP4 linear dequantized to a dense float [N, K] matrix (not cached)."""
-        codes = self.ck.raw(prefix + ".weight")              # U8      [N, K/2]
+        """An NVFP4 linear dequantized to a dense float [N, K] matrix (not cached), from either
+        container: modelopt's `.weight` + `.weight_scale_2` (a multiplier) or compressed-tensors'
+        `.weight_packed` + `.weight_global_scale` (a divisor)."""
+        packed = prefix + ".weight_packed" in self.ck
+        codes = self.ck.raw(prefix + (".weight_packed" if packed else ".weight"))   # U8 [N, K/2]
         scale = self.ck.raw(prefix + ".weight_scale")        # E4M3    [N, K/16]
-        ws2 = np.float32(self.ck.raw(prefix + ".weight_scale_2").reshape(()))
         n, half = codes.shape
         w = self._pair[codes].view(np.float32)               # [N, K]: byte j -> columns 2j, 2j+1
         s = _E4M3[scale]                                     # [N, K/16]
-        s = s * ws2 if self.var["ws2"] == "mul" else s / ws2
+        if packed:
+            g = np.float32(self.ck.raw(prefix + ".weight_global_scale").reshape(()))
+            s = s / g if self.var["gscale"] == "div" else s * g
+        else:
+            ws2 = np.float32(self.ck.raw(prefix + ".weight_scale_2").reshape(()))
+            s = s * ws2 if self.var["ws2"] == "mul" else s / ws2
         w = w.reshape(n, half // 8, 16)
         w *= s[:, :, None]
         w = w.reshape(n, 2 * half)
@@ -1139,6 +1155,8 @@ def cmd_mtp(a):
     position t+2 (its row t+1). Measured for both conventions of "hidden state" (before / after
     model.norm), each with and without the draft layer's own K/V history over the earlier pairs."""
     model = make_model(a)
+    if "mtp.fc.weight" not in model.ck:
+        raise SystemExit("this checkpoint carries no MTP draft head (no mtp.* tensors): nothing to measure")
     t0 = time.time()
     jobs = []
     if a.refset:

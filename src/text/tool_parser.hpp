@@ -48,6 +48,7 @@
 #include <functional>
 #include <map>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "loaders/minijson.hpp"
@@ -195,6 +196,17 @@ struct ChatMarkers {
   // (a revision without one leaves it unavailable — never guessed).
   static ChatMarkers from_tokenizer(const Tokenizer& tok);
 };
+
+// Which body a chat template writes between the two <tool_call> tokens
+// (ChatMarkers::json_calls), read off the template's own source. The two
+// Qwen3-Next checkpoints share a model class and a tokenizer and differ
+// here: Qwen3-Next-80B-A3B-Instruct's template spells the Hermes form —
+// `<tool_call>\n{"name": NAME, "arguments": {...}}` — and Qwen3-Coder-Next's
+// the XML tags of the Qwen3.8 and MiMo templates (`<function=NAME>` /
+// `<parameter=K>`), so neither the family nor the tokenizer can state it.
+// True when the source writes an "arguments" member and never a
+// `<function=` tag; false for everything else.
+bool chat_template_writes_json_calls(std::string_view source);
 
 // The request's tool schemas, reduced to what value typing needs: for
 // every function name, each declared parameter's JSON-schema type.

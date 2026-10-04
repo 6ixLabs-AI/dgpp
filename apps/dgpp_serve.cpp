@@ -970,6 +970,12 @@ struct Qwen35Family final : ServeFamily {
   }
   dgpp::MemoryPlan plan(int forward_rows, int64_t context, int rank, int world_, bool fabric, int slots,
                         bool mtp, int decode_rows) const override {
+    // A checkpoint without a draft layer (Qwen3-Coder-Next carries no
+    // `mtp.*`): engine.mtp has nothing to run, and says so before the plan.
+    if (mtp && cfg.mtp_layer() < 0)
+      throw std::invalid_argument(
+          "engine.mtp is on, but this checkpoint carries no draft layer (no mtp.* tensors) — set "
+          "engine.mtp to false");
     return dgpp::Qwen35Model::plan_memory(cfg, forward_rows, context, fabric ? rank : 0, fabric ? world_ : 1,
                                           fabric || !dflash.empty() ? dgpp::LoaderResidency::Resident : dgpp::LoaderResidency::Streaming,
                                           slots, fabric && mtp, decode_rows, dflash);
@@ -1114,14 +1120,26 @@ int prefix_arena_slots(size_t bytes, double gib) {
   return static_cast<int>(std::min(slots, 4096.0));
 }
 
-// The <tool_call> block's body is the family's: Qwen3-Next's template asks
-// for one JSON object between the two tokens the Qwen3.8 and MiMo templates
-// fill with XML tags, and the tokenizers carry the same two tokens — so the
-// family states it, to the frontend's markers (which the parser reads) and
-// to the grammar vocabulary alike (ChatMarkers::json_calls).
-bool family_json_calls(std::string_view family) { return family == "qwen3_next"; }
-// Families whose checkpoint is an Instruct model with no reasoning to control: a request's
-// reasoning_effort is accepted and does nothing (TextFrontend's instruct_only).
+// The <tool_call> block's body is the checkpoint's: Qwen3-Next-80B's template
+// asks for one JSON object between the two tokens the Qwen3.8 and MiMo
+// templates fill with XML tags, and Qwen3-Coder-Next — the same family and
+// the same tokenizer — fills them with those XML tags (vLLM's qwen3_coder
+// parser). The tokenizers carry the same two tokens, so inside the family
+// the checkpoint's own template states it (text/tool_parser.hpp), to the
+// frontend's markers (which the parser reads) and to the grammar vocabulary
+// alike (ChatMarkers::json_calls). A template that cannot be read leaves the
+// JSON form; the template loader refuses that checkpoint anyway.
+bool family_json_calls(std::string_view family, const std::string& ckpt) {
+  if (family != "qwen3_next") return false;
+  std::ifstream f(fs::path(ckpt) / "chat_template.jinja");
+  if (!f) return true;
+  std::stringstream ss;
+  ss << f.rdbuf();
+  return dgpp::text::chat_template_writes_json_calls(ss.str());
+}
+// Families whose checkpoints have no reasoning to control (Qwen3-Next-80B
+// Instruct, Qwen3-Coder-Next): a request's reasoning_effort is accepted and
+// does nothing (TextFrontend's instruct_only).
 bool family_instruct_only(std::string_view family) { return family == "qwen3_next"; }
 
 int serve_openai(dgpp::sched::SchedulerEngine* engine, int64_t vocab_size,
@@ -1167,8 +1185,12 @@ int serve_openai(dgpp::sched::SchedulerEngine* engine, int64_t vocab_size,
     }
     frontend = vision_frontend ? std::move(vision_frontend)
                                : std::make_unique<dgpp::serve::TextFrontend>(
-                                     &tok, &*tpl, family_json_calls(family_name),
+                                     &tok, &*tpl, family_json_calls(family_name, ckpt),
                                      family_instruct_only(family_name));
+    if (family_name == "qwen3_next")
+      DGPP_LOG_INFO("serve: the template writes its tool calls as {}",
+                    family_json_calls(family_name, ckpt) ? "one JSON object (the Hermes form)"
+                                                         : "<function=...> XML tags");
     if (engine->supports_images())
       DGPP_LOG_INFO("serve: image inputs enabled ({} visual tokens per image max)",
                     dgpp::kMaxImageTokens);
@@ -2687,13 +2709,13 @@ int main(int argc, char** argv) {
       const dgpp::text::Tokenizer tok = dgpp::text::Tokenizer::load(
           (fs::path(ckpt) / "tokenizer.json").string());
       // The DSML tag spelling is the family's (the two DeepSeek families
-      // share the tag token; the tokenizer cannot tell them apart), and so
-      // is the JSON call form (family_json_calls).
+      // share the tag token; the tokenizer cannot tell them apart); the JSON
+      // call form is the checkpoint's template's (family_json_calls).
       dgpp::text::GrammarVocab v = dgpp::text::GrammarVocab::from_tokenizer(
           tok, generation_eos, static_cast<int>(family->vocab_size()),
           std::string(family->name()) == "deepseek_v4" ? dgpp::text::DsmlDialect::kV4
                                                        : dgpp::text::DsmlDialect::kV41,
-          family_json_calls(family->name()));
+          family_json_calls(family->name(), ckpt));
       DGPP_LOG_INFO(
           "serve: grammar vocabulary built ({} ids, tool markers {}, "
           "call-turn EOS {})",

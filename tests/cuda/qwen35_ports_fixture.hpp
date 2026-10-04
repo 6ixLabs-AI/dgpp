@@ -1,0 +1,163 @@
+#pragma once
+// Synthetic mini-checkpoints for the qwen3_5 stack's later ports (2026-10-04:
+// Qwen3-Coder-Next's compressed-tensors NVFP4 container on the Qwen3Next
+// dialect): a small config written as config.json and its binding table
+// written as one safetensors shard, so fixture and table cannot disagree.
+// Values are deterministic per tensor name (glm_rng's scheme); the fixture
+// keeps every tensor's bytes so a test can state what the loader must hold.
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <filesystem>
+#include <stdexcept>
+#include <string>
+#include <unordered_map>
+#include <vector>
+
+#include "common/dtypes.hpp"
+#include "glm_rng.hpp"
+#include "models/qwen/binding35.hpp"
+#include "models/qwen/config35.hpp"
+
+namespace qwen35portsfx {
+
+namespace fs = std::filesystem;
+using dgpp::Qwen35TextConfig;
+using dgpp::QwenExpectedTensor;
+using dgpp::QwenTensorRole;
+
+// The kernels' pinned widths (128-wide GDN heads, 256-wide attention heads)
+// at counts that slice at worlds 1, 2 and 4, as the 80B's fixture
+// (qwen3next_loader_fixture.hpp): 4 key heads x 8 value heads, 4 query heads
+// on 2 kv heads, hidden 256, three GDN layers then one attention layer, 4
+// experts of intermediate 64 and a shared expert of 512.
+//
+// Qwen3-Coder-Next: the compressed-tensors recipe, no draft layer.
+inline const char* coder_next_config_json() {
+  return R"json({
+  "architectures": ["Qwen3NextForCausalLM"], "model_type": "qwen3_next",
+  "bos_token_id": 1, "eos_token_id": 1, "decoder_sparse_step": 1, "full_attention_interval": 4,
+  "head_dim": 256, "hidden_act": "silu", "hidden_size": 256, "intermediate_size": 512,
+  "layer_types": ["linear_attention", "linear_attention", "linear_attention", "full_attention"],
+  "linear_conv_kernel_dim": 4, "linear_key_head_dim": 128, "linear_num_key_heads": 4,
+  "linear_num_value_heads": 8, "linear_value_head_dim": 128, "max_position_embeddings": 4096,
+  "mlp_only_layers": [], "moe_intermediate_size": 64, "norm_topk_prob": true,
+  "num_attention_heads": 4, "num_experts": 4, "num_experts_per_tok": 2, "num_hidden_layers": 4,
+  "num_key_value_heads": 2, "partial_rotary_factor": 0.25, "rms_norm_eps": 1e-06,
+  "rope_scaling": null, "rope_theta": 5000000, "shared_expert_intermediate_size": 512,
+  "tie_word_embeddings": false, "vocab_size": 64,
+  "quantization_config": {"config_groups": {"group_0": {"format": "nvfp4-pack-quantized",
+    "weights": {"dynamic": false, "num_bits": 4, "type": "float", "group_size": 16,
+                "strategy": "tensor_group", "symmetric": true},
+    "targets": ["Linear"]}}, "format": "nvfp4-pack-quantized", "kv_cache_scheme": null,
+    "quant_method": "compressed-tensors", "quantization_status": "compressed",
+    "sparsity_config": {}, "transform_config": {}}
+})json";
+}
+
+struct Fixture {
+  Qwen35TextConfig cfg;
+  std::string dir;
+  std::vector<QwenExpectedTensor> table;
+  std::unordered_map<std::string, std::vector<uint8_t>> src;  // every tensor's bytes, by name
+
+  const std::vector<uint8_t>& bytes(const std::string& name) const {
+    const auto it = src.find(name);
+    if (it == src.end()) throw std::runtime_error("fixture has no tensor " + name);
+    return it->second;
+  }
+  // A BF16 tensor's bits / an F32 scalar.
+  std::vector<uint16_t> bf16(const std::string& name) const {
+    const std::vector<uint8_t>& b = bytes(name);
+    std::vector<uint16_t> out(b.size() / 2);
+    std::memcpy(out.data(), b.data(), out.size() * 2);
+    return out;
+  }
+  float f32(const std::string& name) const {
+    float v;
+    std::memcpy(&v, bytes(name).data(), 4);
+    return v;
+  }
+};
+
+inline std::vector<uint8_t> tensor_bytes(const QwenExpectedTensor& e, const Qwen35TextConfig& cfg) {
+  std::vector<uint8_t> out(e.nbytes());
+  glmrng::Rng rng(glmrng::seed_for(e.name));
+  const size_t n = e.numel();
+  for (size_t i = 0; i < n; ++i) {
+    switch (e.dtype) {
+      case dgpp::DType::BF16: {
+        const uint16_t bits = dgpp::float_to_bf16_bits(0.05f * rng.normal3());
+        std::memcpy(&out[i * 2], &bits, 2);
+        break;
+      }
+      case dgpp::DType::U8:  // two e2m1 codes: every byte is valid
+        out[i] = static_cast<uint8_t>(rng.next() & 0xFFu);
+        break;
+      case dgpp::DType::F8_E4M3:  // a positive block scale in [2^-3, 2^2): never the NaN code
+        out[i] = static_cast<uint8_t>(0x20u + (rng.next() % 0x28u));
+        break;
+      case dgpp::DType::F32: {
+        // The NVFP4 per-tensor scale: modelopt's small multiplier, or
+        // compressed-tensors' large divisor. Every other scalar: positive.
+        float v = 0.5f + 0.25f * rng.unit();
+        if (e.role == QwenTensorRole::Fp4Global)
+          v = cfg.quant_kind == dgpp::Qwen35QuantKind::Nvfp4Packed ? 400.0f + 100.0f * rng.unit()
+                                                                 : 0.002f + 0.001f * rng.unit();
+        std::memcpy(&out[i * 4], &v, 4);
+        break;
+      }
+      default:
+        throw std::runtime_error("fixture dtype not handled: " + e.name);
+    }
+  }
+  return out;
+}
+
+// Writes `dir` (config.json + one safetensors shard) for a tiny config and
+// returns what was written.
+inline Fixture write_fixture(const std::string& dir, const char* config_json) {
+  Fixture fx;
+  fx.dir = dir;
+  const fs::path root(dir);
+  fs::remove_all(root);
+  fs::create_directories(root);
+  {
+    std::FILE* f = std::fopen((root / "config.json").c_str(), "wb");
+    if (!f) throw std::runtime_error("cannot write config.json");
+    std::fwrite(config_json, 1, std::strlen(config_json), f);
+    std::fclose(f);
+  }
+  fx.cfg = Qwen35TextConfig::from_json_file((root / "config.json").string());
+  fx.table = dgpp::qwen35_expected_text_tensors(fx.cfg);
+  std::string header = "{";
+  std::vector<uint8_t> data;
+  bool first = true;
+  for (const auto& e : fx.table) {
+    std::vector<uint8_t> b = tensor_bytes(e, fx.cfg);
+    std::string shape = "[";
+    for (size_t i = 0; i < e.shape.size(); ++i) {
+      if (i) shape += ",";
+      shape += std::to_string(e.shape[i]);
+    }
+    shape += "]";
+    if (!first) header += ",";
+    first = false;
+    header += "\"" + e.name + "\":{\"dtype\":\"" + std::string(dgpp::dtype_name(e.dtype)) +
+              "\",\"shape\":" + shape + ",\"data_offsets\":[" + std::to_string(data.size()) + "," +
+              std::to_string(data.size() + b.size()) + "]}";
+    data.insert(data.end(), b.begin(), b.end());
+    fx.src.emplace(e.name, std::move(b));
+  }
+  header += "}";
+  std::FILE* f = std::fopen((root / "model.safetensors").c_str(), "wb");
+  if (!f) throw std::runtime_error("cannot write shard");
+  const uint64_t hlen = header.size();
+  std::fwrite(&hlen, 8, 1, f);
+  std::fwrite(header.data(), 1, hlen, f);
+  std::fwrite(data.data(), 1, data.size(), f);
+  std::fclose(f);
+  return fx;
+}
+
+}  // namespace qwen35portsfx

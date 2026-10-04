@@ -1,5 +1,6 @@
 // qwen35_forward_check: the qwen3_5 stack's world-1 diagnostic forward over
-// a real checkpoint (Qwen3.8-27B or, the Qwen3Next dialect, Qwen3-Next-80B) —
+// a real checkpoint (Qwen3.8-27B or, the Qwen3Next dialect, Qwen3-Next-80B and
+// Qwen3-Coder-Next) —
 // one prompt of token ids through the loader, the per-layer residual
 // magnitudes, every position's top-k next-token logits, and the
 // teacher-forced log-probability of each given token (the number an

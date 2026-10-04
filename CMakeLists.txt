@@ -821,6 +821,8 @@ add_executable(unit_tests
   tests/unit/qwen35_binding_test.cpp
   tests/unit/qwen3next_config_test.cpp
   tests/unit/qwen3next_loader_test.cpp
+  tests/unit/qwen3codernext_config_test.cpp
+  tests/unit/qwen3codernext_loader_test.cpp
   tests/unit/qwen_dflash2_config_test.cpp
   tests/unit/dflash2_speculator_test.cpp
   tests/unit/qwen_rope_scaling_test.cpp
@@ -945,6 +947,15 @@ dgpp_set_common(qwen3next_tool_calls_test)
 add_test(NAME qwen3next_tool_calls_test
   COMMAND qwen3next_tool_calls_test ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/qwen3next_chat_template_goldens.jsonl)
 set_tests_properties(qwen3next_tool_calls_test PROPERTIES SKIP_RETURN_CODE 2 LABELS "host;checkpoint")
+# Qwen3-Coder-Next over its real tokenizer and template (host): the same
+# model class and tokenizer, the XML call form — what the template states,
+# the parser and the forced-call grammar over the tokenizer's own pieces.
+add_executable(qwen3codernext_tool_calls_test tests/host/qwen3codernext_tool_calls_test.cpp)
+target_include_directories(qwen3codernext_tool_calls_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(qwen3codernext_tool_calls_test PRIVATE dgpp_models_glm Threads::Threads)
+dgpp_set_common(qwen3codernext_tool_calls_test)
+add_test(NAME qwen3codernext_tool_calls_test COMMAND qwen3codernext_tool_calls_test)
+set_tests_properties(qwen3codernext_tool_calls_test PROPERTIES SKIP_RETURN_CODE 2 LABELS "host;checkpoint")
 
 # M6 Stage 4: the serving capstone — HTTP/SSE over epoll + the OpenAI
 # generation service (host-only; the engine adapters live in the apps,
@@ -1300,6 +1311,16 @@ target_link_libraries(qwen3next_loader_test PRIVATE dgpp_models_qwen_loader dgpp
 dgpp_set_common(qwen3next_loader_test)
 add_test(NAME qwen3next_loader_test COMMAND qwen3next_loader_test)
 set_tests_properties(qwen3next_loader_test PROPERTIES LABELS "gpu")
+
+# The later ports' copy pass over their synthetic fixtures (Qwen3-Coder-Next's
+# compressed-tensors NVFP4 container): resident values against the fixture's
+# bytes, rank slices, the FP8 form of the dense stack.
+add_executable(qwen35_ports_loader_test tests/cuda/qwen35_ports_loader_test.cpp)
+target_include_directories(qwen35_ports_loader_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/tests/cuda)
+target_link_libraries(qwen35_ports_loader_test PRIVATE dgpp_models_qwen_loader dgpp_models_qwen dgpp_loaders CUDA::cudart Threads::Threads)
+dgpp_set_common(qwen35_ports_loader_test)
+add_test(NAME qwen35_ports_loader_test COMMAND qwen35_ports_loader_test)
+set_tests_properties(qwen35_ports_loader_test PROPERTIES LABELS "gpu")
 
 add_executable(mimo_attn_test tests/cuda/mimo_attn_test.cu)
 target_include_directories(mimo_attn_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/tests/cuda)

@@ -11,7 +11,8 @@ without `.example` and stay Git-ignored; the launcher fills the nodes, the SSH
 user and the ports from the site's `.env` (`scripts/site_env.py`).
 
 - Model names are `glm-5.3-flash`, `glm-5.3` (the full model), `glm-4.7`,
-  `qwen-3.8-flash-next`, `qwen3.8-27b`, `deepseek-v4.1-flash` and `mimo-v2.6-flash`.
+  `qwen-3.8-flash-next`, `qwen3.8-27b`, `qwen3-next-80b`, `qwen3-coder-next`,
+  `deepseek-v4.1-flash` and `mimo-v2.6-flash`.
 - The quant names the checkpoint representation: `fp8`, `nvfp4`,
   `nvfp4-fp8` for the custom GLM-5.3-Flash hybrid, `int4-int8` for the full
   GLM-5.3's pack-quantized release (int4 group-64 routed experts, int8
@@ -29,7 +30,9 @@ family measured best, with the decode graph, at the request-slot count and
 cache budget that measured at or above every other shape tried — except a
 `_dflash2` variant, which names `engine.dflash_model` instead of MTP and
 runs the eager world-1 path (no graph), the external block drafter
-replacing the MTP draft. The shapes
+replacing the MTP draft, and a checkpoint that carries no draft layer
+(Qwen3-Coder-Next: no `mtp.*` tensors), whose template runs the plain
+decode graph. The shapes
 a template does not name are knobs appended at boot:
 `scripts/dgpp-cluster up --config FILE --knobs "FLAGS"`.
 
@@ -54,6 +57,9 @@ a template does not name are knobs appended at boot:
 | [cluster_deepseek-v4-flash_mxfp4-fp8_w2.example.json](cluster_deepseek-v4-flash_mxfp4-fp8_w2.example.json) | the same on two nodes: the scheduled DSpark depth with the two-node costs, four request slots, the full 1M-token context (95.8 GiB of the 121.6 GiB per rank with an 8 GiB prefix cache) | T=1: `--no-mtp` |
 | [cluster_qwen3.8-27b_fp8_w1.example.json](cluster_qwen3.8-27b_fp8_w1.example.json) | Qwen3.8-27B-FP8 on one Spark: the dense 27B (48 Gated-DeltaNet + 16 full-attention layers) from its native block-FP8 checkpoint, MTP depth 2 with the decode graph, 256K context, eight request slots; the lm head requantized to block FP8 (`dense_weights: "fp8"`: half its bytes per decode row, MTP depth-2 C1 151 → 132 ms/step at the same acceptance, HumanEval/GSM8K 39/40 each), the rest exact | T=1: `--no-mtp`; the checkpoint's BF16 head: `--dense-weights checkpoint`; the opt-in prefill recipe `--prefill-fp8-per-tensor` (cuBLASLt's per-tensor e4m3 kernels, ~2x the prefill rate; changes long-context transcripts) |
 | [cluster_qwen3.8-27b_fp8_w1_dflash2.example.json](cluster_qwen3.8-27b_fp8_w1_dflash2.example.json) | Qwen3.8-27B-FP8 on one Spark with the DFlash2 block drafter (`engine.dflash_model: z-lab/Qwen3.8-27B-DFlash2`, the MTP draft off, the eager world-1 engine): seven drafts per step through the shared head and the rank-256 selector walk, the multi-slot verify replayed as a captured graph (`engine.dflash_verify_graph`), the redrafts stacked across slots (`engine.dflash_draft_batch`); the FP8 lm head like the base template (C1 180 → 164 ms/step, C4 246–262 → 217–231) | plain from this template: `--no-dflash`; the eager verify batch: `--no-dflash-verify-graph`; a verify-depth cap: `--dflash-depth N` |
+| [cluster_qwen3-next-80b_nvfp4_w1.example.json](cluster_qwen3-next-80b_nvfp4_w1.example.json) | Qwen3-Next-80B-A3B-Instruct NVFP4 on one Spark (the Qwen3Next dialect of the `qwen3_5` stack, [6IXSERVE.md](../6IXSERVE.md)): MTP depth 2, the dense projections and the head FP8 at load, eight request slots, a 524288-token pool, interleaved prefill (256-token busy / 4096-token idle budgets, four decode passes a chunk), answer limits clamped | the BF16 dense stack: `--dense-weights checkpoint`; T=1: `--no-mtp` |
+| [cluster_qwen3-next-80b_nvfp4_w1_yarn512k.example.json](cluster_qwen3-next-80b_nvfp4_w1_yarn512k.example.json) | the same with the opt-in YaRN ramp (`engine.rope_scaling` yarn ×2 over the checkpoint's 262 144 positions: one request reaches 524 288 tokens), four request slots, a 565 248-token pool; unit-tested, not yet verified on a GPU | the plain 262K template: [cluster_qwen3-next-80b_nvfp4_w1.example.json](cluster_qwen3-next-80b_nvfp4_w1.example.json) |
+| [cluster_qwen3-coder-next_nvfp4_w1.example.json](cluster_qwen3-coder-next_nvfp4_w1.example.json) | Qwen3-Coder-Next on one Spark from `RedHatAI/Qwen3-Coder-Next-NVFP4` (the same model class in its compressed-tensors NVFP4 container: attention q/k/v/o, shared expert and routed experts NVFP4, the Gated DeltaNet and the router BF16): no draft layer in the checkpoint, so no MTP — the plain decode graph; the 80B template's slots, pool and prefill budgets; tool calls in the template's `<function=...>` XML form. Written 2026-10-04 from the checkpoint's headers; NOT yet run on a GPU | the BF16 dense stack (the checkpoint's own values, no FP8 re-encode): `--dense-weights checkpoint` |
 
 The Qwen NVFP4 templates use `engine.fp8_head: "mma"` after matched
 [real-checkpoint numerical checks](../benchmarks/results/2026-09-21-qwen-fp8-head-numerics.md)

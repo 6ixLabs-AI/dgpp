@@ -5,7 +5,10 @@
 // The Qwen3Next dialect builds the same residents in their BF16 forms from
 // the modelopt NVFP4 release: gathered GDN projections, NVFP4 output
 // projections and shared expert dequantized on the host, the routed experts
-// as Flash-Next's loader holds them (models/qwen/loader.cpp).
+// as Flash-Next's loader holds them (models/qwen/loader.cpp). The same
+// dialect's compressed-tensors container (Qwen3-Coder-Next) differs in the
+// NVFP4 set's names, in its per-tensor scale (a divisor) and in which
+// matrices carry the set: the attention q/k/v as well, the GDN's out_proj not.
 #include "models/qwen/loader35.hpp"
 
 #include <algorithm>
@@ -110,6 +113,31 @@ void qwen3next_fp4_dequant_bf16(const uint8_t* payload, size_t payload_stride,
       for (int c = 0; c < 16; ++c)
         value[c] = float_to_bf16_bits(fp4_e2m1_bits_to_float(static_cast<uint8_t>(c)) * s *
                                       weight_scale_2);
+      for (int64_t j = 0; j < kBytes; ++j) {
+        const uint8_t byte = pr[b * kBytes + j];
+        o[b * kGroup + 2 * j] = value[byte & 0xFu];
+        o[b * kGroup + 2 * j + 1] = value[byte >> 4];
+      }
+    }
+  }
+}
+
+void qwen35_fp4_packed_dequant_bf16(const uint8_t* payload, size_t payload_stride,
+                                    const uint8_t* scales, size_t scale_stride,
+                                    float weight_global_scale, int64_t rows, int64_t cols,
+                                    uint16_t* out) {
+  constexpr int64_t kGroup = kFp4Group, kBytes = kFp4Group / 2;
+  for (int64_t n = 0; n < rows; ++n) {
+    const uint8_t* pr = payload + static_cast<size_t>(n) * payload_stride;
+    const uint8_t* sr = scales + static_cast<size_t>(n) * scale_stride;
+    uint16_t* o = out + static_cast<size_t>(n) * static_cast<size_t>(cols);
+    for (int64_t b = 0; b < cols / kGroup; ++b) {
+      // The block's scale over the tensor's global scale first (one fp32
+      // rounding), then the sixteen codes under it.
+      const float s = fp8_e4m3_bits_to_float(sr[b]) / weight_global_scale;
+      uint16_t value[16];
+      for (int c = 0; c < 16; ++c)
+        value[c] = float_to_bf16_bits(fp4_e2m1_bits_to_float(static_cast<uint8_t>(c)) * s);
       for (int64_t j = 0; j < kBytes; ++j) {
         const uint8_t byte = pr[b * kBytes + j];
         o[b * kGroup + 2 * j] = value[byte & 0xFu];
@@ -495,10 +523,23 @@ struct Qwen35LoaderFamily::Builder : WeightBuilder<QwenExpectedTensor> {
     return load_bf16_cols_fp8(name, col_start, cols);
   }
 
-  // The modelopt NVFP4 set of the matrix `base` ("...out_proj"): base.weight
-  // U8 [N, K/2] (two e2m1 codes a byte), base.weight_scale e4m3 [N, K/16],
-  // base.weight_scale_2 F32 [] (the per-tensor scale, a multiplier) and
-  // base.input_scale F32 [] (the recipe's activation scale).
+  // The NVFP4 set of the matrix `base` ("...out_proj") in the container the
+  // recipe names. modelopt: base.weight U8 [N, K/2] (two e2m1 codes a byte),
+  // base.weight_scale e4m3 [N, K/16], base.weight_scale_2 F32 [] (the
+  // per-tensor scale, a multiplier) and base.input_scale F32 [] (the
+  // recipe's activation scale). compressed-tensors: base.weight_packed and
+  // base.weight_scale in the same geometry, base.weight_global_scale F32 [1]
+  // (the per-tensor scale, a divisor) and base.input_global_scale F32 [1].
+  bool fp4_packed() const { return cfg.quant_kind == Qwen35QuantKind::Nvfp4Packed; }
+  std::string fp4_payload_name(const std::string& base) const {
+    return base + (fp4_packed() ? ".weight_packed" : ".weight");
+  }
+  std::string fp4_global_name(const std::string& base) const {
+    return base + (fp4_packed() ? ".weight_global_scale" : ".weight_scale_2");
+  }
+  std::string fp4_input_name(const std::string& base) const {
+    return base + (fp4_packed() ? ".input_global_scale" : ".input_scale");
+  }
   struct Fp4Set {
     const QwenExpectedTensor* payload = nullptr;
     const QwenExpectedTensor* scales = nullptr;
@@ -510,9 +551,9 @@ struct Qwen35LoaderFamily::Builder : WeightBuilder<QwenExpectedTensor> {
   // (each carries its own scales), columns start and span whole 16-blocks.
   Fp4Set fp4_set(const std::string& base, int64_t r0, int64_t rn, int64_t c0, int64_t cn) const {
     Fp4Set s;
-    s.payload = &expected(base + ".weight");
+    s.payload = &expected(fp4_payload_name(base));
     s.scales = &expected(base + ".weight_scale");
-    s.global = &expected(base + ".weight_scale_2");
+    s.global = &expected(fp4_global_name(base));
     if (s.payload->shape.size() != 2) fail(base + ": NVFP4 matrix needs 2 dims");
     s.N = s.payload->shape[0];
     s.K = s.payload->shape[1] * 2;
@@ -527,20 +568,23 @@ struct Qwen35LoaderFamily::Builder : WeightBuilder<QwenExpectedTensor> {
     return s;
   }
 
-  // The per-tensor scale (the copy pass only: the counting pass has no sources).
-  float read_weight_scale_2(const Fp4Set& s) {
+  // The per-tensor scale as the container stores it — modelopt's multiplier
+  // or compressed-tensors' divisor (the copy pass only: the counting pass has
+  // no sources).
+  float read_fp4_global(const Fp4Set& s) {
     const TensorInfo& t = source(s.global->name);
-    float ws2;
-    std::memcpy(&ws2, t.data, 4);
-    if (!(ws2 > 0.0f) || !std::isfinite(ws2))
+    float g;
+    std::memcpy(&g, t.data, 4);
+    if (!(g > 0.0f) || !std::isfinite(g))
       fail("'" + s.global->name + "' is not a positive finite scale");
     consumed(t);
-    return ws2;
+    return g;
   }
 
   // The copy pass's dequant of rows [r0, +rn) x columns [c0, +cn) of an NVFP4
-  // matrix into `host` ([rn, cn] BF16; qwen3next_fp4_dequant_bf16), and the
-  // set's byte accounting (both passes).
+  // matrix into `host` ([rn, cn] BF16; qwen3next_fp4_dequant_bf16, or
+  // qwen35_fp4_packed_dequant_bf16 for the compressed-tensors container), and
+  // the set's byte accounting (both passes).
   void read_fp4_dequantized(const Fp4Set& s, int64_t r0, int64_t rn, int64_t c0, int64_t cn,
                             uint16_t* host) {
     const size_t pc_full = static_cast<size_t>(s.K / 2),
@@ -548,11 +592,15 @@ struct Qwen35LoaderFamily::Builder : WeightBuilder<QwenExpectedTensor> {
     if (copy) {
       const TensorInfo& tp = source(s.payload->name);
       const TensorInfo& ts = source(s.scales->name);
-      qwen3next_fp4_dequant_bf16(
-          static_cast<const uint8_t*>(tp.data) + static_cast<size_t>(r0) * pc_full + c0 / 2,
-          pc_full,
-          static_cast<const uint8_t*>(ts.data) + static_cast<size_t>(r0) * sc_full + c0 / kFp4Group,
-          sc_full, read_weight_scale_2(s), rn, cn, host);
+      const uint8_t* codes =
+          static_cast<const uint8_t*>(tp.data) + static_cast<size_t>(r0) * pc_full + c0 / 2;
+      const uint8_t* block_scales =
+          static_cast<const uint8_t*>(ts.data) + static_cast<size_t>(r0) * sc_full + c0 / kFp4Group;
+      const float global = read_fp4_global(s);
+      if (fp4_packed())
+        qwen35_fp4_packed_dequant_bf16(codes, pc_full, block_scales, sc_full, global, rn, cn, host);
+      else
+        qwen3next_fp4_dequant_bf16(codes, pc_full, block_scales, sc_full, global, rn, cn, host);
       consumed(tp);
       consumed(ts);
     }
@@ -571,7 +619,7 @@ struct Qwen35LoaderFamily::Builder : WeightBuilder<QwenExpectedTensor> {
     uint16_t* dst =
         static_cast<uint16_t*>(bump.alloc(static_cast<size_t>(rn) * static_cast<size_t>(cn) * 2));
     read_fp4_dequantized(s, r0, rn, c0, cn, copy ? bump.host(dst) : nullptr);
-    (void)load_raw(base + ".input_scale");
+    (void)load_raw(fp4_input_name(base));
     return dst;
   }
 
@@ -585,25 +633,27 @@ struct Qwen35LoaderFamily::Builder : WeightBuilder<QwenExpectedTensor> {
     if (copy) bf16.resize(static_cast<size_t>(rn) * static_cast<size_t>(cn));
     read_fp4_dequantized(s, r0, rn, c0, cn, bf16.data());
     const GlmQuantMatrix q = encode_fp8(bf16.data(), static_cast<size_t>(cn), rn, cn);
-    (void)load_raw(base + ".input_scale");
+    (void)load_raw(fp4_input_name(base));
     return q;
   }
   GlmQuantMatrix load_fp4_rows_as_fp8(const std::string& base, int64_t row_start, int64_t rows) {
     require_fp8_aligned(base, row_start, rows);
-    const QwenExpectedTensor& ep = expected(base + ".weight");
+    const QwenExpectedTensor& ep = expected(fp4_payload_name(base));
     return load_fp4_as_fp8(base, row_start, rows, 0, ep.shape.size() == 2 ? ep.shape[1] * 2 : 0);
   }
   GlmQuantMatrix load_fp4_cols_as_fp8(const std::string& base, int64_t col_start, int64_t cols) {
     require_fp8_aligned(base + " cols", col_start, cols);
-    const QwenExpectedTensor& ep = expected(base + ".weight");
+    const QwenExpectedTensor& ep = expected(fp4_payload_name(base));
     return load_fp4_as_fp8(base, 0, ep.shape.empty() ? 0 : ep.shape[0], col_start, cols);
   }
 
   // A routed expert's NVFP4 slice in Flash-Next's resident form (the expert
   // kernels are shared): the payload and block-scale bytes as shipped,
-  // packed contiguous; the per-tensor scale stored in `global` as its
-  // reciprocal (the kernels divide the finished dot by it once); the
-  // activation scale read into the image and kept for the layer's maximum.
+  // packed contiguous; the per-tensor scale stored in `global` as the
+  // divisor the kernels apply to the finished dot once — modelopt's
+  // multiplier as its reciprocal, compressed-tensors' global scale as
+  // shipped; the activation scale read into the image and, in the modelopt
+  // container, kept for the layer's maximum.
   float last_input_scale_ = 0.0f;  // the last NVFP4 expert matrix's input_scale (0: not read)
   GlmFp4Matrix load_fp4_slice(const std::string& base, int64_t r0, int64_t rn, int64_t c0,
                               int64_t cn, float* global) {
@@ -636,15 +686,21 @@ struct Qwen35LoaderFamily::Builder : WeightBuilder<QwenExpectedTensor> {
       }
       consumed(tp);
       consumed(ts);
-      const float inv = 1.0f / read_weight_scale_2(s);
-      std::memcpy(bump.host(global), &inv, 4);
+      const float stored = read_fp4_global(s);
+      const float divisor = fp4_packed() ? stored : 1.0f / stored;
+      std::memcpy(bump.host(global), &divisor, 4);
     }
     note_read(*s.payload, static_cast<size_t>(rn) * pc);
     note_read(*s.scales, static_cast<size_t>(rn) * sc);
     note_read(*s.global, 4);
+    // modelopt's input_scale is the W4A4 prefill path's static activation
+    // scale. compressed-tensors' input_global_scale is another convention
+    // (the global of a locally dynamic activation scale) that nothing here
+    // has been checked against: it is read into the image so the build
+    // accounts for the whole set, and the layer keeps no static scale (0).
     last_input_scale_ = 0.0f;
-    if (copy) std::memcpy(&last_input_scale_, source(base + ".input_scale").data, 4);
-    (void)load_raw(base + ".input_scale");
+    if (copy && !fp4_packed()) std::memcpy(&last_input_scale_, source(fp4_input_name(base)).data, 4);
+    (void)load_raw(fp4_input_name(base));
     q.global_scale = global;
     return q;
   }
@@ -679,10 +735,18 @@ struct Qwen35LoaderFamily::Builder : WeightBuilder<QwenExpectedTensor> {
     g.a_log = load_bf16_as_f32(p + "linear_attn.A_log", r * lv, lv);
     g.dt_bias = load_bf16_as_f32(p + "linear_attn.dt_bias", r * lv, lv);
     g.norm = load_bf16(p + "linear_attn.norm.weight");
-    if (fp8)
+    if (fp4_packed()) {
+      // The compressed-tensors release leaves the GDN whole in BF16.
+      if (fp8)
+        g.out_proj_fp8 =
+            load_dense_cols_fp8(p + "linear_attn.out_proj.weight", r * lv * dv, lv * dv);
+      else
+        g.out_proj = load_bf16_cols(p + "linear_attn.out_proj.weight", r * lv * dv, lv * dv);
+    } else if (fp8) {
       g.out_proj_fp8 = load_fp4_cols_as_fp8(p + "linear_attn.out_proj", r * lv * dv, lv * dv);
-    else
+    } else {
       g.out_proj = load_fp4_as_bf16(p + "linear_attn.out_proj", 0, H, r * lv * dv, lv * dv);
+    }
   }
 
   void build_full_next(const std::string& p, bool is_mtp) {
@@ -700,7 +764,19 @@ struct Qwen35LoaderFamily::Builder : WeightBuilder<QwenExpectedTensor> {
     const int64_t o0 = static_cast<int64_t>(geo.head_begin) * d;
     const int64_t on = static_cast<int64_t>(geo.local_heads) * d;
     const bool fp8 = g_dense_weights_fp8;
-    if (fp8) {
+    if (!is_mtp && fp4_packed()) {
+      // The compressed-tensors release quantizes q, k and v as well:
+      // dequantized on the host like o_proj below.
+      if (fp8) {
+        a.q_proj_fp8 = load_fp4_rows_as_fp8(p + "self_attn.q_proj", q0, qn);
+        a.k_proj_fp8 = load_fp4_rows_as_fp8(p + "self_attn.k_proj", kv0, kvn);
+        a.v_proj_fp8 = load_fp4_rows_as_fp8(p + "self_attn.v_proj", kv0, kvn);
+      } else {
+        a.q_proj = load_fp4_as_bf16(p + "self_attn.q_proj", q0, qn, 0, H);
+        a.k_proj = load_fp4_as_bf16(p + "self_attn.k_proj", kv0, kvn, 0, H);
+        a.v_proj = load_fp4_as_bf16(p + "self_attn.v_proj", kv0, kvn, 0, H);
+      }
+    } else if (fp8) {
       a.q_proj_fp8 = load_dense_rows_fp8(p + "self_attn.q_proj.weight", q0, qn);
       a.k_proj_fp8 = load_dense_rows_fp8(p + "self_attn.k_proj.weight", kv0, kvn);
       a.v_proj_fp8 = load_dense_rows_fp8(p + "self_attn.v_proj.weight", kv0, kvn);
@@ -719,8 +795,10 @@ struct Qwen35LoaderFamily::Builder : WeightBuilder<QwenExpectedTensor> {
         a.o_proj_fp8 = load_fp4_cols_as_fp8(p + "self_attn.o_proj", o0, on);
       else
         a.o_proj = load_fp4_as_bf16(p + "self_attn.o_proj", 0, H, o0, on);
-      // The recipe's FP8 K/V-cache scales ride along: [k, v] in the image
-      // and on the host (after_restore re-reads the host copies).
+    }
+    if (!is_mtp && cfg.quant_kind == Qwen35QuantKind::Nvfp4Modelopt) {
+      // The modelopt recipe's FP8 K/V-cache scales ride along: [k, v] in the
+      // image and on the host (after_restore re-reads the host copies).
       const QwenExpectedTensor& ek = expected(p + "self_attn.k_proj.k_scale");
       const QwenExpectedTensor& ev = expected(p + "self_attn.v_proj.v_scale");
       float* kv = static_cast<float*>(bump.alloc(2 * sizeof(float)));
@@ -800,7 +878,11 @@ struct Qwen35LoaderFamily::Builder : WeightBuilder<QwenExpectedTensor> {
     // sliced on the intermediate axis.
     m.experts_fp4.resize(static_cast<size_t>(E) * 3);
     m.expert_globals = static_cast<float*>(bump.alloc(static_cast<size_t>(E) * 3 * sizeof(float)));
-    m.act_scales = static_cast<float*>(bump.alloc(2 * sizeof(float)));
+    // The layer's static activation scales exist in the modelopt container
+    // alone (load_fp4_slice): without them the W4A4 opt-in quantizes its
+    // activations dynamically.
+    const bool static_act = !fp4_packed();
+    if (static_act) m.act_scales = static_cast<float*>(bump.alloc(2 * sizeof(float)));
     for (int e = 0; e < E; ++e) {
       const std::string ep = p + "mlp.experts." + std::to_string(e) + ".";
       float* g = m.expert_globals + static_cast<size_t>(e) * 3;
@@ -817,7 +899,7 @@ struct Qwen35LoaderFamily::Builder : WeightBuilder<QwenExpectedTensor> {
     // The layer's activation scales go into the image with the weights: a
     // resident-image restore lays the views out without the copy pass, so
     // host-side values would come back as 0.
-    if (copy) {
+    if (copy && static_act) {
       const float v[2] = {m.act_scale_w13, m.act_scale_w2};
       std::memcpy(bump.host(m.act_scales), v, sizeof(v));
     }

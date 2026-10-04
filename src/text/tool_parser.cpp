@@ -53,6 +53,14 @@ ChatMarkers ChatMarkers::from_tokenizer(const Tokenizer& tok) {
   return m;
 }
 
+bool chat_template_writes_json_calls(std::string_view source) {
+  if (source.find("<function=") != std::string_view::npos) return false;
+  // The member's quotes are plain inside a single-quoted Jinja literal and
+  // backslash-escaped inside a double-quoted one.
+  return source.find("\"arguments\"") != std::string_view::npos ||
+         source.find("\\\"arguments\\\"") != std::string_view::npos;
+}
+
 // ---------------------------------------------------------------------------
 // Schemas
 // ---------------------------------------------------------------------------

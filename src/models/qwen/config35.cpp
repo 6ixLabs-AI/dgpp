@@ -417,16 +417,27 @@ Qwen35TextConfig Qwen35TextConfig::parse_qwen3_next(const minijson::Value& root)
     if (!mo->items().empty()) reject("mlp_only_layers", "dense-MLP layers are not implemented");
   }
 
-  // --- MTP ----------------------------------------------------------------------
-  c.mtp_num_layers = optional_int(root, "mtp_num_hidden_layers", 1);
-  if (c.mtp_num_layers != 0 && c.mtp_num_layers != 1)
-    reject("mtp_num_hidden_layers", "only the single draft layer is implemented");
-  if (optional_bool(root, "mtp_use_dedicated_embeddings", false))
-    reject("mtp_use_dedicated_embeddings", "the draft shares the embeddings");
-
   // --- quantization ---------------------------------------------------------------
+  // Two NVFP4 containers of this model class are implemented, told apart by
+  // what the recipe says of itself (the binding table then holds the
+  // checkpoint to that container's tensor names): modelopt's writes no
+  // `format`; llm-compressor's writes "nvfp4-pack-quantized".
   {
     const minijson::Value* q = root.find("quantization_config");
+    // Intel's AutoRound release of Qwen3-Coder-Next (`quant_method`
+    // "auto-round", GPTQ-packed int4 per 128 on every projection, the router
+    // included) has no path here: the routed experts would bind to the packed
+    // core, but the GDN and attention projections have no exact resident form
+    // (a 4-bit code x an f16 scale does not fit BF16's significand).
+    if (q != nullptr && q->is_object()) {
+      const std::string method = optional_string(*q, "quant_method", "");
+      if (method == "auto-round" || method == "gptq")
+        throw std::runtime_error(
+            "Qwen3-Next quantization_config.quant_method: '" + method +
+            "' (the AutoRound int4 release) is not implemented — the engine serves the NVFP4 "
+            "releases of this model class (RedHatAI/Qwen3-Coder-Next-NVFP4, "
+            "nvidia/Qwen3-Next-80B-A3B-Instruct-NVFP4)");
+    }
     const minijson::Value* groups = q != nullptr && q->is_object() ? q->find("config_groups") : nullptr;
     const minijson::Value* g0 = groups != nullptr && groups->is_object() ? groups->find("group_0") : nullptr;
     const minijson::Value* w = g0 != nullptr && g0->is_object() ? g0->find("weights") : nullptr;
@@ -440,8 +451,50 @@ Qwen35TextConfig Qwen35TextConfig::parse_qwen3_next(const minijson::Value& root)
       throw std::runtime_error(
           "Qwen3-Next quantization_config.config_groups.group_0.weights: only NVFP4 "
           "(4-bit float, group 16) is implemented");
-    c.quant_kind = Qwen35QuantKind::Nvfp4Modelopt;
+    const std::string format = optional_string(*q, "format", "");
+    if (format.empty()) {
+      c.quant_kind = Qwen35QuantKind::Nvfp4Modelopt;
+    } else if (format == "nvfp4-pack-quantized") {
+      // compressed-tensors: everything that would change what a stored code
+      // means is read and held to the one recipe the loader implements.
+      const auto bad = [](const std::string& what) {
+        throw std::runtime_error("Qwen3-Next quantization_config (nvfp4-pack-quantized): " + what);
+      };
+      if (!optional_bool(*w, "symmetric", true)) bad("weights.symmetric must be true");
+      if (const std::string st = optional_string(*w, "strategy", "tensor_group"); st != "tensor_group")
+        bad("weights.strategy must be tensor_group, got " + st);
+      if (groups->members().size() != 1) bad("config_groups must hold group_0 alone");
+      const auto empty = [](const minijson::Value* v) {
+        return v == nullptr || v->is_null() || (v->is_object() && v->members().empty());
+      };
+      // A transform (a rotation folded into the weights) or a sparsity mask
+      // would make the stored codes something other than the weights.
+      if (!empty(q->find("transform_config"))) bad("transform_config must be empty");
+      if (!empty(q->find("sparsity_config"))) bad("sparsity_config must be empty");
+      // The modelopt release carries its K/V-cache scales as tensors; this
+      // one names no cache scheme, and one that did would have none to read.
+      if (const minijson::Value* kv = q->find("kv_cache_scheme"); kv != nullptr && !kv->is_null())
+        bad("kv_cache_scheme must be null");
+      if (const std::string st = optional_string(*q, "quantization_status", "compressed");
+          st != "compressed")
+        bad("quantization_status must be compressed, got " + st);
+      c.quant_kind = Qwen35QuantKind::Nvfp4Packed;
+    } else {
+      throw std::runtime_error(
+          "Qwen3-Next quantization_config.format: only the modelopt NVFP4 release (no format) and "
+          "nvfp4-pack-quantized are implemented, got '" + format + "'");
+    }
   }
+
+  // --- MTP ----------------------------------------------------------------------
+  // The config has no field for the draft layer: the recipe identifies the
+  // release (config35.hpp), and a config that names the field overrides it.
+  c.mtp_num_layers = optional_int(root, "mtp_num_hidden_layers",
+                                  c.quant_kind == Qwen35QuantKind::Nvfp4Packed ? 0 : 1);
+  if (c.mtp_num_layers != 0 && c.mtp_num_layers != 1)
+    reject("mtp_num_hidden_layers", "only the single draft layer is implemented");
+  if (optional_bool(root, "mtp_use_dedicated_embeddings", false))
+    reject("mtp_use_dedicated_embeddings", "the draft shares the embeddings");
   return c;
 }
 

@@ -73,6 +73,7 @@ struct Stmt {
   size_t line = 1;
   std::string text;               // Text
   ExprPtr expr;                   // Output/Set value; If+elif cond; For iter
+  ExprPtr filter;                 // For: the loop filter ({% for x in xs if cond %})
   std::string target;             // Set target name
   std::string target_attr;        // Set target attribute ({% set ns.a = %})
   std::vector<std::string> names;  // For loop variables (1 or 2)
@@ -367,6 +368,17 @@ class ExprParser {
 
   ExprPtr parse() {
     ExprPtr e = ternary();
+    expect_end();
+    return e;
+  }
+
+  // The tail of a {% for %} statement: the iterable, then Jinja's optional
+  // loop filter — `for x in xs if cond` (Qwen3-Coder-Next's template walks a
+  // schema's extra keys that way). Jinja parses the iterable without a
+  // conditional expression of its own, so an `if` after it opens the filter.
+  ExprPtr parse_for_iterable(ExprPtr* filter) {
+    ExprPtr e = or_();
+    if (accept_kw("if")) *filter = ternary();
     expect_end();
     return e;
   }
@@ -883,7 +895,7 @@ class StmtParser {
     }
     const size_t ib = rest.find_first_not_of(" \t", in + 4);
     if (ib == std::string::npos) fail(line, "for: missing iterable");
-    s->expr = parse_expr_str(rest.substr(ib), line);
+    s->expr = ExprParser(rest.substr(ib), line).parse_for_iterable(&s->filter);
     ++pos_;
     static const char* kForTerm[] = {"endfor"};
     std::string ended;
@@ -1767,22 +1779,45 @@ struct Renderer {
           break;
         }
         case Stmt::Tag::For: {
-          const Value iter = eval(*s->expr);
+          Value iter = eval(*s->expr);
+          // A mapping iterates as its keys, in member order (Python's dict).
+          if (iter.kind() == Value::Kind::Map) {
+            std::vector<Value> keys;
+            for (const auto& m : *iter.as_members()) keys.push_back(Value::string_value(m.first));
+            iter = Value::list_value(std::move(keys));
+          }
           if (iter.kind() != Value::Kind::List)
             fail(s->line, "for: cannot iterate a non-list");
           const bool tuple = s->names.size() == 2;
-          for (size_t idx = 0; idx < iter.as_list().size(); ++idx) {
-            ctx_.stack.emplace_back();
-            Frame& frame = *ctx_.stack.rbegin();
+          const auto bind = [&](Frame& frame, const Value& item) {
             if (tuple) {
-              const Value& item = iter.as_list()[idx];
               if (item.kind() != Value::Kind::List || item.as_list().size() != 2)
                 fail(s->line, "for: tuple target needs 2-element items");
               frame[s->names[0]] = item.as_list()[0];
               frame[s->names[1]] = item.as_list()[1];
             } else {
-              frame[s->names[0]] = iter.as_list()[idx];
+              frame[s->names[0]] = item;
             }
+          };
+          // The loop filter: the items the condition keeps, each tested with
+          // the loop variables bound (and no `loop` yet, as in Jinja); the
+          // loop then runs over the kept items, and its index, first, last,
+          // length and neighbours are theirs.
+          if (s->filter) {
+            std::vector<Value> kept;
+            for (const Value& item : iter.as_list()) {
+              ctx_.stack.emplace_back();
+              bind(*ctx_.stack.rbegin(), item);
+              const bool keep = eval(*s->filter).truthy();
+              ctx_.stack.pop_back();
+              if (keep) kept.push_back(item);
+            }
+            iter = Value::list_value(std::move(kept));
+          }
+          for (size_t idx = 0; idx < iter.as_list().size(); ++idx) {
+            ctx_.stack.emplace_back();
+            Frame& frame = *ctx_.stack.rbegin();
+            bind(frame, iter.as_list()[idx]);
             // Fresh loop metadata each iteration (index0/index/first/
             // last/length).
             Value::Members lm;
@@ -1881,6 +1916,7 @@ void collect_global_reads(const std::vector<StmtPtr>& body,
         collect_name_reads(*s->expr, bound, out);  // the iterable is the parent's
         std::vector<std::string> inner = bound;
         for (const std::string& n : s->names) inner.push_back(n);
+        if (s->filter) collect_name_reads(*s->filter, inner, out);  // the filter sees the loop variables
         collect_global_reads(s->body, std::move(inner), out);
         break;
       }

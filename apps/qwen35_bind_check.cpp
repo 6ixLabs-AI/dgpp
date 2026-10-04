@@ -1,7 +1,8 @@
 // qwen35_bind_check: offline validation of a qwen3_5-stack checkpoint
 // against the family's expected-tensor table — Qwen3.8-27B (the Qwen35
-// dialect) or Qwen3-Next-80B-A3B (the Qwen3Next dialect: flat config, fused
-// GDN projections, the routed MoE, the modelopt NVFP4 set). Reads
+// dialect) or the Qwen3Next dialect (flat config, fused GDN projections,
+// the routed MoE): Qwen3-Next-80B-A3B's modelopt NVFP4 set, or
+// Qwen3-Coder-Next's compressed-tensors one. Reads
 // config.json and every safetensors header; no payload bytes are touched.
 // Exit 0 only when the binding is exact: every expected tensor present with
 // its dtype and shape, nothing unexpected.

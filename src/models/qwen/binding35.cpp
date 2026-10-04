@@ -44,17 +44,46 @@ void add_fp4(TensorList& out, const std::string& base, int64_t rows, int64_t col
       QwenTensorRole::InputScale);
 }
 
-// A Qwen3Next matrix the release quantizes in the backbone and ships in
-// BF16 in the draft layer (`mtp.*` is on the recipe's ignore list).
-void add_fp4_or_bf16(TensorList& out, const std::string& base, int64_t rows, int64_t cols,
-                     QwenWeightClass cls, int layer, int expert, bool bf16) {
-  if (bf16)
-    add(out, base + ".weight", DType::BF16, {rows, cols}, cls, layer, expert);
+// The compressed-tensors NVFP4 set of one matrix (`nvfp4-pack-quantized`,
+// RedHatAI/Qwen3-Coder-Next-NVFP4): the same code and block-scale geometry
+// under other names — `weight_packed` U8 [N, K/2], `weight_scale` e4m3
+// [N, K/16] — with an F32 [1] `weight_global_scale` that DIVIDES (modelopt's
+// weight_scale_2 multiplies) and the recipe's `input_global_scale` (unused:
+// W4A16).
+void add_fp4_packed(TensorList& out, const std::string& base, int64_t rows, int64_t cols,
+                    QwenWeightClass cls, int layer, int expert = -1) {
+  add(out, base + ".weight_packed", DType::U8, {rows, cols / 2}, cls, layer, expert,
+      QwenTensorRole::Fp4Payload);
+  add(out, base + ".weight_scale", DType::F8_E4M3, {rows, cols / 16}, cls, layer, expert,
+      QwenTensorRole::Fp4Scale);
+  add(out, base + ".weight_global_scale", DType::F32, {1}, cls, layer, expert,
+      QwenTensorRole::Fp4Global);
+  add(out, base + ".input_global_scale", DType::F32, {1}, cls, layer, expert,
+      QwenTensorRole::InputScale);
+}
+
+// One NVFP4 matrix in the container the config's recipe names.
+void add_fp4_set(TensorList& out, const Qwen35TextConfig& cfg, const std::string& base,
+                 int64_t rows, int64_t cols, QwenWeightClass cls, int layer, int expert = -1) {
+  if (cfg.quant_kind == Qwen35QuantKind::Nvfp4Packed)
+    add_fp4_packed(out, base, rows, cols, cls, layer, expert);
   else
     add_fp4(out, base, rows, cols, cls, layer, expert);
 }
 
-// --- the Qwen3Next dialect (nvidia/Qwen3-Next-80B-A3B-Instruct-NVFP4 @ 8fb2682f) ---
+// A Qwen3Next matrix the release quantizes in the backbone and ships in
+// BF16 in the draft layer (`mtp.*` is on the recipe's ignore list).
+void add_fp4_or_bf16(TensorList& out, const Qwen35TextConfig& cfg, const std::string& base,
+                     int64_t rows, int64_t cols, QwenWeightClass cls, int layer, int expert,
+                     bool bf16) {
+  if (bf16)
+    add(out, base + ".weight", DType::BF16, {rows, cols}, cls, layer, expert);
+  else
+    add_fp4_set(out, cfg, base, rows, cols, cls, layer, expert);
+}
+
+// --- the Qwen3Next dialect (nvidia/Qwen3-Next-80B-A3B-Instruct-NVFP4 @ 8fb2682f and
+// RedHatAI/Qwen3-Coder-Next-NVFP4 @ 27a8f16f) ---
 // The GDN projections are fused: in_proj_qkvz [2*kdim + 2*vdim, H] rows
 // are interleaved per key head ([q 128 | k 128 | v r*128 | z r*128] with
 // r = value heads per key head), in_proj_ba [2*vh, H] alike ([b x r | a x r]).
@@ -72,26 +101,31 @@ void expect_gdn_next(TensorList& out, const std::string& p, const Qwen35TextConf
   add_bf16(out, p + "in_proj_ba.weight", {2 * vh, H}, c, layer);
   add_bf16(out, p + "in_proj_qkvz.weight", {2 * kdim + 2 * vdim, H}, c, layer);
   add_bf16(out, p + "norm.weight", {cfg.gdn_value_head_dim}, c, layer);
-  add_fp4(out, p + "out_proj", H, vdim, c, layer);
+  // The compressed-tensors recipe ignores the whole GDN (`re:.*linear_attn.*`):
+  // its out_proj ships BF16 where the modelopt release quantizes it.
+  add_fp4_or_bf16(out, cfg, p + "out_proj", H, vdim, c, layer, -1,
+                  cfg.quant_kind == Qwen35QuantKind::Nvfp4Packed);
 }
 
-// q/k/v BF16 with the recipe's FP8 K/V-cache scales beside k and v (F32
-// scalars; read only under engine.kv_dtype fp8), o_proj NVFP4. The draft
-// layer: all four BF16, no cache scales.
+// The modelopt release: q/k/v BF16 with the recipe's FP8 K/V-cache scales
+// beside k and v (F32 scalars; read only under engine.kv_dtype fp8), o_proj
+// NVFP4. The compressed-tensors release: all four NVFP4, no cache scales.
+// The draft layer: all four BF16, no cache scales.
 void expect_full_next(TensorList& out, const std::string& p, const Qwen35TextConfig& cfg,
                       int layer, bool is_mtp) {
   const int64_t H = cfg.hidden_size;
   const int64_t qh = cfg.num_attention_heads, kvh = cfg.num_key_value_heads;
   const int64_t d = cfg.head_dim;
   const QwenWeightClass c = QwenWeightClass::FullAttn;
-  add_bf16(out, p + "q_proj.weight", {2 * qh * d, H}, c, layer);
-  add_bf16(out, p + "k_proj.weight", {kvh * d, H}, c, layer);
-  add_bf16(out, p + "v_proj.weight", {kvh * d, H}, c, layer);
-  if (!is_mtp) {
+  const bool qkv_bf16 = is_mtp || cfg.quant_kind != Qwen35QuantKind::Nvfp4Packed;
+  add_fp4_or_bf16(out, cfg, p + "q_proj", 2 * qh * d, H, c, layer, -1, qkv_bf16);
+  add_fp4_or_bf16(out, cfg, p + "k_proj", kvh * d, H, c, layer, -1, qkv_bf16);
+  add_fp4_or_bf16(out, cfg, p + "v_proj", kvh * d, H, c, layer, -1, qkv_bf16);
+  if (!is_mtp && cfg.quant_kind == Qwen35QuantKind::Nvfp4Modelopt) {
     add(out, p + "k_proj.k_scale", DType::F32, {}, c, layer);
     add(out, p + "v_proj.v_scale", DType::F32, {}, c, layer);
   }
-  add_fp4_or_bf16(out, p + "o_proj", H, qh * d, c, layer, -1, is_mtp);
+  add_fp4_or_bf16(out, cfg, p + "o_proj", H, qh * d, c, layer, -1, is_mtp);
   add_bf16(out, p + "q_norm.weight", {d}, c, layer);
   add_bf16(out, p + "k_norm.weight", {d}, c, layer);
 }
@@ -107,14 +141,16 @@ void expect_moe_next(TensorList& out, const std::string& p, const Qwen35TextConf
   add_bf16(out, p + "gate.weight", {cfg.num_experts, H}, QwenWeightClass::Router, layer);
   add_bf16(out, p + "shared_expert_gate.weight", {1, H}, QwenWeightClass::Router, layer);
   const std::string sp = p + "shared_expert.";
-  add_fp4_or_bf16(out, sp + "gate_proj", S, H, QwenWeightClass::SharedExpert, layer, -1, is_mtp);
-  add_fp4_or_bf16(out, sp + "up_proj", S, H, QwenWeightClass::SharedExpert, layer, -1, is_mtp);
-  add_fp4_or_bf16(out, sp + "down_proj", H, S, QwenWeightClass::SharedExpert, layer, -1, is_mtp);
+  add_fp4_or_bf16(out, cfg, sp + "gate_proj", S, H, QwenWeightClass::SharedExpert, layer, -1, is_mtp);
+  add_fp4_or_bf16(out, cfg, sp + "up_proj", S, H, QwenWeightClass::SharedExpert, layer, -1, is_mtp);
+  add_fp4_or_bf16(out, cfg, sp + "down_proj", H, S, QwenWeightClass::SharedExpert, layer, -1, is_mtp);
   for (int e = 0; e < cfg.num_experts; ++e) {
     const std::string ep = p + "experts." + std::to_string(e) + ".";
-    add_fp4_or_bf16(out, ep + "gate_proj", I, H, QwenWeightClass::RoutedExpert, layer, e, is_mtp);
-    add_fp4_or_bf16(out, ep + "up_proj", I, H, QwenWeightClass::RoutedExpert, layer, e, is_mtp);
-    add_fp4_or_bf16(out, ep + "down_proj", H, I, QwenWeightClass::RoutedExpert, layer, e, is_mtp);
+    add_fp4_or_bf16(out, cfg, ep + "gate_proj", I, H, QwenWeightClass::RoutedExpert, layer, e,
+                    is_mtp);
+    add_fp4_or_bf16(out, cfg, ep + "up_proj", I, H, QwenWeightClass::RoutedExpert, layer, e, is_mtp);
+    add_fp4_or_bf16(out, cfg, ep + "down_proj", H, I, QwenWeightClass::RoutedExpert, layer, e,
+                    is_mtp);
   }
 }
 

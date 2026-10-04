@@ -35,6 +35,14 @@ namespace dgpp {
 // e4m3 [N, K/16], F32 `weight_scale_2`, F32 `input_scale`) for the routed
 // experts, the shared expert, the attention o_proj and the GDN out_proj;
 // every other matrix is BF16, the draft layer (`mtp.*`) entirely.
+//
+// The same dialect in its compressed-tensors container (Qwen3-Coder-Next,
+// RedHatAI/...-NVFP4 @ 27a8f16f, 296,151 tensors): the NVFP4 set is
+// `weight_packed` U8 [N, K/2], `weight_scale` e4m3 [N, K/16], F32 [1]
+// `weight_global_scale` and F32 [1] `input_global_scale`, on the routed
+// experts, the shared expert and the attention q/k/v/o; the whole GDN
+// (out_proj included), the router and the head are BF16; there are no
+// K/V-cache scales and no draft layer.
 
 // "model.language_model." (Qwen3.5) or "model." (the flat Qwen3Next names):
 // the prefix of `layers.L.`, `embed_tokens.weight` and `norm.weight`.

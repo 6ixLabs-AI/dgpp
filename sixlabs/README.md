@@ -11,6 +11,7 @@ DGPP's own tree is untouched outside the files the port changes; our tooling liv
 | `bench/bench_decode.py` | Single-stream and N-stream decode speed. |
 | `bench/bench_matrix.py` | Context x concurrency cells, timings read from the server's own log. |
 | `bench/compare_states.py`, `compare_logprobs.py`, `compare_transcripts.py` | The engine against the numpy host reference (`tools/qwen3next_reference.py`) and against another capture. |
+| `bench/compare_forward_check.py` | One `qwen35_forward_check` run against the reference's `score` of the same ids (no capture needed): the first numerical gate of a new checkpoint. |
 | `bench/build_dgpp.py` | Configure + build a checkout as a logged job. |
 | `upstream-issue-77-draft.md` | The feature request as first drafted (its checkpoint section was corrected in the issue thread). |
 
