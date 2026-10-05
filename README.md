@@ -12,6 +12,15 @@ It uses the CUDA runtime, cuBLASLt and libibverbs. Rank 0 coordinates
 requests through an admission journal; peers check their operation streams
 against it throughout a run.
 
+## This fork: 6ix.cpp, by 6ixLabs
+
+This repository is 6ixLabs' fork of [DGPP](https://github.com/HawkBearPig/dgpp) by Stephen
+Hawkins: DGPP's `master` plus the work described in [6IXSERVE.md](6IXSERVE.md). The rest of this
+file is DGPP's own README, unchanged. What we have run on our two DGX Sparks, how fast, and what
+did not work is in [models/README.md](models/README.md), one folder per model; our thanks to
+DGPP, to Atlas and to the others this work rests on are in its
+[acknowledgements](models/README.md#acknowledgements).
+
 ## Supported models and configurations
 
 These serving configurations have deployment templates and recorded

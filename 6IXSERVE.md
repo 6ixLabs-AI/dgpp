@@ -12,6 +12,12 @@ the engine keeps DGPP's names (`dgpp-serve`, `scripts/dgpp-cluster`, the `DGPP_*
 upstream changes keep merging cleanly. Everything in `README.md` and `docs/` is DGPP's own
 documentation and applies unchanged.
 
+**Results, per model:** [`models/README.md`](models/README.md) has one folder per model run on the
+fleet (one box and two), the summary table, what did not work, and the
+[acknowledgements](models/README.md#acknowledgements). This file is the record of the 80B port
+and of its 2026-10-03 figures; the 80B's later figures are in
+[`models/qwen3-next-80b/`](models/qwen3-next-80b/README.md).
+
 ## What 6ixLabs added
 
 **Qwen3-Next-80B-A3B** (`nvidia/Qwen3-Next-80B-A3B-Instruct-NVFP4`), which DGPP did not serve
@@ -59,6 +65,9 @@ The forward-check gate on two boxes: this model and the 35B serve over two Spark
 to the routed MoE) and are measured there, about 1.6x one Spark, but not verified
 (`models/shared/dgxone_dgxtwo_two_box_80b_35b_2026-10-04.md`); the FP8 release
 of the same model as a second format; a deployment template in `deploy/`; a model-level fixture test.
+
+(Note, 2026-10-04: the templates exist now, `deploy/cluster_qwen3-next-80b_nvfp4_w1.example.json`,
+`…_w1_yarn512k.example.json` and `…_w2.example.json`; the line above is kept as it was written.)
 
 ## Running it
 

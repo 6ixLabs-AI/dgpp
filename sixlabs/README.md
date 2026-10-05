@@ -15,6 +15,9 @@ DGPP's own tree is untouched outside the files the port changes; our tooling liv
 | `bench/build_dgpp.py` | Configure + build a checkout as a logged job. |
 | `ports/gemma-4-31b/gpu-steps.md`, `inputs/` | Gemma 4 (`nvidia/Gemma-4-31B-IT-NVFP4`): a new family whose host side is in the build and whose GPU side is a draft behind `-DDGPP_BUILD_GEMMA_DRAFT=ON`; the steps that would verify it, and the two token-id inputs they use. Not servable yet. |
 | `ports/gemma-4-26b-a4b/gpu-steps.md` | The same family's MoE model (`bg-digitalservices/Gemma-4-26B-A4B-it-NVFP4A16`, a community NVFP4 release with its own, earlier chat template): what differs from the 31B's steps. Not servable yet. |
+| `bench/results/` | Engine-level records only since 2026-10-04 (the upstream merge, one in-app A/B capture). Records that belong to a model moved to `../models/<model>/`. |
+| `ports/<model>/` | Per port: `gpu-steps.md` (the bring-up and verification steps) and `inputs/` (the gate's token ids). The result records of the ports that have run moved to `../models/<model>/`; `ports/integration-2026-10-04.md` is the integration check of the new families. |
+| `../models/` | **Results, one folder per model that has run on the fleet**: `models/README.md` is the summary table, what was learned and the acknowledgements; `models/candidates.md` is every model that has not run, by how much work it needs. |
 | `upstream-issue-77-draft.md` | The feature request as first drafted (its checkpoint section was corrected in the issue thread). |
 | `registry/` | The model registry: `models.json` says which family serves each model, which checkpoints it takes, how it is launched and how far it has been verified (working / upstream / compiled / groundwork / refused); `registry.py` checks it against the tree, prints the status and speed table, and resolves an entry into a deployment config. |
 
