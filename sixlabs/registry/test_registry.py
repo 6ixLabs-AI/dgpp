@@ -75,8 +75,12 @@ class Resolve(unittest.TestCase):
         self.assertTrue(prov["template"].endswith("yarn512k.example.json"))
         cfg, prov = R.resolve(self.reg, "qwen3.8-flash-next", world=2)
         self.assertEqual(cfg["world_size"], 2)
+        # The 80B has a two-Spark world since 2026-10-04 (the routed-MoE dialects in TP).
+        cfg, prov = R.resolve(self.reg, "qwen3-next-80b", world=2)
+        self.assertEqual(cfg["world_size"], 2)
+        self.assertNotIn("prefill_order", cfg["engine"])      # single-rank only: not in the two-Spark template
         with self.assertRaises(R.RegistryError):
-            R.resolve(self.reg, "qwen3-next-80b", world=2)
+            R.resolve(self.reg, "qwen3-coder-next", world=2, allow_unverified=True)
         with self.assertRaises(R.RegistryError):
             R.resolve(self.reg, "qwen3-next-80b", variant="nope")
 

@@ -1,0 +1,40 @@
+[3/5] 0/1 err=0 elapsed=0s :: sharegpt starting
+    governor: throttling=False ceiling=2418.0 MHz after waiting 0s (None)
+    $ /home/mark/run-sharegpt-bench.sh
+ShareGPT bench — 20261004-193203 — model=Qwen3-Next-80B host=172.17.0.1 port=18190 harness=external tok=nvidia/Qwen3-Next-80B-A3B-Instruct-NVFP4 prompts/level=64 levels=1 2 4 8 maxc=8
+container=(none — dgxone:5000/nvidia/vllm:25.12-py3)
+
+[0/4] 0/4 err=0 elapsed=0s starting c=1
+### max-concurrency 1
+   Successful requests:                     64        
+   Benchmark duration (s):                  194.73    
+   Request throughput (req/s):              0.33      
+   Output token throughput (tok/s):         77.78     
+   Mean TTFT (ms):                          184.75    
+   Median TTFT (ms):                        195.36    
+   P99 TTFT (ms):                           354.75    
+   Mean TPOT (ms):                          12.31     
+   Median TPOT (ms):                        12.27     
+   P99 TPOT (ms):                           16.77     
+   Mean ITL (ms):                           12.05     
+   Median ITL (ms):                         0.02      
+   P99 ITL (ms):                            50.52     
+
+[1/4] 1/4 err=0 elapsed=206s starting c=2
+### max-concurrency 2
+   Successful requests:                     46        
+   Benchmark duration (s):                  95.19     
+   Request throughput (req/s):              0.48      
+   Output token throughput (tok/s):         104.02    
+   Mean TTFT (ms):                          206.31    
+   Median TTFT (ms):                        222.63    
+   P99 TTFT (ms):                           361.36    
+   Mean TPOT (ms):                          18.76     
+   Median TPOT (ms):                        18.42     
+   P99 TPOT (ms):                           26.86     
+   Mean ITL (ms):                           18.21     
+   Median ITL (ms):                         0.02      
+   P99 ITL (ms):                            51.34     
+
+[2/4] 2/4 err=0 elapsed=311s starting c=4
+### max-concurrency 4

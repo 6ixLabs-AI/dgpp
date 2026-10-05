@@ -1,0 +1,78 @@
+[3/5] 0/1 err=0 elapsed=0s :: sharegpt starting
+    governor: throttling=False ceiling=2418.0 MHz after waiting 0s (None)
+    $ /home/mark/run-sharegpt-bench.sh
+ShareGPT bench — 20261004-190423 — model=Qwen3-Next-80B host=172.17.0.1 port=18190 harness=external tok=nvidia/Qwen3-Next-80B-A3B-Instruct-NVFP4 prompts/level=64 levels=1 2 4 8 maxc=8
+container=(none — dgxone:5000/nvidia/vllm:25.12-py3)
+
+[0/4] 0/4 err=0 elapsed=0s starting c=1
+### max-concurrency 1
+   Successful requests:                     64        
+   Benchmark duration (s):                  16.14     
+   Request throughput (req/s):              3.97      
+   Output token throughput (tok/s):         125.46    
+   Mean TTFT (ms):                          52.14     
+   Median TTFT (ms):                        51.82     
+   P99 TTFT (ms):                           62.12     
+   Mean TPOT (ms):                          6.63      
+   Median TPOT (ms):                        6.50      
+   P99 TPOT (ms):                           9.07      
+   Mean ITL (ms):                           6.27      
+   Median ITL (ms):                         0.01      
+   P99 ITL (ms):                            25.69     
+
+[1/4] 1/4 err=0 elapsed=25s starting c=2
+### max-concurrency 2
+   Successful requests:                     64        
+   Benchmark duration (s):                  10.39     
+   Request throughput (req/s):              6.16      
+   Output token throughput (tok/s):         176.42    
+   Mean TTFT (ms):                          63.04     
+   Median TTFT (ms):                        53.06     
+   P99 TTFT (ms):                           102.35    
+   Mean TPOT (ms):                          9.51      
+   Median TPOT (ms):                        9.37      
+   P99 TPOT (ms):                           13.16     
+   Mean ITL (ms):                           8.97      
+   Median ITL (ms):                         0.01      
+   P99 ITL (ms):                            50.69     
+
+[2/4] 2/4 err=0 elapsed=42s starting c=4
+### max-concurrency 4
+   Successful requests:                     64        
+   Benchmark duration (s):                  7.26      
+   Request throughput (req/s):              8.81      
+   Output token throughput (tok/s):         244.81    
+   Mean TTFT (ms):                          83.81     
+   Median TTFT (ms):                        79.17     
+   P99 TTFT (ms):                           113.27    
+   Mean TPOT (ms):                          13.79     
+   Median TPOT (ms):                        14.21     
+   P99 TPOT (ms):                           20.52     
+   Mean ITL (ms):                           13.02     
+   Median ITL (ms):                         0.01      
+   P99 ITL (ms):                            76.17     
+
+[3/4] 3/4 err=0 elapsed=55s starting c=8
+### max-concurrency 8
+   Successful requests:                     64        
+   Benchmark duration (s):                  5.90      
+   Request throughput (req/s):              10.84     
+   Output token throughput (tok/s):         301.28    
+   Mean TTFT (ms):                          129.75    
+   Median TTFT (ms):                        128.02    
+   P99 TTFT (ms):                           182.79    
+   Mean TPOT (ms):                          22.03     
+   Median TPOT (ms):                        22.56     
+   P99 TPOT (ms):                           35.63     
+   Mean ITL (ms):                           20.79     
+   Median ITL (ms):                         0.01      
+   P99 ITL (ms):                            102.49    
+
+[4/4] 4/4 err=0 elapsed=68s done
+==> saved: /home/mark/bench-results/sharegpt/sharegpt-bench-20261004-190423.txt
+    P99 TTFT and P99 ITL are the interactive-feel numbers; medians hide the stutter.
+    Forum thread 357820 (Qwen3-Next-80B-A3B-FP8, a DIFFERENT model) reported
+    43-136 tok/s, TTFT 170-400ms low-concurrency, P99 ITL 332ms — the
+    methodology is comparable, the model is not.
+[3/5] 1/1 err=0 elapsed=68s :: sharegpt done
+DONE

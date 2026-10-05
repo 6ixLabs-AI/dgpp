@@ -77,7 +77,8 @@
                 "tok_s": {"single_prose": 82.2, "single_code": 103.6, "c2": 118.5, "c4": 185.4, "c8": 253.4},
                 "notes": "Load and plan are the 2026-10-03 figures (6IXSERVE.md, 262,144-token pool); the tok/s run used a 524,288-token pool."
               }
-            }
+            },
+            "2": {"template": "deploy/cluster_qwen3-next-80b_nvfp4_w2.example.json", "measured": {"date": "2026-10-04", "box": "DGXone + DGXtwo", "source": "sixlabs/bench/results/dgxone_dgxtwo_two_box_80b_35b_2026-10-04.md", "load_cold_s": 144, "load_warm_s": 10, "plan_gib": 38.12, "gpu_gib": 37.47, "tok_s": {"single_prose": 121.3, "c2": 161.5, "c4": 214.0, "c8": 251.5}, "notes": "ShareGPT output tok/s; memory is per box. Same build and settings on one box: 76.7 / 97.5 / 127.7 / 154.0, so about 1.6x. tool-eval-bench short 93, hard 80. Measured, not verified: the forward check has no two-rank mode and upstream's qwen35_tp_test has no MoE fixture. The template leaves out the scheduler settings that are single-rank only. A second engine on the same boxes needs DGPP_BUS_ENGINE_CPU."}}
           }
         }
       ],
@@ -113,7 +114,8 @@
                 "tok_s": {"single_prose": 97.7, "single_code": 120.1, "c2": 128.8, "c4": 194.6, "c8": 271.3},
                 "notes": "One run each, bench_decode, taken with the prefill settings left automatic. Since 2026-10-04 the template carries the tuned prefill settings (needs a build with cecb0cd or later): same answers, a burst of eight 2k prompts answered in 6.7 s instead of 34.9 s, chat under long-prompt load 95 tok/s instead of 13 (sixlabs/bench/results/dgxone_35b_prefill_2026-10-04.md). ShareGPT the same day (sixlabs/bench/results/dgxone_35b_6ixcpp_vs_atlas_2026-10-04.md): 96.7 / 135.4 / 182.4 / 220.1 output tok/s at 1 / 2 / 4 / 8; tool-eval-bench short 93, hard 89."
               }
-            }
+            },
+            "2": {"template": "deploy/cluster_qwen3.6-35b-a3b_nvfp4_w2.example.json", "measured": {"date": "2026-10-04", "box": "DGXone + DGXtwo", "source": "sixlabs/bench/results/dgxone_dgxtwo_two_box_80b_35b_2026-10-04.md", "load_cold_s": 60, "load_warm_s": 6, "plan_gib": 22.76, "gpu_gib": 22.41, "tok_s": {"single_prose": 154.4, "c2": 214.1, "c4": 300.5, "c8": 367.6}, "notes": "ShareGPT output tok/s (thinking on, as the one-box ShareGPT figures 96.7 / 135.4 / 182.4 / 220.1 from the morning's build); memory is per box. Measured, not verified: no gate has been run for this model on the merged engine, on one box or two."}}
           }
         },
         {

@@ -1,0 +1,39 @@
+OK   rank 0 (10.77.0.1) platform: Linux aarch64; supported target is Linux/aarch64 GB10
+OK   rank 0 (10.77.0.1) Python: 3.12.3; Python 3.10+ is required
+OK   rank 0 (10.77.0.1) commands: python3, timeout, ldd, ssh, scp, curl, jq
+OK   rank 0 (10.77.0.1) node address: rank 0 address 10.77.0.1 belongs to this host
+OK   rank 0 (10.77.0.1) GPU: NVIDIA GB10, 12.1, [N/A]
+OK   rank 0 (10.77.0.1) logs/staging: /home/mark/6ixinfer-w2/log/deployments/0e7add83f4a94ba0: parent /home/mark/6ixinfer-w2/log/deployments/0e7add83f4a94ba0, 574.6 GiB free
+OK   rank 0 (10.77.0.1) resident cache: ~/6ixinfer-out/resident-cache: parent /home/mark/6ixinfer-out/resident-cache, 574.6 GiB free
+OK   rank 0 (10.77.0.1) model cache: /home/mark/6ixinfer-out/hfcache-qwen: parent /home/mark/6ixinfer-out/hfcache-qwen, 574.6 GiB free
+OK   rank 0 (10.77.0.1) checkpoint: /home/mark/6ixinfer-out/hfcache-qwen/models--nvidia--Qwen3.6-35B-A3B-NVFP4/snapshots/1355db6a052410cfd62085d94b58866fd0f2c3c5: 21.8 GiB; all indexed shards have consistent lengths (not a content hash check)
+OK   rank 0 (10.77.0.1) available memory: 69.6 GiB; startup enforces the exact model memory plan
+OK   rank 0 (10.77.0.1) HTTP port: 172.17.0.1:18191 is available
+OK   rank 0 (10.77.0.1) fabric port: 0.0.0.0:29992 is available
+OK   rank 0 (10.77.0.1) journal port: 0.0.0.0:29993 is available
+OK   rank 0 (10.77.0.1) RoCE rocep1s0f0: port 1, routable v2 GIDs: [('3', '0000:0000:0000:0000:0000:ffff:0a4d:0001')]; verify these subnets connect corresponding lanes on every node
+OK   rank 0 (10.77.0.1) RoCE roceP2p1s0f0: port 1, routable v2 GIDs: [('3', '0000:0000:0000:0000:0000:ffff:0a4e:0001')]; verify these subnets connect corresponding lanes on every node
+OK   rank 0 (10.77.0.1) runtime libraries: all binary dependencies resolve
+OK   rank 0 (10.77.0.1) server version: dgpp-serve 0.1.0+g2ad1c4f400aa (git 2ad1c4f400aa, cuda 13.0)
+OK   rank 1 (10.77.0.2) platform: Linux aarch64; supported target is Linux/aarch64 GB10
+OK   rank 1 (10.77.0.2) Python: 3.12.3; Python 3.10+ is required
+OK   rank 1 (10.77.0.2) commands: python3, timeout, ldd
+OK   rank 1 (10.77.0.2) node address: rank 1 address 10.77.0.2 belongs to this host
+OK   rank 1 (10.77.0.2) GPU: NVIDIA GB10, 12.1, [N/A]
+OK   rank 1 (10.77.0.2) logs/staging: /tmp/bus4-6ix-35b/deployments/0e7add83f4a94ba0: parent /tmp/bus4-6ix-35b/deployments/0e7add83f4a94ba0, 618.9 GiB free
+OK   rank 1 (10.77.0.2) resident cache: ~/6ixinfer-out/resident-cache: parent /home/marktwo/6ixinfer-out/resident-cache, 618.9 GiB free
+OK   rank 1 (10.77.0.2) model cache: /home/marktwo/6ixinfer-out/hfcache-qwen: parent /home/marktwo/6ixinfer-out/hfcache-qwen, 618.9 GiB free
+OK   rank 1 (10.77.0.2) checkpoint: /home/marktwo/6ixinfer-out/hfcache-qwen/models--nvidia--Qwen3.6-35B-A3B-NVFP4/snapshots/1355db6a052410cfd62085d94b58866fd0f2c3c5: 21.8 GiB; all indexed shards have consistent lengths (not a content hash check)
+OK   rank 1 (10.77.0.2) available memory: 74.9 GiB; startup enforces the exact model memory plan
+OK   rank 1 (10.77.0.2) RoCE rocep1s0f0: port 1, routable v2 GIDs: [('3', '0000:0000:0000:0000:0000:ffff:0a4d:0002')]; verify these subnets connect corresponding lanes on every node
+OK   rank 1 (10.77.0.2) RoCE roceP2p1s0f0: port 1, routable v2 GIDs: [('3', '0000:0000:0000:0000:0000:ffff:0a4e:0002')]; verify these subnets connect corresponding lanes on every node
+OK   rank 1 (10.77.0.2) peer runtime libraries: libibverbs.so, libcudart.so.13, libcublasLt.so.13, libstdc++.so
+WARN rank 1 (10.77.0.2) peer binary: development binary will be staged; verify identical OS/compiler runtime compatibility
+Preflight: 0 failed check(s). No files were installed and no services were started or stopped.
+2026-10-04 23:48:07.853 === staging dgpp-serve and the config to the peers
+2026-10-04 23:48:09.463 === rank 0 on 10.77.0.1 (HTTP :18191, fabric :29992, journal :29993)
+2026-10-04 23:48:09.464 head pid 3734482
+2026-10-04 23:48:11.464 journal listening: ok (2s)
+2026-10-04 23:48:11.464 === peers 10.77.0.2
+2026-10-04 23:48:18.189 rank 0 serving: ok (6s)
+2026-10-04 23:48:18.189 READY — curl http://172.17.0.1:18191/v1/models  (stop: python3 /home/mark/6ixinfer-w2/scripts/dgpp-cluster down --config /home/mark/6ixinfer-w2/deploy/cluster_qwen3.6-35b-a3b_nvfp4_w2.json --log-dir /home/mark/6ixinfer-w2/log/deployments/0e7add83f4a94ba0)
