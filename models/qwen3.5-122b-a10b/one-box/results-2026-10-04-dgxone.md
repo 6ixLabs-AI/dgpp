@@ -1,5 +1,7 @@
 # Qwen3.5-122B-A10B NVFP4 on one Spark — 6ix.cpp (measured) against Atlas (published figure) (DGXone, 2026-10-04)
 
+> Layout note, 2026-10-04: moved from `sixlabs/ports/qwen3.5-122b-a10b/results-2026-10-04-dgxone.md` when the per-model folders under `models/` were made. Paths to other moved records were updated; nothing else was changed. `gpu-steps.md` and `inputs/` stayed in `sixlabs/ports/qwen3.5-122b-a10b/`. The logs and the site config it lists as "in this folder" (section 7) are not in this repository.
+
 Status: **DONE.** 6ix.cpp: gate passed 4 of 4, booted, ShareGPT 1/2/4/8 measured, engine down. Atlas: NOT run
 for this model, on the owner's instruction ("skip atlas for the 122B use the published number"); its column is
 the figure from its own recipe. No tool-eval (not wanted). Every number is quoted from a log in this folder.

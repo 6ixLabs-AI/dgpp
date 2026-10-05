@@ -28,7 +28,7 @@
         "decode_passes_per_prefill": 8,
         "prefill_order": "shortest"
       },
-      "notes": "GDN + full attention + routed MoE, flat config. Left automatic, prefill reads 256 tokens a tick even when idle; these four keys are the 2026-10-04 sweep's choice (sixlabs/bench/results/prefill_sweep_2026-10-04.md)."
+      "notes": "GDN + full attention + routed MoE, flat config. Left automatic, prefill reads 256 tokens a tick even when idle; these four keys are the 2026-10-04 sweep's choice (models/qwen3-next-80b/one-box/prefill_sweep_2026-10-04.md)."
     },
     "qwen3_5": {
       "architectures": ["Qwen3_5"],
@@ -36,7 +36,7 @@
       "on_main": true,
       "tokenizer": "bpe",
       "engine_defaults": {},
-      "notes": "GDN + full attention, dense MLP or routed MoE, nested text_config. No prefill defaults yet: the 35B and the 122B were verified and measured at the automatic budget (256 tokens a tick, one decode pass a chunk), and their time to first token under load is poor. The serve binary accepts an explicit budget for this family since cecb0cd (before that the 35B exited at start with one). The 35B has been checked with qwen3_next's four settings and its template carries them (sixlabs/bench/results/dgxone_35b_prefill_2026-10-04.md); the 122B and the dense checkpoints have not, so the family default stays empty. Before giving another checkpoint those settings, run sixlabs/bench/group_check.py (with --seed, default against tuned) and mixed_load.py against it; the dense checkpoints (27B, 0.8B) compute one FP8 activation scale over a chunk's rows, so a larger chunk changes their numbers and their answers must be looked at, not only their speed."
+      "notes": "GDN + full attention, dense MLP or routed MoE, nested text_config. No prefill defaults yet: the 35B and the 122B were verified and measured at the automatic budget (256 tokens a tick, one decode pass a chunk), and their time to first token under load is poor. The serve binary accepts an explicit budget for this family since cecb0cd (before that the 35B exited at start with one). The 35B has been checked with qwen3_next's four settings and its template carries them (models/qwen3.6-35b-a3b/one-box/dgxone_35b_prefill_2026-10-04.md); the 122B and the dense checkpoints have not, so the family default stays empty. Before giving another checkpoint those settings, run sixlabs/bench/group_check.py (with --seed, default against tuned) and mixed_load.py against it; the dense checkpoints (27B, 0.8B) compute one FP8 activation scale over a chunk's rows, so a larger chunk changes their numbers and their answers must be looked at, not only their speed."
     },
     "qwen4_exp": {"architectures": ["Qwen4Exp"], "served": true, "on_main": true, "tokenizer": "bpe", "engine_defaults": {}, "notes": "Qwen3.8-Flash-Next."},
     "glm5": {"architectures": ["Glm5"], "served": true, "on_main": true, "tokenizer": "bpe", "engine_defaults": {}, "notes": "GLM-5.3-Flash."},
@@ -72,13 +72,13 @@
               "template": "deploy/cluster_qwen3-next-80b_nvfp4_w1.example.json",
               "variants": {"yarn512k": "deploy/cluster_qwen3-next-80b_nvfp4_w1_yarn512k.example.json"},
               "measured": {
-                "date": "2026-10-04", "box": "DGXtwo", "source": "sixlabs/bench/results/dgxtwo_clean_2026-10-04.md",
+                "date": "2026-10-04", "box": "DGXtwo", "source": "models/qwen3-next-80b/one-box/dgxtwo_clean_2026-10-04.md",
                 "load_cold_s": 80, "load_warm_s": 12, "plan_gib": 57.9,
                 "tok_s": {"single_prose": 82.2, "single_code": 103.6, "c2": 118.5, "c4": 185.4, "c8": 253.4},
                 "notes": "Load and plan are the 2026-10-03 figures (6IXSERVE.md, 262,144-token pool); the tok/s run used a 524,288-token pool."
               }
             },
-            "2": {"template": "deploy/cluster_qwen3-next-80b_nvfp4_w2.example.json", "measured": {"date": "2026-10-04", "box": "DGXone + DGXtwo", "source": "sixlabs/bench/results/dgxone_dgxtwo_two_box_80b_35b_2026-10-04.md", "load_cold_s": 144, "load_warm_s": 10, "plan_gib": 38.12, "gpu_gib": 37.47, "tok_s": {"single_prose": 121.3, "c2": 161.5, "c4": 214.0, "c8": 251.5}, "notes": "ShareGPT output tok/s; memory is per box. Same build and settings on one box: 76.7 / 97.5 / 127.7 / 154.0, so about 1.6x. tool-eval-bench short 93, hard 80. Measured, not verified: the forward check has no two-rank mode and upstream's qwen35_tp_test has no MoE fixture. The template leaves out the scheduler settings that are single-rank only. A second engine on the same boxes needs DGPP_BUS_ENGINE_CPU."}}
+            "2": {"template": "deploy/cluster_qwen3-next-80b_nvfp4_w2.example.json", "measured": {"date": "2026-10-04", "box": "DGXone + DGXtwo", "source": "models/shared/dgxone_dgxtwo_two_box_80b_35b_2026-10-04.md", "load_cold_s": 144, "load_warm_s": 10, "plan_gib": 38.12, "gpu_gib": 37.47, "tok_s": {"single_prose": 121.3, "c2": 161.5, "c4": 214.0, "c8": 251.5}, "notes": "ShareGPT output tok/s; memory is per box. Same build and settings on one box: 76.7 / 97.5 / 127.7 / 154.0, so about 1.6x. tool-eval-bench short 93, hard 80. Measured, not verified: the forward check has no two-rank mode and upstream's qwen35_tp_test has no MoE fixture. The template leaves out the scheduler settings that are single-rank only. A second engine on the same boxes needs DGPP_BUS_ENGINE_CPU."}}
           }
         }
       ],
@@ -104,18 +104,18 @@
           "status": "working",
           "default": true,
           "tensors": 124135,
-          "verified": {"date": "2026-10-04", "box": "DGXone", "engine_commit": "89955e0", "record": "sixlabs/ports/qwen3.6-35b-a3b/results-2026-10-04-dgxone.md"},
+          "verified": {"date": "2026-10-04", "box": "DGXone", "engine_commit": "89955e0", "record": "models/qwen3.6-35b-a3b/one-box/results-2026-10-04-dgxone.md"},
           "worlds": {
             "1": {
               "template": "deploy/cluster_qwen3.6-35b-a3b_nvfp4_w1.example.json",
               "measured": {
-                "date": "2026-10-04", "box": "DGXone", "source": "sixlabs/ports/qwen3.6-35b-a3b/results-2026-10-04-dgxone.md",
+                "date": "2026-10-04", "box": "DGXone", "source": "models/qwen3.6-35b-a3b/one-box/results-2026-10-04-dgxone.md",
                 "load_cold_s": 47.5, "load_warm_s": 9.0, "plan_gib": 36.0, "gpu_gib": 38.55,
                 "tok_s": {"single_prose": 97.7, "single_code": 120.1, "c2": 128.8, "c4": 194.6, "c8": 271.3},
-                "notes": "One run each, bench_decode, taken with the prefill settings left automatic. Since 2026-10-04 the template carries the tuned prefill settings (needs a build with cecb0cd or later): same answers, a burst of eight 2k prompts answered in 6.7 s instead of 34.9 s, chat under long-prompt load 95 tok/s instead of 13 (sixlabs/bench/results/dgxone_35b_prefill_2026-10-04.md). ShareGPT the same day (sixlabs/bench/results/dgxone_35b_6ixcpp_vs_atlas_2026-10-04.md): 96.7 / 135.4 / 182.4 / 220.1 output tok/s at 1 / 2 / 4 / 8; tool-eval-bench short 93, hard 89."
+                "notes": "One run each, bench_decode, taken with the prefill settings left automatic. Since 2026-10-04 the template carries the tuned prefill settings (needs a build with cecb0cd or later): same answers, a burst of eight 2k prompts answered in 6.7 s instead of 34.9 s, chat under long-prompt load 95 tok/s instead of 13 (models/qwen3.6-35b-a3b/one-box/dgxone_35b_prefill_2026-10-04.md). ShareGPT the same day (models/qwen3.6-35b-a3b/one-box/dgxone_35b_6ixcpp_vs_atlas_2026-10-04.md): 96.7 / 135.4 / 182.4 / 220.1 output tok/s at 1 / 2 / 4 / 8; tool-eval-bench short 93, hard 89."
               }
             },
-            "2": {"template": "deploy/cluster_qwen3.6-35b-a3b_nvfp4_w2.example.json", "measured": {"date": "2026-10-04", "box": "DGXone + DGXtwo", "source": "sixlabs/bench/results/dgxone_dgxtwo_two_box_80b_35b_2026-10-04.md", "load_cold_s": 60, "load_warm_s": 6, "plan_gib": 22.76, "gpu_gib": 22.41, "tok_s": {"single_prose": 154.4, "c2": 214.1, "c4": 300.5, "c8": 367.6}, "notes": "ShareGPT output tok/s (thinking on, as the one-box ShareGPT figures 96.7 / 135.4 / 182.4 / 220.1 from the morning's build); memory is per box. Measured, not verified: no gate has been run for this model on the merged engine, on one box or two."}}
+            "2": {"template": "deploy/cluster_qwen3.6-35b-a3b_nvfp4_w2.example.json", "measured": {"date": "2026-10-04", "box": "DGXone + DGXtwo", "source": "models/shared/dgxone_dgxtwo_two_box_80b_35b_2026-10-04.md", "load_cold_s": 60, "load_warm_s": 6, "plan_gib": 22.76, "gpu_gib": 22.41, "tok_s": {"single_prose": 154.4, "c2": 214.1, "c4": 300.5, "c8": 367.6}, "notes": "ShareGPT output tok/s (thinking on, as the one-box ShareGPT figures 96.7 / 135.4 / 182.4 / 220.1 from the morning's build); memory is per box. Measured, not verified: no gate has been run for this model on the merged engine, on one box or two."}}
           }
         },
         {
@@ -136,10 +136,10 @@
         }
       ],
       "baselines": [
-        {"engine": "vllm", "checkpoint": "Qwen/Qwen3.6-35B-A3B-FP8", "date": "2026-10-04", "box": "DGXone", "source": "sixlabs/ports/qwen3.6-35b-a3b/results-2026-10-04-dgxone.md",
+        {"engine": "vllm", "checkpoint": "Qwen/Qwen3.6-35B-A3B-FP8", "date": "2026-10-04", "box": "DGXone", "source": "models/qwen3.6-35b-a3b/one-box/results-2026-10-04-dgxone.md",
          "load_cold_s": 404, "gpu_gib": 44.51, "tok_s": {"single_prose": 50.1, "single_code": 50.1, "c2": 62.6, "c4": 105.9, "c8": 190.0},
          "notes": "The fleet's slot qwen3.6-35b@dgxone, same box and tools, one run. A different quantization from the 6ix.cpp row."},
-        {"engine": "atlas", "checkpoint": "nvidia/Qwen3.6-35B-A3B-NVFP4", "date": "2026-10-04", "box": "DGXone", "source": "sixlabs/bench/results/dgxone_35b_6ixcpp_vs_atlas_2026-10-04.md",
+        {"engine": "atlas", "checkpoint": "nvidia/Qwen3.6-35B-A3B-NVFP4", "date": "2026-10-04", "box": "DGXone", "source": "models/qwen3.6-35b-a3b/one-box/dgxone_35b_6ixcpp_vs_atlas_2026-10-04.md",
          "load_cold_s": 49, "gpu_gib": 72.1, "tok_s": {"single_prose": 84.8, "c2": 112.2, "c4": 108.9, "c8": 127.1},
          "notes": "The same file as the 6ix.cpp row, measured here. tok/s is ShareGPT output throughput: compare with 6ix.cpp's ShareGPT 96.7 / 135.4 / 182.4 / 220.1, not the bench_decode figures in its row. Atlas ran its recipe with thinking on to match (the recipe ships thinking off; its published figure is 116.5 with one draft token), 32,768-token context, 0.62 of the box."}
       ]
@@ -163,7 +163,7 @@
             "1": {
               "template": "deploy/cluster_qwen3-coder-next_nvfp4_w1.example.json",
               "measured": {
-                "date": "2026-10-04", "box": "DGXone", "source": "sixlabs/ports/qwen3-coder-next/results-2026-10-04-dgxone.md",
+                "date": "2026-10-04", "box": "DGXone", "source": "models/qwen3-coder-next/one-box/results-2026-10-04-dgxone.md",
                 "load_cold_s": 86, "load_warm_s": 12, "plan_gib": 64.51, "gpu_gib": 66.3,
                 "tok_s": {"single_prose": 40.4, "c2": 65.6, "c4": 97.6, "c8": 124.1},
                 "notes": "tok/s is ShareGPT output throughput (64 prompts a level), not bench_decode. tool-eval-bench: short 87, hard 78."
@@ -179,7 +179,7 @@
         }
       ],
       "baselines": [
-        {"engine": "vllm", "checkpoint": "Intel/Qwen3-Coder-Next-int4-AutoRound", "date": "2026-10-04", "box": "DGXone", "source": "sixlabs/ports/qwen3-coder-next/results-2026-10-04-dgxone.md",
+        {"engine": "vllm", "checkpoint": "Intel/Qwen3-Coder-Next-int4-AutoRound", "date": "2026-10-04", "box": "DGXone", "source": "models/qwen3-coder-next/one-box/results-2026-10-04-dgxone.md",
          "load_cold_s": 363, "gpu_gib": 53.1, "tok_s": {"single_prose": 67.1, "c2": 107.3, "c4": 148.7, "c8": 192.9},
          "notes": "The fleet's slot qwen3-coder@dgxone, same box and tools, one run; a different quantization from the 6ix.cpp row. tok/s is ShareGPT output throughput; bench_decode on the same slot gave 70.6 / 70.7 single and 96.8 / 151.7 / 259.2. tool-eval-bench: short 93, hard 77. The older fleet note (80-93 tok/s, MTP depth 2) was not reproduced, and this checkpoint has no draft tensors."},
         {"engine": "atlas", "checkpoint": "Qwen/Qwen3-Coder-Next-FP8", "source": "Atlas recipes README (published, not measured here)", "tok_s": {"single_prose": 58}}
@@ -231,13 +231,13 @@
           "default": true,
           "tensors": 149552,
           "gpu_steps": "sixlabs/ports/qwen3.5-122b-a10b/gpu-steps.md",
-          "verified": {"date": "2026-10-04", "box": "DGXone", "engine_commit": "29f904b", "record": "sixlabs/ports/qwen3.5-122b-a10b/results-2026-10-04-dgxone.md"},
+          "verified": {"date": "2026-10-04", "box": "DGXone", "engine_commit": "29f904b", "record": "models/qwen3.5-122b-a10b/one-box/results-2026-10-04-dgxone.md"},
           "notes": "The checkpoint in the fleet's cache, and the one Atlas's single-Spark recipe names. Gate passed on prose and code in both dense forms. One Spark only with a reduced pool: the planner says 83.12 GiB at 65,536 tokens and 8 seats, the box lost about 89.6 GiB, which left 15 GiB beside the reranker, embedder and Docling (under the fleet's 19.7 GiB floor; the owner waived it for the run).",
           "worlds": {
             "1": {
               "template": "deploy/cluster_qwen3.5-122b-a10b_nvfp4-sehyo_w1.example.json",
               "measured": {
-                "date": "2026-10-04", "box": "DGXone", "source": "sixlabs/ports/qwen3.5-122b-a10b/results-2026-10-04-dgxone.md",
+                "date": "2026-10-04", "box": "DGXone", "source": "models/qwen3.5-122b-a10b/one-box/results-2026-10-04-dgxone.md",
                 "load_cold_s": 176, "load_warm_s": 26, "plan_gib": 83.12, "gpu_gib": 84.9,
                 "tok_s": {"single_prose": 36.5, "c2": 46.9, "c4": 60.0, "c8": 71.2},
                 "notes": "tok/s is ShareGPT output throughput (64 prompts a level), 65,536-token pool, draft head on (77.5 % of drafts accepted). The cold load writes a 67.4 GiB resident image."
@@ -367,7 +367,7 @@
          "worlds": {
            "2": {"template": "deploy/cluster_deepseek-v4-flash_mxfp4-fp8_w2.example.json",
                  "measured": {"date": "2026-10-04", "box": "DGXone + DGXtwo",
-                              "source": "sixlabs/bench/results/dgxone_dgxtwo_deepseek_v4_flash_2026-10-04.md",
+                              "source": "models/deepseek-v4-flash/two-box/dgxone_dgxtwo_deepseek_v4_flash_2026-10-04.md",
                               "load_cold_s": 196, "load_warm_s": 24, "plan_gib": 84.2, "gpu_gib": 88.29,
                               "tok_s": {"single_prose": 65.8, "c2": 87.8, "c4": 104.4},
                               "notes": "Served and measured on this fleet; the forward-check gate was not run here, so the status stays upstream. Run with 6 seats and a 262,144-token pool (the template ships 4 seats and a 1M pool) on two RoCE lanes; memory is per box. tok/s is MiaAI-Lab's method with thinking off and a 256-token prompt: per-stream decode at one stream, totals at 2 and 4; 103.3 total at 6 (18.5 a stream). Thinking on: 52.5 at one stream, 71.0 total at 6. ShareGPT (thinking on): 43.2 / 53.7 / 63.2 / 66.2 output tok/s at 1 / 2 / 4 / 8. A second RoCE lane gave no measurable decode gain. Upstream's published figures for the template as shipped (docs/benchmarks.md): 40.4–72.8 single, 67.5–101.1 at four requests."}},

@@ -21,7 +21,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
 ORDER = ["working", "upstream", "compiled", "groundwork", "refused"]   # best first
 LAUNCHABLE = ("working", "upstream")
-REPO_PATH = re.compile(r"^(sixlabs|docs|deploy|benchmarks)/\S+$|^[A-Z0-9_]+\.md$")
+REPO_PATH = re.compile(r"^(sixlabs|docs|deploy|benchmarks|models)/\S+$|^[A-Z0-9_]+\.md$")
 
 
 class RegistryError(Exception):

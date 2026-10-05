@@ -10,7 +10,7 @@ upstream's GPU kernel tests and the Qwen3.8-27B bring-up are still owed.**
 
 Later the same evening (not part of this record's build): 9612a02 lifted the one-box refusal of
 section 2 and the 80B and the 35B were served and measured over both boxes on the merged engine
-(`dgxone_dgxtwo_two_box_80b_35b_2026-10-04.md`: 35B 154.4 / 214.1 / 300.5 / 367.6 tok/s at
+(`models/shared/dgxone_dgxtwo_two_box_80b_35b_2026-10-04.md`: 35B 154.4 / 214.1 / 300.5 / 367.6 tok/s at
 1/2/4/8 streams). Those figures are measured, not verified: the gate below has not been run on
 any build that contains this merge.
 
@@ -144,7 +144,7 @@ free GPU; items 1 and 2 are correctness and are owed whatever is decided about o
    reference (`compare_forward_check.py`, default bounds), then ShareGPT at 1/2/4/8 and
    `group_check.py --thinking-off --seed 4242`. Before: 93.2 / 128.5 / 176.7 / 222.7 output tok/s,
    p99 first token 366 / 327 / 409 / 510 ms on build 17fbf92
-   (`dgxone_35b_prefill_2026-10-04.md`). Until the gate has passed on this build, the registry's
+   (`models/qwen3.6-35b-a3b/one-box/dgxone_35b_prefill_2026-10-04.md`). Until the gate has passed on this build, the registry's
    `verified.engine_commit` for the 35B stays where it is.
 3. Qwen3.8-27B from upstream's one-box template with the DFlash2 drafter: answers first
    (`group_check`), then ShareGPT. Upstream's own one-box rows (`docs/benchmarks.md`): 17.0–40.8

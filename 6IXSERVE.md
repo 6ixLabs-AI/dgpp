@@ -57,7 +57,7 @@ walk with the routed MoE in the dense MLP's place — on one Spark today:
 The forward-check gate on two boxes: this model and the 35B serve over two Sparks since 2026-10-04
 (upstream's #86 brought tensor parallel to the `qwen3_5` family's dense dialect, 9612a02 extended it
 to the routed MoE) and are measured there, about 1.6x one Spark, but not verified
-(`sixlabs/bench/results/dgxone_dgxtwo_two_box_80b_35b_2026-10-04.md`); the FP8 release
+(`models/shared/dgxone_dgxtwo_two_box_80b_35b_2026-10-04.md`); the FP8 release
 of the same model as a second format; a deployment template in `deploy/`; a model-level fixture test.
 
 ## Running it

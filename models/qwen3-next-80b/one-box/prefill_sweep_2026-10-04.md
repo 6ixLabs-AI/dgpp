@@ -1,5 +1,7 @@
 # Answers beside long prompts: scheduler settings, Qwen3-Next-80B (2026-10-04)
 
+> Layout note, 2026-10-04: moved from `sixlabs/bench/results/prefill_sweep_2026-10-04.md` when the per-model folders under `models/` were made. Paths to other moved records were updated; nothing else was changed.
+
 `sixlabs/bench/prefill_sweep.sh` on DGXone, 05:23–05:46 EDT, build 5c20f70, 8 slots, 524,288-token
 pool, fp8 dense, MTP depth 2. `mixed_load.py`: 4 writers streaming long answers, 2 readers sending
 fresh 17,400-token prompts, 50 s a phase. Every run clean: no HEM scoring call during it and no

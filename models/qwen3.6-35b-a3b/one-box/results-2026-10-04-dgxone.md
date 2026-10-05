@@ -1,5 +1,7 @@
 # Qwen3.6-35B-A3B on 6ix.cpp — bring-up results (DGXone)
 
+> Layout note, 2026-10-04: moved from `sixlabs/ports/qwen3.6-35b-a3b/results-2026-10-04-dgxone.md` when the per-model folders under `models/` were made. Paths to other moved records were updated; nothing else was changed. `gate-final-8-runs.txt` moved with it; `gpu-steps.md` and `inputs/` stayed in `sixlabs/ports/qwen3.6-35b-a3b/`. The `jobs/` folder, `fixes.patch`, `build-status.md` and `unloaded.txt` it names are not in this repository.
+
 **Finished 2026-10-04 05:20 EDT.** Nothing below is claimed beyond what the quoted output shows.
 
 Status in one line: **partly.** Checkpoint A (NVFP4) builds, boots, answers, and is measured, and the vLLM

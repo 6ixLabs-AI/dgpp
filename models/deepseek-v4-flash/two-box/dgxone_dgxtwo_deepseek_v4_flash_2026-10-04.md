@@ -1,12 +1,14 @@
 # DeepSeek-V4-Flash on 6ix.cpp across both boxes — DGXone + DGXtwo, 2026-10-04
 
+> Layout note, 2026-10-04: moved from `sixlabs/bench/results/dgxone_dgxtwo_deepseek_v4_flash_2026-10-04.md` when the per-model folders under `models/` were made. Paths to other moved records were updated; nothing else was changed. Its data folder moved with it.
+
 Status: **DONE** for ShareGPT and for MiaAI-Lab's benchmark method on 6ix.cpp (one lane and two
 lanes with thinking off; two lanes with thinking on). **NOT RUN:** the vLLM six-seat baseline on
 the same day (stopped before launch on the owner's instruction, 18:08 EDT) and the forward-check
 gate on this fleet, so the registry keeps the checkpoint at `upstream`. The engine is down.
 
 Every 6ix.cpp number below is quoted from a file in
-`sixlabs/bench/results/dgxone_dgxtwo_deepseek_v4_flash_2026-10-04/`. Log timestamps are UTC
+`models/deepseek-v4-flash/two-box/dgxone_dgxtwo_deepseek_v4_flash_2026-10-04/`. Log timestamps are UTC
 (20:52 UTC = 16:52 EDT).
 
 ## 1. Result

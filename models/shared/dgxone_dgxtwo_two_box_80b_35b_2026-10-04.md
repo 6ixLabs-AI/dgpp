@@ -1,5 +1,7 @@
 # Qwen3-Next-80B and Qwen3.6-35B-A3B across both boxes — DGXone + DGXtwo, 2026-10-04
 
+> Layout note, 2026-10-04: moved from `sixlabs/bench/results/dgxone_dgxtwo_two_box_80b_35b_2026-10-04.md` when the per-model folders under `models/` were made. Paths to other moved records were updated; nothing else was changed. Its log folder moved with it. It covers two models, so it lives in `models/shared/` and both model folders link to it.
+
 Status: **both models serve over two Sparks and are about 1.6× faster than on one, at 1 to 8
 streams.** Measured with ShareGPT and tool-eval-bench. **NOT done:** the forward-check gate at
 two boxes (the tool has no two-rank mode), the 35B's one-box gate on the merged engine, and
@@ -7,7 +9,7 @@ upstream's `qwen35_tp_test`. Answers were checked by hand and by tool-eval only:
 two-box worlds as measured, not verified.
 
 Every number is quoted from a log in
-`sixlabs/bench/results/dgxone_dgxtwo_two_box_80b_35b_2026-10-04/`. Log timestamps are UTC.
+`models/shared/dgxone_dgxtwo_two_box_80b_35b_2026-10-04/`. Log timestamps are UTC.
 
 ## 1. Result
 
@@ -23,7 +25,7 @@ ShareGPT, 64 prompts a level, all 64 successful at every level, output tok/s:
 - The 80B pair is like for like: same build (`2ad1c4f`), same settings, same harness, one run
   each, an hour apart.
 - The 35B's one-box column is this morning's run on an earlier build
-  (`dgxone_35b_6ixcpp_vs_atlas_2026-10-04.md`), before the upstream merge changed this family's
+  (`models/qwen3.6-35b-a3b/one-box/dgxone_35b_6ixcpp_vs_atlas_2026-10-04.md`), before the upstream merge changed this family's
   kernels. Same checkpoint and harness, not the same engine version.
 - Both models were loaded on the two boxes together for the 35B run and for a second 80B run
   (121.14 / 160.53 / 212.38 / 251.37): an idle neighbour costs nothing measurable.

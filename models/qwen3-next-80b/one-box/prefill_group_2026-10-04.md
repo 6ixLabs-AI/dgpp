@@ -1,5 +1,7 @@
 # Reading several prompts in one walk (`engine.prefill_group`), Qwen3-Next-80B (2026-10-04)
 
+> Layout note, 2026-10-04: moved from `sixlabs/bench/results/prefill_group_2026-10-04.md` when the per-model folders under `models/` were made. Paths to other moved records were updated; nothing else was changed.
+
 `sixlabs/bench/group_two.sh` on DGXtwo, 09:33–09:43 EDT, nothing else on the GPU in either run.
 Build d06a1cd; 8 slots; prefill 1024 a tick while decoding / 4096 idle; 8 decode passes a chunk;
 shortest first. `group_check.py`: every prompt is a ledger nobody has sent before plus a lookup

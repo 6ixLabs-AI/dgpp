@@ -1,5 +1,7 @@
 # Qwen3-Coder-Next on 6ix.cpp — bring-up results (DGXone)
 
+> Layout note, 2026-10-04: moved from `sixlabs/ports/qwen3-coder-next/results-2026-10-04-dgxone.md` when the per-model folders under `models/` were made. Paths to other moved records were updated, the gate output's file name was corrected to the file's real name and the `inputs/` location in 4.5 was spelled out; nothing else was changed. `gate-coder-4-runs-2026-10-04.txt` moved with it; `gpu-steps.md` and `inputs/` stayed in `sixlabs/ports/qwen3-coder-next/`. The `jobs/` and `out/` folders and the patch files it names are not in this repository.
+
 (The engine was renamed 6ix.cpp on 2026-10-04 at about 10:22 EDT; it was 6ixInfer / 6ixServe before. The binary is still `6ix-Serve`; paths and ports are unchanged.)
 
 **Finished 2026-10-04 11:50 EDT (DGXone clock).** Nothing below is claimed beyond what the quoted output shows.
@@ -134,7 +136,7 @@ A small negative number as shipped; each wrong convention collapses it. Holds.
 
 The gate is `sixlabs/bench/compare_forward_check.py` as on main, default bounds, untouched.
 `$OUT/jobs/run_forward_check.py code,prose --fp8-form`, log `~/6ixinfer-logs/forward-check-coder.log`
-(the four verdict blocks are in `gate-coder-4-runs.txt` beside this file).
+(the four verdict blocks are in `gate-coder-4-runs-2026-10-04.txt` beside this file).
 
 | input | dense form | pearson (≥ 0.995) | mean \|Δ\| (≤ 0.10) | max (position), reported | greedy rows agreeing | misses above the 0.5 nat margin | verdict |
 |---|---|---|---|---|---|---|---|
@@ -279,8 +281,8 @@ token for token from the box's `tokenizer.json` and `chat_template.jinja`). Same
 original (a system sentence, a user request for a function plus one sentence, a canned answer),
 different tasks and languages, **and a different system sentence each** — the model is causal,
 so a prompt that reuses the original's system sentence repeats the original's rows 0–10
-computation exactly, row 8 included; the control below shows that. Inputs are in `inputs/`
-beside this file and in `fixes.patch` (as `sixlabs/ports/qwen3-coder-next/inputs/…`).
+computation exactly, row 8 included; the control below shows that. Inputs are in `sixlabs/ports/qwen3-coder-next/inputs/`
+and in `fixes.patch` (as `sixlabs/ports/qwen3-coder-next/inputs/…`).
 
 | prompt | tokens | task |
 |---|---|---|

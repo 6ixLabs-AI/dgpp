@@ -1,7 +1,9 @@
 # Qwen3-Coder-Next: 6ix.cpp against vLLM, and why it is not the 80B — DGXone, 2026-10-04
 
+> Layout note, 2026-10-04: moved from `sixlabs/bench/results/dgxone_coder_next_2026-10-04.md` when the per-model folders under `models/` were made. Paths to other moved records were updated; nothing else was changed.
+
 Summary of the Coder-Next bring-up and comparison. The full record, with every command and its
-output, is `sixlabs/ports/qwen3-coder-next/results-2026-10-04-dgxone.md`.
+output, is `models/qwen3-coder-next/one-box/results-2026-10-04-dgxone.md`.
 
 ## Result
 
@@ -109,8 +111,8 @@ between engines in several rows, so only the measured same-file rows are engine 
 | Model | 6ix.cpp | Atlas | vLLM |
 |---|---|---|---|
 | Qwen3-Next-80B | 82.2 / 103.6 measured | 80.9 / 115.5 measured, same file; ~104 published | ~35, fleet record, draft head off |
-| Qwen3.6-35B-A3B | 97.7 / 120.1 measured; ShareGPT 96.7 | ShareGPT 84.8 measured, same file, thinking on (`dgxone_35b_6ixcpp_vs_atlas_2026-10-04.md`); 116.5 published with one draft token, thinking off | 50.1 / 50.1 measured, FP8 slot |
-| Qwen3.5-122B-A10B | ShareGPT 36.5 measured, Sehyo NVFP4, 65,536-token pool (`sixlabs/ports/qwen3.5-122b-a10b/results-2026-10-04-dgxone.md`) | 33.4 on one Spark, ~51 on two, published; not runnable beside DGXone's services | no speed on record |
+| Qwen3.6-35B-A3B | 97.7 / 120.1 measured; ShareGPT 96.7 | ShareGPT 84.8 measured, same file, thinking on (`models/qwen3.6-35b-a3b/one-box/dgxone_35b_6ixcpp_vs_atlas_2026-10-04.md`); 116.5 published with one draft token, thinking off | 50.1 / 50.1 measured, FP8 slot |
+| Qwen3.5-122B-A10B | ShareGPT 36.5 measured, Sehyo NVFP4, 65,536-token pool (`models/qwen3.5-122b-a10b/one-box/results-2026-10-04-dgxone.md`) | 33.4 on one Spark, ~51 on two, published; not runnable beside DGXone's services | no speed on record |
 | Qwen3.5-35B-A3B | not set up | ~133 published | none |
 | Qwen3.5-0.8B | not run | recipe exists, no speed published | no speed on record |
 | Qwen3.8-27B | not run here | 23.6 published, with the draft head | none |

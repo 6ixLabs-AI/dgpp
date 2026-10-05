@@ -1,5 +1,7 @@
 # Qwen3.6-35B-A3B: the default prefill settings against the tuned ones — DGXone, 2026-10-04
 
+> Layout note, 2026-10-04: moved from `sixlabs/bench/results/dgxone_35b_prefill_2026-10-04.md` when the per-model folders under `models/` were made. Paths to other moved records were updated; nothing else was changed. Its data folder moved with it.
+
 One build (`17fbf92`, the first with `cecb0cd`, which lets the `qwen3_5` family take an explicit
 prefill budget), one checkpoint (`nvidia/Qwen3.6-35B-A3B-NVFP4`), one box, the same three checks
 run twice: the template as it was, then with

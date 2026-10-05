@@ -1,5 +1,7 @@
 # Qwen3.6-35B-A3B NVFP4 — 6ix.cpp against Atlas, same checkpoint (DGXone, 2026-10-04)
 
+> Layout note, 2026-10-04: moved from `sixlabs/bench/results/dgxone_35b_6ixcpp_vs_atlas_2026-10-04.md` when the per-model folders under `models/` were made. Paths to other moved records were updated; nothing else was changed. The logs and launch scripts it lists as "in this folder" (section 4) are not in this repository; it says the full logs are on DGXone under `~/6ixinfer-logs/`.
+
 Status: **DONE** for ShareGPT on both engines. Tool-eval: 6ix.cpp complete; Atlas short complete, hard stopped
 at 24 of 88 on the owner's instruction ("we do not need the tool calling numbers", 12:35). Both engines are down.
 Every number below is quoted from a log in this folder.

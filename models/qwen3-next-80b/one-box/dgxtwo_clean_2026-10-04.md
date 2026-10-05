@@ -1,5 +1,7 @@
 # Qwen3-Next-80B on DGXtwo, alone on the GPU (2026-10-04, 07:14–07:57 EDT)
 
+> Layout note, 2026-10-04: moved from `sixlabs/bench/results/dgxtwo_clean_2026-10-04.md` when the per-model folders under `models/` were made. Paths to other moved records were updated; nothing else was changed.
+
 `sixlabs/bench/after_papers.sh`, unattended, after the RAG papers benchmark. Build 5c20f70's
 binary; 8 slots; 524,288-token pool; fp8 dense; MTP depth 2; prefill 1024 tokens a tick while
 decoding / 4096 idle; 8 decode passes per chunk; shortest prompt first. Before each benchmark:

@@ -1,7 +1,8 @@
 # Port 4 — Qwen3.5-122B-A10B: what to run once a GPU is free
 
 **Update 2026-10-04 (DGXone): checkpoint B (`Sehyo/Qwen3.5-122B-A10B-NVFP4`) was run through these
-steps and is verified. The record is `results-2026-10-04-dgxone.md` beside this file.** What the
+steps and is verified. The record is
+`models/qwen3.5-122b-a10b/one-box/results-2026-10-04-dgxone.md`.** What the
 run showed that the text below does not say:
 
 - Bind check `expected 149552 | matched 149552`; the gate passed on prose and code in both dense

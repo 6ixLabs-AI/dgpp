@@ -1,8 +1,8 @@
 # Port 1 — Qwen3-Coder-Next: what to run once a GPU is free
 
 **Update 2026-10-04 (DGXone bring-up): these steps were run. The record is
-`results-2026-10-04-dgxone.md` beside this file; the summary is
-`sixlabs/bench/results/dgxone_coder_next_2026-10-04.md`.** What differs from the text below:
+`models/qwen3-coder-next/one-box/results-2026-10-04-dgxone.md`; the summary is
+`models/qwen3-coder-next/one-box/dgxone_coder_next_2026-10-04.md`.** What differs from the text below:
 
 - The gate's bounds are the recalibrated ones (pearson ≥ 0.995, mean ≤ 0.10 nat, greedy agreement
   wherever the reference's margin exceeds 0.5 nat), not the ones written here.
