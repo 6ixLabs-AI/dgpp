@@ -4,8 +4,15 @@ Branch `merge/upstream-2026-10-04`: origin/main `997071d` + upstream master `769
 (HawkBearPig/dgpp), merge commit `d7af6f5`, built and tested at `01e0c26` (the merge plus a
 `6IXSERVE.md` note; the engine source is the merge's).
 
-**State: builds clean, every host test passes. No model has been loaded on the merged build yet:
-the 35B gate, the speed measurements and the Qwen3.8-27B bring-up are section 4, not done.**
+**State: builds clean, every host test passes; on main since 51408f8 (Mark, the same evening).
+The checks of section 4 were not run by this work: the 35B's one-box gate on the merged engine,
+upstream's GPU kernel tests and the Qwen3.8-27B bring-up are still owed.**
+
+Later the same evening (not part of this record's build): 9612a02 lifted the one-box refusal of
+section 2 and the 80B and the 35B were served and measured over both boxes on the merged engine
+(`dgxone_dgxtwo_two_box_80b_35b_2026-10-04.md`: 35B 154.4 / 214.1 / 300.5 / 367.6 tok/s at
+1/2/4/8 streams). Those figures are measured, not verified: the gate below has not been run on
+any build that contains this merge.
 
 ## 1. What came in
 
@@ -40,7 +47,8 @@ Three files. `LICENSE` and `NOTICE` are upstream's, unchanged.
 | `run_rows`' MLP | the same, plus the prefetch window | the same choice | the same, the prefetch kept |
 | end of `run_rows` | join the prefetch stream | `finish_run` with the packed span heads (`/v1/score`, shared walk) | both, in that order |
 
-One addition that is neither side's: **the routed-MoE dialects (Qwen3-Next 80B, Qwen3.6-35B-A3B,
+One addition that is neither side's (and stood for two hours: 9612a02 replaced it with the
+sharded chain): **the routed-MoE dialects (Qwen3-Next 80B, Qwen3.6-35B-A3B,
 Qwen3.5-122B-A10B) are refused above one box**, in the constructor and in `plan_memory`. Upstream
 removed the family's "world must be 1"; the MoE chain here is sized for one Spark and has never
 run sharded, and under the new folds its output would be summed once per rank. The refusal names
@@ -127,6 +135,9 @@ Logs on DGXone: `~/6ixinfer-logs/build-merge-upstream-{release,release-tests,ci}
 that became 1b2d21d) is kept as `~/6ixinfer-logs/check-tree-before-reset-2026-10-04.patch`.
 
 ## 4. Not done yet — needs the GPU
+
+As of 20:30 EDT both boxes serve the 80B and the 35B over two Sparks, so none of this has a
+free GPU; items 1 and 2 are correctness and are owed whatever is decided about one-box speed.
 
 1. The three kernel tests above.
 2. Qwen3.6-35B-A3B: `qwen35_forward_check` on the port's prose and code inputs against the numpy
