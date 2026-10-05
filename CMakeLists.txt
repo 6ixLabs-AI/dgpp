@@ -1275,6 +1275,15 @@ dgpp_set_common(engine_watchdog_test)
 add_test(NAME engine_watchdog_test COMMAND engine_watchdog_test)
 set_tests_properties(engine_watchdog_test PROPERTIES TIMEOUT 20)
 
+# The bus engine's core choice (net/engine_cpu.hpp): a second engine process
+# on the host takes the next fastest core, by a per-core claim. Host-only;
+# the cores are numbers and nothing is pinned.
+add_executable(bus_engine_cpu_test tests/host/bus_engine_cpu_test.cpp)
+target_link_libraries(bus_engine_cpu_test PRIVATE Threads::Threads)
+dgpp_set_common(bus_engine_cpu_test)
+add_test(NAME bus_engine_cpu_test COMMAND bus_engine_cpu_test)
+set_tests_properties(bus_engine_cpu_test PROPERTIES TIMEOUT 60)
+
 add_executable(cuda_wait_test tests/cuda/cuda_wait_test.cpp)
 target_link_libraries(cuda_wait_test PRIVATE CUDA::cudart Threads::Threads)
 dgpp_set_common(cuda_wait_test)
@@ -2407,6 +2416,7 @@ foreach(_test IN LISTS DGPP_ALL_TESTS)
   set_tests_properties(${_test} PROPERTIES LABELS "gpu")
 endforeach()
 set_tests_properties(unit unit_tests http_server_test serve_test fabric_serve_test scheduler_test shutdown_watchdog_test engine_watchdog_test
+  bus_engine_cpu_test
   qwen_yarn_fixture_test qwen_w4a4_plan_default qwen_w4a4_plan_mode_0 qwen_w4a4_plan_mode_1
   qwen_w4a4_plan_mode_empty qwen_w4a4_plan_mode_invalid PROPERTIES LABELS "host")
 set_tests_properties(checkpoint_audit_test route_trace_test sampling_profile_test
