@@ -212,6 +212,10 @@ def table(reg, only=None):
     return "\n".join(rows)
 
 
+
+# Scheduler settings the server accepts on one rank only.
+SINGLE_RANK_ONLY = ("decode_passes_per_prefill", "prefill_order", "prefill_budget_per_reader", "prefill_group")
+
 # ── resolve / launch ─────────────────────────────────────────────────────────────────────────
 def resolve(reg, model_id, world=None, checkpoint=None, variant=None, sets=(), allow_unverified=False, root=ROOT):
     """(deployment config, provenance) for one model, or RegistryError saying why not."""
@@ -244,6 +248,10 @@ def resolve(reg, model_id, world=None, checkpoint=None, variant=None, sets=(), a
         cfg = json.load(f)
     engine = dict(cfg.get("engine", {}))
     from_family = {k: v for k, v in reg["families"][m["family"]].get("engine_defaults", {}).items() if k not in engine}
+    if int(world) > 1:
+        # The server refuses these above one rank for now (apps/dgpp_serve.cpp): a family default
+        # must not turn a two-Spark template into a config that cannot start.
+        from_family = {k: v for k, v in from_family.items() if k not in SINGLE_RANK_ONLY}
     engine.update(from_family)
     engine.update(w.get("engine", {}))
     overrides = {}
