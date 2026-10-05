@@ -42,7 +42,12 @@ walk with the routed MoE in the dense MLP's place — on one Spark today:
   (`sixlabs/bench/pool_pressure.py` reproduces the condition);
 - `engine.logprobs_mode` — sampled requests report logprobs under the model's raw distribution
   (OpenAI's and vLLM's meaning) instead of the truncated one the draw was made from; `raw` is the
-  default on one node. Detectors that read top-N logprobs (CIFF, HIFF) need it.
+  default on one node. Detectors that read top-N logprobs (CIFF, HIFF) need it;
+- two engines on one box no longer pin their bus engine threads to the same core: each claims its
+  core with a lock on `/tmp/dgpp-bus-engine-cpu<N>.lock` and the next engine takes the next
+  fastest free one (`DGPP_BUS_ENGINE_CPU=N` still names a core outright). Both engines must run
+  a build that has this; the startup line `bus engine: rank R pinned to cpu C (...)` says which
+  core and why.
 
 ## Measured (one DGX Spark, 2026-10-03)
 

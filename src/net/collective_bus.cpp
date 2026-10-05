@@ -28,6 +28,7 @@
 #include "common/log.hpp"
 #include "common/cuda_wait.hpp"
 #include "net/bus_types.hpp"
+#include "net/engine_cpu.hpp"
 #include "net/tcp.hpp"
 #include "net/verbs.hpp"
 
@@ -2595,16 +2596,25 @@ struct CollectiveBus::Impl {
   // on a 3.9 GHz core (2026-09-02, ranks 1 and 3). A fixed core also
   // keeps the spinner from wandering under a sleeping main thread's
   // wake-affine placement. DGPP_BUS_ENGINE_CPU=n overrides; an
-  // unreadable sysfs leaves the thread unpinned.
-  void pin_engine_thread() {
-    int cpu = -1;
+  // unreadable sysfs leaves the thread unpinned. The core is claimed
+  // (net/engine_cpu.hpp) for as long as the returned claim lives, so the
+  // engine of another process on this host takes the next one.
+  EngineCpuClaim pin_engine_thread() {
+    EngineCpuClaim claim;
+    std::string why;
     if (const char* env = std::getenv("DGPP_BUS_ENGINE_CPU")) {
-      cpu = std::atoi(env);
+      claim = EngineCpuClaim::fixed(std::atoi(env));
+      why = "DGPP_BUS_ENGINE_CPU";
+      if (!claim.held()) why += "; another engine has claimed this core, the two share it";
     } else {
       // Every online core with its max clock, fastest first (ties: the
       // HIGHER index first — core 0's neighbourhood carries the interrupt
-      // load). Bus instances in one process (the loopback tests run a
-      // whole world in-process) take successive cores: four engines on
+      // load), and the first one no other engine has claimed. A second
+      // engine PROCESS used to take the same core as the first (the
+      // instance count below is per process), and two spinners on one core
+      // cost both worlds 5-8x (2026-10-04). Bus instances in one process
+      // (the loopback tests run a whole world in-process) take successive
+      // cores, with the claims and when none can be taken: four engines on
       // one core is four spinners sharing a timeslice, and the 5 s
       // collective watchdog measured exactly that (ctest -j4, 2026-09-02).
       std::vector<std::pair<long, int>> cores;  // (khz, cpu)
@@ -2615,30 +2625,43 @@ struct CollectiveBus::Impl {
         long khz = -1;
         if (f >> khz) cores.emplace_back(khz, static_cast<int>(c));
       }
-      if (cores.empty()) return;
-      std::sort(cores.begin(), cores.end(),
-                [](const auto& a, const auto& b) {
-                  return a.first != b.first ? a.first > b.first
-                                            : a.second > b.second;
-                });
+      if (cores.empty()) return claim;
       static std::atomic<unsigned> next_instance{0};
       const unsigned i = next_instance.fetch_add(1, std::memory_order_relaxed);
-      cpu = cores[i % cores.size()].second;
+      claim = EngineCpuClaim::first_free(order_engine_cpus(std::move(cores)), i);
+      if (!claim.held()) {
+        why = std::format("no core could be claimed under {}: instance {} of this process, "
+                          "and another engine may share the core",
+                          kEngineCpuLockDir, i);
+      } else if (claim.passed_over() == 0) {
+        why = "the fastest core, claimed";
+      } else {
+        why = std::format("the fastest free core, claimed; {} ahead of it claimed by other engines",
+                          claim.passed_over());
+      }
     }
-    if (cpu < 0) return;
+    const int cpu = claim.cpu();
+    if (cpu < 0) return claim;
     cpu_set_t set;
     CPU_ZERO(&set);
     CPU_SET(cpu, &set);
     if (sched_setaffinity(0, sizeof(set), &set) != 0) {
       DGPP_LOG_WARN("bus engine: could not pin to cpu {} (errno {})", cpu,
                     errno);
-      return;
+      claim.release();  // not spinning there: leave the core to the next engine
+      return claim;
     }
-    DGPP_LOG_INFO("bus engine: rank {} pinned to cpu {}", opt.my_rank, cpu);
+    // A core without its claim is where two spinners can meet: a warning.
+    if (claim.held()) {
+      DGPP_LOG_INFO("bus engine: rank {} pinned to cpu {} ({})", opt.my_rank, cpu, why);
+    } else {
+      DGPP_LOG_WARN("bus engine: rank {} pinned to cpu {} ({})", opt.my_rank, cpu, why);
+    }
+    return claim;
   }
 
   void engine_loop() {
-    pin_engine_thread();
+    const EngineCpuClaim cpu_claim = pin_engine_thread();  // held until this thread exits
     int idle = 0;
     for (;;) {
       if (stopping.load(std::memory_order_relaxed) && drained()) break;
