@@ -5,6 +5,9 @@ engine, or beside it. Each folder has a README with the measured tables and the 
 they are quoted from. Models that were never loaded on a GPU here are on one page:
 [candidates.md](candidates.md).
 
+The 80B and the 35B against Atlas and vLLM are written up on one page each:
+[performance-80b.md](performance-80b.md) and [performance-35b.md](performance-35b.md).
+
 Rules these pages keep:
 
 - Every figure comes from a record in this repository, and the record is linked beside it.
