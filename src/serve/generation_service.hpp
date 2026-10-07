@@ -534,6 +534,7 @@ class GenerationService : public HttpHandler,
   void clamp_steps_to_context(int64_t prompt_tokens, int* steps) const;
   // OpenAI's ignore_eos: generate to the token limit whatever is drawn.
   bool parse_ignore_eos(const minijson::Value& body, HttpResponseWriter& w, bool* ignore);
+  bool parse_priority(const minijson::Value& body, HttpResponseWriter& w, int* priority);
   bool parse_sse_ping_interval(const minijson::Value& body, HttpResponseWriter& w, bool stream,
                                int* interval);
   bool parse_stream_options(const minijson::Value& body, HttpResponseWriter& w,

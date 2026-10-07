@@ -1694,3 +1694,32 @@ DGPP_TEST(journal_large_fragmented_record_scans_linearly_and_preserves_following
   require(sender_error.empty(), sender_error);
   require(empty && following && eof, "journal reader lost buffered lines or accepted a partial EOF record");
 }
+
+DGPP_TEST(journal_priority_rides_the_submit_and_zero_writes_nothing) {
+  // The request's priority class (SchedulerRequest::priority) reaches every
+  // rank with the request; a request at 0 writes the record it always wrote.
+  GenerationService::PassEvents ev;
+  dgpp::sched::SchedulerRequest plain, bg, urgent;
+  plain.id = "chatcmpl-0000000000000d01"; plain.prompt = {1, 2, 3}; plain.max_steps = 2;
+  bg = plain; bg.id = "chatcmpl-0000000000000d02"; bg.priority = 10;
+  urgent = plain; urgent.id = "chatcmpl-0000000000000d03"; urgent.priority = -10;
+  ev.submits = {plain, bg, urgent};
+  const std::string line = dgpp::serve::encode_journal_tick(ev);
+  require(line.find("\"pr\":10") != std::string::npos && line.find("\"pr\":-10") != std::string::npos,
+          "codec: priority on the wire: " + line);
+  const dgpp::serve::JournalRecord back = dgpp::serve::decode_journal_line(line);
+  require(back.submits.size() == 3 && back.submits[0].priority == 0 && back.submits[1].priority == 10 &&
+              back.submits[2].priority == -10,
+          "codec: priority round-trip");
+  GenerationService::PassEvents one;
+  one.submits = {plain};
+  require(dgpp::serve::encode_journal_tick(one).find("\"pr\"") == std::string::npos,
+          "codec: a request at priority 0 writes the record it always wrote");
+  bool refused = false;
+  try {
+    std::string bad = line;
+    bad.replace(bad.find("\"pr\":10"), 7, "\"pr\":999");
+    dgpp::serve::decode_journal_line(bad);
+  } catch (const std::runtime_error&) { refused = true; }
+  require(refused, "codec: a priority outside its range is a bad record");
+}

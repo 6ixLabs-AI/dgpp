@@ -3739,3 +3739,177 @@ DGPP_TEST(scheduler_fairShare_busy_budget_rotates_and_survives_compaction) {
     require(run(true) == run(false), "compaction preserves every engine op and observer event");
   }
 }
+
+// ── request priority (6ixServe, 2026-10-07) ─────────────────────────────────
+// SchedulerRequest::priority: lower is sooner, 0 the default. The tests above
+// run with every request at 0 and pin that nothing changed for them; these
+// pin what a second class does.
+
+DGPP_TEST(scheduler_priority_orders_the_queue_and_one_class_is_arrival_order) {
+  // GIVEN one slot in use and three requests waiting, the last to arrive the
+  // only one at priority 0: it takes the slot next. With all three in one
+  // class (any value) the order is arrival order, as it always was.
+  for (const bool classes : {true, false}) {
+    FakeEngine engine(1, 100, 2);
+    engine.arm(0, {10, 11}, 2);  // the request already running
+    engine.arm(0, {20, 21}, 2);  // whoever is admitted second
+    engine.arm(0, {30, 31}, 2);  // third
+    engine.arm(0, {40, 41}, 2);  // fourth
+    Scheduler sched(&engine, {});
+    sched.submit(make_request("running", 2, 2));
+    sched.tick();
+    auto bg1 = make_request("bg1", 2, 2), bg2 = make_request("bg2", 2, 2), chat = make_request("chat", 2, 2);
+    bg1.priority = 10;
+    bg2.priority = 10;
+    chat.priority = classes ? 0 : 10;
+    sched.submit(bg1);
+    sched.submit(bg2);
+    sched.submit(chat);
+    sched.run_to_completion();
+    const auto got = [&](const char* id) { return sched.find(id)->generated.front(); };
+    if (classes)
+      require(got("chat") == 20 && got("bg1") == 30 && got("bg2") == 40,
+              "the request at priority 0 is admitted ahead of the background ones that arrived before it");
+    else
+      require(got("bg1") == 20 && got("bg2") == 30 && got("chat") == 40, "one class: arrival order");
+    require(sched.meters().pool_blocks_in_use == 0 && sched.meters().queued == 0, "every request ran and released");
+  }
+}
+
+DGPP_TEST(scheduler_priority_background_leaves_the_last_seat_open) {
+  // GIVEN two slots and two background requests: the second does not take
+  // the last open slot while the first runs, so a request at priority 0 that
+  // arrives later is seated at once instead of waiting for an answer to end.
+  FakeEngine engine(2, 100, 2, 2);
+  engine.arm(0, {10, 11, 12, 13, 14, 15}, 6);  // bg1: a long answer
+  engine.arm(1, {30, 31, 32, 33}, 4);          // chat, in the seat that was kept
+  engine.arm(0, {20, 21}, 2);                  // bg2, once both seats are free again
+  Scheduler sched(&engine, {});
+  auto bg1 = make_request("bg1", 2, 6), bg2 = make_request("bg2", 2, 2);
+  bg1.priority = 10;
+  bg2.priority = 10;
+  sched.submit(bg1);
+  sched.submit(bg2);
+  sched.tick();
+  sched.tick();  // (one admission a tick without a prefill budget: the second tick is the one that would seat it)
+  require(sched.meters().active == 1 && sched.meters().queued == 1,
+          "the second background request waits and the last seat stays open");
+  sched.submit(make_request("chat", 2, 4));
+  sched.tick();
+  require(sched.meters().active == 2 && sched.meters().queued == 1, "the request at priority 0 is seated on its first tick");
+  sched.run_to_completion();
+  require(sched.find("chat")->generated == std::vector<int64_t>({30, 31, 32, 33}) &&
+              sched.find("bg1")->generated.size() == 6 && sched.find("bg2")->generated == std::vector<int64_t>({20, 21}) &&
+              sched.meters().pool_blocks_in_use == 0,
+          "all three complete: the waiting background request runs when a seat can be spared");
+}
+
+DGPP_TEST(scheduler_priority_background_alone_is_never_held_back) {
+  // The last-seat rule holds a background request only while something else
+  // is running. On an idle engine it starts at once — with one slot (its only
+  // seat is the last one) and with several.
+  for (const int slots : {1, 3}) {
+    FakeEngine engine(slots, 100, 2, slots);
+    engine.arm(0, {10, 11}, 2);
+    Scheduler sched(&engine, {});
+    auto bg = make_request("bg", 2, 2);
+    bg.priority = 100;
+    sched.submit(bg);
+    sched.tick();
+    require(sched.meters().active + sched.meters().terminal == 1 && sched.meters().queued == 0,
+            "a background request on an idle engine is admitted on its first tick");
+    sched.run_to_completion();
+    require(sched.find("bg")->generated == std::vector<int64_t>({10, 11}), "and completes");
+  }
+}
+
+DGPP_TEST(scheduler_priority_gives_the_read_in_budget_to_the_urgent_prompt) {
+  // GIVEN a 23-token background prompt being read in 4-token ticks and a
+  // 9-token prompt at priority 0 arriving behind it: every tick's budget goes
+  // to the urgent prompt until it is read; the background prompt keeps its
+  // slot and resumes. In one class the two share each tick, as before.
+  for (const bool classes : {true, false}) {
+    ChunkFakeEngine engine;
+    engine.arm(0, {10, 11}, 2);
+    engine.arm(1, {20, 21}, 2);
+    dgpp::sched::AdmissionPolicy policy;
+    policy.prefill_budget_tokens = 4;
+    Scheduler sched(&engine, {}, 0, policy);
+    auto bg = make_request("bg", 23, 2);
+    bg.priority = classes ? 10 : 0;
+    sched.submit(bg);
+    sched.tick();
+    require(sched.meters().prompt_tokens_computed == 4, "the background prompt begins alone on the whole budget");
+    auto chat = make_request("chat", 9, 2);
+    sched.submit(chat);
+    sched.tick();
+    sched.tick();
+    require(sched.meters().prompt_tokens_computed == 12 && sched.meters().prefilling == 2,
+            "two ticks read eight tokens either way, and both prompts hold a slot");
+    const auto bg_chunks = [&] {
+      return std::count_if(engine.ops().begin(), engine.ops().end(),
+                           [](const std::string& op) { return op.rfind("PF:0:", 0) == 0; });
+    };
+    require(bg_chunks() == (classes ? 1 : 3),
+            classes ? "the background prompt was not advanced while the urgent one was being read"
+                    : "one class: the two prompts share each tick");
+    sched.tick();
+    require(sched.meters().prefilling == (classes ? 1 : 2),
+            classes ? "the urgent prompt is read by its third tick" : "equal shares leave both unfinished");
+    sched.run_to_completion();
+    require(sched.find("bg")->generated == std::vector<int64_t>({10, 11}) &&
+                sched.find("chat")->generated == std::vector<int64_t>({20, 21}) &&
+                sched.meters().prompt_tokens_computed == 32 && sched.meters().pool_blocks_in_use == 0,
+            "both prompts are read in full and both answers complete");
+  }
+}
+
+DGPP_TEST(scheduler_priority_reads_a_short_urgent_prompt_ahead_of_a_background_read_in) {
+  // GIVEN a 23-token background prompt being read in 4-token ticks and a
+  // 3-token chat prompt at priority 0 arriving behind it: the chat prompt is
+  // read on the next tick, which is its own. In one class (and without
+  // shortest-first) it waits until no read-in is in flight, as before.
+  for (const bool classes : {true, false}) {
+    ChunkFakeEngine engine;
+    engine.arm(0, {10, 11}, 2);
+    engine.arm(0, {20, 21, 22}, 3);  // one class: the chat prompt waits and reuses the long one's slot
+    engine.arm(1, {20, 21, 22}, 3);  // priority: it is seated beside the read-in
+    dgpp::sched::AdmissionPolicy policy;
+    policy.prefill_budget_tokens = 4;
+    Scheduler sched(&engine, {}, 0, policy);
+    auto bg = make_request("bg", 23, 2);
+    bg.priority = classes ? 10 : 0;
+    sched.submit(bg);
+    sched.tick();
+    auto chat = make_request("chat", 3, 3);
+    sched.submit(chat);
+    sched.tick();
+    require(sched.meters().prompt_tokens_computed == (classes ? 7 : 8) &&
+                sched.meters().active == (classes ? 2 : 1) && sched.meters().prefilling == 1,
+            classes ? "the urgent prompt is read at once and the tick is its own: the read-in is not advanced"
+                    : "one class: the tick goes to the read-in and the chat prompt waits");
+    sched.run_to_completion();
+    require(sched.find("bg")->generated == std::vector<int64_t>({10, 11}) &&
+                sched.find("chat")->generated == std::vector<int64_t>({20, 21, 22}) &&
+                sched.meters().prompt_tokens_computed == 26 && sched.meters().pool_blocks_in_use == 0,
+            "both prompts are read in full and both answers complete");
+  }
+}
+
+DGPP_TEST(scheduler_priority_outside_its_range_is_refused) {
+  FakeEngine engine(1, 100, 2);
+  Scheduler sched(&engine, {});
+  for (const int bad : {SchedulerRequest::kPriorityMin - 1, SchedulerRequest::kPriorityMax + 1}) {
+    auto r = make_request("r", 2, 2);
+    r.priority = bad;
+    bool rejected = false;
+    try { sched.submit(r); } catch (const std::invalid_argument&) { rejected = true; }
+    require(rejected, "a priority outside [-100, 100] is refused at submit");
+  }
+  auto ok = make_request("r", 2, 2);
+  ok.priority = SchedulerRequest::kPriorityMin;
+  engine.arm(0, {10, 11}, 2);
+  sched.submit(ok);
+  sched.run_to_completion();
+  require(sched.find("r")->generated.size() == 2, "the ends of the range are accepted");
+}

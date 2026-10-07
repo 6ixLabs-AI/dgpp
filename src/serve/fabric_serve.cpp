@@ -162,6 +162,12 @@ std::string encode_journal_tick(const GenerationService::PassEvents& events) {
         out += "]";
       }
       if (r.no_cache) out += ",\"nc\":1";
+      // The priority class: omitted at 0, so a record without one is what
+      // it was before the field existed, byte for byte.
+      if (r.priority != 0) {
+        out += ",\"pr\":";
+        append_json_int(&out, r.priority);
+      }
       if (!r.images.empty()) {
         validate_image_inputs(r.images, r.prompt.size());
         out += ",\"images\":[";
@@ -759,6 +765,12 @@ JournalRecord decode_journal_line(std::string_view line) {
           throw std::runtime_error("journal: submit '" + r.id +
                                    "' has a bad no-cache flag");
         r.no_cache = nc->as_int() == 1;
+      }
+      if (const dgpp::minijson::Value* pr = item.find("pr")) {
+        if (!pr->is_number() || pr->as_int() < dgpp::sched::SchedulerRequest::kPriorityMin ||
+            pr->as_int() > dgpp::sched::SchedulerRequest::kPriorityMax)
+          throw std::runtime_error("journal: submit '" + r.id + "' has a bad priority");
+        r.priority = static_cast<int>(pr->as_int());
       }
 
       if (const auto* images = item.find("images")) {

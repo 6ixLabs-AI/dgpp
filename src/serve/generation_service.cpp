@@ -1908,6 +1908,23 @@ bool GenerationService::parse_max_tokens(const minijson::Value& body, HttpRespon
   return true;
 }
 
+// "priority": the request's class for the scheduler (SchedulerRequest::priority):
+// an integer, lower is sooner, 0 when absent — the field vLLM reads, so a gateway
+// alias that marks background traffic for one engine marks it for both.
+bool GenerationService::parse_priority(const minijson::Value& body, HttpResponseWriter& w, int* priority) {
+  *priority = 0;
+  const auto* v = body.find("priority");
+  if (!v || v->is_null()) return true;
+  if (!v->is_number() || v->as_int() < sched::SchedulerRequest::kPriorityMin ||
+      v->as_int() > sched::SchedulerRequest::kPriorityMax) {
+    respond_error(w, 400, "priority must be an integer in [-100, 100] (lower is sooner)", "invalid_request_error",
+                  "priority");
+    return false;
+  }
+  *priority = static_cast<int>(v->as_int());
+  return true;
+}
+
 bool GenerationService::parse_ignore_eos(const minijson::Value& body, HttpResponseWriter& w,
                                          bool* ignore) {
   *ignore = false;
@@ -2004,6 +2021,8 @@ void GenerationService::route_chat_completions(const HttpRequest& req,
   if (!parse_max_tokens(body, w, &steps, true)) return;
   bool ignore_eos = false;
   if (!parse_ignore_eos(body, w, &ignore_eos)) return;
+  int priority = 0;
+  if (!parse_priority(body, w, &priority)) return;
   bool stream = false;
   if (const auto* sv = optional_field(body, "stream")) {
     if (!sv->is_bool()) {
@@ -2231,6 +2250,7 @@ void GenerationService::route_chat_completions(const HttpRequest& req,
     sr.prompt = prompt;
     sr.max_steps = steps;
     sr.ignore_eos = ignore_eos;
+    sr.priority = priority;
     sr.sampling = sampling;
     sr.seed = seed + static_cast<uint64_t>(choice);
     sr.logprobs = logprobs;
@@ -2288,6 +2308,8 @@ void GenerationService::route_completions(const HttpRequest& req,
   if (!parse_max_tokens(body, w, &steps, false)) return;
   bool ignore_eos = false;
   if (!parse_ignore_eos(body, w, &ignore_eos)) return;
+  int priority = 0;
+  if (!parse_priority(body, w, &priority)) return;
   bool stream = false;
   if (const auto* sv = optional_field(body, "stream")) {
     if (!sv->is_bool()) {
@@ -2407,6 +2429,7 @@ void GenerationService::route_completions(const HttpRequest& req,
   sr.prompt = std::move(ids);
   sr.max_steps = steps;
   sr.ignore_eos = ignore_eos;
+  sr.priority = priority;
   sr.sampling = sampling;
   sr.seed = seed;
   sr.logprobs = logprobs;

@@ -22,6 +22,7 @@
 // Request slots isolate model state. Tests compare concurrent requests with
 // independent runs, including cancellation, batching and slot reuse.
 // See DESIGN §11 and docs/operations.md for the journal and resource policy.
+#include <limits>
 #include <chrono>
 #include <cstdint>
 #include <stdexcept>
@@ -404,6 +405,26 @@ struct SchedulerRequest {
   // engine on every rank; rides the journal.
   std::vector<LogitBias> logit_bias;
   std::vector<ImageInput> images;
+  // The request's priority class (6ixServe, 2026-10-07): lower is sooner, 0
+  // is the default, the convention of vLLM's priority scheduling, so one
+  // gateway setting ("priority": N in the request body) means the same thing
+  // on both engines. Interactive traffic leaves it at 0; background work
+  // (sub-agents, benchmarks, scoring) is sent with a positive value. It
+  // orders everything the scheduler would otherwise order by arrival:
+  //   * the queue: the lowest value that fits admits first, arrival order
+  //     within a value;
+  //   * the read-in: a tick's prefill budget goes to the prompts of the
+  //     lowest value being read; the others keep their slots and wait;
+  //   * the last seat: a request above 0 does not take the last open slot
+  //     while others are in use, so an arrival at 0 or below never waits for
+  //     a background answer to finish.
+  // It does nothing to decoding: every active request rides every pass.
+  // With every request at one value (all at 0, as before this field) each
+  // of these is arrival order again: the op stream is unchanged, bit for
+  // bit. Rides the journal, so every rank orders alike.
+  static constexpr int kPriorityMin = -100;
+  static constexpr int kPriorityMax = 100;
+  int priority = 0;
 };
 
 // The bounded admission queue at capacity (submit() only). A load-shed
@@ -579,7 +600,9 @@ class Scheduler {
   uint64_t prefix_digest() const { return cache_.digest(); }
   const PrefixCache& prefix_cache() const { return cache_; }
 
-  // Arrival order = FCFS priority. Throws on an empty/duplicate id, a
+  // Arrival order is the order within a priority class (and the whole order
+  // when no request sets one). Throws on an empty/duplicate id, a priority
+  // outside [kPriorityMin, kPriorityMax], a
   // nonpositive max_steps, or a cancel_after outside [1, max_steps] —
   // manifest errors are operator errors, and they must fail identically
   // on every rank (a request that only exists on some ranks would
@@ -766,7 +789,15 @@ class Scheduler {
   // head-of-line blocking), or -1. With the prefix cache on it may EVICT
   // unattached entries (LRU) to make the blocks a request needs.
   // oneshot_budget >= 0: only requests a single tick reads in whole (no chunked read-in) are considered.
-  int next_admissible(int64_t oneshot_budget = -1);
+  // below_priority: only requests more urgent than that value are considered.
+  // Candidates are tried in queued_order(), and one above priority 0 is passed over while
+  // withhold_seat() holds.
+  int next_admissible(int64_t oneshot_budget = -1, int below_priority = std::numeric_limits<int>::max());
+  // The queued requests, most urgent first: by priority, then arrival.
+  std::vector<int> queued_order() const;
+  // The last-seat rule: a request above priority 0 does not take the last of `open_slots` while
+  // other slots are in use (then something is running, so the queue cannot stall on it).
+  bool withhold_seat(const Request& r, int open_slots) const;
   // The queued requests that admit together with `first` this tick: cold
   // prompts within the engine's group span limit, no prefix-cache plan,
   // fitting the free slots and blocks; empty when the engine has no group
@@ -797,7 +828,8 @@ class Scheduler {
   // either consumes the remaining cap. Other one-shots/groups must fit
   // the cap. Returns false when nothing admitted. A zero policy budget
   // retains one monolithic admission event per tick.
-  bool admit_fitting(int64_t& tick_cap, int64_t budget, bool first_prefill, bool oneshots_only = false);
+  bool admit_fitting(int64_t& tick_cap, int64_t budget, bool first_prefill, bool oneshots_only = false,
+                     int below_priority = std::numeric_limits<int>::max());
   void step_batch(const std::vector<int>& arrivals);
   // Appends one token and applies terminal conditions in their canonical
   // order. Returns true when the request retired. `logprobs` (optional)
